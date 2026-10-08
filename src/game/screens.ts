@@ -472,7 +472,7 @@ function drawDialogue(g: Game) {
   const frX = bx + 14, frY = by + 14;
   ctx.fillStyle = '#0e0c18';
   ctx.fillRect(frX, frY, frS, frS);
-  drawPortrait(ctx, pkey, frX + (frS - 28 * 1.72) / 2, frY + (frS - 40 * 1.72) / 2 + bob, 1.72, blink);
+  drawPortrait(ctx, pkey, frX + (frS - 28 * 1.72) / 2, frY + (frS - 40 * 1.72) / 2 + bob, 1.72, blink, performance.now());
   ctx.strokeStyle = '#6a5a38';
   ctx.strokeRect(frX, frY, frS, frS);
   ctx.strokeStyle = 'rgba(240,200,74,0.35)';

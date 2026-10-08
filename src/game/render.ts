@@ -22,6 +22,12 @@ import { drawDayNightGrade, drawCloudShadows } from './world/sky';
 import { waterOverlay } from './world/water';
 import { drawPropV2 } from './world/props';
 import { drawMinimapOverlay } from './world/minimap';
+// Ronda 2 · Terror: overlay de pavor, presentación del jefe, FX de fases y frames nuevos
+import { drawHorrorOverlay, getHorrorShake } from './actors/horror';
+import { drawBossIntro } from './actors/bossintro';
+import { drawBossFx } from './actors/bossfx';
+import { wolfFrameAI, guardianFrame } from './actors/enemies';
+import type { GuardianState } from './actors/enemies';
 
 const WORLD_FILTER: Record<string, string> = {
   presente: 'saturate(0.74) contrast(0.98)',
@@ -56,8 +62,10 @@ export function drawGame(g: Game) {
 function drawWorld(g: Game) {
   const ctx = g.ctx;
   // sacudida de cámara (g.shake decae en update y, por seguridad, en fxFrame)
-  const shx = g.shake > 0.2 ? (Math.random() - 0.5) * g.shake * 2 : 0;
-  const shy = g.shake > 0.2 ? (Math.random() - 0.5) * g.shake * 2 : 0;
+  // + micro-temblor del terror (Ronda 2): solo activo con el jefe en fase final
+  const hs = getHorrorShake();
+  const shx = (g.shake > 0.2 ? (Math.random() - 0.5) * g.shake * 2 : 0) + hs;
+  const shy = (g.shake > 0.2 ? (Math.random() - 0.5) * g.shake * 2 : 0) + hs * 0.7;
   ctx.save();
   ctx.translate(shx, shy);
   const camX = Math.round(g.camX), camY = Math.round(g.camY);
@@ -101,7 +109,7 @@ function drawWorld(g: Game) {
   for (const ec of g.map.echoes) {
     if (g.takenEchoes.has(ec.id)) continue;
     const bob = Math.sin(g.globalT * 2 + ec.x) * 2;
-    const fr = Math.floor(g.globalT * 3) % 2;
+    const fr = Math.floor(g.globalT * 3) % getSpr('wisp').length;
     ctx.globalAlpha = 0.75;
     ctx.drawImage(getSpr('wisp')[fr], sx(ec.x * TILE + 8 - 5), sy(ec.y * TILE + 2 + bob), 10 * ZOOM, 10 * ZOOM);
     ctx.globalAlpha = 1;
@@ -109,6 +117,10 @@ function drawWorld(g: Game) {
 
   // props (v2: obeliscos, forja, fragmentos, altares, carteles, portones)
   drawProps(g);
+
+  // aura de suelo, esquirlas orbitando y grietas del Guardián (Ronda 2):
+  // bajo las entidades, dentro del filtro de época para fundirse con el mundo
+  drawBossFx(ctx, g);
 
   // estelas de esquiva (afterimages del jugador, bajo las entidades)
   drawRollTrail(g, sx, sy);
@@ -133,7 +145,7 @@ function drawWorld(g: Game) {
     if (ch.needPast && g.epoch !== 'pasado') continue;
     const opened = g.openedChests.has(ch.id);
     const sprC = getSpr(opened ? 'chest_open' : 'chest')[0];
-    ctx.drawImage(sprC, sx(ch.x * TILE), sy(ch.y * TILE - 2), 16 * ZOOM, 14 * ZOOM);
+    ctx.drawImage(sprC, sx(ch.x * TILE), sy(ch.y * TILE - 2), sprC.width * ZOOM, sprC.height * ZOOM);
   }
 
   drawCombatFx(g, sx, sy);
@@ -167,6 +179,10 @@ function drawWorld(g: Game) {
   drawAmbient(g, 'sky');
   // clima capa cielo (R1): luciérnagas/briznas/polen/chispas con halo 'lighter'
   drawWeatherSky(ctx, g);
+
+  // terror ambiental (Ronda 2): viñeta cardiaca + susurros junto a sombras +
+  // ojos en la niebla del bosque nocturno (después de la luz, antes del HUD)
+  drawHorrorOverlay(ctx, g);
 
   // textos flotantes (después de la luz: siempre legibles)
   drawFloats(g, sx, sy);
@@ -267,7 +283,20 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
   ctx.ellipse(sx(e.x), sy(e.y + 4), (e.w / 2 + 3) * ZOOM, 3 * ZOOM, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  const fi = entityFrame(spr, e.dir, e.moving, e.anim);
+  // frames v2 (Ronda 2): el lobo usa su ciclo de 6 fases por IA y el Guardián
+  // sus 8 frames por estado (idle/grito/invoca/colapso); el resto, ciclo normal
+  const enF = e as Enemy;
+  let fi: number;
+  if (e.kind === 'enemy' && enF.etype === 'lobo') {
+    fi = wolfFrameAI(enF.ai, e.anim);
+  } else if (e.kind === 'enemy' && enF.etype === 'guardian') {
+    const st: GuardianState = enF.ai === 'aturdido' || enF.phase >= 3 ? 'colapso'
+      : enF.ai === 'carga' && enF.windup > 0 ? 'grito'
+      : enF.sumT > 0 ? 'invoca' : 'idle';
+    fi = guardianFrame(st, e.anim);
+  } else {
+    fi = entityFrame(spr, e.dir, e.moving, e.anim);
+  }
   const idx = Math.min(fi, spr.length - 1);
   const flip = e.dir === 'left';
   const dx = sx(e.x) - (zoomW * ZOOM) / 2;
@@ -605,7 +634,7 @@ function drawHud(g: Game) {
   ctx.clip();
   ctx.fillStyle = '#141020';
   ctx.fillRect(14, 14, 44, 44);
-  drawPortrait(ctx, p.discipline === 'alba' ? 'hero_alba' : 'hero_tejedor', 14 + (44 - 28 * 1.06) / 2, 14 + (44 - 40 * 1.06) / 2 + hudBob, 1.06, blinkHud);
+  drawPortrait(ctx, p.discipline === 'alba' ? 'hero_alba' : 'hero_tejedor', 14 + (44 - 28 * 1.06) / 2, 14 + (44 - 40 * 1.06) / 2 + hudBob, 1.06, blinkHud, performance.now());
   ctx.restore();
   ctx.strokeStyle = '#5a4a30';
   ctx.strokeRect(14, 14, 44, 44);
@@ -737,7 +766,10 @@ function drawOverlays(g: Game) {
   // 2) overlay de memoria (vitral-eco): no bloquea el input
   if (g.memoryReveal) drawMemoryOverlay(g);
 
-  // 3) banner dramático de jefe
+  // 3) presentación cinematográfica del jefe (Ronda 2): letterbox + banner
+  drawBossIntro(ctx, g);
+
+  // 4) banner dramático de jefe
   if (g.bossBannerT > 0) drawBossBanner(g);
 
   void p;

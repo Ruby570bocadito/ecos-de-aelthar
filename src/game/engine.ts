@@ -17,6 +17,10 @@ import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawT
 import { audio } from './audio';
 import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue } from './data';
 import { updateGame } from './update';
+// Ronda 2 · Terror: disolución al morir + stinger de pavor + resets de la intro/FX del jefe
+import { spawnDeathDissolve, resetBossFx } from './actors/bossfx';
+import { resetBossIntro } from './actors/bossintro';
+import { dreadStinger } from './actors/dread';
 import { drawGame } from './render';
 import { buildMinimapV2 } from './world/minimap';
 import { handleCustomAction, recordDialogueTone } from './hooks';
@@ -220,6 +224,9 @@ export class Game {
     };
     this.flags = {};
     this.questIdx = 0; this.questStep = 0;
+    // terror v2 (Ronda 2): estado interno de intro del jefe y FX de fases, limpio
+    resetBossIntro();
+    resetBossFx();
     this.openedChests = new Set();
     this.takenEchoes = new Set();
     this.deadGolds = [];
@@ -809,6 +816,7 @@ export class Game {
       this.deadGolds.push({ map: this.mapId, x: p.x, y: p.y, amount: lost });
     }
     audio.sfx('die');
+    dreadStinger('muerte'); // terror v2 (Ronda 2): golpe grave + silencio
     this.setState('dead');
   }
 
@@ -1226,6 +1234,8 @@ export class Game {
     p.gold += gold;
     this.floatAt(e.x, e.y - 20, `+${gold} coronas`, '#f0c84a');
     this.burst(e.x, e.y - 4, e.etype === 'guardian' ? '#7ee8ff' : '#9ec4b4', e.etype === 'guardian' ? 40 : 14, e.etype === 'guardian' ? 120 : 60);
+    // terror v2 (Ronda 2): el enemigo no explota alegre — se DESHACE en cenizas
+    spawnDeathDissolve(this, e);
     audio.sfx('enemyDie');
     // cuenta de lobos para la misión
     if (e.etype === 'lobo' && this.questIdx === 1 && this.questStep === 0) {

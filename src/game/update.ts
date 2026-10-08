@@ -9,6 +9,11 @@ import type { Enemy, Dir, Element, Player, Companion } from './types';
 import { ENEMY_DEFS } from './data';
 import { audio } from './audio';
 import { addShake, addFlash, requestSlowmo, applyKnockback, stepKnockback } from './fxcore';
+// Ronda 2 · Terror: capas de pavor visual/audio + presentación del jefe + FX de fases
+import { updateHorror } from './actors/horror';
+import { updateDread, dreadInit, dreadStinger } from './actors/dread';
+import { startBossIntro, updateBossIntro } from './actors/bossintro';
+import { updateBossFx } from './actors/bossfx';
 
 const DIRS: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
 
@@ -46,6 +51,12 @@ export function updateGame(g: Game, dt: number) {
   g.floats = g.floats.filter(f => f.t > 0);
   for (const p of g.particles) { p.t -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.grav * dt; }
   g.particles = g.particles.filter(p => p.t > 0);
+  // terror v2 (Ronda 2): nivel de pavor, audio procedural, intro del jefe y FX de
+  // fases corren en TODOS los estados (decaen solos fuera de juego / sin jefe)
+  updateHorror(g, dt);
+  updateDread(g, dt);
+  updateBossIntro(g, dt);
+  updateBossFx(g, dt);
   if (g.state !== 'play') { g.updateCamera(); return; }
 
   const p = g.player;
@@ -260,6 +271,10 @@ export function updateGame(g: Game, dt: number) {
       if (dist(p.x, p.y, boss.x, boss.y) < 190) {
         g.bossActive = true;
         audio.playTrack('boss');
+        // terror v2 (Ronda 2): capa de pavor + presentación cinematográfica
+        dreadInit();
+        dreadStinger('boss');
+        startBossIntro(g);
         g.toast('El Guardián Hueco despierta: ROMPE SU BARRA DE QUIEBRE', '#7ee8ff');
         audio.sfx('roar');
       }
@@ -651,6 +666,8 @@ function guardianBrain(g: Game, e: Enemy, dt: number, d: number) {
       }
       g.toast('El Guardián llama a sombras sin rostro', '#b48fff');
     }
+    // las sombras invocadas abren la ventana de 'invoca' (frames del sprite)
+    e.sumT = 1.4;
   }
   e.sumT -= dt;
   if (e.atkCd <= 0) {
