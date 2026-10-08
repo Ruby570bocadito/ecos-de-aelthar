@@ -89,6 +89,8 @@ export class Game {
   fadeT = 0; fadeDir = 0;   // transición de mapa
   pendingMap: { to: MapId; tx: number; ty: number } | null = null;
   exitCd = 0;               // enfriamiento anti-bucle tras loadMap (ignora zonas de salida)
+  rollQueued = false;       // esquiva en cola (detección de borde: 1 pulsación = 1 voltereta)
+  lastGoldLost = 0;         // oro perdido en la última muerte (lo muestra la pantalla de muerte)
 
   // UI
   uiHit: UiHit[] = [];
@@ -121,6 +123,16 @@ export class Game {
     this.ctx.imageSmoothingEnabled = false;
     initSprites();
     this.bindInput();
+    // volúmenes persistidos (sistema → sliders)
+    try {
+      const v = JSON.parse(localStorage.getItem('ecos-vol') ?? 'null');
+      if (v && typeof v.m === 'number' && typeof v.s === 'number') {
+        this.musicVolUi = Math.min(1, Math.max(0, v.m));
+        this.sfxVolUi = Math.min(1, Math.max(0, v.s));
+        audio.setMusicVol(this.musicVolUi * 0.9);
+        audio.setSfxVol(this.sfxVolUi * 0.9);
+      }
+    } catch { /* noop */ }
     (window as unknown as { __g?: Game }).__g = this;
   }
 
@@ -130,6 +142,7 @@ export class Game {
     // (pausa, muerte…), el viaje pendiente se cancela para no teletransportar
     // al reanudar ni reescribir el autoguardado con posición incorrecta.
     if (s !== 'play' && s !== 'dialogue') this.pendingMap = null;
+    if (s !== 'play') this.rollQueued = false;
     this.onStateChange?.(s);
     if (s === 'title') audio.playTrack('title');
   }
@@ -309,6 +322,11 @@ export class Game {
   // ---------------- Mapa ----------------
 
   loadMap(id: MapId, tx: number, ty: number) {
+    // memoria del jefe: si sales de la cripta con el Guardián herido, no se
+    // regenera al volver (cierra el exploit de reseteo de combate)
+    if (this.mapId === 'cripta' && this.bossRef && !this.bossRef.dead && !this.flags.guardianDefeated) {
+      this.flags.bossHp = this.bossRef.hp;
+    }
     this.mapId = id;
     this.map = MAPS[id];
     this.rows = mapRows(this.map);
@@ -322,6 +340,11 @@ export class Game {
     }
     this.exitCd = 0.9;
     this.spawnEnemies();
+    // restaura la vida memorizada del Guardián si la partida sigue en curso
+    if (id === 'cripta' && !this.flags.guardianDefeated && typeof this.flags.bossHp === 'number') {
+      const boss = this.enemies.find(e => e.etype === 'guardian');
+      if (boss) boss.hp = Math.max(1, Math.min(boss.maxHp, this.flags.bossHp as number));
+    }
     this.spawnNpcs();
     this.projectiles = []; this.waves = []; this.telegraphs = [];
     this.bossRef = null; this.bossActive = false;
@@ -494,6 +517,13 @@ export class Game {
     this.epoch = this.epoch === 'presente' ? 'pasado' : 'presente';
     this.epochFx = 0.8;
     audio.sfx('epoch');
+    // el cambio de época puede traer un muro hasta ti: recoloca si quedas dentro
+    if (this.player && this.tileSolidAt(this.player.x, this.player.y)) {
+      const [sx, sy] = this.findSafeTile(Math.floor(this.player.x / TILE), Math.floor(this.player.y / TILE));
+      this.player.x = sx * TILE + 8;
+      this.player.y = sy * TILE + 8;
+      this.toast('El mundo cambia a tu alrededor... y te aparta del muro.', '#c8b0e8');
+    }
     this.toast(this.epoch === 'pasado' ? 'El pasado canta a tu alrededor' : 'Vuelves al presente en ruinas', '#ffe9a0');
   }
 
@@ -775,6 +805,7 @@ export class Game {
     const p = this.player!;
     p.deaths++;
     const lost = Math.floor(p.gold / 2);
+    this.lastGoldLost = lost;
     if (lost > 0) {
       p.gold -= lost;
       this.deadGolds.push({ map: this.mapId, x: p.x, y: p.y, amount: lost });
@@ -845,6 +876,9 @@ export class Game {
       else if (k === 'arrowup' || k === 'w') { if (this.dlgNode?.options) { this.dlgSel = (this.dlgSel + this.dlgNode.options.length - 1) % this.dlgNode.options.length; audio.sfx('blip'); } }
       else if (k === 'arrowdown' || k === 's') { if (this.dlgNode?.options) { this.dlgSel = (this.dlgSel + 1) % this.dlgNode.options.length; audio.sfx('blip'); } }
     } else if (this.state === 'play') {
+      if (k === ' ' && this.player && this.player.rollT <= 0 && this.player.attackT <= 0 && this.player.sta >= 20) {
+        this.rollQueued = true; // 1 pulsación = 1 voltereta (no en cadena)
+      }
       if (k === 'e') this.tryInteract();
       else if (k === 'q') this.epochSwitch();
       else if (k === 'escape' || k === 'm') { this.setState('pause'); audio.sfx('uiOpen'); }
@@ -918,7 +952,8 @@ export class Game {
   }
 
   drinkPotion() {
-    const p = this.player!;
+    if (!this.player) return;
+    const p = this.player;
     if (p.potions <= 0) { this.toast('No te quedan pociones', '#e88'); audio.sfx('error'); return; }
     if (p.hp >= p.maxHp) { this.toast('Vida al máximo', '#9aa0b8'); return; }
     p.potions--;
@@ -930,7 +965,8 @@ export class Game {
   }
 
   startAttack() {
-    const p = this.player!;
+    if (!this.player) return;
+    const p = this.player;
     if (p.attackT > 0 || p.rollT > 0) return;
     p.charging = true;
     p.chargeT = 0;
@@ -968,7 +1004,8 @@ export class Game {
   }
 
   startParry() {
-    const p = this.player!;
+    if (!this.player) return;
+    const p = this.player;
     if (this.state !== 'play' || p.rollT > 0) return;
     if (p.sta < 12) { audio.sfx('parryFail'); return; }
     p.sta -= 12;
@@ -978,7 +1015,8 @@ export class Game {
   }
 
   aimAtMouse() {
-    const p = this.player!;
+    if (!this.player) return;
+    const p = this.player;
     const wx = this.mouse.x / ZOOM + this.camX / ZOOM;
     const wy = this.mouse.y / ZOOM + this.camY / ZOOM;
     const dx = wx - p.x, dy = wy - p.y;
@@ -987,7 +1025,8 @@ export class Game {
   }
 
   useSkill(i: number) {
-    const p = this.player!;
+    if (!this.player) return;
+    const p = this.player;
     const disc = SKILLS[p.discipline];
     if (i < 0 || i >= disc.length) return;
     const sk = disc[i];
@@ -999,7 +1038,8 @@ export class Game {
   }
 
   castSkill(id: string, element: Element) {
-    const p = this.player!;
+    if (!this.player) return;
+    const p = this.player;
     this.aimAtMouse();
     const wx = this.mouse.x / ZOOM + this.camX / ZOOM;
     const wy = this.mouse.y / ZOOM + this.camY / ZOOM;
@@ -1144,8 +1184,18 @@ export class Game {
       }
     }
     // estados
-    if (element === 'fuego') e.statuses.push({ kind: 'quemado', t: 3, power: 4 });
-    if (element === 'hielo') e.statuses.push({ kind: 'congelado', t: 2.5, power: 0.5 });
+    // estados: se REFRESCAN en vez de apilarse sin tope (el quemado infinito
+    // multiplicaba el DPS y trivializaba el quiebre del jefe)
+    if (element === 'fuego') {
+      const b = e.statuses.find(s => s.kind === 'quemado');
+      if (b) { b.t = Math.min(6, b.t + 3); b.power = Math.min(8, b.power + 2); }
+      else e.statuses.push({ kind: 'quemado', t: 3, power: 4 });
+    }
+    if (element === 'hielo') {
+      const c = e.statuses.find(s => s.kind === 'congelado');
+      if (c) c.t = Math.min(5, c.t + 2.5);
+      else e.statuses.push({ kind: 'congelado', t: 2.5, power: 0.5 });
+    }
     // reacciones elementales
     if (element === 'hielo' && e.statuses.some(s => s.kind === 'quemado' && s.t > 1)) {
       this.aoeHit(e.x, e.y, 30, 12, 'ninguno', false);
@@ -1188,6 +1238,7 @@ export class Game {
     }
     if (e.etype === 'guardian') {
       this.flags.guardianDefeated = true;
+      delete this.flags.bossHp;
       this.bossActive = false;
       audio.setCombat(false);
       audio.playTrack('crypt');

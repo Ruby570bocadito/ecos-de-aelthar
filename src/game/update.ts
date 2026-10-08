@@ -182,8 +182,10 @@ export function updateGame(g: Game, dt: number) {
     }
   }
 
-  // esquiva
-  if (k.has(' ') && p.rollT <= 0 && p.attackT <= 0 && p.sta >= 20) {
+  // esquiva (detección de borde: la pulsación se pone en cola en keydown;
+  // mantener Espacio ya no encadena volteretas con invulnerabilidad continua)
+  if (g.rollQueued && p.rollT <= 0 && p.attackT <= 0 && p.sta >= 20) {
+    g.rollQueued = false;
     p.rollT = 0.3;
     p.iframes = 0.34;
     p.sta -= 20;
