@@ -17,6 +17,7 @@ import { addShake, addFlash, requestSlowmo, applyKnockback, stepKnockback } from
 import { combatSparks, dodgeRing, critGlint } from './fx';
 import { expansionTick, expansionDeathFx, expansionBossWatchers } from './enemies_expansion';
 import { tileAt } from './maps'; // solo lectura (mapas propiedad de otro agente)
+import { interaccionTick, companionOrdersMove, lureActive, sennoChase } from './interaccion'; // 16-b: órdenes tácticas + señuelo
 
 const DIRS: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
 
@@ -378,6 +379,10 @@ export function updateGame(g: Game, dt: number) {
   // ---------------- compañera ----------------
   if (g.companion) updateCompanion(g, dt);
 
+  // ==== 16-b (interacción-compañeros): señuelo (vida/marcador/aggro timers),
+  // restos (ttl/marcador) y cooldown de interposición. O(1)/frame, cero GC. ====
+  interaccionTick(g, dt);
+
   // ---------------- enemigos ----------------
   let anyAggro = false;
   for (const e of g.enemies) {
@@ -543,20 +548,32 @@ function updateCompanion(g: Game, dt: number) {
   }
   c.atkCd -= dt;
   const d = dist(c.x, c.y, p.x, p.y);
-  // mantener posición de escolta
-  if (d > 30) {
-    const spd = Math.min(92, 40 + (d - 30) * 2);
-    const dx = (p.x - c.x) / d, dy = (p.y - c.y) / d;
-    g.moveEntity(c, dx * spd * dt, dy * spd * dt);
-    c.moving = true; c.anim += dt;
-    c.dir = dx > 0 ? 'right' : dx < 0 ? 'left' : dy > 0 ? 'down' : 'up';
-  } else { c.moving = false; c.anim += dt * 0.4; }
+  // ==== 16-b: ¿modo defensivo? (filtra disparos y Lluvia de estrellas al perímetro de 2 tiles) ====
+  const defensivo16b = (c.mode ?? 'seguir') === 'defensivo';
+  // ==== 16-b (órdenes tácticas al compañero, tecla T) =====================
+  // En 'agresivo' y 'defensivo' el movimiento lo decide la orden
+  // (interaccion.companionOrdersMove). Devuelve false en 'seguir' —y en la
+  // retirada agresiva por vida baja (<30%)— y entonces corre la escolta
+  // ORIGINAL de abajo, intacta.
+  if (!companionOrdersMove(g, c, p, dt, d)) {
+    // mantener posición de escolta
+    if (d > 30) {
+      const spd = Math.min(92, 40 + (d - 30) * 2);
+      const dx = (p.x - c.x) / d, dy = (p.y - c.y) / d;
+      g.moveEntity(c, dx * spd * dt, dy * spd * dt);
+      c.moving = true; c.anim += dt;
+      c.dir = dx > 0 ? 'right' : dx < 0 ? 'left' : dy > 0 ? 'down' : 'up';
+    } else { c.moving = false; c.anim += dt * 0.4; }
+  }
+  // ==== fin 16-b (dispatch de movimiento) ==================================
   // disparo a enemigos aggro cercanos: flechas elementales cíclicas fuego→hielo→rayo
   // (fuego/hielo aplican sus estados vía damageEnemy; rayo solo daño)
   if (c.atkCd <= 0) {
     let best: Enemy | null = null, bd = 150;
+    // ==== 16-b: modo DEFENSIVO — solo dispara a enemigos a <2 tiles del Portador ====
     for (const e of g.enemies) {
       if (e.dead) continue;
+      if (defensivo16b && dist(e.x, e.y, p.x, p.y) >= 2 * TILE) continue;
       const dd = dist(c.x, c.y, e.x, e.y);
       if (dd < bd) { bd = dd; best = e; }
     }
@@ -595,7 +612,9 @@ function updateCompanion(g: Game, dt: number) {
   // Técnica combinada «Lluvia de estrellas» (afinidad ≥ 20 · cd 24 s · biblia)
   mem.rainCd -= dt;
   if (mem.rainCd <= 0 && c.affinity >= 20) {
-    const targets = g.enemies.filter(e => !e.dead && e.aggro && dist(c.x, c.y, e.x, e.y) < 140);
+    // ==== 16-b: en DEFENSIVO la Lluvia de estrellas también respeta el perímetro de 2 tiles ====
+    const targets = g.enemies.filter(e => !e.dead && e.aggro && dist(c.x, c.y, e.x, e.y) < 140
+      && (!defensivo16b || dist(e.x, e.y, p.x, p.y) < 2 * TILE));
     if (targets.length > 0) {
       mem.rainCd = 24;
       const t0 = targets[0];
@@ -733,6 +752,9 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
     case 'persigue': {
       if (!e.aggro) { e.ai = 'patrulla'; break; }
       if (d > aggroR * 2.4) { e.aggro = false; e.ai = 'patrulla'; break; }
+      // ==== 16-b (señuelo): enemigo atraído camina hacia el señuelo y NO
+      // ataca al Portador; al expirar el timer retoma la persecución normal ====
+      if (lureActive(g, e)) { sennoChase(g, e, dt, def.speed * speedMult(e)); break; }
       const dx = (p.x - e.x) / (d || 1), dy = (p.y - e.y) / (d || 1);
       const spd = def.speed * speedMult(e);
       if (d > def.atkR * 0.8) {

@@ -6,9 +6,10 @@
 // ============================================================
 
 import type { Game } from './engine';
-import type { DialogueOption, Player, ToneKind } from './types';
+import type { DialogueNode, DialogueOption, Player, ToneKind } from './types';
 import { MEMORIES } from './data';
 import { ACTO3_ELITE } from './data';
+import { ACTO4_BOSS, ACTO4_FIN_BASE, ACTO4_FIN_JEFES } from './data';
 import { audio } from './audio';
 
 const TONES: ToneKind[] = ['empatico', 'pragmatico', 'sarcastico', 'amenazante'];
@@ -337,7 +338,180 @@ export function handleCustomAction(g: Game, action: string): boolean {
     return true;
   }
 
+  // ----- Acto IV · El Último Canto (agente 16-a: historia y diálogos) -----
+  // Watcher idempotente (patrón acto3CatchUp): O(1) fuera del rango q14-q16;
+  // completa por ESTADO los pasos que pudieron cumplirse antes de aceptar la
+  // misión o cuyo evento (killEnemy del motor no tiene rama para el jefe
+  // final) debe detectarse por referencia (ACTO4_BOSS.ref.dead).
+  acto4CatchUp(g);
+
+  // accept_q14: Brisa abre el Acto IV («las campanas de antes»); acepta q14.
+  // Con questIdx<13 auto-repara aceptaciones anticipadas o saves antiguos
+  // (mismo principio de accept_q11); el Acto III quedó en idx 12 paso 2.
+  if (action === 'accept_q14') {
+    if (g.questIdx < 13) { g.questIdx = 13; g.questStep = 0; }
+    if (!g.flags.q14) {
+      g.flags.q14 = true;
+      audio.sfx('quest');
+      g.toast('Nueva misión: Las Campanas de Antes', '#8ef0b0');
+    }
+    return true;
+  }
+
+  // acto4_toln: la forja de Toln completa el paso 0 de q14 (flag idempotente
+  // camToln); Toln cría la Campana del Ayer con el metal que recuerda.
+  if (action === 'acto4_toln') {
+    g.flags.camToln = true;
+    if (g.questIdx === 13 && g.questStep === 0) {
+      g.questAdvance();
+      g.toast('Toln cría la Campana del Ayer: falta el coro que la llame', '#8ef0b0');
+    }
+    return true;
+  }
+
+  // acto4_cam_mera / acto4_cam_ivo: las voces del coro (flags idempotentes
+  // camMera/camCumbres, cualquier orden); ambas cierran el paso 1 de q14.
+  // camMera devuelve la voz que la Sirena Abisal cantaba robada (requiere
+  // sirenaDefeated, garantizado tras el Acto II — lo valida el ruteo);
+  // camCumbres recoge la resonancia de los pastores (requiere golemDefeated).
+  if (action === 'acto4_cam_mera' || action === 'acto4_cam_ivo') {
+    g.flags[action === 'acto4_cam_mera' ? 'camMera' : 'camCumbres'] = true;
+    audio.sfx('echo');
+    if (g.player) g.burst(g.player.x, g.player.y - 8, '#ffe9a0', 18, 70);
+    const n = (['camMera', 'camCumbres'] as const).filter(k => g.flags[k]).length;
+    if (g.questIdx === 13 && g.questStep === 1 && n >= 2) {
+      g.questAdvance();
+      g.toast('El coro de antes acompaña a la campana: vuelve con la Anciana Brisa', '#8ef0b0');
+    } else {
+      g.toast(`Voz devuelta al coro (${Math.min(n, 2)}/2)`, '#ffe9a0');
+    }
+    return true;
+  }
+
+  // accept_q15: aceptación formal de q15 (el avance real lo hace questAdvance
+  // al cerrar q14; aquí solo bandera + auto-reparación, sin toast duplicado).
+  if (action === 'accept_q15') {
+    if (g.questIdx < 14) { g.questIdx = 14; g.questStep = 0; }
+    g.flags.q15 = true;
+    return true;
+  }
+
+  // acto4_guarda: el encuentro con la Guarda del Primer Canto completa el
+  // paso 0 de q15 (la Guarda es NPC de la Cripta añadida con showFlag
+  // 'acto3Done': solo aparece cuando el tercer canto terminó).
+  if (action === 'acto4_guarda') {
+    if (g.questIdx === 14 && g.questStep === 0) {
+      g.questAdvance();
+      g.toast('La Guarda sostiene la puerta: la Sala del Primer Canto puede abrirse', '#c8b0e8');
+    }
+    return true;
+  }
+
+  // acto4_subir: clímax de q15 — JEFE FINAL. Patrón acto3_subir: loadMap
+  // cripta + instancia makeEnemy + bossRef/bossActive + banner + toast.
+  // El jefe usa el tipo 'heraldo' (ENEMY_DEFS_16A: sprite existente
+  // 'inquisidor', quiebre estilo Coro Roto vía breakBar). Idempotente: si el
+  // jefe ya cayó NO vuelve a spawnear; re-invocable desde la Guarda si el
+  // jugador salió sin rematar (loadMap reconstruye enemigos desde cero).
+  if (action === 'acto4_subir') {
+    g.closeDialogue();
+    g.flags.acto4SalaAbierta = true;
+    g.loadMap('cripta', 19, 24); // aterrizaje del santuario (findSafeTile interno)
+    if (!g.flags.heraldoDerrotado) {
+      const altar = g.map.props.find(pr => pr.id === 'altar_c');
+      const ax = (altar ? altar.x : 19) * 16 + 8;      // TILE=16, constante del proyecto
+      const ay = (altar ? altar.y + 2 : 6) * 16 + 8;   // boca de la Sala del Primer Canto
+      const boss = g.makeEnemy('heraldo', ax, ay, 0, 'boss');
+      g.enemies.push(boss);
+      ACTO4_BOSS.ref = boss;
+      g.bossRef = boss;       // barra de jefe del HUD + limpieza de update (bossRef.dead → null)
+      g.bossActive = true;
+      g.bossBannerT = 3.2;
+      g.bossBannerText = 'EL HERALDO';
+      g.bossBannerSub = 'Vesh, la Última Nota';
+      audio.playTrack('boss');
+      g.shake = 8;
+      g.toast('La Sala del Primer Canto se abre: ROMPE SU BARRA DE QUIEBRE', '#c8b0e8');
+    }
+    return true;
+  }
+
+  // acto4_report: cierre de q14/q15 — paga UNA VEZ por misión (flags
+  // acto4Paid14/15 anti-doble-pago, mismo patrón que acto3Paid11/12/13):
+  // q14 +80 y 1 poción · q15 +120 y 1 poción. q16 se paga en acto4_epilogo.
+  if (action === 'acto4_report') {
+    if (g.questIdx === 13 && g.questStep === 2 && !g.flags.acto4Paid14) {
+      g.flags.acto4Paid14 = true;
+      p.gold += 80; p.potions += 1;
+      audio.sfx('coin');
+      g.floatAt(p.x, p.y - 26, 'Recompensa: +80 coronas y 1 poción', '#f0c84a', 7);
+      g.toast('Misión completada: Las Campanas de Antes (+80 coronas, +1 poción)', '#8ef0b0');
+      g.questAdvance(); // cierre genérico: q14 → q15 (el toast de misión lo emite questAdvance)
+    }
+    if (g.questIdx === 14 && g.questStep === 2 && !g.flags.acto4Paid15) {
+      g.flags.acto4Paid15 = true;
+      p.gold += 120; p.potions += 1;
+      audio.sfx('coin');
+      g.floatAt(p.x, p.y - 26, 'Recompensa: +120 coronas y 1 poción', '#f0c84a', 7);
+      g.toast('Misión completada: La Sala del Primer Canto (+120 coronas, +1 poción)', '#8ef0b0');
+      g.questAdvance(); // q15 → q16
+    }
+    return true;
+  }
+
+  // accept_q16: aceptación formal de q16 — el epílogo (el avance real lo hace
+  // questAdvance al cerrar q15; aquí solo bandera + auto-reparación).
+  if (action === 'accept_q16') {
+    if (g.questIdx < 15) { g.questIdx = 15; g.questStep = 0; }
+    g.flags.q16 = true;
+    return true;
+  }
+
+  // acto4_epilogo: EL ÚLTIMO CANTO — cierre de la historia. Pago final UNA
+  // VEZ (flag acto4Paid16): +150 coronas, 1 poción, memoria VII
+  // 'mem_ultimacanto' y flag acto4Done; avanza el paso 0→1 de q16 (la misión
+  // epílogo no se cierra: es la letra con la que el mundo se queda).
+  // Instala además en dynNodes el FINAL vivo del epílogo ('acto4_epilogo_canto')
+  // compuesto con los jefes opcionales derrotados (Coro Roto / Vult).
+  if (action === 'acto4_epilogo') {
+    if (g.questIdx < 15) { g.questIdx = 15; g.questStep = 0; } // auto-reparación
+    g.flags.q16 = true;
+    if (!g.flags.acto4Paid16) {
+      g.flags.acto4Paid16 = true;
+      p.gold += 150; p.potions += 1;
+      audio.sfx('quest');
+      g.floatAt(p.x, p.y - 26, 'Recompensa: +150 coronas y 1 poción', '#f0c84a', 7);
+      g.toast('Misión completada: El Eco que Elegiste (+150 coronas, +1 poción)', '#8ef0b0');
+      grantMemory(g, p, 'mem_ultimacanto');
+      g.flags.acto4Done = true;
+      if (g.questIdx === 15 && g.questStep === 0) g.questAdvance(); // paso 0→1 (invitación final)
+    }
+    g.dynNodes['acto4_epilogo_canto'] = acto4FinNode(g);
+    return true;
+  }
+
   return false;
+}
+
+/**
+ * 16-a — Nodo final del epílogo (acto4_epilogo_canto) compuesto según jefes
+ * opcionales derrotados: base + párrafos del Coro Roto y de Vult. Se instala
+ * en dynNodes (precedencia sobre DIALOGUES en openDialogue) y es idempotente:
+ * se re-escribe en cada acto4_epilogo. Tras recargar partida (dynNodes
+ * volátiles) el nodo estático de data.ts cubre como respaldo.
+ */
+function acto4FinNode(g: Game): DialogueNode {
+  const f = g.flags;
+  let text = ACTO4_FIN_BASE;
+  if (f.coroDefeated) text += '\n\n' + ACTO4_FIN_JEFES.coro;
+  if (f.vultDefeated) text += '\n\n' + ACTO4_FIN_JEFES.vult;
+  return {
+    name: 'Anciana Brisa', portrait: 'brisa', text,
+    options: [
+      { text: '(Subir el telón del Último Canto: terminar el viaje)', action: 'end_demo' },
+      { text: '(Quedarse: el mundo aún tiene mañanas que nombrar)', tone: 'empatico' },
+    ],
+  };
 }
 
 /** Concede una memoria una única vez y lanza el overlay de revelación. */
@@ -434,6 +608,45 @@ function acto3CatchUp(g: Game): void {
     g.toast('Tres recuerdos devueltos: vuelve con la Anciana Brisa', '#8ef0b0');
   }
   if (g.questIdx === 12 && g.questStep === 1 && f.guardianRecordadoDerrotado) {
+    g.questAdvance();
+  }
+}
+
+/**
+ * 16-a — Watcher idempotente del Acto IV (mismo principio que acto3CatchUp:
+ * sin tick propio, corre al inicio de MI sección de handleCustomAction; O(1)
+ * fuera del rango 13-15). Completa por ESTADO:
+ *  · Vesh derrotado → flag + limpieza de barra/música + avance q15 paso 1→2
+ *    (killEnemy del motor no tiene rama para un etype nuevo: se detecta por
+ *    ACTO4_BOSS.ref; el envoltorio de getDialogue en data.ts también lee la
+ *    referencia para rutar el informe aunque la flag aún no exista).
+ *  · q14 paso 1: camMera + camCumbres en cualquier orden (incluso antes de
+ *    aceptar la misión o antes de hablar con Toln).
+ *  · reparación de saves a medio aceptar (flag q14 con questIdx aún 12).
+ *  · espejo de reputación en flags (DialogueCtx no la lleva): el epílogo de
+ *    q16 se ramifica leyendo flags.acto4RepOrden / flags.acto4RepGuard.
+ */
+function acto4CatchUp(g: Game): void {
+  const f = g.flags;
+  if (!g.player) return;
+  const rep = g.player.repFacciones;
+  if (rep) {
+    f.acto4RepOrden = rep.orden ?? 0;
+    f.acto4RepGuard = rep.guardianes ?? 0;
+  }
+  if (g.questIdx === 12 && f.acto3Done && f.q14) { g.questIdx = 13; g.questStep = 0; }
+  if (g.questIdx < 13 || g.questIdx > 15) return;
+  if (ACTO4_BOSS.ref?.dead && !f.heraldoDerrotado) {
+    f.heraldoDerrotado = true;
+    g.bossActive = false;
+    audio.playTrack('crypt');
+    g.toast('Vesh, la Última Nota, se aquietó: el coro entero respira', '#c8b0e8');
+  }
+  if (g.questIdx === 13 && g.questStep === 1 && f.camMera && f.camCumbres) {
+    g.questAdvance();
+    g.toast('El coro de antes acompaña a la campana: vuelve con la Anciana Brisa', '#8ef0b0');
+  }
+  if (g.questIdx === 14 && g.questStep === 1 && f.heraldoDerrotado) {
     g.questAdvance();
   }
 }

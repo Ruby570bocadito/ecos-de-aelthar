@@ -37,6 +37,7 @@ import { ENEMY_DEFS } from './data';
 import { ARENA_MAP_ID } from './maps_expansion';
 import { audio } from './audio';
 import { COL, text, textShadow, panel, button, wrapText } from './ui';
+import { recordChallengeResult } from './achievements'; // 16-c: marcas del desafío + logro Rondador
 
 // ---------------- claves de localStorage (contrato documentado) ----------------
 
@@ -540,6 +541,10 @@ function finish(g: Game, run: ChallengeRun, victory: boolean): void {
   run.resultWin = victory;
   run.score = (run.wavesCleared ?? 0) + run.kills;
 
+  // ==== 16-c (logros-stats): ratio de vida EN el momento del cierre (antes de
+  // que restoreCampaign devuelva la hp de campaña) para el logro Rondador ====
+  const hpRatioPre = g.player && g.player.maxHp > 0 ? g.player.hp / g.player.maxHp : 0;
+
   // récord de oleadas (el duelo no lleva récord: su trofeo es el logro)
   if (run.mode === 'oleadas' && run.score > (run.best ?? 0)) {
     try { localStorage.setItem(LS_BEST, String(run.score)); } catch { /* noop */ }
@@ -554,6 +559,11 @@ function finish(g: Game, run: ChallengeRun, victory: boolean): void {
   // killEnemy cantó victoria de CAMPAÑA (flags de jefe, altar, botín): las
   // restauración ya deshizo el estado; los toasts de campaña se limpian aquí
   g.toasts = [];
+
+  // ==== 16-c (logros-stats): top 3 de tiempos por desafío ('ecos-desafio-récords')
+  // + logro Rondador (victoria con vida > 70%). Tras limpiar toasts para que el
+  // aviso de logro sobreviva al panel de resultados ====
+  recordChallengeResult(g, run.mode, run.boss, victory, hpRatioPre, run.timeSec ?? 0);
 
   // recompensa campañista: primer duelo ganado a CADA jefe, con Portador de
   // campaña. Se aplica DESPUÉS de restaurar (la restauración devuelve las

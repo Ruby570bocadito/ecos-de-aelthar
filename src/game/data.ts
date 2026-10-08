@@ -63,6 +63,7 @@ const TOLN_MAIN: DialogueOption[] = [
   { text: 'Mejorar arma', next: 'toln_forge' },
   { text: 'Ver corazas de la forja', next: 'toln_armaduras' }, // 14-b
   { text: 'Comprar poción (15 coronas)', next: 'toln_potion', action: 'buy_potion' },
+  { text: 'Comprar señuelo de caza (60 coronas)', next: 'toln_sennuelo', action: 'buy_sennuelo' }, // 16-b
   { text: '¿Qué sabes de la Noche del Silencio?', next: 'toln_lore' },
   { text: 'Hasta luego.', next: 'toln_bye' },
 ];
@@ -250,6 +251,12 @@ const D: Record<string, DialogueNode> = {
   toln_potion: {
     name: 'Maestro Toln', portrait: 'toln',
     text: 'Para los caminos largos. Bebe con cabeza.',
+    next: 'toln_intro',
+  },
+  // 16-b: señuelo de caza (la compra vive en applyAction case 'buy_sennuelo')
+  toln_sennuelo: {
+    name: 'Maestro Toln', portrait: 'toln',
+    text: 'Señuelo de caza: carne curada, hierro viejo y un olor que los bichos no perdonan. Lo lanzas (tecla 8) tres pasos adelante, ellos van a por él, y tú decides si peleas o te escabulles. Ojo: los jefes no se distraen con panzadas.',
     next: 'toln_intro',
   },
   toln_lore: {
@@ -1403,3 +1410,422 @@ for (const k of Object.keys(BUFF_JEFES_14A) as (keyof typeof BUFF_JEFES_14A)[]) 
   ENEMY_DEFS[k].breakBar = b.breakBar;
 }
 void ENEMY_DEFS_14A; // (la referencia viva es ENEMY_DEFS; se mantiene exportada para el smoke)
+
+// ============================================================
+// ═══════ 16-a (agente historia-acto4) — BLOQUE AÑADIDO ═══════
+// ACTO IV · "El Último Canto" (q14-q16): cierre de la historia.
+// Todo lo anterior queda INTACTO. Este bloque SOLO AÑADE:
+//   1) misiones q14-q16 al final del array QUESTS (push; sin tocar
+//      entradas previas),
+//   2) objetivos de la Brújula para los índices 13-15,
+//   3) KEY_ITEMS + MEMORIES (memoria final VII 'mem_ultimacanto'),
+//   4) ~20 nodos de diálogo (Object.assign sobre DIALOGUES: los nodos
+//      previos quedan byte a byte),
+//   5) los textos finales del epílogo (ACTO4_FIN_*) que hooks.ts
+//      compone dinámicamente según jefes opcionales derrotados,
+//   6) la referencia viva ACTO4_BOSS al jefe final (patrón ACTO3_ELITE),
+//   7) ENEMY_DEFS_16A — el jefe final 'heraldo' (makeEnemy lee
+//      ENEMY_DEFS[etype]; sprite existente 'inquisidor', sin sprites
+//      nuevos; quiebre estilo Coro Roto vía breakBar),
+//   8) el ENVOLTORIO de getDialogue (capa 16-a sobre la capa 13-a):
+//      captura la función vigente (getDialogueActo3) y reasigna el
+//      binding exportado — toda ruta que no sea del Acto IV delega
+//      tal cual en la capa anterior (regresión 0).
+// Idempotencia: los handlers viven en hooks.ts (bloque 16-a) con el
+// watcher acto4CatchUp; aquí solo vive contenido + ruteo.
+// ============================================================
+
+// ---------------- Misiones del Acto IV (append al final del array) ----------------
+
+QUESTS.push(
+  {
+    id: 'q14', name: 'Las Campanas de Antes',
+    steps: [
+      'Escucha a Toln en la forja de Lunaris: el metal que recuerda quiere ser campana',
+      'Reúne el coro de antes: la voz de Merrow y la resonancia de las Cumbres (0/2)',
+      'Vuelve con la Anciana Brisa: la Campana del Ayer puede sonar',
+    ],
+  },
+  {
+    id: 'q15', name: 'La Sala del Primer Canto',
+    steps: [
+      'Desciende a la Cripta: la Guarda del Primer Canto custodia la puerta de la Sala',
+      'Abre la Sala del Primer Canto y derrota a El Heraldo — Vesh, la Última Nota',
+      'Vuelve con la Anciana Brisa',
+    ],
+  },
+  {
+    id: 'q16', name: 'El Eco que Elegiste',
+    steps: [
+      'Vuelve con la Anciana Brisa: el coro de antes te espera para el Último Canto',
+      'Canta el Último Canto: quédate a escuchar... o deja que el mundo descanse',
+    ],
+  },
+);
+
+// ---------------- Brújula de Ecos (12-b): objetivos de las misiones nuevas ----------------
+
+QUEST_COMPASS[13] = [{ npc: 'toln' }, { npc: 'mera' }, { npc: 'brisa' }];
+// 'heraldo' es un jefe instanciado por hooks (acto4_subir), no un spawn de mapa:
+// el objetivo lleva map:'cripta' para que la Brújula señale la salida correcta.
+QUEST_COMPASS[14] = [{ npc: 'guarda' }, { etype: 'heraldo', map: 'cripta' }, { npc: 'brisa' }];
+QUEST_COMPASS[15] = [{ npc: 'brisa' }];
+
+// ---------------- Objeto clave de la campana (sabor; sin gate de motor) ----------------
+
+Object.assign(KEY_ITEMS, {
+  campanaAyer: {
+    name: 'La Campana del Ayer',
+    desc: 'La campana que Toln crió con el metal que recuerda. Reparte las horas, llama al coro de antes y da nombre al valle.',
+  },
+} satisfies Record<string, { name: string; desc: string }>);
+
+// ---------------- Memoria final VII (se otorga en acto4_epilogo, cierre de q16) ----------------
+
+Object.assign(MEMORIES, {
+  mem_ultimacanto: {
+    id: 'mem_ultimacanto',
+    title: 'Memoria VII · El Último Canto',
+    text: 'La mujer sin rostro por fin tiene cara: es la tuya, la que cierra los ojos y no busca a nadie detrás. «El Canto nunca fue mío —dices, y el valle entero te escucha nombrarte—: fue de todos los que lo cantaron. Yo solo devolví lo que me tocó devolver.» Por una noche entera el mundo no necesita ayeres prestados: la Campana del Ayer reparte horas, el mar lee nombres sin borrarlos, y la Niebla —que tanto aprendió— aprende por fin a descansar. Silencio, sí. Pero de los buenos: el que queda cuando la canción ya está dentro.',
+  } satisfies MemoryDef,
+});
+
+// ---------------- Nodos de diálogo del Acto IV ----------------
+
+const D_ACTO4: Record<string, DialogueNode> = {
+  // ----- q14 · Las Campanas de Antes -----
+  acto4_brisa_alba: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: '¿Lo oyes, Portador? Desde que enderezaste los tres ecos, el silencio tiene miedo de nosotros: no sabe qué hacemos con las manos mientras no canta. Pero la Niebla aprende rápido, y su maestro tiene cara de hombre... (seca una taza en el umbral) Anoche Toln vino con una idea imposible: el metal de su forja —el que recuerda el ritmo del martillo de su bisabuela— quiere ser CAMPANA. Las campanas de antes no se fundían solas, Portador: se criaban con el coro alrededor. Dale a Toln su campana, trae de vuelta a Merrow la voz que la Sirena cantaba robada y despierta la resonancia de los pastores en las Cumbres. Cuando el coro de antes vuelva a sonar, hasta la Niebla tendrá que aprender una canción nueva. La tuya.',
+    onEnd: 'accept_q14',
+    options: [
+      { text: 'El coro de antes volverá, Brisa. Te lo devuelvo nota por nota.', tone: 'empatico' },
+      { text: 'Forja, voz, resonancia. Tres campanas para un coro. Voy.', tone: 'pragmatico' },
+      { text: 'Una campana que recuerda y una Niebla que estudia. El barrio va mejorando.', tone: 'sarcastico' },
+    ],
+  },
+  acto4_brisa_ruta: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: 'Las campanas no se funden solas, Portador: Toln espera en la forja con el metal que recuerda, y el coro se reúne donde dejaste voces —Merrow, al este de la costa; las Cumbres, al este del bosque—. La Brújula de Ecos (tecla 6) sabe el camino si el valle se hace largo.',
+  },
+  acto4_toln_cam: {
+    name: 'Maestro Toln', portrait: 'toln',
+    text: 'Ah, viniste. Bien: quería que lo tocases tú. (pone tu mano sobre el yunque) ¿Sientes? Lleva trescientos años esperando. Mi bisabuelo fundió las campanas de Lunaris con este metal —los niños lo llaman el eco del pozo— y dicen que guarda el ritmo del martillo de su abuela. Anoche, cuando el coro del valle cantó tus tres notas, el metal LLORÓ en la fragua. Una campana no se hace, Portador: se cría. Yo le doy el cuerpo; a ti te toca traerle lo que la Niebla le robó: la voz que la llame —la que la Sirena cantaba robada, en Merrow— y la resonancia que la sostenga —donde los pastores cantaban por turnos, en las Cumbres—. Tráeme ambas, y esta campana recordará al mundo entero cómo se llama.',
+    onEnd: 'acto4_toln',
+    options: [
+      { text: 'Tu bisabuelo fundió las campanas, Toln. Tu forja las va a devolver.', tone: 'empatico' },
+      { text: 'Merrow y Cumbres. Dos viajes y una campana criada. Voy.', tone: 'pragmatico' },
+      { text: 'Un yunque que llora y una Niebla que estudia. Necesito vacaciones.', tone: 'sarcastico' },
+      { text: 'Necesito acero y pociones, no canciones.', next: 'toln_intro' },
+    ],
+  },
+  // variante por tono dominante (mismo patrón que acto3_toln_intro_sarc)
+  acto4_toln_cam_sarc: {
+    name: 'Maestro Toln', portrait: 'toln',
+    text: 'Vuelves con orejas nuevas, Listillo. Pues toca el yunque y deja de reírte: ese metal lleva trescientos años esperando y anoche LLORÓ en la fragua cuando el valle cantó tus notas. Los niños lo llaman el eco del pozo: guarda el ritmo del martillo de mi bisabuela. Voy a criar con él la campana que Lunaris merece... pero las campanas no se funden solas: necesito la voz que la Sirena cantó robada —Merrow— y la resonancia de los pastores —las Cumbres—. Anda, ve a hacer el coro y deja las gracias para el estreno.',
+    onEnd: 'acto4_toln',
+    options: [
+      { text: 'Merrow y Cumbres. Dos viajes y una campana criada. Voy.', tone: 'pragmatico' },
+      { text: 'Necesito acero y pociones, no canciones.', next: 'toln_intro' },
+    ],
+  },
+  acto4_mera_cam: {
+    name: 'Espectro de Merrow', portrait: 'nimue',
+    text: '...Portador. Esta mañana el mar dijo un nombre y no era el mío. La que cantaba bajo la quilla ya no canta para la Niebla: su voz quedó suelta, como un farol sin gancho... y una voz suelta siempre busca dueño. Merrow fue su primer dueño, ¿sabes? La Sirena aprendió a cantar escuchando a mis vecinas nombrar a sus hijos al alba. Devuélvela: di TÚ en voz alta que la voz del mar vuelve a casa. (junta las manos, como quien espera una cerilla) Dímelo ahora, si te atreves... y la aldea vuelve a nombrar.',
+    onEnd: 'acto4_cam_mera',
+    options: [
+      { text: 'La voz del mar vuelve a casa, Merrow. Cantad con ella.', tone: 'empatico' },
+      { text: 'Una voz suelta, un dueño, una aldea que nombra. Hecho.', tone: 'pragmatico' },
+      { text: 'La ex ladrona de voces devolviendo el botín. La Niebla debe estar encantada.', tone: 'sarcastico' },
+    ],
+  },
+  acto4_ivo_cam: {
+    name: 'Ivo, cazador de cumbres', portrait: 'brokk',
+    text: '¡Ahí, Portador, ahí! ¡Escucha la hoguera! Anoche ardieron las piedras sin leña, te lo juro por la ballesta: las voces bajo el hielo cantaron la última estrofa. La que nadie cantó. Llevan trescientos años esperando un turno nuevo, y la montaña me ha dicho —sí, HABLADO, búscate otra explicación— que el turno nuevo es tuyo. Pon la mano en la nieve y di «os toca cantar a vosotras», que eran tres hermanas y su hermano el pequeño, y el pequeño es el que no llegaba al final... ¡Ja! La montaña vuelve a tener oído, Portador. Llévate su resonancia a tu campana: el frío ya no guarda voces... las PRESTA.',
+    onEnd: 'acto4_cam_ivo',
+    options: [
+      { text: 'Os toca cantar a vosotras, pastores. Y al pequeño, el final.', tone: 'empatico' },
+      { text: 'Resonancia prestada, devolución garantizada. Gracias, montaña.', tone: 'pragmatico' },
+      { text: 'Una montaña que habla y tú sin abrigo. Aún hacéis buena pareja.', tone: 'sarcastico' },
+    ],
+  },
+  acto4_brisa_cierre1: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: 'Tres campanas... no, Portador: una campana y un coro entero. Escucha. (Lunaris tañe la hora; el sonido baja al mar, cruza la laguna y vuelve puesto de acuerdo con las cumbres) La Campana del Ayer suena, y lo que suena no puede comérselo la Niebla sin masticar. Pero el que enseñó a la Niebla... el de la cara de hombre... ha bajado a la Cripta. La Guarda del Primer Canto lleva tres noches en pie ante la Sala, esperándote. Ve. Y Portador: lo que hay ahí dentro no es un monstruo. Es un hombre al que enseñaron a tener miedo de la música.',
+    onEnd: 'acto4_report',
+    options: [
+      { text: 'Iré. Nadie muere dos veces por cantar, y él lleva una esperando.', next: 'acto4_brisa_sala', tone: 'empatico' },
+      { text: 'La Sala, la Nota, la Guarda. Voy.', next: 'acto4_brisa_sala', tone: 'pragmatico' },
+      { text: 'Un hombre con miedo a la música, en una cripta. Perfecto para cerrar un acto.', tone: 'sarcastico' },
+      { text: 'Necesito preparar el acero antes de bajar.', tone: 'pragmatico' },
+    ],
+  },
+  // ----- q15 · La Sala del Primer Canto -----
+  acto4_brisa_sala: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: 'La Sala del Primer Canto es la habitación donde tu dios aprendió a cantar, Portador: la primera nota, la que costó el ayer de Velmora. Desde la Noche del Silencio está sellada, y su llave no es de acero: es de coro. Ahora que la Campana del Ayer llama, la puerta puede abrirse... pero alguien tiene que sostenerla mientras tú entras. La Guarda del Primer Canto —el tercer capellán que cantaba las horas, el que no calló— te espera dentro de la Cripta. Dile que Brisa aún canta. Ella sabrá qué significa.',
+    onEnd: 'accept_q15',
+    options: [
+      { text: 'Brisa aún canta. Y yo canto con ella. Voy.', tone: 'empatico' },
+      { text: 'Cripta, Guarda, Sala. Entendido. Que suene el final.', tone: 'pragmatico' },
+      { text: 'Una cripta que es cerradura y yo de llave cantora. De acuerdo.', tone: 'sarcastico' },
+    ],
+  },
+  acto4_brisa_ruta2: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: 'La Cripta te espera, Portador: la Guarda del Primer Canto no abandona la puerta ni para dormir, y lleva tres noches escuchando tu campana. Dile que Brisa aún canta... y que esta vieja ya no da más de sí, pero se queda escuchando hasta que vuelvas.',
+  },
+  acto4_brisa_sala_espera: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: 'La Sala está abierta y su Nota vibra, Portador: no la dejes esperando. Si saliste de la Cripta sin rematar, la Guarda sostiene la puerta: pídele volver a entrar. Y guarda una poción para el final... las últimas notas siempre piden más aire.',
+  },
+  acto4_guarda_intro: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: '...Dijiste la palabra de Brisa. Entonces puedo bajar la lanza: trescientos años en pie y ninguna orden para apartarla. Escucha, Portador: yo era el tercer capellán de la muralla de Lunaris —el que cantaba las horas—. Cuando el Canto murió, mis compañeros callaron y yo seguí... hasta que seguí dentro de la piedra: las piedras cantan por mí cuando llueve, y la Orden me dio este puesto para que nadie olvide el camino. Esta puerta guarda la Sala del Primer Canto: aquí aprendió a cantar tu dios, y aquí dejó Vesh, el Gran Inquisidor, su Última Nota... por si el mundo volvía a necesitar una lanza. Ahora se hace llamar El Heraldo, y la Niebla le presta la voz. ¿Abro?',
+    onEnd: 'acto4_guarda',
+    options: [
+      { text: '(Abre, Guarda. Por Brisa, por Velmora y por los que callaron.)', action: 'acto4_subir', tone: 'empatico' },
+      { text: '¿Por qué la Orden guardó la nota que quiso matar?', next: 'acto4_guarda_heraldo' },
+      { text: 'Prepararme antes. Nadie entra a una Sala sin filo.', tone: 'pragmatico' },
+    ],
+  },
+  acto4_guarda_heraldo: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: 'Porque Vesh no era cruel: era un hombre que VIO qué pasaba cuando el Canto tenía hambre. Vio pueblos sin ayeres, con la marea llena de nombres... y cuando la Orden bajó a matar al dios, él quiso guardar una última nota por si el mundo, algún día, la necesitaba de nuevo. Es una obediencia vieja, Portador, y las obediencias viejas no saben retirarse: ahora la Niebla le canta que la nota es SUYA, y él obedece. No lo odies. Rompe su barra... y escucha lo que canta debajo.',
+    next: 'acto4_guarda_puerta',
+  },
+  acto4_guarda_puerta: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: 'La Sala no perdona la prisa, y la Nota no perdona la piedad: come ayeres, y el tuyo también sabe a algo. Yo sostengo la puerta y la Campana del Ayer sostiene el coro; tú solo tienes que llegar hasta el final y querer más que él. Di la palabra.',
+    options: [
+      { text: '(Abrir la Sala: fuera del tiempo)', action: 'acto4_subir' },
+      { text: 'Prepararme antes. Un filo honesto vale más que un verso.', tone: 'pragmatico' },
+    ],
+  },
+  acto4_guarda_espera: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: 'La Sala está abierta y la Nota vibra, Portador: no le dejes más silencio del debido. Si saliste sin terminar, vuelve a entrar: la puerta no se cierra mientras yo esté en pie... y en pie llevo trescientos años.',
+    options: [
+      { text: '(Volver a entrar en la Sala)', action: 'acto4_subir' },
+      { text: 'Un momento. Hasta un coro necesita respirar.', tone: 'empatico' },
+    ],
+  },
+  acto4_guarda_gratitud: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: '...(la Guarda deja la lanza en el suelo, y suena como suena una campana chica) Trescientos años, Portador, y has tardado una sola vida. La Nota ya no llama a la Niebla: ahora es solo una canción triste... y las canciones tristes también curan, si alguien las canta entera. La Brisa te espera en el valle: el Último Canto no se canta solo. Yo me quedo. Alguien tiene que cantar las horas cuando llueva.',
+    onEnd: 'acto4_report', // idempotente: finaliza el pago/paso del informe (acto4CatchUp) al hablar con ella
+    options: [
+      { text: 'Que llueva mucho, Guarda. Cantaré contigo la próxima vez.', tone: 'empatico' },
+      { text: 'Trescientos años en pie y de pie te quedas. Nota tomada.', tone: 'pragmatico' },
+    ],
+  },
+  acto4_guarda_silencio: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: '...(la Guarda no gira la cabeza; la lanza sigue alta) Aún no, Portador. La Sala solo se abre a un coro entero: cuando el valle tenga su campana, vuelve. Trescientos años esperando no me han hecho prisa.',
+  },
+  acto4_heraldo_aviso: {
+    name: 'Heraldo de Vesh', portrait: 'kael',
+    text: '...Ya lo sabes, ¿verdad? Se te nota en la manera de mirar los campanarios. Sí: bajé a la Sala. Mi Gran Inquisidor dejó una orden escrita antes de morir: «si alguien reúne el Canto, baja y sé su última nota». Yo creí que era un honor. Es un CASTIGO, recipiente: la última nota de un canto se queda vibrando para siempre, sin poder bajar del aire... (se ajusta la capucha) Nos vemos en la Sala. Y reza por que tu melodía sea más terca que mi obediencia.',
+    options: [
+      { text: 'No eres tu obediencia, Heraldo. Baja, escucha y descansa.', tone: 'empatico' },
+      { text: 'La última nota de un canto también es la más alta. Nos vemos.', tone: 'pragmatico' },
+      { text: 'Si tanto amas vibrar, te dejo afinado en dos notas. Las mías.', tone: 'amenazante', action: 'rep_orden_-5' },
+    ],
+  },
+  acto4_brisa_cierre2: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: '...(Brisa no habla: escucha. Muy lejos —si la Ciudadela sigue existiendo— algo deja de llamar.) Así que el Heraldo era solo un hombre con una obediencia vieja... y la Nota ya es solo una canción triste. Descansa esta noche, Portador: el coro entero tañe, y hasta la Niebla aprende canciones nuevas. Las tuyas. Queda una sola cosa, y no es una misión: es un ECO. El que elegiste, el que has ido siendo mientras devolvías nombres, ayeres y horas. Ven cuando quieras: el Último Canto se canta con la letra que tú escribiste.',
+    onEnd: 'acto4_report',
+    options: [
+      { text: '(Respirar. Luego, el Último Canto.)', tone: 'empatico' },
+      { text: '(Dar una vuelta más a la plaza. Sin motivo.)', tone: 'sarcastico' },
+    ],
+  },
+  // ----- q16 · El Eco que Elegiste (epílogo ramificado) -----
+  // Tres nodos de ENTRADA según reputación (Orden vs Guardianes; ruteo en el
+  // envoltorio getDialogueActo4 leyendo el espejo flags.acto4RepOrden/Guard
+  // que escribe hooks.acto4CatchUp). Los tres comparten el FINAL dinámico
+  // 'acto4_epilogo_canto' (texto compuesto en hooks según jefes derrotados).
+  acto4_epilogo_verdad: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: 'La verdad, entonces. (Brisa no sonríe: descansa) Contaste lo que Velmora te confió y la Orden dejó de ser un puño cerrado: por primera vez en trescientos años, los de la Ciudadela lloran a sus muertos en voz alta, y las lanzas descansan porque una verdad pesa menos que un secreto. Hay quien te lo reprocha, Portador: hay quien quería a los Guardianes con la causa intacta. Pero el Eco que elegiste es este: una verdad con el suelo mojado de lágrimas viejas. El Último Canto se canta con ella... o no se canta.',
+    onEnd: 'acto4_epilogo',
+    options: [
+      { text: '(Cantar con la verdad puesta: es mi letra y la sostengo.)', action: 'accept_q16', next: 'acto4_epilogo_canto', tone: 'empatico' },
+      { text: '(Cantar. Llorar encima si hace falta; la nota manda.)', action: 'accept_q16', next: 'acto4_epilogo_canto', tone: 'pragmatico' },
+      { text: '(Cantar una versión donde salgo mejor parado. Obviamente.)', action: 'accept_q16', next: 'acto4_epilogo_canto', tone: 'sarcastico' },
+      { text: 'Todavía no. Déjame respirar antes del Último Canto.', tone: 'pragmatico' },
+    ],
+  },
+  acto4_epilogo_silencio: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: 'El silencio, entonces. (Brisa sí sonríe, y es como ver llover sobre el río) Guardaste el secreto de la Orden y los Guardianes conservaron su causa: trescientos años cantando a un dios que mataba por cantar, y nada de eso se derrumbó. Hay quien dirá que mentiste al mundo con tu callar. Yo digo que elegiste a quién darle el peso: hay verdades que solo sostienen los que ya las cargan. El Eco que elegiste es este: un silencio que suena, como el de una casa vacía donde aún se guarda la taza llena. El Último Canto se canta con él... o no se canta.',
+    onEnd: 'acto4_epilogo',
+    options: [
+      { text: '(Cantar con el silencio bien guardado: mi letra es un refugio.)', action: 'accept_q16', next: 'acto4_epilogo_canto', tone: 'empatico' },
+      { text: '(Cantar. Lo que se conserva también se comparte.)', action: 'accept_q16', next: 'acto4_epilogo_canto', tone: 'pragmatico' },
+      { text: 'Todavía no. Déjame respirar antes del Último Canto.', tone: 'pragmatico' },
+    ],
+  },
+  acto4_epilogo: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: 'Hazlo como quieras, Portador: callado o a gritos, el Canto ya es tuyo. (Brisa te mira como se mira el primer día y el último) Tres ecos devueltos, tres campanas criadas, una Sala abierta y una Nota aquietada. Lo que fuiste haciendo mientras caminabas... eso es el Último Canto. Solo falta ponerle letra. ¿La tuya?',
+    onEnd: 'acto4_epilogo',
+    options: [
+      { text: '(Cantar. Con todo lo que tengo y lo que me dieron.)', action: 'accept_q16', next: 'acto4_epilogo_canto', tone: 'empatico' },
+      { text: 'Todavía no. Déjame respirar antes del Último Canto.', tone: 'pragmatico' },
+    ],
+  },
+  // FINAL del epílogo: versión estática de respaldo (el texto vivo lo instala
+  // hooks.acto4_epilogo en g.dynNodes['acto4_epilogo_canto'] con variantes
+  // según jefes opcionales derrotados; tras recargar partida, esta base cubre).
+  acto4_epilogo_canto: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: '...(Brisa alza la voz, y no canta sola: la Campana del Ayer reparte la primera hora, el pozo de los nombres devuelve un coro que nadie recordaba haber prestado, y hasta la Niebla —que tantas letras robó— se queda a escuchar, quieta, como un perro viejo al que por fin le cantan lo suyo.) Escucha, Portador, y no lo olvides: el Canto de Aelthar no volvió porque un héroe lo buscara. Volvió porque alguien, paso a paso, fue devolviendo lo que le iban dando: una nana, una casa, un faro, un invierno, un canto al revés. Ese es el Eco que elegiste. Ese eres tú. Que suene.',
+    options: [
+      { text: '(Subir el telón del Último Canto: terminar el viaje)', action: 'end_demo' },
+      { text: '(Quedarse: el mundo aún tiene mañanas que nombrar)', tone: 'empatico' },
+    ],
+  },
+  acto4_epilogo_stay: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: 'El coro se queda, Portador: Toln le puso badajo al Ayer, la Espectro dicta nombres en la plaza de Merrow, Ivo apuesta a que la montaña desafina en los graves y el mar le lleva la contraparte. Yo tengo una taza llena y trescientas historias nuevas. Cuando quieras terminar el viaje, cierra los ojos y termina: el resto del coro canta donde tú cantes.',
+    options: [
+      { text: '(Subir el telón del Último Canto: terminar el viaje)', action: 'end_demo' },
+      { text: '(Quedarse un rato más junto a la taza llena)', tone: 'empatico' },
+    ],
+  },
+};
+// Los nodos previos quedan intactos: este assign SOLO añade claves nuevos.
+Object.assign(DIALOGUES, D_ACTO4);
+
+// ---------------- Textos finales del epílogo (los compone hooks.acto4_epilogo) ----------------
+/**
+ * 16-a: hooks.acto4_epilogo instala en g.dynNodes['acto4_epilogo_canto'] la
+ * versión viva del cierre = ACTO4_FIN_BASE + los párrafos de los jefes
+ * opcionales derrotados (El Coro Roto / Vult). El nodo estático de arriba es
+ * la base de respaldo (saves recargados a mitad del epílogo).
+ */
+export const ACTO4_FIN_BASE =
+  '...(Brisa alza la voz, y no canta sola: la Campana del Ayer reparte la primera hora, el pozo de los nombres devuelve un coro que nadie recordaba haber prestado, y hasta la Niebla —que tantas letras robó— se queda a escuchar, quieta, como un perro viejo al que por fin le cantan lo suyo.) Escucha, Portador, y no lo olvides: el Canto de Aelthar no volvió porque un héroe lo buscara. Volvió porque alguien, paso a paso, fue devolviendo lo que le iban dando: una nana, una casa, un faro, un invierno, un canto al revés. Ese es el Eco que elegiste. Ese eres tú. Que suene.';
+export const ACTO4_FIN_JEFES: Record<string, string> = {
+  coro: '(A lo lejos, algo tañe en tres voces distintas: las tres máscaras del Coro Roto, ahora tres campanas gemelas, aprendiendo por fin a sonar juntas sin nadie que las una a la fuerza.)',
+  vult: '(En la colina, un mapa se dobla solo: Vult, el Cazador de Ecos, despide los pasos que robó y saluda con el sombrero de cartógrafo. La Liga facturará la escena.)',
+};
+
+// ---------------- Referencia viva al jefe final de q15 (patrón ACTO3_ELITE) ----------------
+/**
+ * 16-a: hooks.acto4_subir instancia el JEFE FINAL (makeEnemy 'heraldo' — la
+ * Sala del Primer Canto) y guarda AQUÍ la referencia; killEnemy del motor no
+ * tiene rama para un etype nuevo, así que hooks.acto4CatchUp detecta su
+ * `.dead` (y el envoltorio de getDialogue también lo lee para rutar el informe
+ * de q15 sin esperar a la flag). Se vive en data.ts y no en hooks.ts porque el
+ * envoltorio de getDialogue vive aquí (data→hooks sería un ciclo de valor).
+ */
+export const ACTO4_BOSS: { ref: { dead?: boolean } | null } = { ref: null };
+
+// ---------------- Enemigo del Acto IV: el jefe final ----------------
+
+/** Defs del Acto IV (mismo formato que ENEMY_DEFS/ENEMY_DEFS_14A).
+ *  'heraldo' reutiliza el sprite EXISTENTE 'inquisidor' (Gran Inquisidor Vesh,
+ *  32×36 con máscara) — cero sprites nuevos, como pide la ronda. makeEnemy lee
+ *  ENEMY_DEFS[etype] por índice y el render dibuja la barra de jefe + QUIEBRE
+ *  (breakBar) con los mecanismos ya existentes. */
+export const ENEMY_DEFS_16A: Record<string, EnemyDef> = {
+  heraldo: {
+    name: 'El Heraldo · Vesh, la Última Nota', hp: 640, dmg: 20, speed: 46, xp: 420, gold: [220, 280],
+    sprite: 'inquisidor', aggroR: 175, atkR: 42, windup: 0.5, atkCd: 1.6,
+    element: 'sombra', weakTo: 'sagrado', breakBar: 130,
+    desc: 'El último hombre de la Orden de Vesh: entró a la Sala del Primer Canto a ser una nota por obediencia y la Niebla le prestó su voz. Golpea como un silencio que cae; quebra su barra y oirás lo que canta debajo. Débil a la luz.',
+  },
+};
+Object.assign(ENEMY_DEFS, ENEMY_DEFS_16A);
+
+// ---------------- Envoltorio de getDialogue (ruteo del Acto IV) ----------------
+/**
+ * Segunda capa del envoltorio (13-a → 16-a): captura la función VIGENTE
+ * (getDialogueActo3) y reasigna el binding exportado. Toda ruta que no sea
+ * del Acto IV (questIdx 13-15) delega tal cual en la capa del Acto III, que a
+ * su vez delega en la original del Acto I/II — regresión 0 por diseño.
+ */
+const GET_DIALOGUE_ACTO3 = getDialogue;
+
+function getDialogueActo4(nid: string, ctx: DialogueCtx): string {
+  const q = ctx.questIdx, s = ctx.questStep, f = ctx.flags;
+  const heraldoMuerto = !!f.heraldoDerrotado || ACTO4_BOSS.ref?.dead === true;
+  // transición q12 → q13: Brisa arranca el Acto IV tras el cierre del Acto III
+  // (la capa 13-a devuelve el idle del Acto I/II con acto3Done; sin esta ruta
+  // el briefing de q14 sería inalcanzable — mismo patrón que la transición
+  // q10→q11 de la capa anterior).
+  if (nid === 'brisa' && q === 12 && f.acto3Done && !f.q14) return 'acto4_brisa_alba';
+  // La Guarda existe desde acto3Done (showFlag de la NPC), incluso antes de
+  // aceptar q14: se ruye ANTES del guard de rango (en q<=12 la capa 13-a
+  // devolvería 'brisa_idle' con el nombre de la Guarda).
+  if (nid === 'guarda') {
+    if (q === 14) {
+      if (s === 0 && !f.acto4Guarda) return 'acto4_guarda_intro';
+      if (heraldoMuerto) return 'acto4_guarda_gratitud';
+      return f.acto4SalaAbierta ? 'acto4_guarda_espera' : 'acto4_guarda_puerta';
+    }
+    return heraldoMuerto ? 'acto4_guarda_gratitud' : 'acto4_guarda_silencio';
+  }
+  if (q < 13 || q > 15) return GET_DIALOGUE_ACTO3(nid, ctx);
+  switch (nid) {
+    case 'brisa': {
+      if (q === 13) return s === 2 ? 'acto4_brisa_cierre1' : 'acto4_brisa_ruta';
+      if (q === 14) {
+        if (s === 2) return 'acto4_brisa_cierre2';
+        if (heraldoMuerto) return 'acto4_brisa_cierre2'; // jefe caído: informe inmediato (anti-bloqueo)
+        return s === 0 ? 'acto4_brisa_ruta2' : 'acto4_brisa_sala_espera';
+      }
+      // q16 (índice 15): el epílogo, ramificado por reputación (espejo de
+      // hooks.acto4CatchUp: DialogueCtx no lleva repFacciones)
+      if (f.acto4Done) return 'acto4_epilogo_stay';
+      const rO = typeof f.acto4RepOrden === 'number' ? (f.acto4RepOrden as number) : 0;
+      const rG = typeof f.acto4RepGuard === 'number' ? (f.acto4RepGuard as number) : 0;
+      if (f.acto3RepDecision) return rO > rG ? 'acto4_epilogo_verdad' : 'acto4_epilogo_silencio';
+      return 'acto4_epilogo';
+    }
+    case 'toln':
+      if (q === 13 && s === 0 && !f.camToln) {
+        return toneOf(ctx.flags) === 'sarcastico' ? 'acto4_toln_cam_sarc' : 'acto4_toln_cam';
+      }
+      return GET_DIALOGUE_ACTO3(nid, ctx);
+    case 'mera':
+      if (q === 13 && s === 1 && !f.camMera && f.sirenaDefeated) return 'acto4_mera_cam';
+      return GET_DIALOGUE_ACTO3(nid, ctx);
+    case 'ivo':
+      if (q === 13 && s === 1 && !f.camCumbres && f.golemDefeated) return 'acto4_ivo_cam';
+      return GET_DIALOGUE_ACTO3(nid, ctx);
+    case 'heraldo': // el NPC de Lunaris avisa una última vez durante el Acto IV
+      if (!heraldoMuerto) return 'acto4_heraldo_aviso';
+      return GET_DIALOGUE_ACTO3(nid, ctx);
+    default:
+      return GET_DIALOGUE_ACTO3(nid, ctx);
+  }
+}
+// @ts-expect-error 16-a: reasignación deliberada del binding de función (capa
+// del Acto IV sobre la capa del Acto III). El binding exportado es vivo:
+// engine.talkTo resuelve SIEMPRE por aquí, y toda ruta no-Acto-IV delega en
+// la función vigente intacta.
+getDialogue = getDialogueActo4;
+
+// ═══════ FIN DEL BLOQUE 16-a ═══════
+
+// ============================================================
+// ==== 16-b ==== (interacción-compañeros): SEÑUELO DE CAZA
+// Objeto apilable 'sennuelo'. Cantidad viva en g.flags.sennuelos (se serializa
+// sola en save(), tolerante con partidas antiguas). Compra en la forja de
+// Toln (opción nueva de TOLN_MAIN → acción 'buy_sennuelo' en engine.ts) o
+// botín raro de jefes (8%, engine.killEnemy → interaccion.bossSennoLoot16b).
+// Uso: tecla 8 (5/6/7 son de las herramientas del árbol, 12-b). La lógica
+// completa (tiro, atracción de aggro, timers e.lured, pool de 1) vive en
+// interaccion.ts; aquí solo el dato de precio/nombre.
+// ============================================================
+export const SENNUEL = {
+  key: 'sennuelo',
+  name: 'Señuelo de caza',
+  price: 60, // coronas en la forja de Toln
+  desc: 'Atrae a los enemigos no-jefe cercanos durante 5 s (tecla 8). Los jefes lo ignoran.',
+} as const;
+

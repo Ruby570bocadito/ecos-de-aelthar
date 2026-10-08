@@ -16,6 +16,7 @@ import { drawPortrait } from './sprites';
 import { audio } from './audio';
 import { COL, text, textShadow, panel, bar, button, wrapText, addHit } from './ui';
 import { openChallengeMenu, drawChallengeTitleUi, drawChallengeOverlay } from './challenge'; // 12-a (modo desafío)
+import { drawTitlePanels, openStatsPanel, openLogrosPanel } from './achievements'; // 16-c: Estadísticas y Logros
 
 const INTRO_SLIDES = [
   {
@@ -70,6 +71,10 @@ export function drawScreens(g: Game) {
       // 12-a: sub-menú de selección del Desafío / panel de resultados (dibujados
       // por challenge.ts sobre el título; limpian los uiHit del título de fondo)
       drawChallengeTitleUi(g);
+      // 16-c: paneles de Estadísticas y Logros (mismo patrón de overlay; se
+      // dibujan al final y limpian uiHit para que el título de fondo quede
+      // inalcanzable mientras están abiertos)
+      drawTitlePanels(g);
       break;
     case 'controls': drawControls(g); break;
     case 'intro': drawIntro(g); break;
@@ -185,26 +190,36 @@ function drawTitle(g: Game) {
   ctx.fillRect(VIEW_W / 2 - 180, 168, 360, 2);
   text(g, 'RPG 2D de acción y exploración · Demo jugable · Acto II incluido', VIEW_W / 2, 180, 17, COL.dim, 'center');
 
-  // botones (con brillo de hover)
+  // botones (con brillo de hover). 16-c: menú ampliado — Estadísticas y
+  // Logros en una rejilla secundaria de 2 columnas (mismo lenguaje visual)
   const bx = VIEW_W / 2 - 130, bw = 260;
+  const sw = (bw - 8) / 2; // ancho de los botones secundarios (2 columnas)
   button(g, 'NUEVA PARTIDA', bx, 236, bw, 44, () => g.requestCreate(), 13);
   hoverCorners(g, bx, 236, bw, 44);
   if (g.hasSave()) {
     button(g, 'CONTINUAR', bx, 290, bw, 44, () => g.continueGame(), 13);
     hoverCorners(g, bx, 290, bw, 44);
-    button(g, 'CONTROLES', bx, 344, bw, 40, () => { g.setState('controls'); }, 12);
-    hoverCorners(g, bx, 344, bw, 40);
-    button(g, 'DESAFÍO', bx, 394, bw, 40, () => openChallengeMenu(), 12);
-    hoverCorners(g, bx, 394, bw, 40);
+    button(g, 'CONTROLES', bx, 346, sw, 34, () => { g.setState('controls'); }, 9);
+    hoverCorners(g, bx, 346, sw, 34);
+    button(g, 'DESAFÍO', bx + sw + 8, 346, sw, 34, () => openChallengeMenu(), 9);
+    hoverCorners(g, bx + sw + 8, 346, sw, 34);
+    button(g, 'ESTADÍSTICAS', bx, 388, sw, 34, () => openStatsPanel(), 9);
+    hoverCorners(g, bx, 388, sw, 34);
+    button(g, 'LOGROS', bx + sw + 8, 388, sw, 34, () => openLogrosPanel(), 9);
+    hoverCorners(g, bx + sw + 8, 388, sw, 34);
   } else {
-    button(g, 'CONTROLES', bx, 290, bw, 44, () => { g.setState('controls'); }, 13);
-    hoverCorners(g, bx, 290, bw, 44);
-    button(g, 'DESAFÍO', bx, 344, bw, 40, () => openChallengeMenu(), 12);
-    hoverCorners(g, bx, 344, bw, 40);
+    button(g, 'CONTROLES', bx, 290, sw, 34, () => { g.setState('controls'); }, 9);
+    hoverCorners(g, bx, 290, sw, 34);
+    button(g, 'DESAFÍO', bx + sw + 8, 290, sw, 34, () => openChallengeMenu(), 9);
+    hoverCorners(g, bx + sw + 8, 290, sw, 34);
+    button(g, 'ESTADÍSTICAS', bx, 332, sw, 34, () => openStatsPanel(), 9);
+    hoverCorners(g, bx, 332, sw, 34);
+    button(g, 'LOGROS', bx + sw + 8, 332, sw, 34, () => openLogrosPanel(), 9);
+    hoverCorners(g, bx + sw + 8, 332, sw, 34);
   }
 
   text(g, 'Basado en el Documento de Diseño de @papito · 8 oct 2026', VIEW_W / 2, VIEW_H - 40, 15, 'rgba(154,160,184,0.8)', 'center');
-  text(g, 'v0.3.0 · Lunaris — Bosque — Cripta — Costa de Bruma — Merrow — Cumbres Heladas', VIEW_W / 2, VIEW_H - 20, 14, 'rgba(122,128,148,0.7)', 'center');
+  text(g, 'v0.5.0 · Lunaris — Bosque — Cripta — Costa de Bruma — Merrow — Cumbres Heladas · Logros', VIEW_W / 2, VIEW_H - 20, 14, 'rgba(122,128,148,0.7)', 'center');
 }
 
 // helpers deterministas locales (evitan importar hash2 aquí)

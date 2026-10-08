@@ -1,0 +1,860 @@
+     1→// ============================================================
+     2→// ECOS DE AELTHAR — VIDA DEL MUNDO (agente 13-b · mundo-vivo)
+     3→// Fauna ambiental, rumores dinámicos de NPCs, eventos callejeros y
+     4→// micro-interacciones con props: el mundo respira aunque no avances.
+     5→//
+     6→// INTEGRACIÓN (solo ya cableado: engine.ts llama worldTick(this, dt) en
+     7→// Game.update — estados play/dialogue). Quedan DOS líneas para el
+     8→// integrador, ambas OPCIONALES para el juego (sin ellas no hay fauna
+     9→// visible ni micro-interacciones; rumores y eventos SÍ funcionan solos):
+    10→//
+    11→// 1) FAUNA/VIAJERO (render.ts · drawWorld · tras el bucle de cofres):
+    12→//      drawWorldLife(g, sx, sy); // 13-b fauna del mundo
+    13→//    (sx/sy son los helpers que drawWorld ya tiene; si se omiten, la
+    14→//     función calcula los suyos de g.camX/camY)
+    15→//
+    16→// 2) MICRO-INTERACCIONES (engine.ts · tryInteract · 1 línea exacta):
+    17→//      tryInteract() {
+    18→//        const it = this.nearestInteract();
+    19→//        if (it) { audio.sfx('select'); it.act(); }
+    20→//        else if (worldInteract(this)) { audio.sfx('select'); }  // ← 13-b
+    21→//        else this.toast('No hay nada que interactuar aquí.', '#9aa0b8');
+    22→//      }
+    23→//    + ampliar el import de la línea 21: `import { worldTick, worldInteract } from './worldlife';`
+    24→//    Semántica: worldInteract SOLO atiende features que nearestInteract
+    25→//    ignora (pozo/lápida/roca/agua como TILES, props wreck/faro, faroles
+    26→//    YA encendidos). Nunca roba NPCs, cofres, santuarios ni faroles sin
+    27→//    encender. Devuelve true si consumió la interacción.
+    28→//
+    29→// RENDIMIENTO (presupuesto 13-b): máx 12 criaturas vivas (pool fijo
+    30→// reutilizado como fx.ts), spawn solo en cámara, O(1)/frame, cero
+    31→// allocations por frame (los pushes a floats/particles son eventos, no
+    32→// per-frame). Estado en WeakMap<Game,…>: 1 Game por página, no se
+    33→// serializa (es ambiente, no progreso).
+    34→// ============================================================
+    35→
+    36→import type { Game } from './engine';
+    37→import { VIEW_W, VIEW_H, ZOOM } from './engine';
+    38→import type { Npc, ToneKind } from './types';
+    39→import { TILE, SOLID_CHARS } from './sprites';
+    40→import { tileAt } from './maps';
+    41→import { isNight } from './update'; // solo lectura (propiedad del agente 3-b)
+    42→import { dominantTone } from './hooks'; // tono dominante del Portador (3-b)
+    43→import { audio } from './audio';
+    44→
+    45→// ---------------- Fauna: pool fijo ----------------
+    46→
+    47→const AVE = 0;        // posa en árboles ('t'/'p'), huye al acercarte
+    48→const MARIPOSA = 1;   // de día (g.dayT), deambula cerca del suelo
+    49→const LUCIERNAGA = 2; // de noche (isNight), brillo pulsante
+    50→const PEZ = 3;        // Costa: salta en el mar/estanque y salpica
+    51→
+    52→const POOL_CAP = 12;          // presupuesto duro de criaturas vivas
+    53→const KIND_CAPS = [4, 6, 6, 3]; // aves, voladoras, voladoras, peces
+    54→
+    55→interface Critter {
+    56→  active: boolean;
+    57→  kind: number;
+    58→  x: number; y: number;       // px de mundo
+    59→  vx: number; vy: number;
+    60→  ax: number; ay: number;     // ancla (vuelta al nido / nivel del agua)
+    61→  t: number;                  // edad
+    62→  life: number;               // vida útil
+    63→  state: number;              // 0 posada/quieto/oculto · 1 huyendo/salto
+    64→  st: number;                 // temporizador de estado
+    65→  seed: number;               // fase aleatoria fija por criatura
+    66→}
+    67→
+    68→// Pool fijo: ranuras reutilizadas, cero GC por frame (patrón fx.ts)
+    69→const POOL: Critter[] = Array.from({ length: POOL_CAP }, () => ({
+    70→  active: false, kind: 0, x: 0, y: 0, vx: 0, vy: 0, ax: 0, ay: 0,
+    71→  t: 0, life: 1, state: 0, st: 0, seed: 0,
+    72→}));
+    73→const kindCount = [0, 0, 0, 0];
+    74→let liveCount = 0; // criaturas vivas (O(1) para el cap)
+    75→
+    76→/** Mapas con fauna (cripta = fuera del tiempo, arena = desafío). */
+    77→const SPAWN_OK = new Set<string>(['lunaris', 'bosque', 'costa', 'aldea', 'cumbres']);
+    78→
+    79→// ---------------- Estado por Game (WeakMap) ----------------
+    80→
+    81→interface WLState {
+    82→  clock: number;              // reloj propio (no depende de g.globalT)
+    83→  spawnAcc: number;
+    84→  evtIn: number;              // segundos hasta el próximo evento callejero
+    85→  evtCount: number;
+    86→  forced: 'eco' | 'rafaga' | 'viajero' | null; // clase fijada por dev/smoke
+    87→  trav: { active: boolean; x: number; y: number; dir: number; t: number };
+    88→  rumorNext: Map<string, number>; // cooldown por NPC (nid → reloj)
+    89→  rot: number;                // rotación determinista de rumores
+    90→  rumorsShown: number;
+    91→  lastRumor: string;
+    92→}
+    93→
+    94→const STATES = new WeakMap<Game, WLState>();
+    95→
+    96→function stateFor(g: Game): WLState {
+    97→  let s = STATES.get(g);
+    98→  if (!s) {
+    99→    s = {
+   100→      clock: 0, spawnAcc: 0, evtIn: 38 + Math.random() * 22, evtCount: 0,
+   101→      forced: null,
+   102→      trav: { active: false, x: 0, y: 0, dir: 1, t: 0 },
+   103→      rumorNext: new Map(), rot: 0, rumorsShown: 0, lastRumor: '',
+   104→    };
+   105→    STATES.set(g, s);
+   106→  }
+   107→  return s;
+   108→}
+   109→
+   110→// ---------------- Helpers de cámara (mundo px) ----------------
+   111→
+   112→function viewBounds(g: Game): [number, number, number, number] {
+   113→  const x0 = g.camX / ZOOM, y0 = g.camY / ZOOM;
+   114→  return [x0, y0, (g.camX + VIEW_W) / ZOOM, (g.camY + VIEW_H) / ZOOM];
+   115→}
+   116→
+   117→function inView(x: number, y: number, b: [number, number, number, number], margin: number): boolean {
+   118→  return x >= b[0] - margin && x <= b[2] + margin && y >= b[1] - margin && y <= b[3] + margin;
+   119→}
+   120→
+   121→/** ¿Hay combate activo? (algún enemigo vivo con aggro) — O(n) pequeño. */
+   122→function combatActive(g: Game): boolean {
+   123→  for (let i = 0; i < g.enemies.length; i++) {
+   124→    const e = g.enemies[i];
+   125→    if (!e.dead && e.aggro) return true;
+   126→  }
+   127→  return false;
+   128→}
+   129→
+   130→// ---------------- Fauna: spawn ----------------
+   131→
+   132→function capFor(g: Game): number {
+   133→  return g.epoch === 'pasado' ? POOL_CAP : 8; // más vida en el pasado
+   134→}
+   135→
+   136→function spawnInterval(g: Game): number {
+   137→  return g.epoch === 'pasado' ? 1.35 : 2.4;
+   138→}
+   139→
+   140→function freeSlot(): Critter | null {
+   141→  for (let i = 0; i < POOL_CAP; i++) if (!POOL[i].active) return POOL[i];
+   142→  return null;
+   143→}
+   144→
+   145→function spawnAt(g: Game, kind: number, x: number, y: number, life: number): boolean {
+   146→  const c = freeSlot();
+   147→  if (!c) return false;
+   148→  c.active = true; c.kind = kind;
+   149→  c.x = x; c.y = y; c.vx = 0; c.vy = 0; c.ax = x; c.ay = y;
+   150→  c.t = 0; c.life = life; c.state = 0; c.st = 1 + Math.random() * 4;
+   151→  c.seed = Math.random() * Math.PI * 2;
+   152→  kindCount[kind]++;
+   153→  liveCount++;
+   154→  return true;
+   155→}
+   156→
+   157→/** Un intento de spawn: samplea hasta 5 puntos de cámara y valida el tile. */
+   158→function trySpawn(g: Game): void {
+   159→  if (liveCount >= capFor(g)) return;
+   160→  const b = viewBounds(g);
+   161→  const m = 20;
+   162→  for (let i = 0; i < 5; i++) {
+   163→    const wx = b[0] - m + Math.random() * (b[2] - b[0] + m * 2);
+   164→    const wy = b[1] - m + Math.random() * (b[3] - b[1] + m * 2);
+   165→    const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
+   166→    if (tx < 0 || ty < 0 || tx >= g.map.w || ty >= g.map.h) continue;
+   167→    const ch = tileAt(g.map, g.rows, tx, ty, g.epoch);
+   168→    if (ch === '~') {
+   169→      // pez: solo Costa (mar/estanque/laguna visibles en cámara)
+   170→      if (g.mapId === 'costa' && kindCount[PEZ] < KIND_CAPS[PEZ]) {
+   171→        if (spawnAt(g, PEZ, tx * TILE + 8, ty * TILE + 12, 24 + Math.random() * 20)) return;
+   172→      }
+   173→    } else if (ch === 't' || ch === 'p') {
+   174→      // ave posada en la copa de un árbol
+   175→      if (kindCount[AVE] < KIND_CAPS[AVE]) {
+   176→        if (spawnAt(g, AVE, tx * TILE + 8, ty * TILE + 5, 14 + Math.random() * 12)) return;
+   177→      }
+   178→    } else if (!SOLID_CHARS.has(ch)) {
+   179→      // voladora de suelo: mariposa de día / luciérnaga de noche
+   180→      const k = isNight(g) ? LUCIERNAGA : MARIPOSA;
+   181→      if (kindCount[k] < KIND_CAPS[k]) {
+   182→        if (spawnAt(g, k, tx * TILE + 8, ty * TILE + 6, 9 + Math.random() * 7)) return;
+   183→      }
+   184→    }
+   185→  }
+   186→}
+   187→
+   188→// ---------------- Fauna: update ----------------
+   189→
+   190→function despawn(c: Critter): void {
+   191→  c.active = false;
+   192→  kindCount[c.kind]--;
+   193→  liveCount--;
+   194→}
+   195→
+   196→function tickCritter(g: Game, c: Critter, dt: number, b: [number, number, number, number]): void {
+   197→  c.t += dt;
+   198→  const p = g.player!;
+   199→  switch (c.kind) {
+   200→    case AVE: {
+   201→      if (c.state === 0) {
+   202→        // posada: picoteos/hop ocasionales; huye si te acercas
+   203→        c.st -= dt;
+   204→        if (c.st <= 0) { c.x += (Math.random() - 0.5) * 6; c.st = 2 + Math.random() * 6; }
+   205→        const dx = c.x - p.x, dy = c.y - p.y;
+   206→        if (dx * dx + dy * dy < 46 * 46) {
+   207→          c.state = 1;
+   208→          c.vx = (dx >= 0 ? 1 : -1) * (55 + Math.random() * 25);
+   209→          c.vy = -(55 + Math.random() * 30);
+   210→        } else if (c.t > c.life - 2) {
+   211→          // se marcha por su cuenta (se acabó la paciencia)
+   212→          c.state = 1;
+   213→          c.vx = (Math.random() < 0.5 ? -1 : 1) * 45;
+   214→          c.vy = -60;
+   215→        }
+   216→      } else {
+   217→        // huyendo: remonta y se va de la cámara
+   218→        c.x += c.vx * dt; c.y += c.vy * dt;
+   219→        c.vy -= 14 * dt; // gana altura
+   220→      }
+   221→      break;
+   222→    }
+   223→    case MARIPOSA:
+   224→    case LUCIERNAGA: {
+   225→      // deriva senoidal alrededor del ancla
+   226→      c.vx = Math.sin(c.t * 0.9 + c.seed) * 13;
+   227→      c.vy = Math.cos(c.t * 1.3 + c.seed) * 8;
+   228→      c.x += c.vx * dt; c.y += c.vy * dt;
+   229→      // imán suave al ancla (no se aleja del parche)
+   230→      if (Math.abs(c.x - c.ax) > 42) c.x += (c.ax - c.x) * dt * 0.8;
+   231→      if (Math.abs(c.y - c.ay) > 30) c.y += (c.ay - c.y) * dt * 0.8;
+   232→      break;
+   233→    }
+   234→    case PEZ: {
+   235→      if (c.state === 0) {
+   236→        // oculto bajo la superficie, espera su salto
+   237→        c.st -= dt;
+   238→        c.y = c.ay;
+   239→        if (c.st <= 0) {
+   240→          c.state = 1;
+   241→          c.vy = -(62 + Math.random() * 26);
+   242→          c.vx = (Math.random() - 0.5) * 22;
+   243→          // salpicadura en la superficie
+   244→          g.burst(c.x, c.ay, '#a8d8f0', 8, 46);
+   245→          const dx = c.x - p.x, dy = c.y - p.y;
+   246→          if (dx * dx + dy * dy < 150 * 150 && Math.random() < 0.8) audio.sfx('splash');
+   247→        }
+   248→      } else {
+   249→        // arco de salto con gravedad propia
+   250→        c.vy += 250 * dt;
+   251→        c.x += c.vx * dt; c.y += c.vy * dt;
+   252→        if (c.vy > 0 && c.y >= c.ay) {
+   253→          c.y = c.ay; c.state = 0; c.st = 4 + Math.random() * 7;
+   254→          g.burst(c.x, c.ay, '#a8d8f0', 5, 34);
+   255→        }
+   256→      }
+   257→      break;
+   258→    }
+   259→  }
+   260→  // despawn: fuera de cámara con margen, vida agotada o huida prolongada
+   261→  if (c.t > c.life + 4 || !inView(c.x, c.y, b, 44)) despawn(c);
+   262→}
+   263→
+   264→function tickFauna(g: Game, dt: number, st: WLState): void {
+   265→  const b = viewBounds(g);
+   266→  for (let i = 0; i < POOL_CAP; i++) {
+   267→    const c = POOL[i];
+   268→    if (c.active) tickCritter(g, c, dt, b);
+   269→  }
+   270→  if (SPAWN_OK.has(g.mapId)) {
+   271→    st.spawnAcc += dt;
+   272→    if (st.spawnAcc >= spawnInterval(g)) {
+   273→      st.spawnAcc = 0;
+   274→      trySpawn(g);
+   275→    }
+   276→  }
+   277→}
+   278→
+   279→// ---------------- Viajero errante (evento decorativo) ----------------
+   280→
+   281→function tickTraveler(g: Game, dt: number, st: WLState): void {
+   282→  const tv = st.trav;
+   283→  if (!tv.active) return;
+   284→  tv.t += dt;
+   285→  tv.x += tv.dir * 46 * dt;
+   286→  const b = viewBounds(g);
+   287→  if (!inView(tv.x, tv.y, b, 60) || tv.t > 40) tv.active = false;
+   288→}
+   289→
+   290→// ---------------- Rumores dinámicos ----------------
+   291→
+   292→type RumorRule = { c?: (g: Game) => boolean; s: string };
+   293→
+   294→const isPast = (g: Game) => g.epoch === 'pasado';
+   295→const isPresent = (g: Game) => g.epoch === 'presente';
+   296→const toneIs = (g: Game, t: ToneKind) => {
+   297→  const p = g.player;
+   298→  return !!p && dominantTone(p) === t;
+   299→};
+   300→
+   301→/** Frases por NPC (progreso REAL: questIdx, jefes, época, tono dominante). */
+   302→const RUMORS: Record<string, RumorRule[]> = {
+   303→  brisa: [
+   304→    { c: g => g.questIdx <= 1, s: 'Brisa: «Los lobos rondan al caer el sol. Ve con cuidado, criatura.»' },
+   305→    { c: g => g.questIdx >= 2 && g.questIdx <= 4, s: 'Brisa: «El Bosque susurra nombres que ya no son de nadie.»' },
+   306→    { c: g => !!g.flags.guardianDefeated && g.questIdx <= 5, s: 'Brisa: «El Guardián calla por fin. Me tiemblan las manos de alivio.»' },
+   307→    { c: g => g.questIdx >= 5 && g.questIdx <= 6, s: 'Brisa: «El mar guarda lo que el valle perdió. Búscalo al sur.»' },
+   308→    { c: g => g.questIdx >= 7 && g.questIdx <= 8 && !g.flags.acto2Done, s: 'Brisa: «Merrow... había una nana de allí. Ya no la recuerdo entera.»' },
+   309→    { c: g => !!g.flags.acto2Done, s: 'Brisa: «Vuelves con las manos llenas de ecos. El valle respira mejor.»' },
+   310→    { c: isPast, s: 'Brisa: «¡El Festival del Canto! Huele a pan y a primavera otra vez...»' },
+   311→    { s: 'Brisa: «El silencio pesa menos desde que llegaste, Portador.»' },
+   312→  ],
+   313→  toln: [
+   314→    { c: g => (g.player?.weaponPlus ?? 0) >= 5, s: 'Toln: «+5 es lo que da de sí esta forja, Portador.»' },
+   315→    { c: g => !!g.flags.guardianDefeated, s: 'Toln: «Con el Eco de la Voz, forjaré lo que el valle pida.»' },
+   316→    { c: isPresent, s: 'Toln: «El metal recuerda el ritmo del martillo. Por eso sigo golpeando.»' },
+   317→    { c: isPast, s: 'Toln: «¡Encargos del festival! Cola en la forja. Qué luz tan buena.»' },
+   318→    { s: 'Toln: «Una espada sin canto corta. Con canto, convence.»' },
+   319→  ],
+   320→  teo: [
+   321→    { c: g => toneIs(g, 'sarcastico'), s: 'Teo: «Hablas raro, Portador. Me gustas.»' },
+   322→    { c: g => !!g.flags.guardianDefeated, s: 'Teo: «¿De verdad bajaste a la Cripta? ¡Cuenta! ¡Cuenta!»' },
+   323→    { c: isPast, s: 'Teo: «En el festival dan pastel con forma de luna. Antes daban tres.»' },
+   324→    { s: 'Teo: «Yo soñé la Niebla antes de verla. ¿Eso es valiente o es raro?»' },
+   325→    { s: 'Teo: «Cuando sea mayor quiero ser Portador. O panadero. O las dos cosas.»' },
+   326→  ],
+   327→  heraldo: [
+   328→    { c: g => toneIs(g, 'amenazante'), s: 'Heraldo: «La Orden apunta tu forma de hablar. Habla con cuidado.»' },
+   329→    { c: g => !!g.flags.guardianDefeated, s: 'Heraldo: «El Eco de la Voz nos pertenece. La Orden cobra sus deudas.»' },
+   330→    { s: 'Heraldo: «Vesh oye todo lo que se firma con voz. Todo.»' },
+   331→    { s: 'Heraldo: «Las rutas del sur también son de la Orden. En los mapas, al menos.»' },
+   332→  ],
+   333→  ilwen: [
+   334→    { c: g => toneIs(g, 'empatico'), s: 'Ilwen: «Hay calma contigo. El Bosque también la nota.»' },
+   335→    { c: g => !!g.flags.sirenaDefeated, s: 'Ilwen: «El canto de esa sirena ya no duele. Buen ojo, Portador.»' },
+   336→    { c: isPast, s: 'Ilwen: «Las flores del pasado no crecen en círculo por casualidad.»' },
+   337→    { s: 'Ilwen: «Nimue... no, nada. Sigue el camino y cubre mi espalda.»' },
+   338→    { s: 'Ilwen: «Cuida tus flechas y tus promesas: se gastan igual.»' },
+   339→  ],
+   340→  doran: [
+   341→    { c: g => toneIs(g, 'empatico'), s: 'Doran: «El Círculo te escucha. El Bosque camina contigo.»' },
+   342→    { c: isPast, s: 'Doran: «Huelo el festival de Merrow desde aquí. El mundo era más tierno.»' },
+   343→    { s: 'Doran: «La Madre Espina tiene roto el corazón, no la voluntad.»' },
+   344→    { s: 'Doran: «Las raíces gritan bajito. Solo hay que saber escuchar de rodillas.»' },
+   345→  ],
+   346→  mara: [
+   347→    { c: g => !!g.flags.maraGift, s: 'Mara: «El faro arde. Trescientos años... y vuelve a arder.»' },
+   348→    { c: g => !!g.flags.sirenaDefeated, s: 'Mara: «La marea volvió a leer nombres en vez de borrarlos.»' },
+   349→    { c: g => isNight(g), s: 'Mara: «De noche, la lámpara aprende a temblar. Quédate cerca.»' },
+   350→    { s: 'Mara: «El mar susurra con voz prestada. No le respondas con tu nombre.»' },
+   351→  ],
+   352→  vult: [
+   353→    { c: g => toneIs(g, 'pragmatico'), s: 'Vult: «Sin mapa no hay negocio. Contigo, quizá.»' },
+   354→    { c: g => !!g.flags.golemDefeated, s: 'Vult: «Las Cumbres abiertas: la Liga lo celebrará con oro.»' },
+   355→    { c: isPresent, s: 'Vult: «Cartografío el silencio. Es el bioma más extenso de Aelthar.»' },
+   356→    { s: 'Vult: «La Liga paga por rutas, no por poemas. Pero qué poemas, eh.»' },
+   357→  ],
+   358→  mera: [
+   359→    { c: g => !!g.flags.ecoNombres, s: 'Mera: «Mi nombre vuelve a mí... pieza a pieza. Gracias.»' },
+   360→    { c: g => isNight(g), s: 'Mera: «Los faroles esperan nombres, no fuego. Díselo al ayer.»' },
+   361→    { c: isPast, s: 'Mera: «Aquí había música. Ponla otra vez en las paredes.»' },
+   362→    { s: 'Mera: «Merrow no es mi nombre. Es el que quedó cuando se lo robaron.»' },
+   363→  ],
+   364→  ivo: [
+   365→    { c: g => toneIs(g, 'amenazante'), s: 'Ivo: «Gritas a la montaña y la montaña te oye. Bien.»' },
+   366→    { c: g => !!g.flags.golemDefeated, s: 'Ivo: «El paso está libre. Los pastores te deben el alba.»' },
+   367→    { c: isPast, s: 'Ivo: «Los pastores cantaban por turnos: uno velaba la voz del otro.»' },
+   368→    { s: 'Ivo: «El Gólem cuenta los coros bajo el hielo. No dejes que cuente el tuyo.»' },
+   369→  ],
+   370→};
+   371→
+   372→/** 2+ frases genéricas por contexto (época), para NPCs sin línea propia. */
+   373→const GENERIC_NOW: string[] = [
+   374→  'Aldeano: «¿Oíste eso? Dicen que los ecos te siguen, Portador.»',
+   375→  'Viajero: «El silencio aburre. El mundo espera lo que tú traes.»',
+   376→  'Voces: «...oye... el canto vuelve... lo dicen las piedras...»',
+   377→];
+   378→const GENERIC_PAST: string[] = [
+   379→  'Festejante: «¡El Festival! Canta algo, ¡que el dios te teje en el canto!»',
+   380→  'Festejante: «Hoy hasta las piedras parecen querer bailar.»',
+   381→  'Festejante: «Dicen que un Portador limpiará la Niebla. ¡Salud, si es tú!»',
+   382→];
+   383→
+   384→/** Candidatas vigentes para un NPC (exportado solo para smokes/dev). */
+   385→function rumorPool(g: Game, nid: string): string[] {
+   386→  const rules = RUMORS[nid];
+   387→  if (!rules) return isPast(g) ? GENERIC_PAST : GENERIC_NOW;
+   388→  const out: string[] = [];
+   389→  for (const r of rules) if (!r.c || r.c(g)) out.push(r.s);
+   390→  return out.length ? out : (isPast(g) ? GENERIC_PAST : GENERIC_NOW);
+   391→}
+   392→
+   393→function fireRumor(g: Game, st: WLState, npc: Npc): void {
+   394→  const pool = rumorPool(g, npc.nid);
+   395→  const text = pool[st.rot++ % pool.length];
+   396→  const color = g.epoch === 'pasado' ? '#ffe0a0' : '#cfe0f8';
+   397→  // burbuja breve: floatText longevo (drawFloats ya lo pinta con contorno)
+   398→  g.floats.push({ x: npc.x, y: npc.y - 24, text, t: 2.8, color, vy: -6, size: 7 });
+   399→  st.rumorNext.set(npc.nid, st.clock + 8 + Math.random() * 6); // 8-14 s
+   400→  st.rumorsShown++;
+   401→  st.lastRumor = text;
+   402→}
+   403→
+   404→function tickRumors(g: Game, st: WLState): void {
+   405→  if (g.state !== 'play' || g.challengeRun || combatActive(g)) return; // ni en combate
+   406→  const p = g.player!;
+   407→  const r = TILE * 2.5; // 2.5 tiles
+   408→  let best: Npc | null = null;
+   409→  let bestD = r * r;
+   410→  for (let i = 0; i < g.npcs.length; i++) {
+   411→    const n = g.npcs[i];
+   412→    const dx = n.x - p.x, dy = n.y - p.y;
+   413→    const d = dx * dx + dy * dy;
+   414→    if (d < bestD) { bestD = d; best = n; }
+   415→  }
+   416→  if (!best) return;
+   417→  // cooldown por NPC: la primera vez, gracia corta para que se vea el sistema
+   418→  if (!st.rumorNext.has(best.nid)) {
+   419→    st.rumorNext.set(best.nid, st.clock + 2.5 + Math.random() * 3);
+   420→    return;
+   421→  }
+   422→  if (st.clock >= (st.rumorNext.get(best.nid) ?? Infinity)) fireRumor(g, st, best);
+   423→}
+   424→
+   425→// ---------------- Eventos callejeros ----------------
+   426→
+   427→const GUST_LINE: Record<string, string> = {
+   428→  lunaris: 'Una ráfaga barre las hojas del valle...',
+   429→  bosque: 'El Bosque se mece: una ráfaga larga remueve las copas.',
+   430→  costa: 'La bruma se rasga: sal en el viento.',
+   431→  aldea: 'El polvo del festival gira en una ráfaga.',
+   432→  cumbres: 'La ventisca silba entre los pinos.',
+   433→  cripta: 'Un polvo antiguo cae del techo de la Cripta.',
+   434→};
+   435→
+   436→const GUST_COLORS: Record<string, string[]> = {
+   437→  lunaris: ['#5a8a44', '#7aa04a', '#a07840'],
+   438→  bosque: ['#3e6a34', '#5a8a44', '#8a6a38'],
+   439→  costa: ['#c8d8c8', '#a8c0b0', '#d8d0b0'],
+   440→  aldea: ['#a89060', '#c0a870', '#907850'],
+   441→  cumbres: ['#e8f0f8', '#d0e0f0', '#f0f8ff'],
+   442→  cripta: ['#7a7a8a', '#5a5a6a', '#8a8a9a'],
+   443→};
+   444→
+   445→/** Evento puntual. kind opcional para tests/dev. */
+   446→function fireEvent(g: Game, st: WLState, kind?: 'eco' | 'rafaga' | 'viajero'): void {
+   447→  const roll = kind ?? (() => {
+   448→    const r = Math.random();
+   449→    if (r < 0.4) return 'eco' as const;
+   450→    if (r < 0.7 && !st.trav.active && g.mapId !== 'cripta') return 'viajero' as const;
+   451→    return 'rafaga' as const;
+   452→  })();
+   453→  const p = g.player!;
+   454→  st.evtCount++;
+   455→  if (roll === 'eco') {
+   456→    // «oyes un eco lejano»: susurro existente + partícula direccional
+   457→    audio.sfx(g.mapId === 'cripta' ? 'wraith' : 'echo');
+   458→    g.floats.push({ x: p.x, y: p.y - 30, text: '...un eco lejano resuena...', t: 2.6, color: '#c8b0e8', vy: -8, size: 8 });
+   459→    const a = Math.random() * Math.PI * 2;
+   460→    const cx = Math.cos(a), sy = Math.sin(a);
+   461→    for (let i = 0; i < 8; i++) {
+   462→      const off = (i - 3.5) * 6;
+   463→      g.particles.push({
+   464→        x: p.x + cx * 80 - sy * off, y: p.y + sy * 80 + cx * off - 8,
+   465→        vx: -cx * 52 + (Math.random() - 0.5) * 10, vy: -sy * 52 + (Math.random() - 0.5) * 10,
+   466→        t: 1.4 + Math.random() * 0.4, maxT: 1.8, color: '#b8a8e8', size: 1.4, grav: 0,
+   467→      });
+   468→    }
+   469→    return;
+   470→  }
+   471→  if (roll === 'viajero') {
+   472→    // viajante errante: entidad decorativa propia que cruza la pantalla
+   473→    const dir = Math.random() < 0.5 ? 1 : -1;
+   474→    const b = viewBounds(g);
+   475→    st.trav.active = true;
+   476→    st.trav.dir = dir;
+   477→    st.trav.x = dir > 0 ? b[0] - 24 : b[2] + 24;
+   478→    st.trav.y = p.y - 4; // camina por el terreno del Portador (siempre pisable)
+   479→    st.trav.t = 0;
+   480→    g.toast('Un viajante errante cruza el camino, sin levantar la vista...', '#c8b0e8');
+   481→    return;
+   482→  }
+   483→  // ráfaga de viento con hojas/polvo/nieve por bioma
+   484→  audio.sfx(g.mapId === 'cripta' ? 'wraith' : 'gust');
+   485→  g.floats.push({ x: p.x, y: p.y - 30, text: GUST_LINE[g.mapId] ?? 'Una ráfaga de viento cruza el mundo.', t: 2.6, color: '#9ac0a8', vy: -8, size: 8 });
+   486→  const dir = Math.random() < 0.5 ? 1 : -1;
+   487→  const b = viewBounds(g);
+   488→  const cols = GUST_COLORS[g.mapId] ?? GUST_COLORS.lunaris;
+   489→  const n = 12;
+   490→  for (let i = 0; i < n; i++) {
+   491→    g.particles.push({
+   492→      x: dir > 0 ? b[0] - 10 + Math.random() * 20 : b[2] + 10 - Math.random() * 20,
+   493→      y: b[1] + Math.random() * (b[3] - b[1]) * 0.7,
+   494→      vx: dir * (95 + Math.random() * 65), vy: -12 + Math.random() * 26,
+   495→      t: 1.6 + Math.random() * 0.8, maxT: 2.4,
+   496→      color: cols[i % cols.length], size: 1.5 + Math.random(), grav: g.mapId === 'cumbres' ? 12 : 26,
+   497→    });
+   498→  }
+   499→}
+   500→
+   501→function tickEvents(g: Game, dt: number, st: WLState): void {
+   502→  st.evtIn -= dt;
+   503→  if (st.evtIn > 0) return;
+   504→  // posponer: diálogo abierto, modo desafío o combate con aggro
+   505→  if (g.state !== 'play' || g.challengeRun || combatActive(g)) {
+   506→    st.evtIn = 5;
+   507→    return;
+   508→  }
+   509→  fireEvent(g, st, st.forced ?? undefined);
+   510→  st.forced = null;
+   511→  st.evtIn = 45 + Math.random() * 45; // cada 45-90 s
+   512→}
+   513→
+   514→// ---------------- Tick principal ----------------
+   515→
+   516→/** Tick de vida del mundo (fauna, eventos, rumores). O(1) fuera de juego. */
+   517→export function worldTick(g: Game, dt: number): void {
+   518→  if (!g.player) return;
+   519→  if (g.state !== 'play' && g.state !== 'dialogue') return;
+   520→  const st = stateFor(g);
+   521→  st.clock += dt;
+   522→  tickFauna(g, dt, st);
+   523→  tickTraveler(g, dt, st);
+   524→  tickRumors(g, st);
+   525→  tickEvents(g, dt, st);
+   526→}
+   527→
+   528→// ---------------- Micro-interacciones (worldInteract) ----------------
+   529→
+   530→const WATER_LINES: Record<string, { now: string; past: string }> = {
+   531→  lunaris: {
+   532→    now: 'El estanque está quieto. Ni un reflejo contesta.',
+   533→    past: 'Los aldeanos susurran sus nombres al agua: el estanque brilla.',
+   534→  },
+   535→  bosque: {
+   536→    now: 'El río lleva musgo y silencio río abajo.',
+   537→    past: 'El río canta bajo el puente entero.',
+   538→  },
+   539→  costa: {
+   540→    now: 'El mar susurra. No le respondas con tu nombre.',
+   541→    past: 'La marea lee nombres en voz baja; hoy lee el tuyo.',
+   542→  },
+   543→  aldea: {
+   544→    now: 'La laguna no refleja nada. La Niebla bebió demasiado.',
+   545→    past: 'La laguna brilla con las guirnaldas del festival.',
+   546→  },
+   547→  cumbres: {
+   548→    now: 'El lago helado guarda coros boca arriba, debajo.',
+   549→    past: 'Bajo el hielo del ayer, los coros aún piden ayuda... en armonía.',
+   550→  },
+   551→  cripta: {
+   552→    now: 'El polvo de la Cripta no conoce el agua.',
+   553→    past: 'El polvo de la Cripta no conoce el agua.',
+   554→  },
+   555→};
+   556→
+   557→function say(g: Game, text: string, color = '#c8d8f0'): void {
+   558→  const p = g.player!;
+   559→  g.floats.push({ x: p.x, y: p.y - 30, text, t: 2.8, color, vy: -6, size: 7 });
+   560→}
+   561→
+   562→/**
+   563→ * Interacción ambiental con features que el motor ignora (punto exacto del
+   564→ * cableado documentado en la cabecera). Devuelve true si consumió la
+   565→ * interacción. NUNCA roba interacciones del motor (NPCs, cofres, faroles
+   566→ * sin encender, santuarios…): solo atiende lo que nearestInteract omite.
+   567→ */
+   568→export function worldInteract(g: Game): boolean {
+   569→  const p = g.player;
+   570→  if (!p) return false;
+   571→
+   572→  // 1) props que nearestInteract no atiende: naufragio, faro y faroles YA
+   573→  //    encendidos (los sin encender los gestiona el motor con lightLamp)
+   574→  for (let i = 0; i < g.map.props.length; i++) {
+   575→    const pr = g.map.props[i];
+   576→    if (pr.needPast && g.epoch !== 'pasado') continue;
+   577→    if (pr.needPresent && g.epoch !== 'presente') continue;
+   578→    const px = pr.x * TILE + 8, py = pr.y * TILE + 8;
+   579→    const dx = px - p.x, dy = py - p.y;
+   580→    if (dx * dx + dy * dy > 34 * 34) continue;
+   581→    if (pr.kind === 'wreck') {
+   582→      say(g, g.epoch === 'pasado'
+   583→        ? 'El barco aún flota en el ayer: la tripulación canta al doblar el cabo.'
+   584→        : 'El naufragio cruje. Algo canta debajo, salado y vivo.', '#a8d0e0');
+   585→      return true;
+   586→    }
+   587→    if (pr.kind === 'faro') {
+   588→      say(g, g.flags.maraGift
+   589→        ? 'El faro de Mara arde de nuevo: la costa tiene permiso para volver.'
+   590→        : g.epoch === 'pasado'
+   591→          ? 'La lámpara gira cantando: una nota por vuelta de engranaje.'
+   592→          : 'El faro está a oscuras. Nadie sube ya la lámpara.', '#ffe0a0');
+   593→      return true;
+   594→    }
+   595→    if (pr.kind === 'lamp' && !!g.flags[pr.id]) {
+   596→      // farol encendido: chispazo (de noche, más vivo)
+   597→      g.burst(px, py - 8, '#ffe9a0', isNight(g) ? 12 : 6, 40);
+   598→      say(g, isNight(g)
+   599→        ? 'El farol chispea: el nombre que guarda está inquieto.'
+   600→        : 'El farol arde con un nombre dentro.', '#ffe9a0');
+   601→      if (isNight(g)) audio.sfx('lamp');
+   602→      return true;
+   603→    }
+   604→  }
+   605→
+   606→  // 2) tiles con historia: pozo > lápida > roca > agua (3×3 alrededor)
+   607→  const ptx = Math.floor(p.x / TILE), pty = Math.floor(p.y / TILE);
+   608→  const OFFS: [number, number][] = [
+   609→    [0, 0], [0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1],
+   610→  ];
+   611→  for (let o = 0; o < OFFS.length; o++) {
+   612→    const tx = ptx + OFFS[o][0], ty = pty + OFFS[o][1];
+   613→    if (tx < 0 || ty < 0 || tx >= g.map.w || ty >= g.map.h) continue;
+   614→    const ch = tileAt(g.map, g.rows, tx, ty, g.epoch);
+   615→    if (ch === 'w') {
+   616→      say(g, g.epoch === 'pasado'
+   617→        ? 'Susurra un nombre al pozo: abajo, algo lo teje en el canto.'
+   618→        : 'El pozo de los nombres devuelve solo silencio.', '#a8c8e0');
+   619→      return true;
+   620→    }
+   621→    if (ch === 'g') {
+   622→      say(g, 'Una lápida sin nombre. El musgo recuerda lo que los vivos olvidaron.', '#9aa8b8');
+   623→      return true;
+   624→    }
+   625→    if (ch === 'R') {
+   626→      say(g, g.epoch === 'pasado'
+   627→        ? 'La talla aún vive en el ayer: una nota del Primer Canto.'
+   628→        : 'Una piedra antigua. Hubo algo tallado aquí; el tiempo lo borró.', '#9aa8b8');
+   629→      return true;
+   630→    }
+   631→    if (ch === '~') {
+   632→      const line = WATER_LINES[g.mapId] ?? {
+   633→        now: 'El agua te devuelve el silencio.',
+   634→        past: 'El agua del ayer tiene ecos de fiesta.',
+   635→      };
+   636→      g.burst(tx * TILE + 8, ty * TILE + 8, '#a8d8f0', 10, 50);
+   637→      audio.sfx('splash');
+   638→      say(g, g.epoch === 'pasado' ? line.past : line.now, '#a8d0e0');
+   639→      return true;
+   640→    }
+   641→  }
+   642→  return false;
+   643→}
+   644→
+   645→// ---------------- Dibujo (contrato integrador: render.drawWorld) ----------------
+   646→
+   647→// --- caches de primitivas (se crean perezosamente, una sola vez) ---
+   648→
+   649→function mkCanvas(w: number, h: number, draw: (c: CanvasRenderingContext2D) => void): HTMLCanvasElement {
+   650→  const c = document.createElement('canvas');
+   651→  c.width = w; c.height = h;
+   652→  const x = c.getContext('2d')!;
+   653→  draw(x);
+   654→  return c;
+   655→}
+   656→
+   657→let cacheBird: HTMLCanvasElement[] | null = null;
+   658→let cacheFly: HTMLCanvasElement[][] | null = null; // [varianteColor][frame]
+   659→let cacheGlow: HTMLCanvasElement | null = null;
+   660→let cacheTrav: HTMLCanvasElement | null = null;
+   661→
+   662→function ensureCaches(): void {
+   663→  if (cacheBird) return;
+   664→  const bird = (wing: number) => mkCanvas(12, 9, c => {
+   665→    // cuerpo
+   666→    c.fillStyle = '#4a3a5a';
+   667→    c.beginPath(); c.ellipse(6, 5, 4, 2.4, 0, 0, Math.PI * 2); c.fill();
+   668→    // cabeza + pico + ojo
+   669→    c.beginPath(); c.arc(9.4, 3.6, 2, 0, Math.PI * 2); c.fill();
+   670→    c.fillStyle = '#e8a040';
+   671→    c.beginPath(); c.moveTo(11.2, 3.4); c.lineTo(12, 4); c.lineTo(11.2, 4.4); c.fill();
+   672→    c.fillStyle = '#0c0c14';
+   673→    c.fillRect(9.8, 3, 1, 1);
+   674→    // cola
+   675→    c.fillStyle = '#3a2c48';
+   676→    c.fillRect(0, 4, 3, 2);
+   677→    // ala alzada / bajada
+   678→    c.fillStyle = '#5c4a70';
+   679→    c.beginPath();
+   680→    if (wing === 0) { c.moveTo(5, 4); c.lineTo(8, 0); c.lineTo(9, 4.4); }
+   681→    else { c.moveTo(5, 5); c.lineTo(8, 8.5); c.lineTo(9, 4.6); }
+   682→    c.closePath(); c.fill();
+   683→  });
+   684→  cacheBird = [bird(0), bird(1)];
+   685→  const fly = (body: string, wingCol: string) => [0, 1].map(f => mkCanvas(7, 6, c => {
+   686→    c.fillStyle = wingCol;
+   687→    if (f === 0) {
+   688→      c.beginPath(); c.ellipse(2.2, 2.6, 2, 2.4, -0.5, 0, Math.PI * 2); c.fill();
+   689→      c.beginPath(); c.ellipse(4.8, 2.6, 2, 2.4, 0.5, 0, Math.PI * 2); c.fill();
+   690→    } else {
+   691→      c.beginPath(); c.ellipse(2.6, 2.6, 1, 2.4, -0.1, 0, Math.PI * 2); c.fill();
+   692→      c.beginPath(); c.ellipse(4.4, 2.6, 1, 2.4, 0.1, 0, Math.PI * 2); c.fill();
+   693→    }
+   694→    c.fillStyle = body;
+   695→    c.fillRect(3.2, 1.2, 0.8, 3.4); // cuerpo
+   696→    c.fillRect(3.1, 4.6, 0.4, 1);   // antena/cola
+   697→    c.fillRect(3.7, 4.6, 0.4, 1);
+   698→  }));
+   699→  cacheFly = [fly('#3a3a3a', '#e88ab0'), fly('#3a3a3a', '#f0d060')];
+   700→  cacheGlow = mkCanvas(12, 12, c => {
+   701→    const rg = c.createRadialGradient(6, 6, 0.5, 6, 6, 6);
+   702→    rg.addColorStop(0, 'rgba(214,255,170,0.95)');
+   703→    rg.addColorStop(0.45, 'rgba(170,240,130,0.4)');
+   704→    rg.addColorStop(1, 'rgba(150,230,120,0)');
+   705→    c.fillStyle = rg;
+   706→    c.fillRect(0, 0, 12, 12);
+   707→  });
+   708→  cacheTrav = mkCanvas(16, 20, c => {
+   709→    // capa
+   710→    c.fillStyle = '#2a3a44';
+   711→    c.beginPath();
+   712→    c.moveTo(5, 6); c.lineTo(11, 6); c.lineTo(13, 19); c.lineTo(3, 19);
+   713→    c.closePath(); c.fill();
+   714→    // cabeza + capucha
+   715→    c.fillStyle = '#d8b890';
+   716→    c.beginPath(); c.arc(8, 4.4, 2.4, 0, Math.PI * 2); c.fill();
+   717→    c.fillStyle = '#22303a';
+   718→    c.beginPath(); c.arc(8, 4, 2.7, Math.PI * 0.9, Math.PI * 2.2); c.fill();
+   719→    // capucha sombra
+   720→    c.fillStyle = '#18242c';
+   721→    c.fillRect(6.4, 3.4, 3.2, 1.4);
+   722→    // bordado del viajante (hilo del Eco)
+   723→    c.fillStyle = '#8a7ab0';
+   724→    c.fillRect(7.6, 10, 0.8, 0.8); c.fillRect(7.6, 13, 0.8, 0.8);
+   725→    // cayado
+   726→    c.fillStyle = '#6a4a2a';
+   727→    c.fillRect(13, 1, 1, 18);
+   728→    c.fillStyle = '#8a6a3a';
+   729→    c.beginPath(); c.arc(13.5, 1.6, 1.4, 0, Math.PI * 2); c.fill();
+   730→    // morral
+   731→    c.fillStyle = '#5a4426';
+   732→    c.fillRect(3, 10, 3, 3);
+   733→  });
+   734→}
+   735→
+   736→const TAU = Math.PI * 2;
+   737→
+   738→/**
+   739→ * Dibuja la fauna + el viajero (primitivas cacheadas). Punto de enganche
+   740→ * documentado en la cabecera: render.ts · drawWorld, tras los cofres.
+   741→ * Idempotente y sin allocations; no dibuja nada si no hay criaturas vivas.
+   742→ */
+   743→export function drawWorldLife(g: Game, sx?: (n: number) => number, sy?: (n: number) => number): void {
+   744→  if (!g.player) return;
+   745→  const st = STATES.get(g);
+   746→  if (!st) return;
+   747→  const ox = sx ?? ((wx: number) => wx * ZOOM - Math.round(g.camX));
+   748→  const oy = sy ?? ((wy: number) => wy * ZOOM - Math.round(g.camY));
+   749→  ensureCaches();
+   750→  const ctx = g.ctx;
+   751→  const camXr = Math.round(g.camX), camYr = Math.round(g.camY);
+   752→
+   753→  // visible en pantalla (coordenadas de mundo → canvas)
+   754→  const vis = (wx: number, wy: number, pad: number): boolean => {
+   755→    const sxx = wx * ZOOM - camXr, syy = wy * ZOOM - camYr;
+   756→    return sxx > -pad && sxx < VIEW_W + pad && syy > -pad && syy < VIEW_H + pad;
+   757→  };
+   758→
+   759→  // viajero errante (detrás de la fauna)
+   760→  const tv = st.trav;
+   761→  if (tv.active && cacheTrav && vis(tv.x, tv.y, 48)) {
+   762→    const bob = Math.floor(tv.t * 6) % 2;
+   763→    ctx.drawImage(cacheTrav, ox(tv.x - 8), oy(tv.y - 16 - bob), 16 * ZOOM, 20 * ZOOM);
+   764→  }
+   765→
+   766→  for (let i = 0; i < POOL_CAP; i++) {
+   767→    const c = POOL[i];
+   768→    if (!c.active || !vis(c.x, c.y, 40)) continue;
+   769→    if (c.kind === AVE && cacheBird) {
+   770→      const fr = c.state === 1 ? Math.floor(c.t * 12) % 2 : 0;
+   771→      const bob = c.state === 0 ? Math.sin(c.t * 2 + c.seed) * 0.6 : 0;
+   772→      const img = cacheBird[fr];
+   773→      if (c.vx < 0) {
+   774→        ctx.save();
+   775→        ctx.translate(ox(c.x + 6), oy(c.y - 4.5 - bob));
+   776→        ctx.scale(-1, 1);
+   777→        ctx.drawImage(img, 0, 0, 12 * ZOOM, 9 * ZOOM);
+   778→        ctx.restore();
+   779→      } else {
+   780→        ctx.drawImage(img, ox(c.x - 6), oy(c.y - 4.5 - bob), 12 * ZOOM, 9 * ZOOM);
+   781→      }
+   782→    } else if (c.kind === MARIPOSA && cacheFly) {
+   783→      const fr = Math.floor(c.t * 9) % 2;
+   784→      const img = cacheFly[Math.floor(c.seed) % 2][fr];
+   785→      ctx.drawImage(img, ox(c.x - 3.5), oy(c.y - 3), 7 * ZOOM, 6 * ZOOM);
+   786→    } else if (c.kind === LUCIERNAGA && cacheGlow) {
+   787→      const pulse = 0.35 + 0.65 * Math.abs(Math.sin(c.t * 2 + c.seed));
+   788→      ctx.globalAlpha = pulse;
+   789→      ctx.drawImage(cacheGlow, ox(c.x - 6), oy(c.y - 6), 12 * ZOOM, 12 * ZOOM);
+   790→      ctx.fillStyle = '#f2ffc8';
+   791→      ctx.fillRect(ox(c.x - 0.75), oy(c.y - 0.75), 1.5 * ZOOM, 1.5 * ZOOM);
+   792→      ctx.globalAlpha = 1;
+   793→    } else if (c.kind === PEZ) {
+   794→      if (c.state === 0) {
+   795→        // sombra bajo la superficie
+   796→        ctx.globalAlpha = 0.16;
+   797→        ctx.fillStyle = '#204060';
+   798→        ctx.beginPath();
+   799→        ctx.ellipse(ox(c.x), oy(c.ay + 3), 3 * ZOOM, 1.2 * ZOOM, 0, 0, TAU);
+   800→        ctx.fill();
+   801→        ctx.globalAlpha = 1;
+   802→      } else {
+   803→        // cuerpo arqueado en el salto
+   804→        ctx.fillStyle = '#b8ccd8';
+   805→        ctx.beginPath();
+   806→        ctx.ellipse(ox(c.x), oy(c.y - 2), 2.6 * ZOOM, 1.6 * ZOOM, c.vy < 0 ? -0.4 : 0.4, 0, TAU);
+   807→        ctx.fill();
+   808→        ctx.fillStyle = '#e8f0f4';
+   809→        ctx.fillRect(ox(c.x - 0.5), oy(c.y - 3), 1 * ZOOM, 1 * ZOOM);
+   810→      }
+   811→    }
+   812→  }
+   813→}
+   814→
+   815→// ---------------- Utilidades dev/smoke ----------------
+   816→
+   817→/** Snapshot del estado del módulo para un Game (solo smokes/dev). */
+   818→export function worldlifeStats(g: Game): {
+   819→  count: number; aves: number; mariposas: number; luciernagas: number; peces: number;
+   820→  viajero: boolean; rumorsShown: number; lastRumor: string; eventCount: number;
+   821→  critters: { x: number; y: number; kind: number }[];
+   822→} | null {
+   823→  const st = STATES.get(g);
+   824→  if (!st) return null;
+   825→  const critters: { x: number; y: number; kind: number }[] = [];
+   826→  const k = [0, 0, 0, 0];
+   827→  for (let i = 0; i < POOL_CAP; i++) {
+   828→    const c = POOL[i];
+   829→    if (!c.active) continue;
+   830→    k[c.kind]++;
+   831→    critters.push({ x: c.x, y: c.y, kind: c.kind });
+   832→  }
+   833→  return {
+   834→    count: critters.length, aves: k[AVE], mariposas: k[MARIPOSA],
+   835→    luciernagas: k[LUCIERNAGA], peces: k[PEZ], viajero: st.trav.active,
+   836→    rumorsShown: st.rumorsShown, lastRumor: st.lastRumor,
+   837→    eventCount: st.evtCount, critters,
+   838→  };
+   839→}
+   840→
+   841→/** Arma el timer de eventos y (opcional) fija la clase del próximo evento. */
+   842→export function __wlArmEvent(g: Game, inSec: number, kind?: 'eco' | 'rafaga' | 'viajero'): void {
+   843→  const st = stateFor(g);
+   844→  st.evtIn = inSec;
+   845→  st.forced = kind ?? null;
+   846→}
+   847→
+   848→/** Pool vigente de rumores de un NPC (solo smokes/dev). */
+   849→export function __wlRumorPool(g: Game, nid: string): string[] {
+   850→  return rumorPool(g, nid);
+   851→}
+   852→
+   853→/** Reinicia todo el estado del módulo (solo smokes). */
+   854→export function __wlResetAll(): void {
+   855→  for (let i = 0; i < POOL_CAP; i++) POOL[i].active = false;
+   856→  kindCount[0] = 0; kindCount[1] = 0; kindCount[2] = 0; kindCount[3] = 0;
+   857→  liveCount = 0;
+   858→  // WeakMap no se itera: cada smoke usa su propia instancia de Game
+   859→}
+   860→

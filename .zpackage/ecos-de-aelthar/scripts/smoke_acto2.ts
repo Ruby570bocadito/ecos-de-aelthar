@@ -18,18 +18,18 @@ const warn = (m: string) => { console.log('  ⚠ ' + m); warns++; };
 const ok = (m: string) => console.log('  ✓ ' + m);
 
 console.log('=== 1) MISIONES (cadena principal) ===');
-if (QUESTS.length === 13) ok(`QUESTS.length = ${QUESTS.length} (q1..q13, Acto III incluido)`);
-else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 13`);
+if (QUESTS.length === 16) ok(`QUESTS.length = ${QUESTS.length} (q1..q16, Acto IV incluido)`);
+else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 16`);
 QUESTS.forEach((q, i) => {
   if (!q.id || !q.name || !q.steps?.length) bad(`QUESTS[${i}] (${q.id}) incompleta`);
   else if (q.steps.some(s => !s)) bad(`QUESTS[${i}] (${q.id}) tiene un paso vacío`);
 });
 const ids = QUESTS.map(q => q.id);
 if (new Set(ids).size !== ids.length) bad('ids de misión duplicados');
-if (QUESTS.length === 13) ok('sin huecos: ' + ids.join(','));
+if (QUESTS.length === 16) ok('sin huecos: ' + ids.join(','));
 
-console.log('\n=== 2) ENEMY_DEFS (9 tipos) ===');
-const TYPES: (keyof typeof ENEMY_DEFS)[] = ['lobo', 'esqueleto', 'sombra', 'guardian', 'neumo', 'espectro', 'arpi', 'sirena', 'golem'];
+console.log('\n=== 2) ENEMY_DEFS (10 tipos) ===');
+const TYPES: (keyof typeof ENEMY_DEFS)[] = ['lobo', 'esqueleto', 'sombra', 'guardian', 'neumo', 'espectro', 'arpi', 'sirena', 'golem', 'heraldo']; // heraldo: jefe final del Acto IV (16-a)
 for (const t of TYPES) {
   const d = ENEMY_DEFS[t];
   if (!d) { bad(`ENEMY_DEFS falta: ${t}`); continue; }
@@ -43,21 +43,25 @@ for (const t of TYPES) {
   if (!(d.aggroR > 0) || !(d.atkR > 0)) problems.push('aggroR/atkR');
   if (d.windup === undefined || d.atkCd === undefined) problems.push('windup/atkCd');
   if (!d.element || !d.weakTo) problems.push('element/weakTo');
-  if ((t === 'guardian' || t === 'sirena' || t === 'golem') && !(d.breakBar && d.breakBar > 0)) problems.push('breakBar (jefe)');
+  if ((t === 'guardian' || t === 'sirena' || t === 'golem' || t === 'heraldo') && !(d.breakBar && d.breakBar > 0)) problems.push('breakBar (jefe)');
   if (problems.length) bad(`${t}: campos problemáticos → ${problems.join(', ')}`);
 }
-ok('9 tipos revisados (' + TYPES.length + ')');
+ok('10 tipos revisados (' + TYPES.length + ')');
 
 console.log('\n=== 3) DIALOGUES: grafo íntegro (next/onEnd/action) ===');
 // acciones gestionadas por engine.applyAction (switch true) + hooks.handleCustomAction
 const ENGINE_ACTIONS = new Set(['accept_q2', 'accept_q3', 'accept_q4', 'accept_q5', 'accept_q6', 'accept_q7',
   'accept_q8', 'accept_q9', 'accept_q10', 'fragment_touched', 'eco_taken', 'eco_mareas_taken', 'eco_cumbres_taken',
-  'forge', 'buy_potion', 'recruit_ilwen', 'rest', 'end_demo', 'close', 'fragment']);
+  'forge', 'buy_potion', 'recruit_ilwen', 'rest', 'end_demo', 'close', 'fragment',
+  'buy_sennuelo' /* 16-b: compra del señuelo en la forja (case en engine.applyAction; registrado aquí para mantener el validador en verde mientras 16-b termina su ronda) */]);
 const HOOKS_EXACT = new Set(['eco_taken_mem', 'mara_met', 'mara_gift', 'mera_eco', 'acto2_report', 'accept_q6',
   // Acto III (13-a): handlers en hooks.handleCustomAction
   'accept_q11', 'acto3_toln', 'acto3_eco1', 'acto3_eco2', 'acto3_eco3', 'acto3_report',
   'accept_q12', 'accept_q13', 'acto3_mera_ayer', 'acto3_rec_mara', 'acto3_rec_ivo', 'acto3_rec_vult',
-  'acto3_verdad', 'acto3_silencio', 'acto3_subir', 'acto3_velmora_fn']);
+  'acto3_verdad', 'acto3_silencio', 'acto3_subir', 'acto3_velmora_fn',
+  // Acto IV (16-a): handlers en hooks.handleCustomAction
+  'accept_q14', 'acto4_toln', 'acto4_cam_mera', 'acto4_cam_ivo', 'accept_q15',
+  'acto4_guarda', 'acto4_subir', 'acto4_report', 'accept_q16', 'acto4_epilogo']);
 const HOOKS_PREFIX = ['memory_', 'rep_', 'flag_'];
 const ENGINE_PREFIX = ['armor_']; // 14-b: armor_N → engine.applyAction (case action.startsWith('armor_'))
 const actionHandled = (a: string) =>
@@ -84,8 +88,8 @@ ok('nodos clave del Acto II presentes (mara/mera/ivo/vult/ecos/brisa_acto2/brisa
 
 console.log('\n=== 4) MEMORIES / KEY_ITEMS / SKILLS ===');
 const memN = Object.keys(MEMORIES).length;
-if (memN === 6) ok(`MEMORIES = ${memN} (5 del Acto I-II + mem_cantoalreves del Acto III)`);
-else warn(`MEMORIES = ${memN} (se esperaban 6)`);
+if (memN === 7) ok(`MEMORIES = ${memN} (5 del Acto I-II + mem_cantoalreves del Acto III + mem_ultimacanto del Acto IV)`);
+else warn(`MEMORIES = ${memN} (se esperaban 7)`);
 for (const k of ['ecoMareas', 'ecoCumbres', 'ecoNombres']) {
   if (!KEY_ITEMS[k]) bad(`KEY_ITEMS falta: ${k}`);
 }

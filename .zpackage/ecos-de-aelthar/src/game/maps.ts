@@ -352,7 +352,12 @@ const BASE_MAPS: Record<'lunaris' | 'bosque' | 'cripta', MapDef> = {
     epochDiffs: [],
     dark: true,
     music: 'crypt',
-    npcs: [],
+    npcs: [
+      // 16-a: La Guarda del Primer Canto — el tercer capellán que no calló,
+      // atado a la piedra de la Cripta. Solo aparece cuando el tercer canto
+      // terminó (acto3Done): custodia la puerta de la Sala (misiones q15).
+      { id: 'guarda', x: 21, y: 24, sprite: 'kael', name: 'La Guarda del Primer Canto', showFlag: 'acto3Done' },
+    ],
     chests: [
       { id: 'c1', x: 28, y: 25, gold: 50 },
       { id: 'c2', x: 7, y: 25, potions: 2 },

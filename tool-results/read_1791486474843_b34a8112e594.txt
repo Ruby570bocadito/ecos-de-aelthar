@@ -1,0 +1,719 @@
+     1→// ============================================================
+     2→// ECOS DE AELTHAR — MODO DESAFÍO (agente 12-a)
+     3→// Arena aparte de la campaña: OLEADAS sin fin y DUELOS 1v1 contra
+     4→// los tres jefes (Guardián Hueco, Sirena Abisal, Gólem de Escarcha).
+     5→//
+     6→// CÓMO FUNCIONA: corre sobre el GState 'play' normal (sin estado nuevo).
+     7→// g.challengeRun no-null activa el modo; challengeTick (llamado al final de
+     8→// Game.update, solo en play/dialogue) gobierna oleadas, spawns y resultado.
+     9→// El mapa 'arena' (maps_expansion.ts) no tiene spawns propios: TODOS los
+    10→// enemigos se instancian aquí, alrededor del Portador (8–14 tiles, nunca
+    11→// encima y solo sobre suelo libre verificado con tileSolidAt/boxFree).
+    12→//
+    13→// AISLAMIENTO DE CAMPAÑA (decisión clave): el motor no sabe que está en un
+    14→// desafío — killEnemy otorga oro/XP, toca flags de jefe, avanza misiones y
+    15→// playerDied cobra el peaje de muerte normal. Para que la arena no ensucie
+    16→// la campaña, startChallenge toma una FOTOGRAFÍA del estado (ChallengeSnap)
+    17→// y finish() la restaura: oro, pociones, muertes, hp/sta/res, misión,
+    18→// banderas, memorias, facciones, oro perdido y stat de kills. La XP/nivel y
+    19→// el tiempo de juego SÍ se conservan a propósito (recompensa del guerrero).
+    20→// El oro de la arena "se disuelve" al salir (flavor + economía intacta).
+    21→//
+    22→// ABORTOS (redes de seguridad, ver challengeTick):
+    23→// 1) mapId deja de ser la arena (puerta sur / viaje) → restaurar y cerrar.
+    24→// 2) g.player ya no es el mismo objeto (Nueva partida / Continuar) → solo
+    25→//    se descarta el reto sin restaurar nada (el jugador nuevo viene limpio).
+    26→//
+    27→// CICLOS: challenge.ts importa VALORES de engine (VIEW_W/VIEW_H/TILE, mismo
+    28→// patrón live-binding ya verificado de screens/render en 11-a) y TYPES de
+    29→// engine/types. Ninguna lectura de engine al cargar el módulo → init-order
+    30→// seguro (mismo criterio que fx↔update).
+    31→// ============================================================
+    32→
+    33→import type { Game } from './engine';
+    34→import { VIEW_W, VIEW_H, TILE } from './engine';
+    35→import type { Enemy, EnemyType, Player } from './types';
+    36→import { ENEMY_DEFS } from './data';
+    37→import { ARENA_MAP_ID } from './maps_expansion';
+    38→import { audio } from './audio';
+    39→import { COL, text, textShadow, panel, button, wrapText } from './ui';
+    40→
+    41→// ---------------- claves de localStorage (contrato documentado) ----------------
+    42→
+    43→const LS_BEST = 'ecos-desafio-best';        // número: mejor puntuación de oleadas
+    44→const LS_LOGROS = 'ecos-desafio-logros';    // JSON string[]: 'duelo:guardian' | ...
+    45→const SAVE_KEY = 'ecos-aelthar-save';       // guardado de campaña (solo lectura/detección)
+    46→
+    47→// punto seguro de la arena: centro del empedrado (verificado pisable en buildArena)
+    48→const CENTER_TX = 21, CENTER_TY = 16;
+    49→
+    50→/** Datos de presentación de cada duelo (banner de jefe del motor). */
+    51→const BOSS_INFO: Record<string, { name: string; sub: string }> = {
+    52→  guardian: { name: 'GUARDIÁN HUECO', sub: 'El primer coro, vaciado de voz' },
+    53→  sirena: { name: 'SIRENA ABISAL', sub: 'La marea que canta nombres ajenos' },
+    54→  golem: { name: 'GÓLEM DE ESCARCHA', sub: 'El invierno que aprendió a esperar' },
+    55→};
+    56→
+    57→// ---------------- interfaz pública (extensión documentada del esqueleto) ----------------
+    58→
+    59→/**
+    60→ * Fotografía del estado de campaña al entrar al desafío. finish() la
+    61→ * restaura para que la arena no deje huella (flags de jefe, oro de kills,
+    62→ * peaje de muerte, avance de misión por watchers…).
+    63→ */
+    64→export interface ChallengeSnap {
+    65→  fromCampaign: boolean;                    // ¿el Portador existe en campaña o es uno temporal?
+    66→  gold: number;
+    67→  potions: number;
+    68→  deaths: number;
+    69→  kills: number;
+    70→  playTime: number;
+    71→  hp: number; sta: number; res: number;
+    72→  questIdx: number; questStep: number;
+    73→  flags: Record<string, number | boolean>;
+    74→  memories: string[];
+    75→  repFacciones: Record<string, number> | undefined;
+    76→  deadGolds: Game['deadGolds'];
+    77→  saveRaw: string | null;                   // contenido del save al entrar (detección de guardado en arena)
+    78→}
+    79→
+    80→export interface ChallengeRun {
+    81→  mode: 'oleadas' | 'jefe';
+    82→  boss?: string;            // 'guardian' | 'sirena' | 'golem' (solo modo 'jefe')
+    83→  wave: number;             // oleada actual (1-based)
+    84→  waveTime: number;         // segundos dentro de la oleada
+    85→  betweenWaves: number;     // >0 = cuenta atrás entre oleadas
+    86→  kills: number;
+    87→  score: number;            // = oleadas superadas + kills (espec 12-a)
+    88→  active: boolean;
+    89→  // ----- extensión 12-a (campos opcionales: el motor solo toca challengeRun) -----
+    90→  phase?: 'jugando' | 'resultado';  // 'resultado' dibuja el panel sobre el título
+    91→  resultWin?: boolean;
+    92→  wavesCleared?: number;
+    93→  timeSec?: number;                 // tiempo total del reto
+    94→  spawnQueue?: EnemyType[];         // cola de la oleada en curso (entrada goteada)
+    95→  spawnT?: number;                  // cadencia de entrada
+    96→  spawnedTotal?: number;            // total instanciado → kills = total − vivos
+    97→  bossEnemy?: Enemy | null;         // referencia del duelo (victoria = .dead)
+    98→  endBeat?: number;                 // pausa dramática (~1,7 s) tras caer el jefe
+    99→  waveHadBoss?: boolean;            // la oleada trae Centinela (mini-jefe)
+   100→  waveBossDown?: boolean;           // su rastro de campaña ya se deshizo
+   101→  bannerT?: number;                 // aviso grande "OLEADA N" / título de duelo
+   102→  bannerText?: string;
+   103→  best?: number;                    // récord previo al entrar
+   104→  newBest?: boolean;
+   105→  snap?: ChallengeSnap;             // restauración al terminar
+   106→  playerRef?: Player | null;        // detección de jugador reemplazado (aborto 2)
+   107→  resave?: 'rewrite' | 'remove';    // guardado en arena detectado → arreglar al salir
+   108→}
+   109→
+   110→// ---------------- estado de módulo ----------------
+   111→
+   112→// sub-menú de selección dibujado sobre el título (lo abre el botón DESAFÍO
+   113→// de screens.ts vía openChallengeMenu); el panel borra g.uiHit del título
+   114→// para que ningún botón de fondo reciba el clic
+   115→let menuOpen = false;
+   116→
+   117→// ---------------- utilidades ----------------
+   118→
+   119→function readBest(): number {
+   120→  try {
+   121→    const v = Number(localStorage.getItem(LS_BEST) ?? '0');
+   122→    return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+   123→  } catch { return 0; }
+   124→}
+   125→
+   126→function readLogros(): string[] {
+   127→  try {
+   128→    const raw = localStorage.getItem(LS_LOGROS);
+   129→    const arr = raw ? JSON.parse(raw) as unknown : null;
+   130→    return Array.isArray(arr) ? arr.filter(s => typeof s === 'string') as string[] : [];
+   131→  } catch { return []; }
+   132→}
+   133→
+   134→function writeLogros(list: string[]): void {
+   135→  try { localStorage.setItem(LS_LOGROS, JSON.stringify(list)); } catch { /* noop */ }
+   136→}
+   137→
+   138→function fmtTime(sec: number): string {
+   139→  const s = Math.max(0, Math.floor(sec));
+   140→  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+   141→}
+   142→
+   143→/** RNG determinista por oleada (convención del proyecto: sin azar de ejecución). */
+   144→function mulberry32(seed: number): () => number {
+   145→  let a = seed >>> 0;
+   146→  return () => {
+   147→    a |= 0; a = (a + 0x6d2b79f5) | 0;
+   148→    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+   149→    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+   150→    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+   151→  };
+   152→}
+   153→
+   154→/**
+   155→ * Portador temporal para jugar desde el título sin campaña: Alba de nivel 8
+   156→ * con atributos planos y arma +2 — potencia comparable a un Portador a mitad
+   157→ * del Acto I avanzado. No toca economía (oro 0) y se descarta al terminar.
+   158→ */
+   159→function makeArenaPlayer(): Player {
+   160→  const maxHp = 158; // 110 base Alba + 7·7 por nivel (misma fórmula que newGame)
+   161→  return {
+   162→    kind: 'player', name: 'Portador de Arena', discipline: 'alba',
+   163→    x: 0, y: 0, w: 10, h: 8, vx: 0, vy: 0, dir: 'down',
+   164→    hp: maxHp, maxHp, sprite: 'hero_alba', anim: 0, moving: false,
+   165→    level: 8, xp: 0, sta: 100, maxSta: 100, res: 0, maxRes: 100,
+   166→    attrs: { fue: 5, des: 5, int: 3, esp: 3, vig: 5 },
+   167→    points: 0, gold: 0, weaponPlus: 2, potions: 2, cds: [0, 0, 0, 0],
+   168→    iframes: 0, parryT: 0, parryFx: 0, attackT: 0, combo: 0,
+   169→    chargeT: 0, charging: false, rollT: 0, lastHitT: 0,
+   170→    hasEcho: false, kills: 0, deaths: 0, repGuardianes: 0, playTime: 0,
+   171→    tones: { empatico: 0, pragmatico: 0, sarcastico: 0, amenazante: 0 },
+   172→    memories: [],
+   173→    repFacciones: { guardianes: 0, orden: 0, circulo: 0, liga: 0 },
+   174→  };
+   175→}
+   176→
+   177→// ---------------- fotografia / restauración de campaña ----------------
+   178→
+   179→function snapshotCampaign(g: Game): ChallengeSnap {
+   180→  const p = g.player;
+   181→  let saveRaw: string | null = null;
+   182→  try { saveRaw = localStorage.getItem(SAVE_KEY); } catch { /* noop */ }
+   183→  return {
+   184→    fromCampaign: !!p,
+   185→    gold: p?.gold ?? 0,
+   186→    potions: p?.potions ?? 0,
+   187→    deaths: p?.deaths ?? 0,
+   188→    kills: p?.kills ?? 0,
+   189→    playTime: p?.playTime ?? 0,
+   190→    hp: p?.hp ?? 0, sta: p?.sta ?? 0, res: p?.res ?? 0,
+   191→    questIdx: g.questIdx, questStep: g.questStep,
+   192→    flags: { ...g.flags },
+   193→    memories: [...(p?.memories ?? [])],
+   194→    repFacciones: p?.repFacciones ? { ...p.repFacciones } : undefined,
+   195→    deadGolds: g.deadGolds.slice(),
+   196→    saveRaw,
+   197→  };
+   198→}
+   199→
+   200→/**
+   201→ * Devuelve la campaña a su estado exacto de antes del reto. Se llama en
+   202→ * finish() (victoria/derrota/aborto). La XP y el nivel ganados en la arena
+   203→ * NO se restauran: son la recompensa persistente de haber sobrevivido.
+   204→ */
+   205→function restoreCampaign(g: Game, run: ChallengeRun): void {
+   206→  const s = run.snap;
+   207→  if (!s) return;
+   208→  const p = g.player;
+   209→  if (s.fromCampaign && p) {
+   210→    p.gold = s.gold;
+   211→    p.potions = s.potions;
+   212→    p.deaths = s.deaths;
+   213→    p.kills = s.kills;
+   214→    p.playTime = s.playTime;
+   215→    p.hp = s.hp; p.sta = s.sta; p.res = s.res;
+   216→    p.memories = s.memories;
+   217→    p.repFacciones = s.repFacciones;
+   218→    g.questIdx = s.questIdx;
+   219→    g.questStep = s.questStep;
+   220→    g.flags = { ...s.flags };
+   221→    g.deadGolds = s.deadGolds;
+   222→  } else if (!s.fromCampaign) {
+   223→    // Portador temporal: el oro/pociones que acumuló en la arena no significan
+   224→    // nada; endChallenge lo retira al volver al título (aquí aún lo usa el HUD).
+   225→    g.deadGolds = [];
+   226→  }
+   227→  // ¿el jugador guardó desde la pausa estando DENTRO de la arena? El fichero
+   228→  // habría serializado mapId 'arena' + estado a medio reto. Marcamos la
+   229→  // reparación y endChallenge la ejecuta sobre lunaris ya cargado.
+   230→  let raw: string | null = null;
+   231→  try { raw = localStorage.getItem(SAVE_KEY); } catch { /* noop */ }
+   232→  if (raw !== s.saveRaw) run.resave = s.saveRaw === null ? 'remove' : 'rewrite';
+   233→}
+   234→
+   235→// ---------------- composición y spawn de oleadas ----------------
+   236→
+   237→/** Escalado de la oleada: hp ×(1 + 0.12·(oleada−1)) — la espec del encargo. */
+   238→function waveMult(w: number): number { return 1 + 0.12 * (w - 1); }
+   239→
+   240→/**
+   241→ * Mezcla de enemigos por oleada. Tablas fijas 1–7 (rampa legible: Acto I,
+   242→ * mini-jefe cada 3, tipos del Acto II desde la 4) y mezcla determinista
+   243→ * (semilla = nº de oleada) a partir de la 8. El daño NO se escala por
+   244→ * instancia (los cerebros leen ENEMY_DEFS): la presión sube por HP, por
+   245→ * mezcla (Acto II pega más) y por el Centinela.
+   246→ */
+   247→function waveComposition(w: number): EnemyType[] {
+   248→  if (w === 1) return ['lobo', 'lobo', 'lobo'];
+   249→  if (w === 2) return ['lobo', 'sombra', 'lobo', 'sombra'];
+   250→  if (w === 3) return ['guardian', 'esqueleto', 'esqueleto'];
+   251→  if (w === 4) return ['neumo', 'neumo', 'espectro', 'espectro'];
+   252→  if (w === 5) return ['arpi', 'arpi', 'espectro', 'neumo'];
+   253→  if (w === 6) return ['guardian', 'arpi', 'arpi', 'espectro'];
+   254→  if (w === 7) return ['espectro', 'espectro', 'neumo', 'arpi', 'sombra', 'lobo'];
+   255→  const pool: EnemyType[] = ['lobo', 'sombra', 'esqueleto', 'neumo', 'espectro', 'arpi'];
+   256→  const rng = mulberry32(w * 7919);
+   257→  const n = Math.min(10, 5 + Math.floor((w - 7) / 2));
+   258→  const out: EnemyType[] = [];
+   259→  for (let i = 0; i < n; i++) out.push(pool[Math.floor(rng() * pool.length)]);
+   260→  if (w % 3 === 0) out.unshift('guardian');
+   261→  return out;
+   262→}
+   263→
+   264→/**
+   265→ * Instancia un enemigo de oleada alrededor del Portador: anillo de 8–14
+   266→ * tiles (nunca encima), dentro del recinto y solo sobre suelo libre
+   267→ * (tileSolidAt + boxFree con el hitbox del tipo). Reintenta 40 ángulos; si
+   268→ * el jugador está acorralado, entra por el sur del anillo.
+   269→ */
+   270→function spawnArenaEnemy(g: Game, run: ChallengeRun, type: EnemyType, mult: number): void {
+   271→  const p = g.player!;
+   272→  const def = ENEMY_DEFS[type];
+   273→  // hitbox idéntica a makeEnemy (guardian/sirena/golem grandes)
+   274→  const big = type === 'guardian' || type === 'sirena' || type === 'golem';
+   275→  const bw = big ? 22 : 12;
+   276→  const bh = big ? 16 : 10;
+   277→  const push = (x: number, y: number) => {
+   278→    const e = g.makeEnemy(type, x, y, 2, 'arena');
+   279→    // mini-jefe (guardián) un 25% más blando: es un escollo de oleada, no la pelea de campaña
+   280→    const scaled = Math.max(1, Math.round(def.hp * (type === 'guardian' ? mult * 0.75 : mult)));
+   281→    e.hp = scaled; e.maxHp = scaled;
+   282→    g.enemies.push(e);
+   283→    run.spawnedTotal = (run.spawnedTotal ?? 0) + 1;
+   284→  };
+   285→  for (let tries = 0; tries < 40; tries++) {
+   286→    const a = Math.random() * Math.PI * 2;
+   287→    const d = (8 + Math.random() * 6) * TILE;
+   288→    const x = p.x + Math.cos(a) * d;
+   289→    const y = p.y + Math.sin(a) * d;
+   290→    if (x < 2.5 * TILE || y < 2.5 * TILE) continue;
+   291→    if (x > (g.map.w - 2.5) * TILE || y > (g.map.h - 2.5) * TILE) continue;
+   292→    if (g.tileSolidAt(x, y)) continue;
+   293→    if (!g.boxFree(x, y, bw, bh)) continue;
+   294→    push(x, y);
+   295→    return;
+   296→  }
+   297→  push((CENTER_TX + 0.5) * TILE, (CENTER_TY + 6) * TILE);
+   298→}
+   299→
+   300→function startWave(g: Game, run: ChallengeRun): void {
+   301→  run.wave++;
+   302→  run.spawnQueue = waveComposition(run.wave);
+   303→  run.spawnT = 0.2;
+   304→  run.waveTime = 0;
+   305→  run.waveHadBoss = run.spawnQueue.includes('guardian');
+   306→  run.waveBossDown = !run.waveHadBoss;
+   307→  run.bannerT = 2.2;
+   308→  run.bannerText = run.waveHadBoss ? `OLEADA ${run.wave} · CENTINELA DEL ECO` : `OLEADA ${run.wave}`;
+   309→  audio.sfx('banner');
+   310→  if (run.waveHadBoss) {
+   311→    g.bossActive = true;
+   312→    g.toast('Un Centinela del Eco despierta en la arena', COL.boss);
+   313→  }
+   314→}
+   315→
+   316→/** Spawnea el jefe del duelo 1v1 (versión "de arena", sin flags de campaña). */
+   317→function spawnDuelBoss(g: Game, run: ChallengeRun, id: string): void {
+   318→  const info = BOSS_INFO[id] ?? BOSS_INFO.guardian;
+   319→  const type = id as EnemyType;
+   320→  const bx = (CENTER_TX + 0.5) * TILE;
+   321→  const by = (CENTER_TY - 8) * TILE; // 8 tiles al norte: entra en aggro con el primer paso
+   322→  const e = g.makeEnemy(type, bx, by, 0, 'boss'); // spawnGuard 0,5 s de cortesía
+   323→  run.spawnedTotal = (run.spawnedTotal ?? 0) + 1;
+   324→  run.bossEnemy = e;
+   325→  g.enemies.push(e);
+   326→  g.bossRef = e;
+   327→  g.bossActive = true;
+   328→  g.bossBannerT = 2.6;
+   329→  g.bossBannerText = info.name;
+   330→  g.bossBannerSub = info.sub;
+   331→  audio.sfx('roar');
+   332→  g.toast(`DUELO 1v1 — ${info.name}: una sola vida, sin pociones`, COL.boss);
+   333→}
+   334→
+   335→// ---------------- ciclo principal ----------------
+   336→
+   337→/** Tick del modo desafío (llamado al final de Game.update en cada frame de juego). */
+   338→export function challengeTick(g: Game, dt: number): void {
+   339→  const run = g.challengeRun;
+   340→  if (!run || run.phase !== 'jugando') return;
+   341→
+   342→  // --- ABORTO 1: se salió de la arena con el reto en marcha (puerta sur o
+   343→  // viaje). El loadMap del destino YA regeneró el mundo (enemigos, FX,
+   344→  // bossRef): aquí solo se restaura la campaña y se cierra el reto.
+   345→  if (g.state === 'play' && g.mapId !== ARENA_MAP_ID) {
+   346→    restoreCampaign(g, run);
+   347→    const temp = !run.snap?.fromCampaign;
+   348→    g.challengeRun = null;
+   349→    g.bossRef = null; g.bossActive = false;
+   350→    audio.setCombat(false);
+   351→    if (temp) {
+   352→      // Portador temporal sin campaña: no hay mundo que seguir → título
+   353→      g.player = null;
+   354→      g.setState('title');
+   355→    } else {
+   356→      g.toast('Has abandonado el Desafío. Tu canto retoma la campaña donde estaba...', '#c8b0e8');
+   357→    }
+   358→    return;
+   359→  }
+   360→  // --- ABORTO 2: el Portador fue REEMPLAZADO (Nueva partida / Continuar
+   361→  // tras un GUARDAR Y SALIR desde la pausa). El estado nuevo viene limpio del
+   362→  // guardado: NO se restaura nada, solo se descarta el reto huérfano.
+   363→  if (run.playerRef && g.player !== run.playerRef) {
+   364→    g.challengeRun = null;
+   365→    g.bossRef = null; g.bossActive = false;
+   366→    return;
+   367→  }
+   368→  if (g.state !== 'play' || !g.player) return; // diálogo: el mundo está detenido
+   369→
+   370→  const p = g.player;
+   371→  run.timeSec = (run.timeSec ?? 0) + dt;
+   372→  if (run.bannerT && run.bannerT > 0) run.bannerT -= dt;
+   373→  if (run.mode === 'oleadas' && run.wave > 0) run.waveTime += dt;
+   374→
+   375→  // kills observadas: todos los enemigos del mapa son nuestros →
+   376→  // instanciados − vivos (los muertos ya los filtró update.ts)
+   377→  run.kills = Math.max(run.kills, (run.spawnedTotal ?? 0) - g.enemies.length);
+   378→  run.score = (run.wavesCleared ?? 0) + run.kills;
+   379→
+   380→  // pausa dramática tras la caída del jefe: deja respirar el slowmo/burst de
+   381→  // su muerte (expansionDeathFx) antes de saltar al panel de resultados
+   382→  if (run.endBeat !== undefined) {
+   383→    run.endBeat -= dt;
+   384→    if (run.endBeat <= 0) finish(g, run, true);
+   385→    return;
+   386→  }
+   387→
+   388→  if (run.mode === 'jefe') {
+   389→    // VICTORIA: killEnemy marcó dead y cantó victoria de CAMPAÑA (flags,
+   390→    // música, botín) — restoreCampaign dentro de finish lo deshace todo.
+   391→    const be = run.bossEnemy;
+   392→    if (be && be.dead) {
+   393→      run.endBeat = 1.7;
+   394→      g.enemies = []; g.projectiles = []; g.waves = []; g.telegraphs = []; // los neumos invocados se disuelven
+   395→      g.bossRef = null; g.bossActive = false;
+   396→      audio.setCombat(false);
+   397→    }
+   398→    return;
+   399→  }
+   400→
+   401→  // ---------------- MODO OLEADAS ----------------
+   402→
+   403→  // el Centinela muerto canta victoria de CAMPAÑA vía killEnemy (música de
+   404→  // cripta + toasts del altar): deshacer su rastro en cuanto cae
+   405→  if (run.waveHadBoss && !run.waveBossDown && !g.enemies.some(e => e.etype === 'guardian' && !e.dead)) {
+   406→    run.waveBossDown = true;
+   407→    audio.playTrack('boss');
+   408→    g.toasts = g.toasts.filter(t => !t.text.includes('Guardián Hueco') && !t.text.includes('altar del Eco'));
+   409→    g.toast('El Centinela del Eco cae hecho añicos', COL.goldSoft);
+   410→  }
+   411→
+   412→  // cuenta atrás entre oleadas
+   413→  if (run.betweenWaves > 0) {
+   414→    run.betweenWaves -= dt;
+   415→    if (run.betweenWaves <= 0) startWave(g, run);
+   416→    return;
+   417→  }
+   418→
+   419→  // entrada goteada de la cola de la oleada
+   420→  if (run.spawnQueue && run.spawnQueue.length > 0) {
+   421→    run.spawnT = (run.spawnT ?? 0) - dt;
+   422→    if (run.spawnT <= 0) {
+   423→      const type = run.spawnQueue.shift();
+   424→      if (type) spawnArenaEnemy(g, run, type, waveMult(run.wave));
+   425→      run.spawnT = 0.5;
+   426→    }
+   427→    return; // la oleada sigue entrando: nada de despeje todavía
+   428→  }
+   429→
+   430→  // oleada despejada → recompensa breve y cuenta atrás (récord se aplica al final)
+   431→  if (run.wave > 0 && g.enemies.length === 0) {
+   432→    run.wavesCleared = run.wave;
+   433→    run.score = (run.wavesCleared ?? 0) + run.kills;
+   434→    const heal = Math.round(p.maxHp * 0.15);
+   435→    if (p.hp > 0 && p.hp < p.maxHp) {
+   436→      p.hp = Math.min(p.maxHp, p.hp + heal);
+   437→      g.floatAt(p.x, p.y - 18, `+${heal}`, '#7ef0a0');
+   438→    }
+   439→    audio.sfx('quest');
+   440→    g.toast(`Oleada ${run.wave} superada. Respira: la Niebla vuelve en 3...`, '#8ef0b0');
+   441→    run.betweenWaves = 3.0;
+   442→    run.waveHadBoss = false;
+   443→    run.waveBossDown = false;
+   444→    run.bannerT = 0;
+   445→  }
+   446→}
+   447→
+   448→/** El jugador cayó en pleno desafío (intercepta respawn de campaña). */
+   449→export function onChallengeDeath(g: Game): void {
+   450→  const run = g.challengeRun;
+   451→  if (!run) return;
+   452→  if (run.phase !== 'jugando') { g.challengeRun = null; return; }
+   453→  // el peaje de muerte de campaña (oro/2, deadGolds, deaths++) ya lo cobró
+   454→  // playerDied: restoreCampaign dentro de finish lo devuelve intacto
+   455→  finish(g, run, false);
+   456→}
+   457→
+   458→/** Entrada desde el botón DESAFÍO del título (lo añade 12-a en screens.ts). */
+   459→export function startChallenge(g: Game, mode: 'oleadas' | 'jefe', boss?: string): void {
+   460→  if (g.challengeRun && g.challengeRun.phase === 'jugando') return; // ya hay un reto en marcha
+   461→  menuOpen = false;
+   462→
+   463→  const snap = snapshotCampaign(g);           // ANTES de tocar nada del mundo
+   464→  if (!g.player) g.player = makeArenaPlayer();
+   465→
+   466→  // arena: época única presente, aterrizaje en el centro (findSafeTile corrige
+   467→  // si acaso); loadMap vacía enemigos/proyectiles y regenera suelo y minimapa
+   468→  g.epoch = 'presente';
+   469→  g.loadMap(ARENA_MAP_ID, CENTER_TX, CENTER_TY);
+   470→  g.epoch = 'presente';
+   471→
+   472→  const p = g.player;
+   473→  if (p) {
+   474→    p.hp = p.maxHp; p.sta = p.maxSta; p.res = 0;
+   475→    p.iframes = 0; p.rollT = 0; p.attackT = 0; p.charging = false; p.chargeT = 0;
+   476→    p.cds = [0, 0, 0, 0];
+   477→    // DUELO: 1 sola vida y SIN pociones (F no ayuda: la arena no regala curas)
+   478→    if (mode === 'jefe') p.potions = 0;
+   479→  }
+   480→
+   481→  const run: ChallengeRun = {
+   482→    mode,
+   483→    boss: mode === 'jefe' ? (boss && BOSS_INFO[boss] ? boss : 'guardian') : undefined,
+   484→    wave: 0, waveTime: 0,
+   485→    betweenWaves: mode === 'oleadas' ? 3.4 : 0,
+   486→    kills: 0, score: 0, active: true,
+   487→    phase: 'jugando', wavesCleared: 0, timeSec: 0,
+   488→    spawnQueue: [], spawnT: 0, spawnedTotal: 0,
+   489→    bossEnemy: null, bannerT: 0, bannerText: '',
+   490→    best: readBest(), newBest: false,
+   491→    snap, playerRef: g.player,
+   492→  };
+   493→  g.challengeRun = run;
+   494→
+   495→  g.projectiles = []; g.waves = []; g.telegraphs = []; g.toasts = [];
+   496→  g.bossRef = null; g.bossActive = false;
+   497→
+   498→  if (mode === 'oleadas') {
+   499→    run.bannerT = 3.4;
+   500→    run.bannerText = 'SOBREVIVE';
+   501→    g.toast('El Desafío comienza: la arena juzga, no perdona', COL.goldSoft);
+   502→  } else {
+   503→    spawnDuelBoss(g, run, run.boss as string);
+   504→  }
+   505→
+   506→  audio.playTrack('boss');
+   507→  g.setState('play');
+   508→}
+   509→
+   510→/**
+   511→ * Cierre desde el panel de resultados: retira el reto, deja el mundo en
+   512→ * estado sano bajo el título y repara el guardado si se escribió en arena.
+   513→ */
+   514→export function endChallenge(g: Game, _victory: boolean): void {
+   515→  const run = g.challengeRun;
+   516→  g.challengeRun = null;
+   517→  menuOpen = false;
+   518→  // Portador temporal: se retira (el título no necesita jugador y NUEVA
+   519→  // PARTIDA/CONTINUAR crean el suyo). Solo tras usarlo, para que el HUD del
+   520→  // panel de resultados pudiera leerlo hasta aquí.
+   521→  if (run?.snap && !run.snap.fromCampaign) g.player = null;
+   522→  g.enemies = [];
+   523→  g.loadMap('lunaris', 25, 19); // punto del Santuario (mismo que respawn en campaña)
+   524→  if (run?.resave === 'rewrite') {
+   525→    // el guardado se escribió DENTRO de la arena: reescribirlo con el estado
+   526→    // de campaña ya restaurado y posición de santuario
+   527→    g.save();
+   528→  } else if (run?.resave === 'remove') {
+   529→    try { localStorage.removeItem(SAVE_KEY); } catch { /* noop */ }
+   530→  }
+   531→  g.setState('title'); // setState ya encaja la música del título
+   532→}
+   533→
+   534→// ---------------- fin de reto ----------------
+   535→
+   536→/** Resultado + limpieza + vuelta al título (victoria, derrota o aborto). */
+   537→function finish(g: Game, run: ChallengeRun, victory: boolean): void {
+   538→  run.active = false;
+   539→  run.phase = 'resultado';
+   540→  run.resultWin = victory;
+   541→  run.score = (run.wavesCleared ?? 0) + run.kills;
+   542→
+   543→  // récord de oleadas (el duelo no lleva récord: su trofeo es el logro)
+   544→  if (run.mode === 'oleadas' && run.score > (run.best ?? 0)) {
+   545→    try { localStorage.setItem(LS_BEST, String(run.score)); } catch { /* noop */ }
+   546→    run.best = run.score;
+   547→    run.newBest = true;
+   548→  }
+   549→
+   550→  restoreCampaign(g, run);
+   551→  g.enemies = []; g.projectiles = []; g.waves = []; g.telegraphs = [];
+   552→  g.bossRef = null; g.bossActive = false;
+   553→  audio.setCombat(false);
+   554→  // killEnemy cantó victoria de CAMPAÑA (flags de jefe, altar, botín): las
+   555→  // restauración ya deshizo el estado; los toasts de campaña se limpian aquí
+   556→  g.toasts = [];
+   557→
+   558→  // recompensa campañista: primer duelo ganado a CADA jefe, con Portador de
+   559→  // campaña. Se aplica DESPUÉS de restaurar (la restauración devuelve las
+   560→  // pociones exactas de antes del reto; aquí se suma la recompensa nueva).
+   561→  // Si ganaste con el Portador temporal no se escribe el logro: el premio
+   562→  // sigue disponible para tu campaña de verdad.
+   563→  if (victory && run.mode === 'jefe' && run.snap?.fromCampaign && run.boss && g.player) {
+   564→    const logros = readLogros();
+   565→    const key = `duelo:${run.boss}`;
+   566→    if (!logros.includes(key)) {
+   567→      logros.push(key);
+   568→      writeLogros(logros);
+   569→      g.player.potions += 1;
+   570→      audio.sfx('coin');
+   571→      g.toast('Recompensa del Desafío: +1 poción', '#7ef0a0');
+   572→      g.floatAt(g.player.x, g.player.y - 26, '+1 poción', '#7ef0a0', 8);
+   573→    }
+   574→  }
+   575→
+   576→  audio.sfx(victory ? 'levelup' : 'die');
+   577→  menuOpen = false;
+   578→  g.setState('title'); // el panel de resultados se dibuja sobre el título
+   579→}
+   580→
+   581→// ---------------- HUD del desafío (estado 'play', dibuja screens.ts) ----------------
+   582→
+   583→/** HUD del desafío (oleada, enemigos, puntuación, cuenta atrás, banner). */
+   584→export function drawChallengeOverlay(g: Game): void {
+   585→  const run = g.challengeRun;
+   586→  if (!run || run.phase !== 'jugando') return;
+   587→  const ctx = g.ctx;
+   588→
+   589→  // banner grande al abrir cada oleada (fade simple con el timer propio)
+   590→  if ((run.bannerT ?? 0) > 0 && run.bannerText) {
+   591→    const a = Math.min(1, (run.bannerT as number) * 1.4);
+   592→    ctx.globalAlpha = a;
+   593→    textShadow(g, run.bannerText, VIEW_W / 2, Math.round(VIEW_H * 0.26), 26, COL.gold, '#000', 'center', true);
+   594→    ctx.globalAlpha = 1;
+   595→  }
+   596→
+   597→  if (run.mode === 'jefe') {
+   598→    // la barra del jefe ya la dibuja el motor (bossActive/bossRef): aquí solo
+   599→    // el recordatorio del formato, justo bajo la barra
+   600→    text(g, `DUELO 1v1 · una vida · sin pociones · ${fmtTime(run.timeSec ?? 0)}`, VIEW_W / 2, 40, 13, 'rgba(200,190,230,0.85)', 'center');
+   601→    return;
+   602→  }
+   603→
+   604→  // ---- cabecera de oleadas (centrada; baja mientras el Centinela muestra barra) ----
+   605→  const py = g.bossActive ? 54 : 6;
+   606→  const w = 320;
+   607→  const x = VIEW_W / 2 - w / 2;
+   608→  panel(g, x, py, w, 46);
+   609→  textShadow(g, `OLEADA ${Math.max(1, run.wave)}`, VIEW_W / 2, py + 7, 14, COL.gold, '#000', 'center', true);
+   610→  const record = run.best ?? 0;
+   611→  text(
+   612→    g,
+   613→    `Enemigos: ${g.enemies.length + (run.spawnQueue?.length ?? 0)}   ·   PUNTOS: ${run.score}   ·   RÉCORD: ${record}`,
+   614→    VIEW_W / 2, py + 26, 14, COL.text, 'center',
+   615→  );
+   616→
+   617→  // cuenta atrás entre oleadas, grande y al centro
+   618→  if (run.betweenWaves > 0) {
+   619→    textShadow(g, `Próxima oleada en ${Math.max(1, Math.ceil(run.betweenWaves))}`, VIEW_W / 2, Math.round(VIEW_H * 0.34), 19, COL.goldSoft, '#000', 'center', true);
+   620→  }
+   621→}
+   622→
+   623→// ---------------- título: sub-menú de selección + panel de resultados ----------------
+   624→
+   625→/**
+   626→ * Lo llama screens.ts en el case 'title' (detrás de drawTitle). Dibuja el
+   627→ * sub-menú de selección si está abierto o el panel de resultados si hay un
+   628→ * reto terminado. Ambos limpiAN g.uiHit antes de registrar sus botones:
+   629→ * el título de fondo queda inalcanzable mientras el panel está abierto.
+   630→ */
+   631→export function drawChallengeTitleUi(g: Game): void {
+   632→  const run = g.challengeRun;
+   633→  if (run && run.phase === 'resultado') { drawResults(g, run); return; }
+   634→  if (menuOpen) drawMenu(g);
+   635→}
+   636→
+   637→/** Abre el sub-menú de selección (acción del botón DESAFÍO del título). */
+   638→export function openChallengeMenu(): void {
+   639→  menuOpen = true;
+   640→  audio.sfx('confirm');
+   641→}
+   642→
+   643→function drawMenu(g: Game): void {
+   644→  const ctx = g.ctx;
+   645→  g.uiHit.length = 0; // sin clics fantasma sobre NUEVA PARTIDA / CONTINUAR
+   646→  const w = 560, h = 340;
+   647→  const x = VIEW_W / 2 - w / 2;
+   648→  const y = Math.max(24, Math.round(VIEW_H / 2 - h / 2));
+   649→  ctx.fillStyle = 'rgba(4,6,14,0.72)';
+   650→  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   651→  panel(g, x, y, w, h);
+   652→
+   653→  textShadow(g, 'MODO DESAFÍO', VIEW_W / 2, y + 16, 18, COL.gold, '#000', 'center', true);
+   654→  text(g, 'La arena del Eco recuerda a los Portadores que cayeron de pie.', VIEW_W / 2, y + 44, 15, COL.dim, 'center');
+   655→  const best = readBest();
+   656→  text(g, `Récord de oleadas: ${best > 0 ? String(best) : '—'}`, VIEW_W / 2, y + 64, 15, COL.goldSoft, 'center');
+   657→
+   658→  button(g, 'OLEADAS · sobrevive sin fin', x + 60, y + 90, w - 120, 38, () => startChallenge(g, 'oleadas'), 12);
+   659→  const logros = readLogros();
+   660→  const mark = (id: string) => (logros.includes(`duelo:${id}`) ? '  ✓' : '');
+   661→  button(g, `DUELO · Guardián Hueco${mark('guardian')}`, x + 60, y + 138, w - 120, 34, () => startChallenge(g, 'jefe', 'guardian'), 11, COL.boss);
+   662→  button(g, `DUELO · Sirena Abisal${mark('sirena')}`, x + 60, y + 178, w - 120, 34, () => startChallenge(g, 'jefe', 'sirena'), 11, COL.boss);
+   663→  button(g, `DUELO · Gólem de Escarcha${mark('golem')}`, x + 60, y + 218, w - 120, 34, () => startChallenge(g, 'jefe', 'golem'), 11, COL.boss);
+   664→
+   665→  const nota = wrapText('El duelo es a una sola vida y sin pociones. Ganar por primera vez a cada jefe con tu Portador de campaña otorga +1 poción. Las coronas de la arena son ecos: se disuelven al salir.', 62);
+   666→  nota.forEach((l, i) => text(g, l, x + 34, y + 262 + i * 14, 13, COL.dim, 'left'));
+   667→  button(g, 'VOLVER (ESC)', x + w / 2 - 80, y + h - 42, 160, 30, () => { menuOpen = false; audio.sfx('uiOpen'); }, 10);
+   668→  if (g.keys.has('escape')) { menuOpen = false; audio.sfx('uiOpen'); }
+   669→}
+   670→
+   671→function drawResults(g: Game, run: ChallengeRun): void {
+   672→  const ctx = g.ctx;
+   673→  g.uiHit.length = 0;
+   674→  const win = run.resultWin === true;
+   675→  const w = 480, h = 336;
+   676→  const x = VIEW_W / 2 - w / 2;
+   677→  const y = Math.max(28, Math.round(VIEW_H / 2 - h / 2));
+   678→  ctx.fillStyle = 'rgba(4,6,14,0.78)';
+   679→  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   680→  panel(g, x, y, w, h, win ? COL.gold : '#5a3040');
+   681→
+   682→  textShadow(g, win ? 'VICTORIA' : 'DERROTA', VIEW_W / 2, y + 18, 22, win ? COL.gold : '#e06878', '#000', 'center', true);
+   683→  const bossName = BOSS_INFO[run.boss ?? 'guardian']?.name ?? 'EL JEFE';
+   684→  const sub = run.mode === 'jefe'
+   685→    ? (win ? `${bossName} ha caído ante tu canto` : `${bossName} sigue en pie... esta vez`)
+   686→    : 'La Niebla se ha llevado la ronda';
+   687→  text(g, sub, VIEW_W / 2, y + 52, 15, COL.dim, 'center');
+   688→
+   689→  const lines: string[] = [];
+   690→  lines.push(run.mode === 'jefe' ? `Modalidad: Duelo 1v1 · ${bossName}` : 'Modalidad: Oleadas');
+   691→  if (run.mode === 'oleadas') lines.push(`Oleadas superadas: ${run.wavesCleared ?? 0}`);
+   692→  lines.push(`Enemigos abatidos: ${run.kills}`);
+   693→  lines.push(`Tiempo: ${fmtTime(run.timeSec ?? 0)}`);
+   694→  if (run.mode === 'oleadas') {
+   695→    lines.push(`Puntuación: ${run.score}`);
+   696→    lines.push(`Récord: ${run.best ?? 0}`);
+   697→  }
+   698→  lines.forEach((l, i) => {
+   699→    const highlight = run.mode === 'oleadas' && l.startsWith('Puntuación');
+   700→    text(g, l, VIEW_W / 2, y + 84 + i * 24, 16, highlight ? COL.goldSoft : COL.text, 'center');
+   701→  });
+   702→
+   703→  let ly = y + 84 + lines.length * 24 + 4;
+   704→  if (run.newBest) {
+   705→    textShadow(g, '¡NUEVO RÉCORD!', VIEW_W / 2, ly, 15, COL.gold, '#000', 'center', true);
+   706→    ly += 22;
+   707→  }
+   708→  if (win && run.mode === 'jefe' && run.boss && readLogros().includes(`duelo:${run.boss}`)) {
+   709→    text(g, 'Recompensa guardada en tu campaña: +1 poción', VIEW_W / 2, ly, 14, '#7ef0a0', 'center');
+   710→    ly += 20;
+   711→  }
+   712→  if (win && run.mode === 'jefe') {
+   713→    text(g, 'Los jefes de campaña no recordarán esta derrota: la arena es otra época.', VIEW_W / 2, ly, 13, 'rgba(154,160,184,0.85)', 'center');
+   714→  }
+   715→
+   716→  button(g, 'CONTINUAR (ESC)', VIEW_W / 2 - 110, y + h - 46, 220, 34, () => endChallenge(g, win), 11);
+   717→  if (g.keys.has('escape') || g.keys.has('enter')) endChallenge(g, win);
+   718→}
+   719→

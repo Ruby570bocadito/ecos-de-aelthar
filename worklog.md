@@ -900,3 +900,83 @@ Work Log:
 
 Stage Summary:
 - Ronda 14 íntegra y verificada: 2 jefes nuevos (caza nocturna + post-Acto III), 2 enemigos de mapa con cerebro, sistema de 5 armaduras completo (compra/efectos/panel), árbol de habilidades con cds operativos, sin regresiones (8/8 smokes + E2E). El push espera token válido: el commit 509d99e está en el repo local (.zpackage/ecos-de-aelthar, main).
+
+---
+Task ID: 15
+Agent: Super Z (agente principal — integrador de fusión + push)
+Task: Fusionar el trabajo del agente visual del usuario (módulos world/ v2 en el remoto) con Ronda B + Ronda 14 locales, verificar sin regresiones y hacer push con el token nuevo.
+
+Work Log:
+- Diagnóstico de divergencia: base común ab61a49; remoto = base + 3 commits del agente visual (ec9de18, dd22cf3 refactor world/ con autotiling, 3b65d17 merge de expansion-v0.4); local = base + Ronda B (dd8f440) + Ronda 14 (509d99e). Solapamiento: engine.ts, sprites.ts (solo suyo), timeskip.ts, worldlife.ts.
+- Causa raíz de los conflictos add/add: en la rama remota expansion-v0.4 el engine.ts importaba timeTick/beginEpochShift/worldTick pero timeskip.ts/worldlife.ts NUNCA se subieron (push anterior bloqueado por token 401); el agente visual reconstruyó stubs no-op desde el contrato documentado. Nosotros teníamos las implementaciones reales (451/859 líneas).
+- Resolución: se conservan NUESTRAS versiones completas (superconjunto estricto de los stubs; exports idénticos). engine.ts y sprites.ts se fusionaron auto (drawTile/drawTallTile v2 con callback de vecinos para autotiling — sin romper firmas).
+- Verificación integral: tsc 0 errores (sin filtros), sin marcadores de conflicto, 8/8 smokes verdes con bun (acto2, acto3, arbol, balance, desafio, motor_acto2, timeskip, worldlife), E2E agent-browser: newGame+startPlay, recorrido lunaris→bosque→costa→aldea→cumbres→cripta con loopError=null en todos, capturas verificadas (cripta con oscuridad+luz OK, aldea con tejados v2+minimapa+fauna OK, sin barra negra).
+- Commit de fusión f56c02b; PUSH EXITOSO a main con token nuevo del usuario (3b65d17..f56c02b), verificado con ls-remote (remoto = f56c02b). Credenciales NO persistidas en disco (push por URL one-shot).
+- Capturas de evidencia en /home/z/my-project/download/merge_e2e_cripta.png y merge_e2e_aldea.png.
+
+Stage Summary:
+- El repo remoto queda integrado y al día: trabajo visual (world/ ×11 módulos, minimapa, cielo, clima, autotiling) + todo el contenido de juego (Acto II+III, 4 jefes nuevos, armaduras, árbol, balanceador, desafío, mundo vivo, inmersión temporal). Estado: tsc 0, smokes 8/8, E2E limpio. PENDIENTE para el usuario: REVOCAR el token ghp_6d3Y... (tercera credencial expuesta en el chat).
+
+---
+Task ID: 16-c
+Agent: general-purpose (logros-stats-menu)
+Task: Panel de estadísticas, 12 logros persistentes y menú de título ampliado
+
+Work Log:
+- Leído worklog.md COMPLETO ( Tasks 1-15, con foco en 12/13/14/15: glue GState, contrato challenge/balance, fusión world/ v2) y estudiados screens.ts (título/paneles/anti-clic-fantasma), challenge.ts (récords 12-a), balance.ts, engine.ts (save/load 'ecos-aelthar-save', patrón 'ecos-vol'), types.ts, hooks.ts/data.ts (verificado: NO existía ningún flag del Acto IV al empezar).
+- NUEVO src/game/achievements.ts (504 líneas, patrón balance.ts/challenge.ts): (1) STATS — defaultStats/sanitizeStats (defaults seguros campo a campo), statsTick (tiempoJugado += dt; corre en Game.update que SOLO corre en play/dialogue; memoriasHalladas = p.memories.length); (2) LOGROS — 12 definiciones con ids, Set en memoria cargado perezosamente de localStorage con tolerancia a JSON corrupto/legacy/array, desbloqueo IDEMPOTENTE (tryUnlock: Set + persist + toast dorado '¡Logro: <nombre>!' + sfx 'levelup' existente), achievementTick O(1) con early-out por contador de pendientes; (3) MARCAS DEL DESAFÍO — recordChallengeTime con top 3 por clave en 'ecos-desafio-récords' (duelos: menor tiempo mejor; oleadas: mayor supervivencia mejor), recordChallengeResult; (4) PANELES del título — drawStatsPanel (cifras del ÚLTIMO guardado leídas de 'ecos-aelthar-save' SIN arrancar partida, fallback stats de player.kills/deaths/playTime para saves antiguos, sección 'MEJORES MARCAS DEL DESAFÍO' con récord de oleadas + top 3 tiempos por desafío, 'Aún no hay partidas.' si no hay save) y drawLogrosPanel (rejilla 2×6 con contador X/12 arriba), ambos con el MISMO lenguaje visual que el menú del Desafío (ui.ts COL/panel/button, overlay que limpia g.uiHit, cierre con ESC o VOLVER).
+- types.ts: StatsData (10 campos: enemigosDerrotados, jefesDerrotados, muertes, coronasGanadas, coronasGastadas, pocionesUsadas, vecesCambioEpoca, distanciaAndada, tiempoJugado, memoriasHalladas) + SaveData.stats OPCIONAL (compatibilidad con saves antiguos).
+- engine.ts (15 bloques delimitados // ==== 16-c ====): g.stats con default; newGame reset; continueGame restaura con sanitizeStats; save() serializa stats dentro del guardado + ESPEJO 'ecos-stats' (patrón try/catch de 'ecos-vol'); instrumentación con guard `!this.challengeRun` (la arena no contamina la campaña, filosofía 12-a): killEnemy (enemigosDerrotados, coronasGanadas += gold, jefesDerrotados via BOSS_DEFEAT_FLAG — cubre futuros jefes —, chequeo puntual achievementTick), playerDied (muertes), drinkPotion (pocionesUsadas), epochSwitch (vecesCambioEpoca SOLO si el viaje real ocurre, tras el veto de 13-c), openChest/grantQuestLoot (coronasGanadas), forge/buy_potion/armor_N exitosos (coronasGastadas), moveEntity (distanciaAndada = desplazamiento REALMENTE aplicado del Portador; moveEntity es la única puerta del movimiento); Game.update llama statsTick + achievementTick (O(1), early-out).
+- challenge.ts (2 bloques 16-c en finish()): captura hpRatio ANTES de restoreCampaign y llama recordChallengeResult DESPUÉS de limpiar toasts → guarda la marca de tiempo del reto ('ecos-desafio-récords') y concede RONDADOR (victoria con vida > 70%). Duelos solo registran en victoria; oleadas registran al completar (caer tras N oleadas).
+- Logros Acto I-III por ESTADO en achievementTick: Corazón de Alba (questIdx >= 5), Notas Perdidas (acto2Done), Canto al Revés (acto3Done), Invicto (Nv 5 && deaths === 0), Rico (gold >= 500), Alquimista (pocionesUsadas >= 10), Viajero del Tiempo (vecesCambioEpoca >= 10), Primer Canto (enemigosDerrotados >= 1), Cazador de Ecos (takenEchoes.size >= 5), Rompejefes (3+ flags de BOSS_DEFEAT_FLAG). En la arena (challengeRun) el tick NO desbloquea logros de campaña (Rondador va por evento).
+- ÚLTIMA NOTA / Acto IV: verificado en hooks.ts/data.ts que NO existía flag del acto IV → logro con nombre dinámico 'El Último Canto (próximamente)', imposible de desbloquear, con detección TOLERANTE (try/catch) de flags futuros: candidatos acto4Done/acto4/actoIVDone/acto4Report/acto4Seen/finalActo4 en g.flags o propiedades del Game. NOTA de coordinación: el agente 16-a está añadiendo el Acto IV EN PARALELO en esta misma sesión y usa 'acto4Done' — primer candidato de mi lista: al cablear acto4_report el logro se activará y renombrará SOLO. El agente 16-b (interacción, en paralelo) ya usó mi contador coronasGastadas para la compra del señuelo (engine.ts, '16-c: espejo').
+- screens.ts: título ampliado — rejilla secundaria 2×2 con CONTROLES/DESAFÍO/ESTADÍSTICAS/LOGROS (botones de 126×34, tamaño 9, hoverCorners, con y sin save), drawTitlePanels(g) tras drawChallengeTitleUi en el case 'title' (limpia uiHit → título de fondo inalcanzable mientras un panel está abierto, mismo blindaje anti-clic-fantasma), versión v0.3.0 → v0.5.0.
+- scripts/smoke_logros.ts (bun, stub DOM + Game real, localStorage respaldado en /tmp, fase 'load' en proceso nuevo): 53+7 checks en 6 bloques — (1) desbloqueo ÚNICO (2 ticks extra no duplican toast ni registro; 'ecos-logros' con el id una sola vez), (2) stats acumuladas reales (killEnemy lobo+jefe, drinkPotion, playerDied+respawn, moveEntity jugador SÍ/enemigo NO, epochSwitch, forge 30, buy_potion 15, grantQuestLoot, statsTick; save() serializa stats y espejo; continueGame restaura; sanitizeStats tolerante), (3) JSON corrupto en las 4 claves sin crash ('ecos-logros' basura/forma inválida/ids desconocidos, 'ecos-desafio-récords', 'ecos-stats', save corrupto → readLastSave null + continueGame no lanza), (4) recordChallengeResult: Rondador con 80% de vida SÍ y con 50% NO, top 3 duelos ordenado y recortado ([60,80,95], el 120 cae), oleadas mayor-mejor, (5) paneles dibujados con ctx stub sin excepciones con save y sin save, (6) persistencia real entre procesos (fase 'load' recarga logros/marcas/save del disco).
+
+Stage Summary:
+- Menú de título ampliado con ESTADÍSTICAS y LOGROS (paneles overlay estilo Desafío, ESC/VOLVER, sin clics fantasma) + 12 logros persistentes con toast dorado y sfx, estadísticas de partida serializadas en el save (SaveData.stats, defaults seguros) y espejo 'ecos-stats', y top 3 de tiempos del desafío en 'ecos-desafio-récords'.
+- CONTRATOS para el integrador/agentes futuros: (1) claves localStorage nuevas: 'ecos-logros' ({v, done: string[]}), 'ecos-stats' (espejo StatsData), 'ecos-desafio-récords' ({v, times: Record<clave, number[]>} — claves 'oleadas' y 'duelo:guardian|sirena|golem'); (2) hooks en el motor YA cableados: Game.update → statsTick+achievementTick (O(1), sin wiring pendiente), Game.save() escribe stats y espejo, challenge.finish() → recordChallengeResult; (3) flag del Acto IV: al existir 'acto4Done' (u otro candidato en achievements.ts ACTO4_FLAGS) el logro 'El Último Canto' se activa solo; (4) para añadir logros: una entrada en LOGROS + su condición en achievementTick (el panel y el contador crecen solos).
+- Verificación: `npx tsc --noEmit` → 0 errores en todo el proyecto (grep filtrando examples/ y skills: 0); eslint de mis 6 archivos → 0 errores/0 warnings; bun build --target=browser engine.ts → resuelve (627 KB, ciclo achievements⇄engine seguro, patrón challenge.ts). SMOKE LOGROS: TODO OK (main 53 ✓ + load 7 ✓). smokes de regresión verdes: desafio, acto3, motor_acto2, balance, arbol, timeskip, worldlife. smoke_acto2 falla (25) EXCLUSIVAMENTE por el trabajo EN CURSO del agente paralelo 16-a (nodos acto4_* de data.ts con handlers sin cablear en hooks.ts + QUESTS.length 16 vs 13 + 'buy_sennuelo' de 16-b): ningún fallo es de 16-c (mi sesión dejó smoke_acto2 en 0 fallos con TODO mi código ya integrado; todos los ✗ actuales citan acto4/sennuelo y mis cambios no tocan data.ts ni hooks.ts). Se irán a verde cuando 16-a/16-b cableen sus handlers y actualicen el conteo, como hicieron 13-a/14.
+- CÓMO PROBAR EN JUEGO: 1) título → ESTADÍSTICAS con partida guardada muestra las cifras del último save + marcas del desafío (sin save: 'Aún no hay partidas'); 2) título → LOGROS: 0/12 al empezar, la lista persiste entre sesiones; 3) mata 1 enemigo → toast dorado '¡Logro: Primer Canto!'; sube a Nv 5 sin morir → Invicto; llega a 500 coronas → Rico; bebe 10 pociones → Alquimista; pulsa Q 10 veces (con Eco) → Viajero del Tiempo; escucha 5 ecos menores → Cazador de Ecos; termina Acto I/II/III con Brisa/Velmora → Corazón de Alba/Notas Perdidas/Canto al Revés; 3 jefes → Rompejefes; 4) gana un duelo del Desafío con >70% de vida → Rondador, y su tiempo entra en el top 3 visible en ESTADÍSTICAS; 5) guarda en Santuario y comprueba que las cifras aparecen en el panel del título.
+
+---
+Task ID: 16-a
+Agent: general-purpose (historia-acto4) — sesión agotó contexto DESPUÉS de terminar el código y su smoke; entrada reconstruida por el integrador tras verificar.
+Task: ACTO IV 'El Último Canto' (q14-q16): cierre de la historia.
+
+Work Log (verificado por el integrador):
+- data.ts (bloque delimitado 16-a): misiones q14 'Las Campanas de Antes' (Toln forja la campana + voz de Merrow + resonancia en Cumbres; flags camToln/camMera/camCumbres), q15 'La Sala del Primer Canto' (jefe final Vesh, la Última Nota en la Cripta, gate acto3Done) y q16 'El Eco que Elegiste' (epílogo ramificado por reputación Orden/Guardianes y verdad/silencio del Acto III + memoria VII mem_ultimacanto).
+- hooks.ts: handlers accept_q14/q15/q16, pasos de cada misión con flags idempotentes, acto4_catchUp (watcher anti-bloqueo fuera de orden, patrón acto3CatchUp), pagos únicos acto4Paid14/15/16 y spawn del jefe final (loadMap cripta + bossActive + toast, patrón acto3_subir).
+- Diálogos acto4_* con ramas dominantTone encadenadas con los NPCs existentes.
+- SMOKE scripts/smoke_acto4.ts: estructura, flujos en orden y fuera de orden, anti-doble-pago, informe tras jefe caído, epílogo por flags espejo — TODO OK.
+- smoke_acto2 actualizado (16 misiones / 7 memorias / acciones del Acto IV en el validador).
+
+Stage Summary:
+- Acto IV jugable y verificado: q14→q16 con anti-bloqueo, jefe final con barra, memoria VII y cierre de la historia por ramas de reputación. smoke_acto4 verde. Cómo probar: tras acto3Done hablar con Brisa (q14) → Toln/Merrow/Cumbres (3 campanas) → q15 Guarda del Primer Canto (Sala + Vesh) → Brisa (q16) → epílogo según verdad/silencio y reputación.
+
+---
+Task ID: 16-b
+Agent: general-purpose (interaccion-companeros) — sesión agotó contexto con el código INTEGRADO pero su smoke sin cerrar (5 fallos); entrada reconstruida por el integrador, que completó los 2 arreglos finales.
+Task: Órdenes tácticas de compañero (T) + señuelo (8) + restos examinables + cofres vacíos + rumores.
+
+Work Log (verificado/completado por el integrador):
+- src/game/interaccion.ts NUEVO (583 líneas): cycleCompanionMode (seguir→agresivo→defensivo, toasts+sfx), companionOrdersMove (agresivo: busca enemigo con aggro en 6 tiles, retirada <30% vida; defensivo: guarda a 2 tiles), companionInterpose (50% del daño melé a la compañera a <1.5 tiles, cd 6 s, convención Manto de Ecos), useSenno (tecla 8, pool de 1, atrae enemigos no-jefe 5 s, jefes y bossActive inmunes), registerCorpse16b (anillo cap 12, ttl 30 s), bossSennoLoot16b (8% +1 señuelo), interaccionInteract16b (restos 25% 1-5 coronas una vez por cadáver + cofres abiertos 'vacío… pero huele a antes'), rumores por mapa (10 líneas × 6 mapas, ventana 2.5 s tras diálogo, cd 60 s por NPC), interaccionTick O(1).
+- Cableado completo en engine.ts (teclas T/8, tryInteract, killEnemy, damagePlayer, closeDialogue, save/load companionMode) y update.ts (interaccionTick, dispatch de movimiento, filtrado defensivo de disparos, sennoChase).
+- COMPLETADO POR EL INTEGRADOR: (1) interaccion.ts nunca leía el flag examined → añade 'if (c.examined) continue' para que re-examinar caiga en el mensaje por defecto (anti-farm); (2) el smoke probaba 'compañera lejos' con un helper que la recolocaba CERCA → corregido el smoke con golpe manual a 60 px. smoke_interaccion 0 fallos.
+
+Stage Summary:
+- Interacción total operativa: T cicla órdenes (con serialización en save), 8 lanza señuelo (jefes inmunes), E examina restos (una vez), cofres abiertos cuentan su historia, NPCs largan rumores al re-pulsar E. Verificado en vivo (agent-browser) y con smoke propio verde + batería completa 11/11.
+
+---
+Task ID: 16-int
+Agent: Super Z (agente principal — integrador Ronda 16)
+Task: Recuperar el trabajo de los agentes 16-a/16-b (agotaron contexto), cerrar huecos, verificar todo y empujar a GitHub.
+
+Work Log:
+- 16-a y 16-b murieron por timeout con el código ya escrito e integrado (tsc 0) pero sin cerrar; 16-c terminó completo. smoke_interaccion tenía 5 fallos → 2 fixes (ver 16-b). Batería final: tsc 0, 11/11 smokes verdes con bun (acto2, acto3, acto4, arbol, balance, desafio, interaccion, logros, motor_acto2, timeskip, worldlife).
+- HALLAZGO IMPORTANTE: el dev server sirve /home/z/my-project/src/game (árbol VIVO) y el repo está en .zpackage/ecos-de-aelthar — el E2E de la fusión (Task 15) había validado el árbol viejo por falta de sync. rsync repo→vivo ejecutado y verificado (diff vacío). El E2E en vivo AHORA SÍ valida el código fusionado + Ronda 16.
+- E2E en vivo (agent-browser): loopError null, g.stats OK (10 campos), kill→stats 0→1 + logro 'primer_canto' persistido en localStorage, examen de restos (oro +2, toast), señuelo por tecla 8 (flags 1→0), tecla T cicla a DEFENSIVO con toast de orden, menú título v0.5.0 con ESTADÍSTICAS y LOGROS (captura e2e_titulo_v050.png).
+- PUSH: commit de la Ronda 16 + push a main con el token del usuario.
+
+Stage Summary:
+- Ronda 16 íntegra en el remoto: Acto IV (cierre de la historia), órdenes tácticas + señuelo + restos + rumores, estadísticas + 12 logros + menú ampliado. Estado: tsc 0, smokes 11/11, E2E vivo limpio. Pendiente permanente: el usuario debe REVOCAR el token expuesto en el chat.
