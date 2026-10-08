@@ -12,6 +12,24 @@
 //  - waterOverlay la conecta render.ts (1 vez por frame) para animar
 //    olas, destellos y espuma POR ENCIMA del suelo prerrenderizado.
 //    Su `at` es ABSOLUTO: at(tx,ty) = char del tile (tx,ty) del mapa.
+// Ronda 4 · agua v3 (todo ADITIVO, firmas intactas):
+//  - setWaterNight(n): el integrador la llama CADA FRAME desde render.ts
+//    con (dayT > 0.7 || dayT < 0.08 ? 1 : 0). Mientras nadie la llame la
+//    noche queda a 0: waterOverlay NO puede derivar la hora de globalT
+//    (el ciclo día/noche vive en g.dayT y el hook no pasa g).
+//  - Camino de luna nocturno: banda vertical dithered plateada en agua
+//    ABIERTA, anclada a la misma x de pantalla que la luna de sky.ts
+//    (VIEW_W*0.78 - camX*0.004), serpentea y respira.
+//  - Destellos sol/luna con presupuesto de 2-3 por pantalla (hash2
+//    devuelve [0,0.5): los umbrales se normalizan ×2).
+//  - Orillas vivas: anillo de espuma secundario con marea lenta y
+//    transición barro/musgo de 2-3 px en el interior de la orilla.
+//  - Reflejos de borde: banda de 2 px con el color del terreno adyacente
+//    oscurecido ×0.6 (tablas precalculadas al cargar el módulo).
+//  - Agua profunda: maps.ts NO usa 'x' como agua profunda ('x' es el
+//    puente roto del bosque, 'B' el entero del pasado), así que las vetas
+//    lentas y el polvo sumergido viven en los '~' interiores (profundidad 2).
+//  - Cero allocations por frame: colores y tablas son const de módulo.
 // ============================================================
 
 import { hash2, isForest } from './palette';
@@ -35,6 +53,76 @@ function isRiverish(ch: string): boolean {
 
 /** Offsets relativos de los 4 bordes (N, S, W, E). */
 const DIRS: readonly (readonly [number, number])[] = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+
+// ============================================================
+// R4-A1 · AGUA V3 — noche inyectada y paleta local (aditivo)
+// ============================================================
+
+// Noche inyectada por el integrador (0 = día, 1 = noche, admite fades).
+// Mientras nadie llame a setWaterNight permanece a 0.
+let nightF = 0;
+
+/**
+ * Ronda 4 · el integrador llama esto CADA FRAME desde render.ts:
+ *   setWaterNight(g.dayT > 0.7 || g.dayT < 0.08 ? 1 : 0);
+ * (espejo de isNight() de update.ts). 0..1: valores intermedios hacen
+ * fundido del camino de luna. Sin efecto sobre olas/espuma de Ronda 1.
+ */
+export function setWaterNight(n: number): void {
+  nightF = n >= 1 ? 1 : n <= 0 ? 0 : n;
+}
+
+// Paleta local v3 — constantes de módulo: cero strings nuevos por frame.
+const MOON_HI = '#e8f4ff';   // médula del camino de luna
+const MOON_LO = '#a8c4de';   // plata apagada del camino
+const SPARK_WARM = '#fff3d6'; // destello de sol (blanco cálido)
+const SPARK_COOL = '#d8e8fc'; // destello de luna (blanco frío)
+const VEIN_COL = 'rgba(118,158,198,0.20)'; // veta lenta del fondo profundo
+const DUST_COL = '#9cb8d6';  // polvo sumergido (alpha por globalAlpha)
+
+/** Oscurece un hex '#rrggbb' ×f — SOLO se ejecuta al cargar el módulo. */
+function darken(c: string, f: number): string {
+  const r = Math.round(parseInt(c.slice(1, 3), 16) * f);
+  const g = Math.round(parseInt(c.slice(3, 5), 16) * f);
+  const b = Math.round(parseInt(c.slice(5, 7), 16) * f);
+  return 'rgb(' + r + ',' + g + ',' + b + ')';
+}
+
+// Color representativo del terreno por char ([char, valle, bosque]):
+// base de la tabla de REFLEJOS DE BORDE (terreno adyacente ×0.6).
+const TERRAIN_COL: readonly (readonly [string, string, string])[] = [
+  ['.', '#467c3e', '#396334'], // hierba
+  [',', '#4f8a46', '#3f6d3a'], // hierba alta
+  ['t', '#2c5a30', '#24502c'], // borde de espesura
+  ['p', '#16351f', '#16351f'], // pino
+  ['m', '#3a5a48', '#3a5a48'], // niebla apagada
+  ['n', '#3a5a48', '#3a5a48'], // niebla muda
+  [':', '#5a5a6a', '#5a5a6a'], // losa de piedra
+  ['=', '#a08454', '#a08454'], // camino
+  ['H', '#d0bc94', '#d0bc94'], // muro de casa
+  ['r', '#7e3626', '#7e3626'], // tejado
+  ['d', '#5c3a1e', '#5c3a1e'], // puerta
+  ['F', '#6a4e30', '#6a4e30'], // valla
+  ['R', '#5a5a6a', '#5a5a6a'], // roca
+  ['c', '#4a3520', '#4a3520'], // cultivo
+  ['w', '#5a5a6a', '#5a5a6a'], // pozo
+  ['g', '#3e3e50', '#3e3e50'], // lápida / glifo
+  ['#', '#4a4a5c', '#4a4a5c'], // muro de cripta
+  ['A', '#4a4a5c', '#4a4a5c'], // altar / entrada
+  ['P', '#3e3e50', '#3e3e50'], // pilar
+];
+const REFLECT_V: Record<string, string> = {};
+const REFLECT_F: Record<string, string> = {};
+for (const [ch, cv, cf] of TERRAIN_COL) {
+  REFLECT_V[ch] = darken(cv, 0.6);
+  REFLECT_F[ch] = darken(cf, 0.6);
+}
+const REFLECT_DF = darken('#3a4a30', 0.6); // terreno no catalogado
+
+/** R4-A1: ¿vecino de TIERRA firme? (no agua, no borde de mapa, no puente) */
+function isLandN(c: string): boolean {
+  return c !== '~' && c !== 'V' && c !== 'B' && c !== 'x';
+}
 
 /**
  * Cuenta vecinos que cumplen `pred` en la vecindad 8 del punto (ox,oy),
@@ -507,6 +595,14 @@ function paintBridgeBroken(
  * Recorre únicamente los tiles visibles (~600 pruebas de at por frame) y
  * solo pinta en los que son '~'. Trazo en px de MUNDO con scale(Z,Z):
  * alineación exacta con la rejilla de 16 px del canvas de suelo.
+ *
+ * Ronda 4 (agua v3): llamar TAMBIÉN cada frame, desde render.ts:
+ *   setWaterNight(g.dayT > 0.7 || g.dayT < 0.08 ? 1 : 0);
+ * activa el camino de luna (banda plateada en agua abierta); mientras
+ * nadie la llame la noche queda a 0. mapId 'cripta' no tiene agua →
+ * la capa es un no-op limpio. Nota maps.ts: 'x' NO es agua profunda
+ * (es el puente roto del bosque; en el pasado es 'B'): la masa profunda
+ * real son los '~' interiores (profundidad 2).
  */
 export function waterOverlay(
   x: CanvasRenderingContext2D, camX: number, camY: number, t: number,
@@ -517,6 +613,13 @@ export function waterOverlay(
   const tx0 = Math.floor(gx / T) - 1, tx1 = Math.ceil((gx + viewW) / T) + 1;
   const ty0 = Math.floor(gy / T) - 1, ty1 = Math.ceil((gy + viewH) / T) + 1;
   const forest = isForest(mapId);
+  const refl = forest ? REFLECT_F : REFLECT_V; // tabla de reflejos de borde
+
+  // R4-A1 · anclaje del camino de luna: la MISMA x de pantalla que la luna
+  // pre-pintada de sky.ts (VIEW_W*0.78 - camX*0.004), convertida a mundo.
+  const moonWx = gx + (VIEW_W * 0.78 - camX * 0.004) / Z;
+  // R4-A1 · presupuesto de destellos por frame (2-3 en pantalla)
+  let sparkBudget = 3;
 
   x.save();
   x.translate(-gx * Z, -gy * Z); // coordenadas de mundo escaladas ×2
@@ -526,6 +629,8 @@ export function waterOverlay(
     for (let tx = tx0; tx <= tx1; tx++) {
       if (at(tx, ty) !== '~') continue;
       const px0 = tx * T, py0 = ty * T;
+      // vecinos cacheados (R4-A1): una llamada de at por dirección
+      const cn = at(tx, ty - 1), cs = at(tx, ty + 1), cw = at(tx - 1, ty), ce = at(tx + 1, ty);
       const depth = depthLevel(countAroundAbs(at, tx, ty));
       // fase idéntica a la del agua original
       const ph = t * 2 + tx * 0.9 + ty * 1.3;
@@ -554,28 +659,56 @@ export function waterOverlay(
         const by = Math.max(1, Math.min(T - 3, 8 + Math.round(Math.sin(ph * 0.5 + tx) * 2)));
         x.fillStyle = 'rgba(70,110,150,0.16)';
         x.fillRect(px0, py0 + by, T, 2);
+        // R4-A1 · agua profunda viva: vetas lentas + polvo sumergido
+        deepBed(x, tx, ty, px0, py0, t);
       }
 
-      // — destellos sparkle: hash2 por (tx, ty, floor(t*2)), fundido 0→1→0
-      const k2 = Math.floor(t * 2);
-      if (hash2(tx * 13 + k2 * 7, ty * 17 + k2 * 3) > 0.82) {
-        const a = Math.sin((t * 2 - k2) * Math.PI);
-        const sx = px0 + 2 + Math.floor(hash2(tx + k2 * 5, ty * 3 - k2) * 12);
-        const sy = py0 + 2 + Math.floor(hash2(tx * 7 + k2, ty - k2 * 3) * 12);
-        x.globalAlpha = a;
-        x.fillStyle = PAL.sparkle;
-        x.fillRect(sx, sy, 1, 1);
-        x.globalAlpha = a * 0.5; // cruz tenue alrededor
-        x.fillRect(sx - 1, sy, 1, 1); x.fillRect(sx + 1, sy, 1, 1);
-        x.fillRect(sx, sy - 1, 1, 1); x.fillRect(sx, sy + 1, 1, 1);
-        x.globalAlpha = 1;
+      // — destellos sol/luna (R4-A1): hash2 devuelve [0,0.5) → umbral ×2;
+      //    presupuesto de 3 por pantalla; blanco cálido de día, frío de noche
+      if (sparkBudget > 0) {
+        const k2 = Math.floor(t * 2);
+        if (hash2(tx * 13 + k2 * 7, ty * 17 + k2 * 3) * 2 > 0.93) {
+          sparkBudget--;
+          const a = Math.sin((t * 2 - k2) * Math.PI);
+          const sx = px0 + 2 + Math.floor(hash2(tx + k2 * 5, ty * 3 - k2) * 12);
+          const sy = py0 + 2 + Math.floor(hash2(tx * 7 + k2, ty - k2 * 3) * 12);
+          x.globalAlpha = a;
+          x.fillStyle = nightF > 0.5 ? SPARK_COOL : SPARK_WARM;
+          x.fillRect(sx, sy, 1, 1);
+          x.globalAlpha = a * 0.5; // cruz tenue alrededor
+          x.fillRect(sx - 1, sy, 1, 1); x.fillRect(sx + 1, sy, 1, 1);
+          x.fillRect(sx, sy - 1, 1, 1); x.fillRect(sx, sy + 1, 1, 1);
+          x.globalAlpha = 1;
+        }
       }
+
+      // — R4-A1 · reflejo oscuro-invertido del borde: banda de 2 px a 3 px
+      //    de la orilla con el color del terreno adyacente oscurecido ×0.6
+      //    (solo contra tierra firme: los puentes ya tienen su sombra estática)
+      if (isLandN(cn)) edgeReflect(x, tx, ty, px0, py0, 0, refl[cn] ?? REFLECT_DF, t);
+      if (isLandN(cs)) edgeReflect(x, tx, ty, px0, py0, 1, refl[cs] ?? REFLECT_DF, t);
+      if (isLandN(cw)) edgeReflect(x, tx, ty, px0, py0, 2, refl[cw] ?? REFLECT_DF, t);
+      if (isLandN(ce)) edgeReflect(x, tx, ty, px0, py0, 3, refl[ce] ?? REFLECT_DF, t);
 
       // — espuma animada en las orillas (vecino no-agua, dentro del tile)
-      for (let d = 0; d < 4; d++) {
-        const c = at(tx + (d === 2 ? -1 : d === 3 ? 1 : 0), ty + (d === 0 ? -1 : d === 1 ? 1 : 0));
-        if (c === '~' || c === 'V') continue; // agua o borde de mapa: sin espuma
-        foamEdge(x, tx, ty, px0, py0, d, t);
+      if (cn !== '~' && cn !== 'V') foamEdge(x, tx, ty, px0, py0, 0, t);
+      if (cs !== '~' && cs !== 'V') foamEdge(x, tx, ty, px0, py0, 1, t);
+      if (cw !== '~' && cw !== 'V') foamEdge(x, tx, ty, px0, py0, 2, t);
+      if (ce !== '~' && ce !== 'V') foamEdge(x, tx, ty, px0, py0, 3, t);
+
+      // — R4-A1 · orillas vivas: anillo de espuma secundario que avanza y
+      //    retrocede con la marea + transición barro/musgo de 2-3 px en la
+      //    orilla interior (solo contra tierra firme)
+      if (isLandN(cn)) { tideRing(x, tx, ty, px0, py0, 0, t); shoreWet(x, tx, ty, px0, py0, 0, t); }
+      if (isLandN(cs)) { tideRing(x, tx, ty, px0, py0, 1, t); shoreWet(x, tx, ty, px0, py0, 1, t); }
+      if (isLandN(cw)) { tideRing(x, tx, ty, px0, py0, 2, t); shoreWet(x, tx, ty, px0, py0, 2, t); }
+      if (isLandN(ce)) { tideRing(x, tx, ty, px0, py0, 3, t); shoreWet(x, tx, ty, px0, py0, 3, t); }
+
+      // — R4-A1 · camino de luna: SOLO de noche y en agua ABIERTA (los 4
+      //    vecinos son '~': la orilla y los puentes cortan el reflejo)
+      if (nightF > 0 && cn === '~' && cs === '~' && cw === '~' && ce === '~'
+          && px0 <= moonWx + 8 && px0 + T >= moonWx - 8) {
+        moonPath(x, moonWx, px0, py0, t);
       }
     }
   }
@@ -610,4 +743,169 @@ function foamEdge(
       x.fillRect(w[0], w[1], w[2], w[3]);
     }
   }
+}
+
+// ============================================================
+// R4-A1 · AGUA V3 — helpers de la capa animada (aditivos)
+// ============================================================
+
+/**
+ * Camino de luna: banda vertical DITHERED plateada que serpentea y
+ * respira. `moonWx` es la x de MUNDO equivalente a la x de PANTALLA de la
+ * luna de sky.ts (ver waterOverlay). Se llama solo en agua abierta y solo
+ * con noche activa; cada fila ondula con dos senos y el damero global
+ * ((wx+wy)&1) + hash rompe la banda en escamas plateadas.
+ */
+function moonPath(
+  x: CanvasRenderingContext2D, moonWx: number,
+  px0: number, py0: number, t: number,
+): void {
+  for (let j = 0; j < T; j++) {
+    const wy = py0 + j;
+    const cx = moonWx + Math.sin(t * 0.55 + wy * 0.16) * 2.2
+                    + Math.sin(t * 1.1 + wy * 0.07) * 1.4; // serpenteo
+    const hw = 1.6 + Math.sin(t * 0.42 + wy * 0.11) * 0.9; // 0.7..2.5 px
+    const cxi = Math.round(cx);
+    const breath = 0.42 + 0.18 * Math.sin(t * 0.8 + wy * 0.05);
+    for (let d = -3; d <= 3; d++) {
+      const wx = cxi + d;
+      if (wx < px0 || wx >= px0 + T) continue;
+      const adn = wx - cx;
+      const ad = adn < 0 ? -adn : adn;
+      if (ad > hw) continue;
+      if (((wx + wy) & 1) !== 0) continue;        // damero global
+      const h = hash2(wx * 3 + 17, wy * 5 + 29) * 2;
+      if (h < 0.22) continue;                     // huecos irregulares
+      const core = ad < hw * 0.45 && h > 0.7;
+      x.fillStyle = core ? MOON_HI : MOON_LO;
+      x.globalAlpha = nightF * breath * (core ? 0.9 : 0.45 + 0.35 * (1 - ad / hw));
+      x.fillRect(wx, wy, 1, 1);
+    }
+  }
+  x.globalAlpha = 1;
+}
+
+/**
+ * Agua profunda (tiles '~' de profundidad 2 — maps.ts no usa 'x' como
+ * agua): 2 vetas lentas que derivan en X con envolvente módulo y ondulan
+ * en Y, más polvo sumergido escaso (mota de 1 px con deriva y parpadeo).
+ */
+function deepBed(
+  x: CanvasRenderingContext2D, tx: number, ty: number,
+  px0: number, py0: number, t: number,
+): void {
+  x.fillStyle = VEIN_COL;
+  for (let k = 0; k < 2; k++) {
+    const ly = py0 + 2 + Math.floor(hash2(tx * 17 + k * 41 + 3, ty * 23 + k * 13) * 12);
+    const ph = hash2(ty * 31 + k * 7, tx * 5 + k * 19) * 24;
+    const drift = (t * (2.2 + k * 1.3) + ph) % 24 - 4;   // -4..20 (envolvente)
+    const lx0 = px0 + Math.floor(drift);
+    for (let i = 0; i < 6; i += 2) {                      // guión ondulado
+      const wx = lx0 + i;
+      if (wx < px0 || wx >= px0 + T - 1) continue;
+      const wy = ly + (Math.sin(t * 0.9 + wx * 0.55 + k * 2) > 0 ? 0 : 1);
+      if (wy < py0 || wy >= py0 + T) continue;
+      x.fillRect(wx, wy, 2, 1);
+    }
+  }
+  for (let k = 0; k < 2; k++) {                           // polvo sumergido
+    const hg = hash2(tx * 29 + k * 7 + 5, ty * 31 - k * 11 + 3) * 2;
+    if (hg < 0.95) continue;                              // ~5 % por ranura
+    const hx = hash2(tx * 7 + k * 13 + 1, ty * 5 + k * 3);
+    const hyv = hash2(tx * 3 + k + 2, ty * 19 - k * 7);
+    const wx = px0 + 1 + Math.floor(hx * 14 + Math.sin(t * 0.24 + hg * 40 + k * 2) * 1.6);
+    const wy = py0 + 1 + Math.floor(hyv * 14 + Math.cos(t * 0.19 + hg * 23 + k) * 1.6);
+    if (wx < px0 || wx >= px0 + T || wy < py0 || wy >= py0 + T) continue;
+    const tw = Math.sin(t * (0.5 + hx) + hyv * 50) * 0.5 + 0.5;
+    x.globalAlpha = 0.08 + 0.18 * tw;
+    x.fillStyle = DUST_COL;
+    x.fillRect(wx, wy, 1, 1);
+  }
+  x.globalAlpha = 1;
+}
+
+/**
+ * Reflejo oscuro-invertido del borde: banda de 2 px a 3 px de la orilla,
+ * dentada por hash, con el color del terreno adyacente ya oscurecido ×0.6
+ * (tablas REFLECT_* precalculadas) y un shimmer lento que la vida del agua
+ * deforma. Se dibuja DENTRO del tile de agua, bajo la espuma animada.
+ */
+function edgeReflect(
+  x: CanvasRenderingContext2D, tx: number, ty: number,
+  px0: number, py0: number, dir: number, col: string, t: number,
+): void {
+  x.fillStyle = col;
+  for (let i = 0; i < T; i += 2) {
+    const h = hash2(tx * 13 + i * 7 + dir * 31, ty * 11 - i * 3 + dir * 57) * 2;
+    if (h < 0.28) continue;                       // dentado determinista
+    const sh = Math.sin(t * 1.1 + i * 0.5 + dir * 2.1) * 0.5 + 0.5;
+    x.globalAlpha = (0.20 + 0.22 * sh) * (1 - nightF * 0.4);
+    const r = edgeRect(dir, px0, py0, i, 3, 2, 2);
+    x.fillRect(r[0], r[1], r[2], r[3]);
+  }
+  x.globalAlpha = 1;
+}
+
+/**
+ * Anillo de espuma secundario (1 px, foamWash, más tenue que la espuma
+ * principal): respira con la marea — avanza/retrocede 1 px en un ciclo
+ * lento (~12.5 s) y se disuelve en segmentos por hash + seno compartido
+ * con shoreWet para que orilla y barro respiren al unísono.
+ */
+function tideRing(
+  x: CanvasRenderingContext2D, tx: number, ty: number,
+  px0: number, py0: number, dir: number, t: number,
+): void {
+  const base = dir === 0 ? tx * 0.7
+             : dir === 1 ? tx * 0.7 + 2.1
+             : dir === 2 ? ty * 0.7 + 4.2
+             : ty * 0.7 + 5.5;
+  const tide = Math.sin(t * 0.5 + base * 0.6);   // -1..1 respiración lenta
+  const inset = 2 + (tide > 0 ? 1 : 0);          // 2..3 px desde la orilla
+  x.fillStyle = PAL.foamWash;
+  x.globalAlpha = 0.5 + 0.15 * tide;
+  for (let i = 0; i < T; i += 2) {
+    const jag = hash2(tx * T + i * 5 + dir * 131, ty * T - i * 3 + dir * 17) * 2;
+    const s = Math.sin(t * 0.5 + base + i * 0.3) * 0.5 + 0.5 + jag * 0.3;
+    if (s < 0.62) continue;                      // anillo intermitente
+    const r = edgeRect(dir, px0, py0, i, inset, 1, 2);
+    x.fillRect(r[0], r[1], r[2], r[3]);
+  }
+  x.globalAlpha = 1;
+}
+
+/**
+ * Transición barro/musgo de la orilla interior: banda de 2-3 px de
+ * shoreMud (más ancha con marea alta) con motas de musgo (PAL.moss),
+ * siguiendo la misma fase de marea que tideRing. Completa el gradiente
+ * estático del prerrender: arena → lodo → barro vivo → agua abierta.
+ */
+function shoreWet(
+  x: CanvasRenderingContext2D, tx: number, ty: number,
+  px0: number, py0: number, dir: number, t: number,
+): void {
+  const base = dir === 0 ? tx * 0.7
+             : dir === 1 ? tx * 0.7 + 2.1
+             : dir === 2 ? ty * 0.7 + 4.2
+             : ty * 0.7 + 5.5;
+  const tide = Math.sin(t * 0.5 + base * 0.6);
+  const inset = 5 + (tide > 0 ? 0 : 1);          // 5..6 px desde la orilla
+  const th = tide > 0.2 ? 3 : 2;                 // 2-3 px de transición
+  x.fillStyle = PAL.shoreMud;
+  x.globalAlpha = 0.30 + 0.12 * tide;
+  for (let i = 0; i < T; i += 2) {
+    const jag = hash2(tx * T + i * 11 + dir * 43, ty * T + i * 7 - dir * 71) * 2;
+    if (jag > 0.86) continue;                    // huecos en el barro
+    const r = edgeRect(dir, px0, py0, i, inset, th, 2);
+    x.fillRect(r[0], r[1], r[2], r[3]);
+  }
+  x.fillStyle = PAL.moss;                        // motas de musgo
+  x.globalAlpha = 0.42;
+  for (let i = 0; i < T; i += 4) {
+    const h = hash2(tx * 19 + i * 3 + dir * 7, ty * 13 - i + dir * 29) * 2;
+    if (h < 0.76) continue;
+    const r = edgeRect(dir, px0, py0, i, inset + (h > 0.88 ? 1 : 0), 1, 1);
+    x.fillRect(r[0], r[1], r[2], r[3]);
+  }
+  x.globalAlpha = 1;
 }

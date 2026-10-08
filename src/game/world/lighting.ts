@@ -1,19 +1,30 @@
 // ============================================================
-// ECOS DE AELTHAR — Iluminación dinámica (R1-A6 · módulo world)
-// Reemplaza/complementa el drawLighting de render.ts con:
-//   · ciclo día/noche por keyframes + smoothstep (amanecer rosa,
-//     tarde ámbar, noche azul oscura)
-//   · recorte de luces en canvas offscreen (destination-out) con
-//     radial gradients: radio en px de mundo × ZOOM, flicker
-//     1 + 0.06·sin(globalT·13 + semilla) y jitter de 1 px
-//   · tinte cálido aditivo ('lighter') por luz
-//   · cripta: oscuridad base 0.72 + antorchas deterministas
-//     (hash2) junto a muros '#' + haz suave del jugador (r=110)
-//   · viñeta perenne suave
-// Sin estado de juego propio: TODO se deriva de g y g.globalT.
+// ECOS DE AELTHAR — Iluminación dinámica v3 (R4-A3 · módulo world)
+// Evoluciona la v2 (R1-A6) manteniendo el pipeline y las firmas
+// públicas EXACTAS (render.ts llama drawLightingV2(ctx, g)):
+//   · FLICKER ORGÁNICO: cada luz respira con 2 senos de frecuencias
+//     inconmensurables (razón √2) + hash por posición — radio ±8 %,
+//     alpha ±10 %, períodos ~0.4–0.9 s. El fuego respira, no parpadea.
+//   · LUZ DEL PORTADOR en la cripta: r base 70 px cálida y tenue que
+//     CRECE junto a antorchas cercanas (hasta +24 px); el recorte de
+//     TODAS las luces usa 3 BANDAS ESCALONADAS (destination-out) en
+//     vez de 1 corte duro.
+//   · CRIPTA más PROFUNDA (base 0.82) con VETAS de oscuridad por tile
+//     (hash determinista, alpha ±0.04) y OJOS que brillan EN la
+//     oscuridad: setEyesVisible() la llena render.ts con los enemigos
+//     en vista; mientras no se llame, es un no-op.
+//   · DÍA/NOCHE: interpolación entre keyframes adyacentes con curva
+//     C2 (smootherstep, ease-in-out) — también continua en el wrap 1→0.
+//   · VIÑETA v2: forma de OJO (elipse/superelipse) con DITHER Bayer
+//     ordenado, pre-pintada en caché; en la cripta se cierra por los
+//     4 lados (superelipse 2.4 + alpha máx 0.38).
+// Determinismo: TODO se deriva de g y g.globalT (hash2 ×2 → [0,1),
+// cero Math.random, fillRect enteros). Único estado mutable del módulo:
+// la lista de ojos inyectada y las cachés de canvas (scratch/viñeta).
 // ============================================================
 
-import { VIEW_W, VIEW_H, ZOOM, TILE } from '../engine';
+import { VIEW_W, VIEW_H, ZOOM } from '../consts';
+import { TILE } from '../sprites';
 import type { Game } from '../engine';
 import type { Entity, StatusFx } from '../types';
 import { hash2, LIGHT_PAL } from './palette';
@@ -22,9 +33,21 @@ import { hash2, LIGHT_PAL } from './palette';
 
 /** Fuente de luz deducida del estado del juego.
  *  Coordenadas x/y en px de MUNDO (1x, sin ZOOM); r en px de mundo.
- *  `flicker` es la semilla/fase de parpadeo (radianes): el factor real
- *  aplicado al dibujar es 1 + 0.06·sin(globalT·13 + flicker). */
+ *  `flicker` es la semilla/fase de parpadeo (radianes): en v3 alimenta
+ *  flickerOf() (2 senos inconmensurables + hash de la semilla) → radio
+ *  ±8 % y alpha ±10 % con períodos de 0.4–0.9 s. */
 export interface LightSrc { x: number; y: number; r: number; color: string; flicker: number; }
+
+/** Ojo que brilla en la oscuridad (x/y en px de MUNDO, como las entidades). */
+export type EyeDot = { x: number; y: number; color: string };
+
+/** Lista de ojos visibles que render.ts inyecta CADA FRAME con los
+ *  enemigos en vista (esqueleto/sombra). Mientras no se llame: no-op.
+ *  Se copia la lista (sin retener el array del llamador). */
+let eyesList: EyeDot[] = [];
+export function setEyesVisible(list: EyeDot[]): void {
+  eyesList = list ? list.slice() : [];
+}
 
 /** Debug de iluminación: dibuja el contorno circular de cada luz. */
 export const LIGHT_DEBUG = false;
@@ -36,6 +59,7 @@ const DEBUG_COL = '#3affd4';
 // Keyframes del ciclo día/noche (dayT 0..1; 0.15 = amanecer).
 // a/col = capa de oscuridad (alpha y color); w/wc = tinte de franja
 // (amanecer rosa, tarde ámbar) pintado en 'source-over'.
+// Valores de R1-A6 intactos; la v3 solo mejora la CURVA (ease-in-out C2).
 interface DayStop { t: number; a: number; col: RGB; w: number; wc: RGB; }
 type RGB = [number, number, number];
 
@@ -52,12 +76,30 @@ const DAY_STOPS: DayStop[] = [
   { t: 1.00, a: 0.50, col: [10, 14, 40], w: 0.00, wc: [255, 150, 170] },
 ];
 
-// Parámetros de la cripta (mapa dark).
-const CRYPT_DARK = 0.72;          // oscuridad base
+// Parámetros de la cripta (mapa dark) — v3: más profunda y con vetas.
+const CRYPT_DARK = 0.82;          // oscuridad base (v2: 0.72)
+const CRYPT_VEIN = 0.08;          // amplitud total de la veta (±0.04 por hash)
 const CRYPT_COL: RGB = [6, 8, 16];
-const CRYPT_BEAM_R = 110;         // haz suave del jugador (px de mundo)
+
+// Luz propia del Portador en la cripta (v3 reemplaza el haz r=110 frío).
+const PLAYER_LIGHT_R = 70;        // radio base (px de mundo)
+const PLAYER_LIGHT_COL = '#e6c896'; // cálida tenue (pergamino)
+const PLAYER_GROW_DIST2 = 96 * 96;  // antorcha "cercana" si dist < 96 px de mundo
+const PLAYER_GROW_STEP = 6;         // px por antorcha cercana
+const PLAYER_GROW_MAX = 24;         // techo de crecimiento (r ≤ 94)
+
+// Antorchas de muro (rejilla determinista de R1-A6, intacta).
 const TORCH_CELL_KEEP = 0.24;     // ~mitad de las celdas 4×4 porta antorcha
 const TORCH_MIN_DIST2 = 12.25;    // separación mínima entre antorchas (3.5 tiles²)
+
+// Flicker orgánico: W1 base → T1 = 0.65 s; T2 = T1/√2 ≈ 0.46 s
+// (razón inconmensurable √2; con el hash por posición: T1 0.59–0.72,
+// T2 0.42–0.51 — dentro de la ventana 0.4–0.9 s).
+const FLICK_W1 = (2 * Math.PI) / 0.65;
+
+// Viñeta v2 (ojo dithered): celda de trama y máscara Bayer 4×4.
+const VIG_CELL = 3;
+const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
 // ---------------- Utilidades ----------------
 
@@ -65,9 +107,18 @@ function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
-function smoothstep(u: number): number {
+/** ease-in-out C2 (smootherstep): derivada también continua entre
+ *  segmentos adyacentes — transición día/noche sin esquinas. */
+function easeInOut(u: number): number {
   const x = clamp(u, 0, 1);
-  return x * x * (3 - 2 * x);
+  return x * x * x * (x * (x * 6 - 15) + 10);
+}
+
+/** hash2 normalizado: el hash2 nativo SOLO devuelve [0, 0.5) (el producto
+ *  final desborda 2^53 — sesgo documentado en R2 y horror.ts). ×2 lo lleva
+ *  a [0, 1) con reparto uniforme. Todos los umbrales de este módulo lo asumen. */
+function h2(a: number, b: number): number {
+  return hash2(a, b) * 2;
 }
 
 function hexRgb(hex: string): RGB {
@@ -77,6 +128,14 @@ function hexRgb(hex: string): RGB {
 
 function rgba(c: RGB, a: number): string {
   return `rgba(${c[0]},${c[1]},${c[2]},${a.toFixed(3)})`;
+}
+
+function rgbaA(r: number, g: number, b: number, a: number): string {
+  return `rgba(${r},${g},${b},${a.toFixed(3)})`;
+}
+
+function blackA(a: number): string {
+  return `rgba(0,0,0,${a.toFixed(3)})`;
 }
 
 function lerp3(A: RGB, B: RGB, u: number): RGB {
@@ -89,13 +148,14 @@ function lerp3(A: RGB, B: RGB, u: number): RGB {
 
 interface DaySample { a: number; col: RGB; w: number; wc: RGB; }
 
-/** Muestrea el ciclo día/noche interpolando keyframes con smoothstep. */
+/** Muestrea el ciclo día/noche interpolando los 2 keyframes adyacentes
+ *  con easeInOut (C2). El wrap 1→0 es continuo (parada final = inicial). */
 function sampleDay(d: number): DaySample {
   const t = clamp(d, 0, 1);
   for (let i = 0; i < DAY_STOPS.length - 1; i++) {
     const A = DAY_STOPS[i], B = DAY_STOPS[i + 1];
     if (t >= A.t && t <= B.t) {
-      const u = smoothstep((t - A.t) / Math.max(1e-6, B.t - A.t));
+      const u = easeInOut((t - A.t) / Math.max(1e-6, B.t - A.t));
       return {
         a: A.a + (B.a - A.a) * u,
         col: lerp3(A.col, B.col, u),
@@ -108,6 +168,23 @@ function sampleDay(d: number): DaySample {
   return { a: last.a, col: last.col, w: last.w, wc: last.wc };
 }
 
+// ---------------- Flicker orgánico (v3) ----------------
+
+/** Factor de parpadeo de una luz: 2 senos de frecuencias inconmensurables
+ *  (razón √2) desfasados por la semilla de la luz + hash por posición que
+ *  fija la frecuencia (cada fuego respira a su propio ritmo).
+ *  rf = radio ±8 % · af = alpha ±10 % · períodos 0.42–0.72 s.
+ *  EXPORT (R4-A3b, aditivo): para verificación determinista del flicker
+ *  (harness) y posible reutilización del integrador; render.ts no la usa. */
+export function flickerOf(seed: number, t: number): { rf: number; af: number } {
+  const hh = h2((Math.round(seed * 997) | 0) * 3 + 1, 17);
+  const w1 = FLICK_W1 * (0.9 + 0.2 * hh);
+  const w2 = w1 * Math.SQRT2;
+  const bR = 0.6 * Math.sin(w1 * t + seed) + 0.4 * Math.sin(w2 * t + seed * 2.3);
+  const bA = 0.6 * Math.sin(w1 * t + seed * 1.7 + 1.3) + 0.4 * Math.sin(w2 * t + seed * 3.1 + 0.7);
+  return { rf: 1 + 0.08 * bR, af: 1 + 0.10 * bA };
+}
+
 /** ¿El tile es transitable (puede recibir luz frontal de muro)? */
 function isWalkable(ch: string): boolean {
   return ch !== '#' && ch !== 'V' && ch !== 'P' && ch !== 'A' && ch !== 'H' && ch !== 'r';
@@ -115,16 +192,14 @@ function isWalkable(ch: string): boolean {
 
 // ---------------- Recolección de luces ----------------
 
-/** Antorchas de muro de la cripta: rejilla determinista basada en hash2.
- *  · cada muro '#' con algún vecino transitable es candidato;
- *  · celdas 4×4: el hash de celda decide si porta antorcha y el máximo
- *    local del hash por muro elige CUÁL muro la porta (sin racimos);
- *  · separación mínima de 3.5 tiles entre portadoras;
- *  · todo se evalúa sobre el mapa completo (independiente de la cámara)
- *    y solo se emiten las luces que caen dentro de la vista. */
-function collectCryptTorches(g: Game, out: LightSrc[]): void {
+/** Antorchas de muro de la cripta: rejilla determinista basada en hash2
+ *  (R1-A6, intacta): celdas 4×4 + máximo local + separación mínima.
+ *  Devuelve las posiciones (px de mundo) EMITIDAS en la vista, para que
+ *  collectLights haga crecer la luz del Portador con las cercanas. */
+function collectCryptTorches(g: Game, out: LightSrc[]): { x: number; y: number }[] {
   const rows = g.rows.length >= g.map.h ? g.rows : g.map.rows;
   const W = g.map.w, H = g.map.h;
+  const emitted: { x: number; y: number }[] = [];
 
   // hash de portación por muro (semilla estable de parpadeo incluida)
   const hTorch = (tx: number, ty: number) => hash2(tx * 7 + 3, ty * 11 + 5);
@@ -171,14 +246,18 @@ function collectCryptTorches(g: Game, out: LightSrc[]): void {
   const vx1 = (camX + VIEW_W) / ZT + 6, vy1 = (camY + VIEW_H) / ZT + 6;
   for (const k of kept) {
     if (k.tx < vx0 || k.ty < vy0 || k.tx > vx1 || k.ty > vy1) continue;
+    const px = k.tx * TILE + 8;
+    const py = k.ty * TILE + 11;   // cara frontal del muro
     out.push({
-      x: k.tx * TILE + 8,
-      y: k.ty * TILE + 11,        // cara frontal del muro
-      r: 40 + k.h * 30,           // 40..55 px de mundo (variación determinista)
+      x: px,
+      y: py,
+      r: 40 + k.h * 30,            // 40..55 px de mundo (variación determinista)
       color: LIGHT_PAL.torchAmber,
       flicker: k.seed,
     });
+    emitted.push({ x: px, y: py });
   }
+  return emitted;
 }
 
 /** Luz naranja parpadeante por entidad con estado 'quemado'. */
@@ -223,21 +302,30 @@ export function collectLights(g: Game): LightSrc[] {
   for (let i = 0; i < g.npcs.length; i++) pushBurnLight(g.npcs[i], 40 + i * 2.3, lights);
   if (g.companion) pushBurnLight(g.companion, 88.8, lights);
 
-  // 3) Jugador
+  // 3) Antorchas de muro (solo mapas oscuros) — ANTES del jugador: la luz
+  //    del Portador crece con las antorchas cercanas (reflejo de su fuego).
+  let torchPos: { x: number; y: number }[] = [];
+  if (g.map.dark) torchPos = collectCryptTorches(g, lights);
+
+  // 4) Jugador
   const p = g.player;
   if (p && !p.dead) {
     // disciplina tejedor: aura violeta tenue
     if (p.discipline === 'tejedor') {
       lights.push({ x: p.x, y: p.y - 8, r: 48, color: LIGHT_PAL.weaverViolet, flicker: 4.4 });
     }
-    // cripta: haz suave alrededor del portador
+    // cripta: el Portador proyecta luz propia cálida y tenue (r base 70)
+    // que CRECE con las antorchas cercanas (hasta +24 px, determinista).
     if (g.map.dark) {
-      lights.push({ x: p.x, y: p.y - 6, r: CRYPT_BEAM_R, color: LIGHT_PAL.playerBeam, flicker: 0 });
+      let near = 0;
+      for (let i = 0; i < torchPos.length; i++) {
+        const dx = torchPos[i].x - p.x, dy = torchPos[i].y - p.y;
+        if (dx * dx + dy * dy <= PLAYER_GROW_DIST2) near++;
+      }
+      const r = PLAYER_LIGHT_R + Math.min(PLAYER_GROW_MAX, near * PLAYER_GROW_STEP);
+      lights.push({ x: p.x, y: p.y - 6, r, color: PLAYER_LIGHT_COL, flicker: 0 });
     }
   }
-
-  // 4) Antorchas de muro (solo mapas oscuros)
-  if (g.map.dark) collectCryptTorches(g, lights);
 
   return lights;
 }
@@ -257,12 +345,96 @@ function getScratch(): { cv: HTMLCanvasElement; cx: CanvasRenderingContext2D } {
   return { cv: scratchCv, cx: scratchCtx! };
 }
 
+// ---------------- Viñeta v2: ojo dithered (pre-pintada en caché) ----------------
+// Forma de OJO: elipse (superelipse p=2.4 en la cripta → se cierra por los
+// 4 lados) cuantizada a 3 niveles con DITHER Bayer 4×4 ordenado. Se pinta
+// UNA vez por variante (normal/cripta) y por frame solo hay un drawImage.
+
+let vigNormal: HTMLCanvasElement | null = null;
+let vigCrypt: HTMLCanvasElement | null = null;
+
+function buildVignette(crypt: boolean): HTMLCanvasElement {
+  const cv = document.createElement('canvas');
+  cv.width = VIEW_W;
+  cv.height = VIEW_H;
+  const x = cv.getContext('2d')!;
+  const RX = VIEW_W * (crypt ? 0.545 : 0.645);
+  const RY = VIEW_H * (crypt ? 0.60 : 0.70);
+  const P = crypt ? 2.4 : 2.0;      // superelipse: la cripta aprieta esquinas y lados
+  const MAXA = crypt ? 0.38 : 0.26;
+  const D0 = 0.42, D1 = 0.98;       // interior limpio → saturación en el borde
+  const cols = Math.ceil(VIEW_W / VIG_CELL);
+  const rows = Math.ceil(VIEW_H / VIG_CELL);
+  for (let cy = 0; cy < rows; cy++) {
+    const dyN = (cy * VIG_CELL + 1.5 - VIEW_H / 2) / RY;
+    const dyP = Math.pow(Math.abs(dyN), P);
+    for (let cx = 0; cx < cols; cx++) {
+      const dxN = (cx * VIG_CELL + 1.5 - VIEW_W / 2) / RX;
+      const d = Math.pow(Math.pow(Math.abs(dxN), P) + dyP, 1 / P);
+      const tt = clamp((d - D0) / (D1 - D0), 0, 1);
+      if (tt <= 0) continue;
+      const ease = tt * tt * (3 - 2 * tt);
+      // dither ordenado: 3 niveles cuantizados + Bayer decide la celda sobrante
+      const lv = ease * 3;
+      const step = Math.min(3, Math.floor(lv) + (BAYER4[(cy & 3) * 4 + (cx & 3)] / 16 < lv - Math.floor(lv) ? 1 : 0));
+      const a = (step / 3) * MAXA;
+      if (a < 0.004) continue;
+      x.fillStyle = rgbaA(0, 0, 12, a);
+      x.fillRect(cx * VIG_CELL, cy * VIG_CELL, VIG_CELL, VIG_CELL);
+    }
+  }
+  return cv;
+}
+
+function ensureVignette(crypt: boolean): HTMLCanvasElement {
+  if (crypt) {
+    if (!vigCrypt) vigCrypt = buildVignette(true);
+    return vigCrypt;
+  }
+  if (!vigNormal) vigNormal = buildVignette(false);
+  return vigNormal;
+}
+
+// ---------------- Ojos en la oscuridad (v3) ----------------
+
+/** Glows aditivos de ojos (esqueleto/sombra) SOBRE la oscuridad: se dibujan
+ *  al final del pipeline para que brille EN la oscuridad, no bajo ella.
+ *  El brillo escala con la oscuridad de la escena (día = tenue) y respira
+ *  por hash de posición. Todo determinista y con fillRect enteros. */
+function drawEyes(ctx: CanvasRenderingContext2D, g: Game, darkA: number, camX: number, camY: number): void {
+  if (eyesList.length === 0) return;
+  const glow = 0.35 + 0.65 * clamp(darkA * 1.2, 0, 1);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < eyesList.length; i++) {
+    const E = eyesList[i];
+    const sx = Math.round(E.x * ZOOM) - camX;
+    const sy = Math.round(E.y * ZOOM) - camY;
+    if (sx < -20 || sy < -20 || sx > VIEW_W + 20 || sy > VIEW_H + 20) continue;
+    const ph = h2(Math.round(E.x) * 3 + 1, Math.round(E.y) * 5 + 2);
+    const pulse = 0.82 + 0.18 * Math.sin(g.globalT * 2.2 + ph * 6.283185);
+    const A = clamp(glow * pulse, 0, 1);
+    ctx.fillStyle = E.color;
+    ctx.globalAlpha = 0.10 * A;               // halo amplio
+    ctx.fillRect(sx - 4, sy - 2, 14, 6);
+    ctx.globalAlpha = 0.18 * A;               // halo medio
+    ctx.fillRect(sx - 2, sy - 1, 10, 4);
+    ctx.globalAlpha = 0.90 * A;               // pupilas (2×3 px, separadas 5)
+    ctx.fillRect(sx, sy, 2, 3);
+    ctx.fillRect(sx + 5, sy, 2, 3);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
 // ---------------- Pipeline principal ----------------
 
-/** Iluminación dinámica v2. Dibuja SOBRE ctx (canvas principal, espacio de
- *  vista 960×540): franja del ciclo día/noche → capa de oscuridad con
- *  recortes por luz → tinte cálido aditivo → viñeta. En mapas dark usa
- *  oscuridad base 0.72 con antorchas ámbar y haz del jugador. */
+/** Iluminación dinámica v3. Dibuja SOBRE ctx (canvas principal, espacio de
+ *  vista 960×540): franja del ciclo día/noche → capa de oscuridad (vetas
+ *  por tile en la cripta) con recortes ESCALONADOS por luz → tinte cálido
+ *  aditivo → viñeta de ojo dithered → ojos que brillan en la oscuridad.
+ *  En mapas dark usa oscuridad base 0.82 con vetas ±0.04, antorchas ámbar
+ *  y luz propia del Portador (r 70→94). */
 export function drawLightingV2(ctx: CanvasRenderingContext2D, g: Game): void {
   const camX = Math.round(g.camX), camY = Math.round(g.camY);
   const lights = collectLights(g);
@@ -271,8 +443,9 @@ export function drawLightingV2(ctx: CanvasRenderingContext2D, g: Game): void {
   // ---- a) oscuridad y tinte según día/noche (o cripta) ----
   let dark: DaySample;
   if (darkMap) {
-    // la cripta "respira" como brasas lejanas
-    const a = CRYPT_DARK + Math.sin(g.globalT * 11) * 0.02 + Math.sin(g.globalT * 23 + 1.7) * 0.015;
+    // la cripta "respira" como brasas lejanas (más sutil que en v2:
+    // las vetas por tile ya aportan la variación fina)
+    const a = CRYPT_DARK + Math.sin(g.globalT * 9) * 0.012 + Math.sin(g.globalT * 19.3 + 1.7) * 0.008;
     dark = { a, col: CRYPT_COL, w: 0, wc: [255, 148, 74] };
   } else {
     dark = sampleDay(g.dayT);
@@ -291,23 +464,53 @@ export function drawLightingV2(ctx: CanvasRenderingContext2D, g: Game): void {
     const lx = sc.cx;
     lx.globalCompositeOperation = 'source-over';
     lx.clearRect(0, 0, VIEW_W, VIEW_H);
-    lx.fillStyle = rgba(dark.col, Math.min(1, dark.a));
-    lx.fillRect(0, 0, VIEW_W, VIEW_H);
 
-    // agujeros de luz: destination-out SOLO sobre la capa de oscuridad
+    if (darkMap) {
+      // VETAS de oscuridad: la oscuridad base varía por tile con hash
+      // determinista (2 octavas: tile y bloque 2×2) → la cripta se siente
+      // viva y opresiva sin coste de estado.
+      const ZT = ZOOM * TILE;
+      const tx0 = Math.floor(camX / ZT), ty0 = Math.floor(camY / ZT);
+      const tx1 = Math.floor((camX + VIEW_W - 1) / ZT), ty1 = Math.floor((camY + VIEW_H - 1) / ZT);
+      for (let ty = ty0; ty <= ty1; ty++) {
+        const sy = ty * ZT - camY;
+        for (let tx = tx0; tx <= tx1; tx++) {
+          const hv = 0.62 * h2(tx, ty) + 0.38 * h2((tx >> 1) + 31, (ty >> 1) + 57);
+          const aT = clamp(dark.a + (hv - 0.5) * CRYPT_VEIN, 0.5, 0.94);
+          lx.fillStyle = rgba(dark.col, aT);
+          lx.fillRect(tx * ZT - camX, sy, ZT, ZT);
+        }
+      }
+    } else {
+      lx.fillStyle = rgba(dark.col, Math.min(1, dark.a));
+      lx.fillRect(0, 0, VIEW_W, VIEW_H);
+    }
+
+    // agujeros de luz ESCALONADOS: destination-out SOLO sobre la capa de
+    // oscuridad. 3 bandas (0.92/0.62/0.30 de fuerza, respirando con af)
+    // con fade final — el borde se lee en escalones, no como 1 corte duro.
     lx.globalCompositeOperation = 'destination-out';
     for (const L of lights) {
-      const fk = 1 + 0.06 * Math.sin(g.globalT * 13 + L.flicker);
-      const r = L.r * ZOOM * fk;
-      const x = L.x * ZOOM - camX + Math.round(Math.sin(g.globalT * 7.3 + L.flicker * 5.1));
-      const y = L.y * ZOOM - camY + Math.round(Math.cos(g.globalT * 6.1 + L.flicker * 3.7));
+      const fk = flickerOf(L.flicker, g.globalT);
+      const r = L.r * ZOOM * fk.rf;
+      const x = Math.round(L.x * ZOOM) - camX + Math.round(Math.sin(g.globalT * 7.3 + L.flicker * 5.1));
+      const y = Math.round(L.y * ZOOM) - camY + Math.round(Math.cos(g.globalT * 6.1 + L.flicker * 3.7));
       if (x < -r || y < -r || x > VIEW_W + r || y > VIEW_H + r) continue;
-      const gr = lx.createRadialGradient(x, y, Math.max(2, r * 0.08), x, y, r);
-      gr.addColorStop(0, 'rgba(0,0,0,0.95)');
-      gr.addColorStop(0.55, 'rgba(0,0,0,0.55)');
-      gr.addColorStop(1, 'rgba(0,0,0,0)');
+      const a0 = clamp(0.92 * fk.af, 0, 0.96);
+      const a1 = clamp(0.62 * fk.af, 0, 0.96);
+      const a2 = clamp(0.30 * fk.af, 0, 0.96);
+      const r0 = Math.max(2, r * 0.05);
+      const gr = lx.createRadialGradient(x, y, r0, x, y, r);
+      gr.addColorStop(0, blackA(a0));
+      gr.addColorStop(0.40, blackA(a0));   // banda 1: núcleo pleno
+      gr.addColorStop(0.40, blackA(a1));   // ─ escalón ─
+      gr.addColorStop(0.66, blackA(a1));   // banda 2
+      gr.addColorStop(0.66, blackA(a2));   // ─ escalón ─
+      gr.addColorStop(0.86, blackA(a2));   // banda 3
+      gr.addColorStop(0.86, blackA(0));    // ─ fade final (sin corte) ─
+      gr.addColorStop(1, blackA(0));
       lx.fillStyle = gr;
-      lx.fillRect(x - r, y - r, r * 2, r * 2);
+      lx.fillRect(x - Math.round(r), y - Math.round(r), Math.round(r * 2), Math.round(r * 2));
     }
     lx.globalCompositeOperation = 'source-over';
 
@@ -317,36 +520,32 @@ export function drawLightingV2(ctx: CanvasRenderingContext2D, g: Game): void {
 
   // ---- c) tinte cálido aditivo por luz ----
   // alpha derivada del color: cálidas (naranjas/dorados) más intensas,
-  // frías (cian/violeta) tenues — coherente con "tinte cálido"
+  // frías (cian/violeta) tenues — ahora respira con af (alpha ±10 %)
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
   for (const L of lights) {
     const [cr, cg, cb] = hexRgb(L.color);
     const warmth = (cr - cb) / 255;
     const base = clamp(0.07 + warmth * 0.09, 0.05, 0.15);
-    const fk = 1 + 0.06 * Math.sin(g.globalT * 13 + L.flicker);
-    const pulse = (fk - 1) / 0.06;                    // -1..1
-    const alpha = clamp(base * (0.92 + 0.08 * pulse), 0, 0.2);
-    const r = L.r * ZOOM * fk;
-    const x = L.x * ZOOM - camX, y = L.y * ZOOM - camY;
+    const fk = flickerOf(L.flicker, g.globalT);
+    const alpha = clamp(base * fk.af, 0, 0.2);
+    const r = L.r * ZOOM * fk.rf;
+    const x = Math.round(L.x * ZOOM) - camX, y = Math.round(L.y * ZOOM) - camY;
     if (x < -r || y < -r || x > VIEW_W + r || y > VIEW_H + r) continue;
     const tg = ctx.createRadialGradient(x, y, 0, x, y, r);
-    tg.addColorStop(0, `rgba(${cr},${cg},${cb},${alpha.toFixed(3)})`);
-    tg.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+    tg.addColorStop(0, rgbaA(cr, cg, cb, alpha));
+    tg.addColorStop(1, rgbaA(cr, cg, cb, 0));
     ctx.fillStyle = tg;
-    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    ctx.fillRect(x - Math.round(r), y - Math.round(r), Math.round(r * 2), Math.round(r * 2));
   }
   ctx.restore();
 
-  // ---- e) viñeta perenne suave ----
-  const vg = ctx.createRadialGradient(
-    VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.44,
-    VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.92,
-  );
-  vg.addColorStop(0, 'rgba(0,0,0,0)');
-  vg.addColorStop(1, 'rgba(0,0,10,0.22)');
-  ctx.fillStyle = vg;
-  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  // ---- d) viñeta v2: forma de ojo, dithered (pre-pintada; más cerrada
+  //      por los 4 lados en la cripta) ----
+  ctx.drawImage(ensureVignette(darkMap), 0, 0);
+
+  // ---- e) ojos que brillan EN la oscuridad (setEyesVisible) ----
+  drawEyes(ctx, g, dark.a, camX, camY);
 
   // ---- debug: círculos de radio por luz ----
   if (LIGHT_DEBUG) {

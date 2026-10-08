@@ -1,29 +1,60 @@
 // ============================================================
 // ECOS DE AELTHAR — Objetos de aldea sobre hierba (módulo world)
-// Casos: 'H' pared casa · 'r' tejado · 'd' puerta · 'F' valla
-//        'w' pozo · 'g' lápida · 'R' roca
+// Casos (VERIFICADO contra maps.ts): 'H' pared casa · 'r' tejado
+//        'd' puerta · 'F' valla del huerto · 'w' pozo
+//        'g' lápida · 'R' roca
+// (las VENTANAS se pintan sobre los muros 'H'; el cultivo del
+//  huerto es 'c' → módulo grass.ts; el camino de tierra es '='
+//  y cae en el default del dispatcher, fuera de este módulo).
 // Contrato: paintVillage llamada por el despachador drawTile.
 //
-// R1-A4b (reintento · terreno y atmósfera):
-//  · Tejado anti-gofre: cursos de 4 px alineados a coordenadas ABSOLUTAS
-//    (dos 'r' vecinos comparten rejilla → cero costuras), juntas verticales
-//    escalonadas cada 8 px con desfase alternado por curso y jitter 0-1 por
-//    hash, destellos y tejas musgo/rotas sueltas, caballete iluminado solo
-//    en la fila superior, alero con sombra sobre la pared (pintada por la
-//    'H' inferior) y chimeneas de piedra 4×6 ocasionales.
-//  · Paredes enlucidas con vigas en esquina, zócalo, ventanas con
-//    reflejo y sombra de alero. Puerta con arco, bisagras y farol.
-//  · Valla continua con postes rematados, travesaños con veta y alguna
-//    tabla torcida que se rompe y cae (hash).
-//  · Pozo con brocal octogonal, polea y cubo; lápidas y rocas con
-//    3 variantes; sombras elípticas coherentes en todo objeto alto.
+// R4-A8 (aldea v3 · mundo y detalle):
+//  · TEJADOS V3 — 3 MATERIALES POR CASA (teja roja curada,
+//    pizarra gris-azulada, paja dorada) asignados por hash del
+//    BLOQUE de casa: flood-fill ligero por continuidad de
+//    'r'/'H'/'d' (4-dir) → todas las tejas del mismo bloque
+//    comparten material (ancla = teja mínima del bloque). Filas
+//    de tejas desplazadas 1px por curso (herringbone simple,
+//    rejilla en coordenadas ABSOLUTAS → cero costuras entre
+//    vecinos), cumbrera con lomo iluminado de 1px y chimenea
+//    con remate en ~1/3 de las casas (1 por bloque, teja elegida
+//    por hash mínimo del bloque).
+//  · MUROS — sillares de madera (pizarra) o enlucido (teja/paja,
+//    ésta con tinte cálido) según el material del bloque, viga
+//    maestra horizontal de 1px (Y+4, enlaza dintel y ventanas) y
+//    sombra del alero de 2px + fundido sobre el muro.
+//  · VENTANAS — 2 variantes por hash (cuadrícula 2×2 y buhardilla
+//    redondeada); de noche se iluminan vía drawVillageWindowsNight
+//    (capa animada aparte, inerte hasta que el integrador la
+//    conecte — ver nota al final del archivo).
+//  · PUERTAS — hoja de tablones con ARCO superior (esquinas
+//    recortadas), herrajes de forja y pomo de 1px; por hash
+//    algunas quedan entornadas 1-2px con interior oscuro.
+//  · HUERTO — la valla 'F' v2 se mantiene; los huertos grandes
+//    (bloque de valla con bbox ≥6×5) estrenan UN espantapájaros
+//    (poste + brazos + camisa + cabeza de saco + sombrero,
+//    ~8×12px, en la valla norte del recinto). Los surcos del
+//    cultivo viven en 'c' (grass.ts), no aquí.
+//  · ROCAS — piedritas sueltas al pie (hash).
 //
 // NOTA de prerrender: buildGround pinta todos los tiles en UN solo
 // canvas por orden de fila, así que el desbordamiento hacia ARRIBA
 // (chimenea, horquilla del pozo) es seguro; nunca se desborda abajo.
+//
+// INTEGRADOR — capa de ventanas encendidas:
+//   setVillageNight(nf) con nf = factor de noche 0..1 (derivar de
+//   g.dayT como nightFactor en props.ts) y luego, en render.drawWorld
+//   dentro del save/restore con translate de cámara (mismo convenio
+//   que waterOverlay/drawTreeCanopy):
+//     drawVillageWindowsNight(ctx, Math.round(g.camX), Math.round(g.camY),
+//       g.mapId, g.globalT, (tx,ty) => tileAt(g.map, g.rows, tx, ty, g.epoch));
+//   camX/camY en px de PANTALLA (con ZOOM); el dibujo sale en px de
+//   MUNDO (lo recorta el translate). `at` es ABSOLUTO aquí. Sin
+//   llamada (o con nf=0) la función es un no-op barato.
 // ============================================================
 
 import { px, PAL, PAL_ROOF, isForest, type NeighborFn } from './palette';
+import { VIEW_W, VIEW_H, ZOOM } from '../consts';
 
 /**
  * Hash local con avalancha completa (splitmix32) para decisiones por
@@ -41,9 +72,158 @@ function vh(x: number, y: number): number {
 
 /** Vecino seguro: sin función de vecinos devuelve '?' (trata como expuesto). */
 type At = (dx: number, dy: number) => string;
+/** Consulta ABSOLUTA (convenio de las capas animadas: waterOverlay/trees). */
+type AbsAt = (tx: number, ty: number) => string;
 
 const isWallCh = (c: string): boolean => c === 'H' || c === 'd';
 const isStoneCh = (c: string): boolean => c === ':' || c === '_' || c === '#' || c === 'P' || c === 'A';
+
+// ------------------------------------------------------------
+// Paletas locales v3 (política aditiva: PAL intacta)
+// ------------------------------------------------------------
+
+// Pizarra gris-azulada (material 1)
+const SLATE = {
+  base: '#57627a', seam: '#3f485c', joint: '#48536a', hi: '#6e7c96',
+  shine: '#8ea0ba', patch: '#4c5870', ridge: '#8a98b2', ridgeHi: '#aab8ce',
+  verge: '#333c4e', eave: '#3a4356',
+} as const;
+// Paja dorada (material 2)
+const THATCH = {
+  base: '#c19c4e', seam: '#8a6a2c', light: '#d6b264', stitch: '#7a5e26',
+  ridge: '#9a7834', ridgeHi: '#c8a452', verge: '#6e5420', eave: '#7a5e26',
+} as const;
+// Sillares de madera (muro de las casas de pizarra)
+const PLANK = {
+  base: '#96744a', line: '#6a4e30', hi: '#b08a5a', post: '#5a422a', postHi: '#7a5c3a',
+} as const;
+// Enlucido cálido (muro de las casas de paja)
+const PLASTER_WARM = { base: '#e8d4a4', hi: '#f6e8c6', dirt: '#cbb282' } as const;
+// Interior oscuro de las puertas entornadas
+const DOOR_IN = '#241a12';
+// Espantapájaros
+const SC = {
+  shirt: '#9a5a40', shirtHi: '#b87458', patch: '#c89068',
+  sack: '#d8c090', sackHi: '#e8d4a8', face: '#3a3020',
+  brim: '#b89040', crown: '#caa050', band: '#8a6a2c', straw: '#c8a850',
+} as const;
+// Ventanas encendidas de noche
+const NIGHT_WARM = '#ffb054';
+const NIGHT_GLASS = '#e8a44e';
+const NIGHT_CORE = '#ffd98a';
+const NIGHT_HOT = '#fff3c8';
+
+// ------------------------------------------------------------
+// Bloques de casa (flood-fill ligero) — material y chimenea
+// ------------------------------------------------------------
+
+const HOUSE_CHARS = new Set(['r', 'H', 'd']);
+
+interface HouseBlock {
+  mat: number;     // 0 teja · 1 pizarra · 2 paja
+  chim: boolean;   // el bloque tiene chimenea (~1/3)
+  chimTx: number;  // teja del tejado que la dibuja (hash mínimo)
+  chimTy: number;
+}
+
+/** Caché por mapId: el resultado es una función pura del grid, la caché
+ *  solo ahorra el flood-fill. Acotada por si acaso. */
+const houseCache = new Map<string, Map<string, HouseBlock>>();
+
+function houseBlockAt(tx0: number, ty0: number, mapId: string, nb: At): HouseBlock {
+  let cache = houseCache.get(mapId);
+  if (!cache) { cache = new Map(); houseCache.set(mapId, cache); }
+  const key = `${tx0},${ty0}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const seen = new Set<string>();
+  const stack: Array<[number, number]> = [[tx0, ty0]];
+  let ax = tx0, ay = ty0;                 // ancla: teja mínima (y, luego x)
+  let chimTx = -1, chimTy = -1, chimBest = 2;
+  while (stack.length) {
+    const [cx, cy] = stack.pop()!;
+    const k = `${cx},${cy}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    if (!HOUSE_CHARS.has(nb(cx - tx0, cy - ty0))) continue;
+    if (cy < ay || (cy === ay && cx < ax)) { ax = cx; ay = cy; }
+    if (nb(cx - tx0, cy - ty0) === 'r') {
+      const h = vh(cx * 5 + 3, cy * 9 + 7);
+      if (h < chimBest) { chimBest = h; chimTx = cx; chimTy = cy; }
+    }
+    stack.push([cx - 1, cy], [cx + 1, cy], [cx, cy - 1], [cx, cy + 1]);
+  }
+  const info: HouseBlock = {
+    mat: Math.floor(vh(ax * 3 + 11, ay * 7 + 5) * 3),
+    chim: chimTx >= 0 && vh(ax * 13 + 1, ay * 5 + 9) < 0.34,
+    chimTx, chimTy,
+  };
+  if (cache.size > 8192) cache.clear();
+  cache.set(key, info);
+  return info;
+}
+
+/** Material del bloque de casa en (tx,ty): 0 teja · 1 pizarra · 2 paja.
+ *  Export de prueba/integración (puro, determinista). */
+export function houseMaterialAt(tx: number, ty: number, mapId: string, at: NeighborFn): number {
+  return houseBlockAt(tx, ty, mapId, at).mat;
+}
+
+// ------------------------------------------------------------
+// Bloques de valla (huerto) — tamaño y espantapájaros
+// ------------------------------------------------------------
+
+interface FenceBlock { big: boolean; scTx: number; scTy: number }
+const fenceCache = new Map<string, Map<string, FenceBlock>>();
+
+function fenceBlockAt(tx0: number, ty0: number, mapId: string, nb: At): FenceBlock {
+  let cache = fenceCache.get(mapId);
+  if (!cache) { cache = new Map(); fenceCache.set(mapId, cache); }
+  const key = `${tx0},${ty0}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const seen = new Set<string>();
+  const stack: Array<[number, number]> = [[tx0, ty0]];
+  let minX = tx0, maxX = tx0, minY = ty0, maxY = ty0;
+  const tiles: Array<[number, number]> = [];
+  while (stack.length) {
+    const [cx, cy] = stack.pop()!;
+    const k = `${cx},${cy}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    if (nb(cx - tx0, cy - ty0) !== 'F') continue;
+    tiles.push([cx, cy]);
+    if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+    if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
+    stack.push([cx - 1, cy], [cx + 1, cy], [cx, cy - 1], [cx, cy + 1]);
+  }
+  const big = maxX - minX + 1 >= 6 && maxY - minY + 1 >= 5;
+  // espantapájaros: valla norte, el tramo recto (hL && hR && sin valla
+  // vertical) MÁS A LA IZQUIERDA — barrido completo para que el resultado no
+  // dependa del orden de descubrimiento del flood-fill (origen de la consulta).
+  // Si no hay tramo recto, el tile más a la izquierda de la fila norte.
+  let scTx = -1, scTy = -1;
+  if (big) {
+    for (const pick of [true, false]) {
+      for (const [cx, cy] of tiles) {
+        if (cy !== minY) continue;
+        if (pick) {
+          const hL = nb(cx - 1 - tx0, cy - ty0) === 'F';
+          const hR = nb(cx + 1 - tx0, cy - ty0) === 'F';
+          const vU = nb(cx - tx0, cy - 1 - ty0) === 'F';
+          const vD = nb(cx - tx0, cy + 1 - ty0) === 'F';
+          if (!(hL && hR && !vU && !vD)) continue;
+        }
+        if (scTx < 0 || cx < scTx) { scTx = cx; scTy = cy; }
+      }
+      if (scTx >= 0) break;
+    }
+  }
+  const info: FenceBlock = { big, scTx, scTy };
+  if (cache.size > 8192) cache.clear();
+  cache.set(key, info);
+  return info;
+}
 
 // ------------------------------------------------------------
 // Ayudantes de suelo y sombra (compartidos por los objetos sueltos)
@@ -90,163 +270,274 @@ function groundBase(x: CanvasRenderingContext2D, tx: number, ty: number, mapId: 
 }
 
 // ------------------------------------------------------------
-// 'r' — Tejado continuo
+// 'r' — Tejado v3 (3 materiales por BLOQUE de casa)
 // ------------------------------------------------------------
 
-function paintRoof(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At): void {
+function paintRoof(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, mapId: string): void {
   const X = tx * 16, Y = ty * 16;
   const contL = nb(-1, 0) === 'r', contR = nb(1, 0) === 'r';
   const contU = nb(0, -1) === 'r', contD = nb(0, 1) === 'r';
+  const mat = houseBlockAt(tx, ty, mapId, nb).mat;
+
   // — Faldón: base plana + CURSOS de 4 px alineados a la coordenada ABSOLUTA.
-  //   Nada depende de tx: dos 'r' vecinos comparten patrón → cero costuras y
-  //   sin bandas de tono alternado (eso era lo que leía como gofre) —
-  px(x, X, Y, 16, 16, PAL.roof);
+  //   Nada depende de tx en el patrón: dos 'r' vecinos comparten rejilla →
+  //   cero costuras y sin bandas de tono alternado (anti-gofre R1). —
+  const base = mat === 1 ? SLATE.base : mat === 2 ? THATCH.base : PAL.roof;
+  const seam = mat === 1 ? SLATE.seam : mat === 2 ? THATCH.seam : PAL.roofDark;
+  px(x, X, Y, 16, 16, base);
   for (let py = 3; py < 16; py += 4) {
-    px(x, X, Y + py, 16, 1, PAL.roofDark);         // sombra del solape (curso)
+    px(x, X, Y + py, 16, 1, seam);                 // sombra del solape (curso)
   }
-  // — Tejas sueltas más oscuras (húmedas): 1-2 parches por curso, hash —
+
+  // — Textura por material, curso a curso (rejilla absoluta) —
   for (let py = 0; py < 16; py += 4) {
-    const ci = (Y + py) >> 2;
-    const nDark = vh(ci * 29 + 3, ty * 7 + 5) < 0.5 ? 1 : 2;
-    for (let d = 0; d < nDark; d++) {
-      const w = 3 + Math.floor(vh(ci * 13 + d * 7 + 1, ty * 5 + d) * 3); // 3..5
-      const dx = Math.floor(vh(ci * 17 + d * 3 + 2, ty * 11 + d + 1) * (16 - w));
-      px(x, X + dx, Y + py, w, 3, PAL.roofMid);
+    const ci = (Y + py) >> 2;                      // curso ABSOLUTO
+    if (mat === 2) {
+      // PAJA: banda clara superior + costuras de hilo + flecos en el solape
+      for (let k = 0; k < 16; k++) {
+        const ax = X + k;
+        if (vh(ax * 3 + ci, ci * 7 + 1) < 0.30) px(x, ax, Y + py, 1, 1, THATCH.light);
+        // peines verticales 1×2 cada 5 px, desplazados 3 px por curso
+        if (((ax - ci * 3) % 5 + 5) % 5 === 0) px(x, ax, Y + py + 1, 1, 2, THATCH.stitch);
+        if (py + 3 < 16 && vh(ax * 7 + ci * 5, ci * 11 + 3) < 0.28) {
+          px(x, ax, Y + py + 3, 1, 1, THATCH.base);  // fleco: rompe la línea de solape
+        }
+      }
+    } else {
+      // TEJA / PIZARRA: parches húmedos más oscuros (1-2 por curso)
+      const patch = mat === 1 ? SLATE.patch : PAL.roofMid;
+      const nDark = vh(ci * 29 + 3, ty * 7 + 5) < 0.5 ? 1 : 2;
+      for (let d = 0; d < nDark; d++) {
+        const w = 3 + Math.floor(vh(ci * 13 + d * 7 + 1, ty * 5 + d) * 3); // 3..5
+        const dx = Math.floor(vh(ci * 17 + d * 3 + 2, ty * 11 + d + 1) * (16 - w));
+        px(x, X + dx, Y + py, w, 3, patch);
+      }
+      // PIZARRA: brillo de lámina en el canto superior de ~60% de cursos
+      if (mat === 1 && vh(ci * 13 + 5, 7) < 0.6) px(x, X, Y + py, 16, 1, SLATE.hi);
     }
   }
-  // — Juntas verticales escalonadas: cada 8 px, desfase alternado por curso
-  //   con +2 para que NUNCA caigan en la columna de borde entre tiles (eso
-  //   pintaba un acento vertical en cada costura); jitter 0-1 por hash de la
-  //   posición ABSOLUTA → el patrón no se corta entre dos 'r' vecinos —
-  for (let py = 0; py < 16; py++) {
-    const gy = Y + py, ci = gy >> 2, ly = gy & 3;
-    if (ly === 3) continue;                        // no cruza la costura
-    const stag = (ci & 1) * 4 + 2;                 // offset alternado por fila
-    for (let m = -1; m <= 1; m++) {
-      let jx = X + stag + m * 8;
-      jx += vh(jx * 2 + ci, ci * 5 + 3) < 0.5 ? 0 : 1; // jitter por hash
-      if (jx < X || jx > X + 15) continue;
-      // junta rota (hash): solo queda la mitad baja de la teja
-      if (vh(jx * 3 + 1, ci * 7 + 2) < 0.2 && ly < 2) continue;
-      px(x, jx, gy, 1, 1, PAL_ROOF.roofJoint);
+
+  // — Juntas verticales: cada 8 px, DESPLAZADAS 1px por curso (herringbone
+  //   simple) con desfase 2..7 para que NUNCA caigan en la columna de borde;
+  //   jitter 0-1 por hash de la posición ABSOLUTA (el patrón no se corta
+  //   entre dos 'r' vecinos). La paja no tiene juntas: usa costuras. —
+  if (mat !== 2) {
+    const joint = mat === 1 ? SLATE.joint : PAL_ROOF.roofJoint;
+    for (let py = 0; py < 16; py++) {
+      const gy = Y + py, ci = gy >> 2, ly = gy & 3;
+      if (ly === 3) continue;                      // no cruza la costura
+      const stag = 2 + (ci % 6);                   // desplazamiento 1px/curso
+      for (let m = -1; m <= 1; m++) {
+        let jx = X + stag + m * 8;
+        jx += vh(jx * 2 + ci, ci * 5 + 3) < 0.5 ? 0 : 1; // jitter por hash
+        if (jx < X || jx > X + 15) continue;
+        // junta rota (hash): solo queda la mitad baja de la teja
+        if (vh(jx * 3 + 1, ci * 7 + 2) < 0.2 && ly < 2) continue;
+        px(x, jx, gy, 1, 1, joint);
+      }
     }
   }
-  // — Vida del faldón: destello en el canto superior de alguna teja —
-  for (let py = 0; py < 16; py += 4) {
-    const ci = (Y + py) >> 2;
-    if (vh(ci * 13 + 5, ty * 7 + 9) < 0.55) {
-      const hx = X + 1 + Math.floor(vh(ci * 17 + 2, ty + 4) * 12);
-      px(x, hx, Y + py, 2, 1, PAL_ROOF.roofShine);
+
+  // — Vida del faldón: destello en el canto de alguna teja (teja/pizarra) —
+  if (mat !== 2) {
+    const shine = mat === 1 ? SLATE.shine : PAL_ROOF.roofShine;
+    for (let py = 0; py < 16; py += 4) {
+      const ci = (Y + py) >> 2;
+      if (vh(ci * 13 + 5, ty * 7 + 9) < 0.55) {
+        const hx = X + 1 + Math.floor(vh(ci * 17 + 2, ty + 4) * 12);
+        px(x, hx, Y + py, 2, 1, shine);
+      }
     }
   }
-  // teja con musgo o rota suelta (hash de posición)
+  // desgaste suelto: musgo / teja rota / paja apelmazada (hash de posición)
   const mv = vh(tx * 5 + 2, ty * 7 + 1);
-  if (mv < 0.12) {
+  if (mat === 0 && mv < 0.12) {
     const mx = X + 2 + Math.floor(vh(tx + 3, ty * 3) * 10);
     const my = Y + 5 + Math.floor(vh(tx * 3, ty + 5) * 8);
     px(x, mx, my, 3, 2, PAL.mossTile);
     px(x, mx + 1, my - 1, 2, 1, PAL.mossTile);
-  } else if (mv < 0.2) {
+  } else if (mat === 0 && mv < 0.2) {
     const mx = X + 3 + Math.floor(vh(tx + 3, ty * 3) * 9);
     const my = Y + 5 + Math.floor(vh(tx * 3, ty + 5) * 7);
     px(x, mx, my, 3, 2, PAL.brokenTile);
     px(x, mx + 2, my + 2, 1, 1, PAL.brokenTile);
+  } else if (mat === 1 && mv < 0.16) {
+    const mx = X + 2 + Math.floor(vh(tx + 3, ty * 3) * 10);
+    const my = Y + 5 + Math.floor(vh(tx * 3, ty + 5) * 8);
+    px(x, mx, my, 3, 2, PAL.mossTile);             // la pizarra musga
+  } else if (mat === 2 && mv < 0.14) {
+    const mx = X + 3 + Math.floor(vh(tx + 3, ty * 3) * 9);
+    const my = Y + 6 + Math.floor(vh(tx * 3, ty + 5) * 6);
+    px(x, mx, my, 3, 2, THATCH.seam);              // paja apelmazada
   }
-  // caballete iluminado SOLO en la fila superior del tejado
+
+  // — Cumbrera con LOMO de 1px (solo en la fila superior del tejado) —
   if (!contU) {
-    px(x, X, Y, 16, 1, PAL.ridgeHi);
-    px(x, X, Y + 1, 16, 1, PAL.ridge);
+    const rHi = mat === 1 ? SLATE.ridgeHi : mat === 2 ? THATCH.ridgeHi : PAL.ridgeHi;
+    const r = mat === 1 ? SLATE.ridge : mat === 2 ? THATCH.ridge : PAL.ridge;
+    px(x, X, Y, 16, 1, rHi);                       // lomo iluminado 1px
+    px(x, X, Y + 1, 16, 1, r);                     // sombra del lomo
   }
-  // limatesas laterales solo contra vecino que no es tejado ('r'-'r' limpio)
-  if (!contL) { px(x, X, Y, 1, 16, PAL.brokenTile); px(x, X + 1, Y, 1, 16, PAL.roofDark); }
-  if (!contR) { px(x, X + 15, Y, 1, 16, PAL.brokenTile); px(x, X + 14, Y, 1, 16, PAL.roofDark); }
-  // canto del alero (bajo él, la 'H' pinta su propia sombra de 2-3 px)
-  if (!contD) px(x, X, Y + 15, 16, 1, PAL.brokenTile);
-  // chimenea ocasional: hash < 0.15 y vecino de arriba libre
-  const up = nb(0, -1);
-  const upFree = up === '.' || up === ',' || up === '=' || up === 'c' || up === 'm';
-  if (vh(tx * 13 + 5, ty * 17 + 3) < 0.15 && upFree) {
-    const cx = X + 4 + Math.floor(vh(tx * 7 + 1, ty * 3 + 2) * 8); // cuerpo de 4 px
-    px(x, cx - 1, Y - 7, 6, 1, PAL.chimneyHi);     // tapa con vuelo
-    px(x, cx, Y - 6, 4, 6, PAL.chimney);           // cuerpo de piedra 4×6
-    px(x, cx, Y - 6, 1, 6, PAL.chimneyHi);         // luz en la cara oeste
-    px(x, cx + 3, Y - 6, 1, 6, PAL.chimneyDark);   // sombra en la cara este
-    px(x, cx + 1, Y - 6, 2, 2, PAL.chimneyMouth);  // boca oscura
+  // — Limatesas laterales solo contra vecino que no es tejado —
+  const verge = mat === 1 ? SLATE.verge : mat === 2 ? THATCH.verge : PAL.brokenTile;
+  if (!contL) { px(x, X, Y, 1, 16, verge); px(x, X + 1, Y, 1, 16, seam); }
+  if (!contR) { px(x, X + 15, Y, 1, 16, verge); px(x, X + 14, Y, 1, 16, seam); }
+  // — Canto del alero (bajo él, la 'H' pinta su sombra de 2px) —
+  const eave = mat === 1 ? SLATE.eave : mat === 2 ? THATCH.eave : PAL.brokenTile;
+  if (!contD) px(x, X, Y + 15, 16, 1, eave);
+
+  // — CHIMENEA: 1 por bloque en ~1/3 de las casas; la dibuja UNA sola teja
+  //   (la de hash mínimo del faldón) y solo si el vecino de arriba es suelo
+  //   blando (el desbordamiento hacia arriba es seguro en el prerrender). —
+  const blk = houseBlockAt(tx, ty, mapId, nb);
+  if (blk.chim && tx === blk.chimTx && ty === blk.chimTy) {
+    const up = nb(0, -1);
+    const upFree = up === '.' || up === ',' || up === '=' || up === 'c' || up === 'm';
+    if (upFree) {
+      const cx = X + 4 + Math.floor(vh(tx * 7 + 1, ty * 3 + 2) * 8); // cuerpo de 4 px
+      px(x, cx - 1, Y - 9, 6, 1, PAL.chimneyHi);   // REMATE: copete con vuelo
+      px(x, cx - 1, Y - 8, 6, 1, PAL.chimneyDark); // canto inferior del remate
+      px(x, cx, Y - 7, 4, 7, PAL.chimney);         // cuerpo de piedra 4×7
+      px(x, cx, Y - 7, 1, 7, PAL.chimneyHi);       // luz en la cara oeste
+      px(x, cx + 3, Y - 7, 1, 7, PAL.chimneyDark); // sombra en la cara este
+      px(x, cx + 1, Y - 7, 2, 2, PAL.chimneyMouth);// boca oscura
+      px(x, cx, Y - 4, 4, 1, PAL.chimneyDark);     // sillería: junta
+      px(x, cx, Y - 2, 4, 1, PAL.chimneyDark);     // sillería: junta
+      px(x, cx + 1, Y - 3, 1, 1, PAL.chimneyHi);   // sillar iluminado suelto
+    }
   }
 }
 
 // ------------------------------------------------------------
-// 'H' / 'd' — Pared compartida (enlucido, vigas, zócalo, alero)
+// 'H' / 'd' — Pared v3 (material del bloque, viga maestra, alero)
 // ------------------------------------------------------------
 
-function wallBase(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At): void {
+function wallBase(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, mat: number): void {
   const X = tx * 16, Y = ty * 16;
-  // enlucido crema con motas sutiles
-  px(x, X, Y, 16, 16, PAL.wall);
-  for (let i = 0; i < 6; i++) {
-    const hx = vh(tx * 6 + i * 3 + 1, ty * 8 + i + 4);
-    const hy = vh(tx * 9 + i + 2, ty * 5 + i * 3 + 6);
-    px(x, X + 1 + Math.floor(hx * 14), Y + 2 + Math.floor(hy * 10), 1, 1,
-      hx < 0.5 ? PAL.wallDirt : PAL.wallHi);
+  if (mat === 1) {
+    // SILLARES DE MADERA: tablones horizontales con extremos escalonados
+    px(x, X, Y, 16, 16, PLANK.base);
+    for (let b = 0; b < 4; b++) {
+      const bandY = Y + b * 4;
+      const ci = (Y + b * 4) >> 2;                 // curso ABSOLUTO
+      px(x, X, bandY + 3, 16, 1, PLANK.line);      // junta del tablón
+      // extremos de tablón: rejilla absoluta cada 10 px, desfase por curso
+      const stag = ((ci * 5) % 10 + 10) % 10;
+      const start = X + (((stag - (X % 10)) % 10) + 10) % 10;
+      for (let jx = start; jx < X + 16; jx += 10) {
+        px(x, jx, bandY, 1, 3, PLANK.line);
+        px(x, jx, bandY, 1, 1, PLANK.hi);
+      }
+      // veta del tablón
+      px(x, X + 2 + Math.floor(vh(ci * 7 + 1, tx * 3 + b) * 10), bandY + 1, 3, 1, PLANK.hi);
+    }
+  } else {
+    // ENLUCIDO (teja: crema · paja: cálido) con motas sutiles
+    const W = mat === 2 ? PLASTER_WARM : { base: PAL.wall, hi: PAL.wallHi, dirt: PAL.wallDirt };
+    px(x, X, Y, 16, 16, W.base);
+    for (let i = 0; i < 6; i++) {
+      const hx = vh(tx * 6 + i * 3 + 1, ty * 8 + i + 4);
+      const hy = vh(tx * 9 + i + 2, ty * 5 + i * 3 + 6);
+      px(x, X + 1 + Math.floor(hx * 14), Y + 2 + Math.floor(hy * 10), 1, 1,
+        hx < 0.5 ? W.dirt : W.hi);
+    }
   }
-  // sombra proyectada por el alero (línea 2-3 px en la parte alta)
+  // — Sombra proyectada por el alero: 2px + fundido (el tejado cae sobre
+  //   el muro) —
   if (nb(0, -1) === 'r') {
-    px(x, X, Y, 16, 3, PAL.objShadow);
-    px(x, X, Y + 3, 16, 1, 'rgba(0,0,0,0.12)');
+    px(x, X, Y, 16, 2, PAL.objShadow);
+    px(x, X, Y + 2, 16, 1, 'rgba(0,0,0,0.12)');
   }
+  // — VIGA MAESTRA horizontal de 1px (Y+4): enlaza los dinteles de puerta
+  //   y el borde superior de las ventanas; el vecino 'H'/'d' la continúa —
+  const beam = mat === 1 ? PLANK.post : PAL.beam;
+  px(x, X, Y + 4, 16, 1, beam);
+  px(x, X, Y + 5, 16, 1, 'rgba(0,0,0,0.10)');      // sombra de la viga
   // zócalo de piedra con juntas
   px(x, X, Y + 13, 16, 3, PAL.plinth);
   px(x, X, Y + 13, 16, 1, PAL.plinthHi);
   px(x, X, Y + 15, 16, 1, PAL.plinthDark);
   px(x, X + 2 + Math.floor(vh(tx * 3 + 5, ty + 9) * 11), Y + 14, 1, 2, PAL.plinthDark);
   px(x, X + 2 + Math.floor(vh(tx * 7 + 3, ty + 4) * 11), Y + 14, 1, 2, PAL.plinthDark);
-  // vigas verticales SOLO en esquinas (el vecino horizontal no es pared)
+  // postes verticales SOLO en esquinas (el vecino horizontal no es pared)
+  const post = mat === 1 ? PLANK.post : PAL.beam;
+  const postHi = mat === 1 ? PLANK.postHi : PAL.beamHi;
   if (!isWallCh(nb(-1, 0))) {
-    px(x, X, Y, 3, 16, PAL.beam);
-    px(x, X + 1, Y, 1, 16, PAL.beamHi);
+    px(x, X, Y, 3, 16, post);
+    px(x, X + 1, Y, 1, 16, postHi);
   }
   if (!isWallCh(nb(1, 0))) {
-    px(x, X + 13, Y, 3, 16, PAL.beam);
-    px(x, X + 13, Y, 1, 16, PAL.beamHi);
+    px(x, X + 13, Y, 3, 16, post);
+    px(x, X + 13, Y, 1, 16, postHi);
   }
 }
 
+// ------------------------------------------------------------
+// Ventanas v3 — plan compartido por el prerrender y la capa nocturna
+// ------------------------------------------------------------
+
 /**
- * Ventanas: 1-2 por muro y nunca adyacentes, decididas por hash de posición.
- * Si el hash no eligió ninguna en todo el muro, se garantiza una junto a la
- * puerta (tile 'H' a la derecha de una 'd').
+ * ¿Hay ventana en el muro 'H' de coordenada absoluta (ax, ty)?
+ * MISMA lógica R1 (rejilla del muro + regla junto a la puerta) para que
+ * la capa nocturna pinte exactamente donde el prerrender pintó cristal.
  */
-function paintWindowIfAny(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At): void {
-  const chOf = (ax: number) => nb(ax - tx, 0); // vecino por coordenada absoluta
-  const q = (ax: number) => vh(ax * 9 + 1, ty * 13 + 7) < 0.34;
-  let lx = tx, rx = tx;
+function windowPlanAbs(ax: number, ty: number, get: AbsAt): boolean {
+  const chOf = (a: number) => get(a, ty);
+  const q = (a: number) => vh(a * 9 + 1, ty * 13 + 7) < 0.34;
+  let lx = ax, rx = ax;
   while (chOf(lx - 1) === 'H') lx--;
   while (chOf(rx + 1) === 'H') rx++;
-  const winAt = (ax: number) => chOf(ax) === 'H' && q(ax) && !(chOf(ax - 1) === 'H' && q(ax - 1));
+  const winAt = (a: number) => chOf(a) === 'H' && q(a) && !(chOf(a - 1) === 'H' && q(a - 1));
   let count = 0;
-  for (let ax = lx; ax <= rx; ax++) if (winAt(ax)) count++;
-  const mine = count > 0 ? winAt(tx) : chOf(tx - 1) === 'd';
-  if (!mine) return;
+  for (let a = lx; a <= rx; a++) if (winAt(a)) count++;
+  return count > 0 ? winAt(ax) : chOf(ax - 1) === 'd';
+}
+
+/** Variante de ventana: 0 = cuadrícula 2×2 · 1 = buhardilla redondeada. */
+function windowVariant(ax: number, ty: number): number {
+  return vh(ax * 5 + 3, ty * 7 + 2) < 0.5 ? 0 : 1;
+}
+
+/** Pinta la ventana del tile 'H' (el plan ya decidió que toca ventana).
+ *  El cristal vive SIEMPRE en (wx+1, wy+1, 6, 6) → la capa nocturna
+ *  no necesita conocer la variante para situar el resplandor. */
+function paintWindow(x: CanvasRenderingContext2D, tx: number, ty: number): void {
   const wx = tx * 16 + 4, wy = ty * 16 + 4;
-  px(x, wx, wy, 8, 8, PAL.winFrame);            // marco
-  px(x, wx + 1, wy + 1, 6, 6, PAL.glass);       // cristal azulado
-  px(x, wx + 1, wy + 6, 6, 1, PAL.glassDark);   // fondo del cristal
-  px(x, wx + 3, wy + 1, 1, 1, PAL.glassHi);     // reflejo diagonal
-  px(x, wx + 2, wy + 2, 1, 1, PAL.glassHi);
-  px(x, wx + 1, wy + 3, 1, 1, PAL.glassHi);
-  px(x, wx + 2, wy + 1, 1, 1, '#e6f2fa');
-  px(x, wx + 4, wy + 1, 1, 6, PAL.winFrame);    // travesaño vertical
-  px(x, wx + 1, wy + 4, 6, 1, PAL.winFrame);    // travesaño horizontal
-  px(x, wx - 1, wy + 8, 10, 1, PAL.plinthHi);   // alféizar
+  if (windowVariant(tx, ty) === 0) {
+    // — Variante A: marco cuadrado con CUADRÍCULA 2×2 —
+    px(x, wx, wy, 8, 8, PAL.winFrame);            // marco
+    px(x, wx + 1, wy + 1, 6, 6, PAL.glass);       // cristal azulado
+    px(x, wx + 1, wy + 6, 6, 1, PAL.glassDark);   // fondo del cristal
+    px(x, wx + 3, wy + 1, 1, 1, PAL.glassHi);     // reflejo diagonal
+    px(x, wx + 2, wy + 2, 1, 1, PAL.glassHi);
+    px(x, wx + 1, wy + 3, 1, 1, PAL.glassHi);
+    px(x, wx + 2, wy + 1, 1, 1, '#e6f2fa');
+    px(x, wx + 4, wy + 1, 1, 6, PAL.winFrame);    // travesaño vertical
+    px(x, wx + 1, wy + 4, 6, 1, PAL.winFrame);    // travesaño horizontal
+  } else {
+    // — Variante B: BUHARDILLA REDONDEADA (arco de 1px sobre el cristal) —
+    px(x, wx + 1, wy + 1, 6, 6, PAL.glass);       // cristal
+    px(x, wx + 1, wy + 5, 6, 2, PAL.glassDark);   // fondo del cristal
+    px(x, wx + 2, wy, 4, 1, PAL.winFrame);        // arco superior
+    px(x, wx + 1, wy + 1, 1, 1, PAL.winFrame);    // hombro del arco
+    px(x, wx + 6, wy + 1, 1, 1, PAL.winFrame);
+    px(x, wx, wy + 2, 1, 5, PAL.winFrame);        // jambas
+    px(x, wx + 7, wy + 2, 1, 5, PAL.winFrame);
+    px(x, wx + 1, wy + 7, 6, 1, PAL.winFrame);    // base del marco
+    px(x, wx + 3, wy + 2, 1, 1, PAL.glassHi);     // reflejo diagonal
+    px(x, wx + 2, wy + 3, 1, 1, PAL.glassHi);
+    px(x, wx + 2, wy + 1, 1, 1, '#e6f2fa');
+  }
+  px(x, wx - 1, wy + 8, 10, 1, PAL.plinthHi);     // alféizar (ambas variantes)
 }
 
 // ------------------------------------------------------------
-// 'd' — Puerta de tablones con arco, bisagras, pomo y farol
+// 'd' — Puerta v3 (arco, herrajes, pomo 1px, entornadas)
 // ------------------------------------------------------------
 
-function paintDoor(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At): void {
+function paintDoor(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, mapId: string): void {
   const X = tx * 16, Y = ty * 16;
-  wallBase(x, tx, ty, nb); // misma pared de fondo (los vecinos son 'H': sin vigas)
+  wallBase(x, tx, ty, nb, houseBlockAt(tx, ty, mapId, nb).mat); // misma pared de fondo
   // arco de piedra con dovela (clave) iluminada, marcado sobre la sombra
   px(x, X + 2, Y + 2, 12, 3, PAL.step);        // dintel de piedra
   px(x, X + 2, Y + 2, 12, 1, PAL.plinthHi);    // canto superior iluminado
@@ -255,22 +546,34 @@ function paintDoor(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At):
   // jambas
   px(x, X + 2, Y + 5, 1, 8, PAL.stepDark);
   px(x, X + 13, Y + 5, 1, 8, PAL.stepDark);
-  // hoja de tablones con juntas y veta
-  px(x, X + 3, Y + 5, 10, 8, PAL.doorMid);
-  px(x, X + 3, Y + 5, 10, 1, PAL.door);
-  px(x, X + 6, Y + 6, 1, 7, PAL.door);
-  px(x, X + 10, Y + 6, 1, 7, PAL.door);
-  px(x, X + 12, Y + 5, 1, 8, PAL.door);
-  px(x, X + 4, Y + 8, 2, 1, '#8a6038');
-  px(x, X + 7, Y + 10, 2, 1, '#8a6038');
+  // — Hoja de tablones: por hash algunas quedan ENTORNADAS 1-2px con el
+  //   interior oscuro asomando por el lado del pomo —
+  const openH = vh(tx * 7 + 3, ty * 11 + 5);
+  const gap = openH < 0.10 ? 2 : openH < 0.24 ? 1 : 0;
+  const leafX = X + 3, leafW = 10 - gap;
+  if (gap > 0) px(x, X + 3, Y + 5, 10, 8, DOOR_IN);  // interior oscuro
+  px(x, leafX + 1, Y + 5, leafW - 2, 1, PAL.doorMid); // ARCO: esquinas recortadas
+  px(x, leafX, Y + 6, leafW, 7, PAL.doorMid);         // cuerpo (filas Y+6..Y+12)
+  px(x, leafX, Y + 6, leafW, 1, PAL.door);            // sombra bajo el arco
+  px(x, leafX + leafW - 1, Y + 6, 1, 7, PAL.door);    // canto derecho
+  // juntas de los tablones (nunca sobre el canto ni el interior)
+  for (const jx of [X + 6, X + 10]) {
+    if (jx <= leafX + leafW - 2) px(x, jx, Y + 6, 1, 7, PAL.door);
+  }
+  // veta de los tablones
+  if (leafW >= 9) px(x, X + 4, Y + 8, 2, 1, '#8a6038');
+  px(x, X + 7, Y + 10, Math.min(2, leafW - 4), 1, '#8a6038');
   // bisagras de forja con remate metálico
   px(x, X + 3, Y + 6, 3, 1, PAL.iron);
   px(x, X + 3, Y + 10, 3, 1, PAL.iron);
   px(x, X + 6, Y + 6, 1, 1, '#8a8a96');
   px(x, X + 6, Y + 10, 1, 1, '#8a8a96');
-  // pomo dorado
-  px(x, X + 10, Y + 8, 2, 2, PAL.gold);
-  px(x, X + 10, Y + 8, 1, 1, '#fff0b0');
+  // herraje vertical sobre la hoja (tranca forjada)
+  px(x, leafX + 1, Y + 9, leafW - 3, 1, PAL.iron);
+  // POMO de 1px (dorado) junto a la rendija
+  const kx = leafX + leafW - 3;
+  px(x, kx, Y + 8, 1, 1, PAL.gold);
+  px(x, kx, Y + 9, 1, 1, '#8a6038');           // sombra del pomo
   // escalón de piedra (sustituye al zócalo bajo la puerta)
   px(x, X + 2, Y + 13, 12, 3, PAL.step);
   px(x, X + 2, Y + 13, 12, 1, PAL.plinthHi);
@@ -286,11 +589,46 @@ function paintDoor(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At):
 }
 
 // ------------------------------------------------------------
-// 'F' — Valla continua (postes rematados + 2 travesaños con veta)
+// 'F' — Valla v2 del huerto + ESPANTAPÁJAROS en huertos grandes
 // ------------------------------------------------------------
+
+/** Espantapájaros (~8×12px): poste, brazos, camisa con remiendo, cabeza
+ *  de saco y sombrero de paja. Todo dentro del tile (sin desbordar). */
+function paintScarecrow(x: CanvasRenderingContext2D, tx: number, ty: number, mapId: string): void {
+  const X = tx * 16, Y = ty * 16;
+  grassBase(x, tx, ty, mapId);
+  dropShadow(x, X + 4, Y + 14, 9);
+  // poste
+  px(x, X + 7, Y + 4, 2, 10, PAL.woodMid);
+  px(x, X + 7, Y + 4, 1, 10, PAL.woodLight);
+  // brazos (travesaño)
+  px(x, X + 4, Y + 7, 8, 1, PAL.woodDark);
+  // camisa colgando
+  px(x, X + 5, Y + 7, 5, 5, SC.shirt);
+  px(x, X + 5, Y + 7, 5, 1, SC.shirtHi);
+  px(x, X + 6, Y + 9, 2, 1, SC.patch);          // remiendo
+  px(x, X + 5, Y + 11, 5, 1, PAL.rope);         // cuerda a la cintura
+  px(x, X + 6, Y + 12, 3, 1, SC.straw);         // paja asomando abajo
+  // cabeza de saco
+  px(x, X + 6, Y + 3, 4, 4, SC.sack);
+  px(x, X + 6, Y + 3, 1, 1, SC.sackHi);
+  px(x, X + 7, Y + 4, 1, 1, SC.face);           // ojo
+  px(x, X + 9, Y + 4, 1, 1, SC.face);           // ojo
+  px(x, X + 8, Y + 5, 1, 1, SC.face);           // boca cosida
+  // sombrero de paja
+  px(x, X + 6, Y + 1, 4, 1, SC.crown);          // copa
+  px(x, X + 6, Y + 2, 4, 1, SC.band);           // banda
+  px(x, X + 4, Y + 3, 8, 1, SC.brim);           // ala
+}
 
 function paintFence(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, mapId: string): void {
   const X = tx * 16, Y = ty * 16;
+  // — Huerto grande: UN espantapájaros en la valla norte del recinto —
+  const blk = fenceBlockAt(tx, ty, mapId, nb);
+  if (blk.big && tx === blk.scTx && ty === blk.scTy) {
+    paintScarecrow(x, tx, ty, mapId);
+    return;
+  }
   grassBase(x, tx, ty, mapId);
   const hL = nb(-1, 0) === 'F', hR = nb(1, 0) === 'F';
   const vU = nb(0, -1) === 'F', vD = nb(0, 1) === 'F';
@@ -320,6 +658,19 @@ function paintFence(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At,
       px(x, bx, Y + 4, 4, 2, gC);                  // rotura: se ve el fondo
       px(x, bx + 4, Y + 5, 2, 1, PAL.woodMid);     // astilla despegada
       px(x, bx + 5, Y + 6, 2, 1, PAL.woodDark);    // punta que cae torcida
+    }
+    // poste de PORTILLO: tramo horizontal que termina contra un hueco
+    // (no contra otra valla ni en una esquina) → poste grueso con remate
+    if (!hR && !vU && !vD) {
+      px(x, X + 9, Y + 2, 2, 12, PAL.woodMid);
+      px(x, X + 9, Y + 2, 1, 12, PAL.woodLight);
+      px(x, X + 8, Y + 1, 4, 1, PAL.woodLight);    // remate
+      px(x, X + 8, Y + 14, 4, 1, PAL.woodDark);
+    } else if (!hL && !vU && !vD) {
+      px(x, X + 5, Y + 2, 2, 12, PAL.woodMid);
+      px(x, X + 5, Y + 2, 1, 12, PAL.woodLight);
+      px(x, X + 4, Y + 1, 4, 1, PAL.woodLight);
+      px(x, X + 4, Y + 14, 4, 1, PAL.woodDark);
     }
   }
   // poste con remate (uno por tile); torcido y más corto si está dañado
@@ -491,6 +842,70 @@ function paintRock(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, 
     px(x, X + L + 4, Y + sy, 1, 2, PAL.stoneVein);              // grieta
     if (!eU) px(x, X + L + (eL ? 1 : 3), Y + sy, 3, 1, PAL.mossTile); // musgo norte
   }
+  // piedritas sueltas al pie (hash; nunca entre rocas fusionadas)
+  if (!eD) {
+    if (vh(tx * 3 + 8, ty * 11 + 2) < 0.5) {
+      px(x, X + 2 + Math.floor(vh(tx * 5 + 1, ty * 7 + 3) * 10), Y + 15, 2, 1, PAL.pebble);
+    }
+    if (vh(tx * 9 + 4, ty * 5 + 6) < 0.35) {
+      px(x, X + 3 + Math.floor(vh(tx * 7 + 2, ty * 3 + 9) * 11), Y + 14, 1, 1, PAL.pebbleDark);
+    }
+  }
+}
+
+// ------------------------------------------------------------
+// Capa nocturna — ventanas encendidas (inerte hasta integración)
+// ------------------------------------------------------------
+
+let nightF = 0;
+
+/** Factor de noche 0..1 (0 = día → la capa no pinta nada).
+ *  El integrador lo deriva de g.dayT cada frame (ver cabecera). */
+export function setVillageNight(n: number): void {
+  nightF = n >= 1 ? 1 : n <= 0 ? 0 : n;
+}
+
+/**
+ * Resplandor cálido SOLO sobre las ventanas visibles de muros 'H'.
+ * MISMO plan de ventanas que el prerrender (windowPlanAbs) → el brillo
+ * cae píxel a píxel sobre el cristal pintado por paintWindow.
+ *
+ * Convenio idéntico a waterOverlay/drawTreeCanopy: camX/camY en px de
+ * PANTALLA (con ZOOM); el dibujo sale en px de MUNDO (llamar dentro del
+ * translate de cámara); `at` es ABSOLUTO. Sin llamada, sin `at`, de día
+ * (nf=0) o fuera de la cámara es un no-op sin allocations.
+ */
+export function drawVillageWindowsNight(
+  x: CanvasRenderingContext2D, camX: number, camY: number, mapId: string, t: number,
+  at?: AbsAt,
+): void {
+  if (nightF <= 0.02 || !at) return;
+  void mapId;
+  const viewW = VIEW_W / ZOOM, viewH = VIEW_H / ZOOM;   // ventana visible en px de mundo
+  const gx = Math.floor(camX / ZOOM), gy = Math.floor(camY / ZOOM);
+  const tx0 = Math.floor(gx / 16) - 1, tx1 = Math.ceil((gx + viewW) / 16) + 1;
+  const ty0 = Math.floor(gy / 16) - 1, ty1 = Math.ceil((gy + viewH) / 16) + 1;
+  for (let ty = ty0; ty <= ty1; ty++) {
+    for (let tx = tx0; tx <= tx1; tx++) {
+      if (at(tx, ty) !== 'H') continue;
+      if (!windowPlanAbs(tx, ty, at)) continue;
+      const wx = tx * 16 + 4, wy = ty * 16 + 4;
+      // parpadeo cálido determinista (fase por hash del tile)
+      const flick = 0.84 + 0.16 * Math.sin(t * 2.2 + vh(tx * 7 + 3, ty * 5 + 1) * 6.283);
+      const a = nightF * flick;
+      x.globalAlpha = 0.10 * a;
+      px(x, wx - 3, wy - 3, 14, 14, NIGHT_WARM);   // halo exterior
+      x.globalAlpha = 0.16 * a;
+      px(x, wx - 1, wy - 1, 10, 10, NIGHT_WARM);   // halo interior
+      x.globalAlpha = 0.72 * a;
+      px(x, wx + 1, wy + 1, 6, 6, NIGHT_GLASS);    // cristal encendido
+      x.globalAlpha = 0.85 * a;
+      px(x, wx + 2, wy + 2, 4, 4, NIGHT_CORE);
+      x.globalAlpha = Math.min(1, a);
+      px(x, wx + 3, wy + 2, 2, 2, NIGHT_HOT);      // mecha caliente
+      x.globalAlpha = 1;
+    }
+  }
 }
 
 // ------------------------------------------------------------
@@ -501,15 +916,17 @@ export function paintVillage(
   x: CanvasRenderingContext2D, ch: string, tx: number, ty: number,
   mapId: string, t: number, at?: NeighborFn,
 ): void {
-  void t; // prerrender estático (t=0); los objetos de aldea no animan
+  void t; // prerrender estático (t=0); la única capa animada es drawVillageWindowsNight
   const nb: At = at ?? (() => '?');
   switch (ch) {
-    case 'H': // pared casa: base + ventana(s) por hash
-      wallBase(x, tx, ty, nb);
-      paintWindowIfAny(x, tx, ty, nb);
+    case 'H': { // pared casa: base por material + ventana(s) por plan R1
+      const mat = houseBlockAt(tx, ty, mapId, nb).mat;
+      wallBase(x, tx, ty, nb, mat);
+      if (windowPlanAbs(tx, ty, (a) => nb(a - tx, 0))) paintWindow(x, tx, ty);
       return;
-    case 'r': paintRoof(x, tx, ty, nb); return;
-    case 'd': paintDoor(x, tx, ty, nb); return;
+    }
+    case 'r': paintRoof(x, tx, ty, nb, mapId); return;
+    case 'd': paintDoor(x, tx, ty, nb, mapId); return;
     case 'F': paintFence(x, tx, ty, nb, mapId); return;
     case 'w': paintWell(x, tx, ty, mapId); return;
     case 'g': paintGrave(x, tx, ty, nb, mapId); return;

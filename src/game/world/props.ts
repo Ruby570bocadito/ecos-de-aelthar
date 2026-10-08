@@ -1,9 +1,30 @@
 // ============================================================
-// ECOS DE AELTHAR — Props v2 (módulo world · R1-A10)
-// Sistema autocontenido de props del mapa: santuario, forja,
-// fragmento, altar del Eco, cartel y puerta. Todo dibujo es
-// directo por rects (sin caché SPR de sprites.ts) para que el
-// módulo no dependa de sprites ni de render.
+// ECOS DE AELTHAR — Props v3 (módulo world · R1-A10 + R4-A4)
+// Sistema autocontenido de props del mapa. Kinds reales:
+//   'sanctuary' · 'forge' · 'fragment' · 'altarEcho' · 'sign' · 'gate'
+// Todo dibujo es directo por rects (sin caché SPR de sprites.ts)
+// para que el módulo no dependa de sprites ni de render.
+//
+// NOVEDAD v3 (R4-A4 · aditivo, firma intacta):
+//   · sanctuary/altarEcho: aura de suelo con anillos concéntricos
+//     pixelados que "se inhalan" hacia el centro (ciclo 2 s), motas
+//     que ascienden y se disipan (2 runas / 3 motas doradas) y el
+//     cristal del santuario pulsa LENTO (2 s) sincronizado con el
+//     anillo flotante y el halo.
+//   · sign: tabla con vetas + tornillos (cabeza + ranura) +
+//     esquinas reforzadas con hierro; globo de lectura con borde
+//     doble (marco oscuro exterior + filo dorado).
+//   · gate: barrotes con remaches + óxido sutil de 2 tonos; de
+//     noche (g.dayT) la sombra se proyecta más larga; los pilares
+//     ganan grietas con musgo y base hundida 1 px en la tierra
+//     (los kinds tumba/pilar no existen en PropKind: se aplica a
+//     los pilares del portón, que son los únicos del juego).
+//   · forge: brasero con brasas de 3 tonos que alternan por hash
+//     (ventana 0.4 s), chispas que suben 1-2 px en ventanas
+//     discretas de 0.5 s y brillo metálico que recorre el canto
+//     del yunque.
+//   · selected (jugador <24 px): TODOS los kinds reciben un
+//     contorno claro de 1 px en el suelo que pulsa sutilmente.
 //
 // CONTRATO DE COORDENADAS (elección documentada):
 //   drawPropV2 recibe coords de MUNDO (wx, wy = centro del prop
@@ -16,7 +37,9 @@
 //   coincidir píxel a píxel con el resto de la capa de mundo.
 //
 // Determinismo: cero Math.random. Todas las animaciones usan
-// g.globalT, sin() y hash2() sobre el tile del prop.
+// g.globalT, sin() y hash2() sobre el tile del prop. El hash2
+// nativo devuelve [0,0.5): aquí se normaliza con h2() = ×2
+// (misma convención que spells/horror/telegraph de R3).
 // ============================================================
 
 import type { Game } from '../engine';
@@ -33,8 +56,14 @@ let _oy = 0;                 // ancla Y en pantalla (px enteros)
 let _t = 0;                  // globalT del frame
 let _tx = 0;                 // tile X del prop (para hash determinista)
 let _ty = 0;                 // tile Y del prop
+let _nf = 0;                 // factor noche 0..1 (de g.dayT, espejo de lighting.ts)
 
 // ---------------- Helpers de dibujo (px mundo locales ×ZOOM) ----------------
+
+/** hash2 normalizado a [0,1): el hash nativo solo devuelve [0,0.5). */
+function h2(a: number, b: number): number {
+  return hash2(a | 0, b | 0) * 2;
+}
 
 /** Rect sólido en px de mundo locales al prop (0,0 = ancla). Redondea a enteros. */
 function P(x: number, y: number, w: number, h: number, c: string): void {
@@ -85,6 +114,45 @@ function RING_HALF(cy: number, rx: number, ry: number, front: boolean, c: string
   x2.globalAlpha = prev;
 }
 
+/**
+ * Anillo de SUELO pixelado (elipse aplastada de bloques 1×1, sin arc/stroke).
+ * v3 R4-A4: aura del santuario/altar. N fijo por radio → determinista.
+ */
+function GROUND_RING(cy: number, rx: number, ry: number, c: string, a: number): void {
+  if (a <= 0.02) return;
+  const n = Math.max(16, Math.min(44, Math.round(rx * 3)));
+  for (let i = 0; i < n; i++) {
+    const ang = (i / n) * Math.PI * 2;
+    const gx = Math.round(Math.cos(ang) * rx);
+    const gy = cy + Math.round(Math.sin(ang) * ry);
+    PA(gx, gy, 1, 1, c, a);
+  }
+}
+
+// ---------------- Factor noche (espejo local de lighting.ts) ----------------
+
+/**
+ * Alpha de oscuridad del ciclo día/noche (dayT 0..1): MISMA tabla de
+ * keyframes que world/lighting.ts (solo lectura conceptual, documentada
+ * aquí porque props no importa lighting para no crear dependencias).
+ * Devuelve 0 (día pleno) .. 1 (noche cerrada, alpha ≥ 0.58).
+ */
+const DAY_ALPHA: readonly (readonly [number, number])[] = [
+  [0.00, 0.50], [0.08, 0.28], [0.15, 0.10], [0.26, 0.00], [0.44, 0.00],
+  [0.52, 0.00], [0.62, 0.10], [0.74, 0.45], [0.86, 0.58], [1.00, 0.50],
+];
+
+function nightFactor(dayT: number): number {
+  const d = ((dayT % 1) + 1) % 1;
+  let a = 0;
+  for (let i = 0; i + 1 < DAY_ALPHA.length; i++) {
+    const t0 = DAY_ALPHA[i][0], a0 = DAY_ALPHA[i][1];
+    const t1 = DAY_ALPHA[i + 1][0], a1 = DAY_ALPHA[i + 1][1];
+    if (d >= t0 && d <= t1) { a = a0 + (a1 - a0) * ((d - t0) / (t1 - t0)); break; }
+  }
+  return Math.min(1, Math.max(0, (a - 0.10) / 0.48));
+}
+
 // ---------------- PROP_SHADOW (export público) ----------------
 
 /**
@@ -129,7 +197,7 @@ function CANDLE(x: number, y: number, i: number): void {
   P(x, y, 2, 3, PAL_PROP.wax);          // cera
   P(x + 1, y, 1, 3, PAL_PROP.waxShade); // costado en sombra
   P(x, y - 1, 2, 1, PAL_PROP.waxHi);    // borde superior
-  if (hash2(x * 7 + i, y * 3 + 1) > 0.55) P(x, y + 1, 1, 1, PAL_PROP.waxHi); // gota de cera
+  if (h2(x * 7 + i, y * 3 + 1) > 0.55) P(x, y + 1, 1, 1, PAL_PROP.waxHi); // gota de cera
   const ff = Math.floor(_t * 6 + i * 1.7) % 3; // llama: 3 frames
   if (ff === 1) { // llama alta
     PA(x, y - 5, 1, 2, PAL_PROP.flame2, 0.95);
@@ -148,24 +216,51 @@ function PEBBLE(x: number, y: number, c: string, cHi: string, a = 1): void {
   PA(x, y, 2, 1, cHi, a * 0.9);
 }
 
+/**
+ * Contorno de SELECCIÓN (v3 R4-A4): corchetes claros de 1 px en el
+ * suelo alrededor de la base, con pulso sutil. Vale para todos los
+ * kinds (se dibuja tras el prop, alpha bajo → nunca tapa).
+ */
+function drawSelectedAura(): void {
+  const a = 0.20 + Math.sin(_t * 3.4) * 0.12; // 0.08..0.32
+  const c = PAL_PROP.runeCyanHi;
+  PA(-12, 3, 5, 1, c, a); PA(7, 3, 5, 1, c, a);               // aristas superiores
+  PA(-14, 6, 5, 1, c, a); PA(9, 6, 5, 1, c, a);               // aristas inferiores (1 px más anchas: perspectiva)
+  PA(-14, 4, 1, 2, c, a * 0.85); PA(13, 4, 1, 2, c, a * 0.85); // laterales
+}
+
 // ---------------- Santuario del Eco ----------------
 
 function drawSanctuary(): void {
   const t = _t;
   const fr = Math.floor(t * 2) % 2;                 // 2 frames deterministas del anillo
   const bob = Math.round(Math.sin(t * 2) * 1.5);    // flotación del anillo (px enteros)
+  // v3: ciclo LENTO de 2 s compartido — el cristal, el anillo y el aura
+  // respiran juntos (el Santuario "inhalas" cada 2 segundos).
+  const ph = (t % 2) / 2;
+  const pulse = Math.sin(ph * Math.PI);             // 0 → 1 → 0 en 2 s
 
   // sombra elíptica en el suelo
   PROP_SHADOW(_ctx!, _ox, _oy + 5 * ZOOM, 12, 3.5);
 
-  // halo elíptico (detrás de todo el prop)
-  ELL(0, -14, 16, 7, PAL_PROP.runeCyan, 0.07 + Math.sin(t * 2) * 0.04);
-  ELL(0, -14, 9, 4, PAL_PROP.runeCyanHi, 0.06 + Math.sin(t * 2.7) * 0.03);
+  // halo elíptico (detrás de todo el prop), sincronizado con el pulso
+  ELL(0, -14, 16, 7, PAL_PROP.runeCyan, 0.05 + pulse * 0.06);
+  ELL(0, -14, 9, 4, PAL_PROP.runeCyanHi, 0.04 + pulse * 0.05);
+
+  // v3: aura de suelo — 3 anillos concéntricos que se INHALAN hacia
+  // el obelisco (radio exterior → interior con fade senoidal).
+  for (let i = 0; i < 3; i++) {
+    const p = (ph + i / 3) % 1;
+    const rx = 17 - Math.round(p * 10);             // 17 → 7 px de mundo
+    GROUND_RING(4, rx, Math.max(2, Math.round(rx * 0.3)),
+      i === 1 ? PAL_PROP.runeCyanHi : PAL_PROP.runeCyan,
+      Math.sin(p * Math.PI) * 0.28);
+  }
 
   // anillo: mitad trasera (detrás del fuste) + abalorio si está detrás
   const ringY = -12 + bob;
   const ringRy = fr === 0 ? 3 : 2; // perspectiva: 2 frames
-  RING_HALF(ringY, 9, ringRy, false, PAL_PROP.runeCyan, 0.55);
+  RING_HALF(ringY, 9, ringRy, false, PAL_PROP.runeCyan, 0.35 + pulse * 0.3);
   const beadAng = t * 2.4;
   const beadFront = Math.sin(beadAng) >= 0;
   if (!beadFront) {
@@ -179,9 +274,9 @@ function drawSanctuary(): void {
   P(-5, 3, 1, 2, '#3e3e50'); // juntas
   P(4, 3, 1, 2, '#3e3e50');
   P(0, 5, 1, 1, '#3e3e50');
-  const r1 = hash2(_tx, _ty);
+  const r1 = h2(_tx, _ty);
   if (r1 > 0.35) P(-12 + Math.floor(r1 * 6), 2, 3, 1, PAL_PROP.moss);
-  const r2 = hash2(_tx * 3 + 1, _ty * 5 + 2);
+  const r2 = h2(_tx * 3 + 1, _ty * 5 + 2);
   if (r2 > 0.5) P(8 - Math.floor(r2 * 5), 4, 2, 1, PAL_PROP.mossDark);
   P(-5, 1, 2, 1, PAL_PROP.mossDark); // musgo al pie del fuste
 
@@ -193,8 +288,14 @@ function drawSanctuary(): void {
   P(1, -25, 2, 24, PAL_PROP.sanctShade);   // sombra
   P(-2, -27, 4, 2, PAL_PROP.sanctStone);   // remate
   P(-2, -27, 2, 1, PAL_PROP.sanctLight);
-  PA(-1, -29, 2, 2, PAL_PROP.runeCyan, 0.55 + Math.sin(t * 2.5) * 0.3); // punta luminosa
-  PA(-1, -29, 1, 1, PAL_PROP.runeCyanHi, 0.9);
+  // punta luminosa = CRISTAL del santuario: pulso LENTO de 2 s
+  PA(-1, -29, 2, 2, PAL_PROP.runeCyan, 0.5 + pulse * 0.4);
+  PA(-1, -29, 1, 1, PAL_PROP.runeCyanHi, 0.75 + pulse * 0.25);
+  if (pulse > 0.8) { // destello en cruz al culminar cada ciclo
+    const fa = ((pulse - 0.8) / 0.2) * 0.55;
+    PA(-3, -28, 1, 1, PAL_PROP.runeCyanHi, fa); PA(2, -28, 1, 1, PAL_PROP.runeCyanHi, fa);
+    PA(-1, -31, 1, 1, PAL_PROP.runeCyanHi, fa); PA(-1, -26, 1, 1, PAL_PROP.runeCyanHi, fa);
+  }
 
   // runas cian que recorren el fuste: posición = floor(globalT*2)%4
   const slot = Math.floor(t * 2) % 4;
@@ -206,18 +307,26 @@ function drawSanctuary(): void {
   }
 
   // anillo: mitad frontal (delante del fuste) + abalorio delante
-  RING_HALF(ringY, 9, ringRy, true, PAL_PROP.runeCyanHi, 0.9);
+  RING_HALF(ringY, 9, ringRy, true, PAL_PROP.runeCyanHi, 0.6 + pulse * 0.35);
   if (beadFront) {
     PA(Math.round(Math.cos(beadAng) * 9) - 1, ringY + Math.round(Math.sin(beadAng) * ringRy), 2, 2, PAL_PROP.runeCyanHi, 0.95);
   }
 
   // partículas ascendentes (4, deterministas con sin + hash)
   for (let i = 0; i < 4; i++) {
-    const ph = hash2(_tx * 5 + i * 13, _ty * 9 + i * 7);
-    const cyc = (t * 0.35 + ph) % 1;                       // 0..1 ciclo de subida
+    const ph2 = h2(_tx * 5 + i * 13, _ty * 9 + i * 7);
+    const cyc = (t * 0.35 + ph2) % 1;                       // 0..1 ciclo de subida
     const yy = 2 - Math.round(cyc * 26);
-    const xx = (i < 2 ? -3 : 3) + Math.round(Math.sin(cyc * 6.283 + ph * 6.283) * 3);
+    const xx = (i < 2 ? -3 : 3) + Math.round(Math.sin(cyc * 6.283 + ph2 * 6.283) * 3);
     PA(xx, yy, 1, 2, i % 2 === 0 ? PAL_PROP.runeCyan : PAL_PROP.runeCyanHi, Math.sin(cyc * Math.PI) * 0.7);
+  }
+
+  // v3: motas-runa que ascienden junto al fuste y se DISIPAN (2)
+  for (let i = 0; i < 2; i++) {
+    const cyc = (t * 0.26 + i * 0.47) % 1;
+    const my = 2 - Math.round(cyc * 24);
+    const mx = (i === 0 ? -7 : 6) + Math.round(Math.sin(cyc * 5.1 + i * 2.6) * 2);
+    RUNE(2 + i, mx, my, i === 0 ? PAL_PROP.runeCyan : PAL_PROP.runeCyanHi, Math.sin(cyc * Math.PI) * 0.6);
   }
 }
 
@@ -225,7 +334,6 @@ function drawSanctuary(): void {
 
 function drawForge(): void {
   const t = _t;
-  const fr = Math.floor(t * 3) % 2;                 // 2 tonos de brasa alternos
 
   // sombra elíptica
   PROP_SHADOW(_ctx!, _ox, _oy + 5 * ZOOM, 13, 3.5);
@@ -238,16 +346,26 @@ function drawForge(): void {
   P(-17, -2, 8, 1, PAL_PROP.ironHi);
   P(-16, -1, 6, 4, PAL_PROP.barDeep);       // hueco
   P(-16, 1, 6, 2, '#1c1c26');               // carbones apagados
-  PA(-15, 0, 4, 2, fr === 0 ? PAL_PROP.ember1 : PAL_PROP.ember2, 0.85 + Math.sin(t * 7) * 0.15);
-  PA(-14, 0, 2, 2, PAL_PROP.emberCore, 0.95);
-  PA(-15, -1, 2, 1, PAL_PROP.ember2, 0.8);  // brasa que asoma
+  // v3: brasero — 3 celdas de brasa 2×2 con 3 TONOS que alternan por
+  // hash (ventana discreta de 0.4 s) + núcleo caliente estable.
+  const estep = Math.floor(t * 2.5);
+  for (let i = 0; i < 3; i++) {
+    const tn = Math.floor(h2(estep * 31 + i * 7 + _tx, _ty * 5 + i * 3) * 3); // 0..2
+    const col = tn === 0 ? PAL_PROP.ember1 : tn === 1 ? PAL_PROP.ember2 : PAL_PROP.emberCore;
+    PA(-15 + i * 2, 0, 2, 2, col, 0.72 + h2(estep * 17 + i * 5, _tx + _ty * 7) * 0.23);
+  }
+  PA(-14, 0, 2, 1, PAL_PROP.emberCore, 0.95); // núcleo blanco-caliente
+  PA(-15, -1, 2, 1, PAL_PROP.ember2, 0.8);    // brasa que asoma
+  // v3: labio inferior del brasero + pie de hierro
+  P(-17, 3, 8, 1, PAL_PROP.ironDeep);
+  P(-16, 4, 6, 1, '#26262f');
 
   // tocón (base de madera)
   P(-10, -2, 20, 7, PAL.woodMid);
   P(-9, -4, 18, 2, PAL.wood);   // cara superior
   P(-7, -4, 14, 1, PAL.woodLight);
   P(-10, 3, 20, 2, PAL.woodDark);
-  const rv = hash2(_tx + 9, _ty + 3);
+  const rv = h2(_tx + 9, _ty + 3);
   P(-7 + Math.floor(rv * 3), -1, 1, 3, PAL.woodDark); // vetas
   P(1, 0, 1, 3, PAL.woodDark);
   P(6, -1, 1, 4, PAL.woodDark);
@@ -260,6 +378,11 @@ function drawForge(): void {
   P(5, -10, 2, 2, PAL_PROP.ironLight);      // cuerna
   P(7, -9, 2, 1, PAL_PROP.iron);
   P(-7, -8, 12, 1, PAL_PROP.ironDeep);      // canto inferior
+  // v3: brillo metálico que recorre el CANTO del yunque (barrido lento
+  // determinista) + destello fijo en la cuerna.
+  const swp = (t * 0.55 + h2(_tx + 5, _ty + 11)) % 1;
+  PA(-6 + Math.round(swp * 10), -10, 2, 1, '#c0c6d0', 0.28 + Math.sin(swp * Math.PI) * 0.4);
+  PA(6, -10, 1, 1, '#c0c6d0', 0.5);
 
   // humillo: 3 puffs que suben y se disipan (determinista)
   for (let i = 0; i < 3; i++) {
@@ -290,17 +413,27 @@ function drawForge(): void {
   P(-6 + sway, 2, 1, 1, '#5a5a6a');                 // callos
   P(-2 + sway, 2, 1, 1, '#5a5a6a');
 
-  // chispas ocasionales: hash2 + floor(globalT*3)
+  // v3: chispas que SUBEN 1-2 px — ventana discreta de 0.5 s
+  const w5 = Math.floor(t * 2);
+  const pr5 = t * 2 - w5;
+  const rw = h2(w5 * 29 + _tx * 7, _ty * 5 + 3);
+  if (rw < 0.82) {
+    PA(-14 + Math.floor(rw * 8) + Math.round(pr5), -3 - Math.round(pr5 * 2), 1, 1,
+      rw < 0.35 ? PAL_PROP.emberCore : PAL_PROP.spark, Math.max(0.02, (1 - pr5) * 0.9));
+  }
+
+  // chispas ocasionales (salpicadura): hash2 + floor(globalT*3)
   const seed = Math.floor(t * 3);
-  const rs = hash2(seed * 17 + _tx * 3, _ty * 11 + 5);
+  const rs = h2(seed * 17 + _tx * 3, _ty * 11 + 5);
   if (rs > 0.4) {
     const age = t * 3 - seed; // 0..1 vida del chispazo
+    const fade = Math.max(0.02, 1 - age); // piso de alpha: presencia estable en la ventana
     for (let i = 0; i < 3; i++) {
-      const vx = (hash2(seed * 7 + i, 3) * 2 - 1) * 5;
-      const vy = 14 + hash2(seed * 3, i * 5) * 8;
+      const vx = (h2(seed * 7 + i, 3) * 2 - 1) * 5;
+      const vy = 14 + h2(seed * 3, i * 5) * 8;
       const xx = -13 + Math.round(vx * age);
       const yy = -1 - Math.round(vy * age) + Math.round(10 * age * age); // gravedad
-      PA(xx, yy, 1, 1, i === 0 ? PAL_PROP.emberCore : PAL_PROP.spark, 1 - age);
+      PA(xx, yy, 1, 1, i === 0 ? PAL_PROP.emberCore : PAL_PROP.spark, fade);
     }
   }
 }
@@ -361,9 +494,19 @@ function drawFragment(): void {
 
 function drawAltarEcho(g: Game): void {
   const t = _t;
+  const ph = (t % 2) / 2; // v3: ciclo de 2 s compartido con el santuario
 
   // sombra elíptica
   PROP_SHADOW(_ctx!, _ox, _oy + 5 * ZOOM, 12, 3);
+
+  // v3: aura dorada de suelo — 3 anillos que se inhalan hacia la losa
+  for (let i = 0; i < 3; i++) {
+    const p = (ph + i / 3) % 1;
+    const rx = 14 - Math.round(p * 7);              // 14 → 7 px de mundo
+    GROUND_RING(3, rx, Math.max(2, Math.round(rx * 0.3)),
+      i === 1 ? PAL_PROP.crackGoldHi : PAL_PROP.crackGold,
+      Math.sin(p * Math.PI) * 0.24);
+  }
 
   // losa del altar (2 escalones)
   P(-10, 1, 20, 4, '#6a6a7a');
@@ -407,6 +550,15 @@ function drawAltarEcho(g: Game): void {
       PA(Math.round(Math.cos(ang) * 7) - 1, -14 + bob2 + Math.round(Math.sin(ang) * 2.5), 1, 1, PAL_PROP.crackGoldHi, 0.8);
     }
   }
+
+  // v3: 3 motas doradas que suben desde el canal y se disipan
+  for (let i = 0; i < 3; i++) {
+    const cyc = (t * 0.4 + i / 3) % 1;
+    const mx = -5 + i * 5 + Math.round(Math.sin(cyc * 4.2 + i * 2.1) * 1.5);
+    const my = -4 - Math.round(cyc * 14);
+    PA(mx, my, 1, 1, PAL_PROP.crackGoldHi, (1 - cyc) * 0.75);
+    PA(mx, my + 1, 1, 1, PAL_PROP.crackGold, (1 - cyc) * 0.4);
+  }
 }
 
 // ---------------- Cartel de madera ----------------
@@ -429,19 +581,31 @@ function drawSign(selected: boolean): void {
   P(-8 + dx, -11, 16, 1, PAL.door);  // sombra inferior
   P(-8 + dx, -18, 1, 8, PAL.door);   // bordes
   P(7 + dx, -18, 1, 8, PAL.door);
-  // clavos (oscuros, con microrreflejo)
-  P(-7 + dx, -17, 1, 1, '#1f1208');
-  P(6 + dx, -17, 1, 1, '#1f1208');
-  P(-7 + dx, -12, 1, 1, '#1f1208');
-  P(6 + dx, -12, 1, 1, '#1f1208');
-  P(-6 + dx, -17, 1, 1, '#c9a86a');
-  P(7 + dx, -12, 1, 1, '#c9a86a');
-  // veta (determinista por tile)
-  const r = hash2(_tx, _ty);
+  // v3: ESQUINAS reforzadas — escuadras de hierro en L (4 esquinas)
+  const bk = '#3c3126', bkHi = '#5a4a34';
+  P(-8 + dx, -18, 3, 1, bk); P(-8 + dx, -18, 1, 3, bk);   // sup-izq
+  P(5 + dx, -18, 3, 1, bk); P(7 + dx, -18, 1, 3, bk);     // sup-der
+  P(-8 + dx, -11, 3, 1, bk); P(-8 + dx, -13, 1, 3, bk);   // inf-izq
+  P(5 + dx, -11, 3, 1, bk); P(7 + dx, -13, 1, 3, bk);     // inf-der
+  P(-6 + dx, -16, 1, 1, bkHi); P(6 + dx, -16, 1, 1, bkHi); // brillos de escuadra
+  P(-6 + dx, -13, 1, 1, bkHi); P(6 + dx, -13, 1, 1, bkHi);
+  // v3: TORNILLOS (cabeza clara + ranura oscura; orientación por hash)
+  P(-7 + dx, -17, 1, 1, '#9aa0ac'); P(6 + dx, -17, 1, 1, '#9aa0ac');
+  P(-7 + dx, -12, 1, 1, '#9aa0ac'); P(6 + dx, -12, 1, 1, '#9aa0ac');
+  if (h2(_tx + 3, _ty + 7) < 0.5) { // ranuras horizontales (hacia dentro)
+    P(-6 + dx, -17, 1, 1, '#2a2a34'); P(5 + dx, -17, 1, 1, '#2a2a34');
+    P(-6 + dx, -12, 1, 1, '#2a2a34'); P(5 + dx, -12, 1, 1, '#2a2a34');
+  } else {                          // ranuras verticales (hacia dentro)
+    P(-7 + dx, -16, 1, 1, '#2a2a34'); P(6 + dx, -16, 1, 1, '#2a2a34');
+    P(-7 + dx, -13, 1, 1, '#2a2a34'); P(6 + dx, -13, 1, 1, '#2a2a34');
+  }
+  // veta (determinista por tile) — v3: hash normalizado (ramas vivas) + 3ª veta
+  const r = h2(_tx, _ty);
   P(-6 + dx, -15, 7, 1, '#6d4520');
   P(1 + dx, -13, 5, 1, '#6d4520');
-  if (r > 0.5) P(-4 + dx, -14, 4, 1, '#7a5230');
-  if (r < 0.35) P(3 + dx, -16, 2, 1, '#5c3a1e'); // nudo
+  P(-2 + dx, -14, 3, 1, '#6d4520');
+  if (r > 0.5) P(-4 + dx, -16, 4, 1, '#7a5230');
+  if (r < 0.35) { P(3 + dx, -16, 2, 1, '#5c3a1e'); P(4 + dx, -16, 1, 1, '#4a2d16'); } // nudo
 
   // icono de lectura (solo seleccionado): globito redondeado con "E"
   if (selected) {
@@ -449,6 +613,11 @@ function drawSign(selected: boolean): void {
     P(-4, by, 9, 9, 'rgba(10,12,20,0.85)');
     P(-2, by - 1, 5, 1, 'rgba(10,12,20,0.85)');   // esquinas redondeadas
     P(-2, by + 9, 5, 1, 'rgba(10,12,20,0.85)');
+    // v3: BORDE DOBLE — marco oscuro exterior + filo dorado interior
+    P(-5, by - 1, 11, 1, 'rgba(6,8,14,0.9)');
+    P(-5, by + 10, 11, 1, 'rgba(6,8,14,0.9)');
+    P(-6, by, 1, 10, 'rgba(6,8,14,0.9)');
+    P(6, by, 1, 10, 'rgba(6,8,14,0.9)');
     P(-4, by, 9, 1, PAL.gold);                    // borde sin esquinas duras
     P(-4, by + 9, 9, 1, PAL.gold);
     P(-5, by + 1, 1, 8, PAL.gold);
@@ -463,11 +632,21 @@ function drawSign(selected: boolean): void {
 
 // ---------------- Puerta / arco de piedra ----------------
 
+// Óxido del portcullis (v3: 2 tonos, locales al módulo)
+const RUST_A = '#7a4a28';
+const RUST_B = '#5a3a20';
+
 function drawGate(): void {
   const t = _t;
+  const nf = _nf; // factor noche 0..1 (de g.dayT)
 
   // sombra elíptica ancha
   PROP_SHADOW(_ctx!, _ox, _oy + 5 * ZOOM, 15, 3);
+  // v3: de NOCHE la sombra se proyecta más larga hacia el sur
+  if (nf > 0.02) {
+    PROP_SHADOW(_ctx!, _ox, _oy + (5 + 8 * nf) * ZOOM, 14 + 5 * nf, 2.5 + nf, 0.05 + 0.14 * nf);
+    PA(-10, 7 + Math.round(nf * 3), 20, 1, '#0a0e18', 0.12 * nf); // veta de sombra en el suelo
+  }
 
   // pilares con sillares (offset por hash para variedad)
   for (let side = 0; side < 2; side++) {
@@ -479,6 +658,17 @@ function drawGate(): void {
     for (let yy = -22 + off; yy < 3; yy += 5) P(x0, yy, 5, 1, '#585868'); // juntas
     P(x0 - 1, -22, 7, 2, '#8a8a9a');  // capitel
     P(x0 - 1, -20, 7, 1, '#3e3e50');
+    // v3: base hundida 1 px en la tierra (zanja que se come el sillar)
+    P(x0 - 1, 3, 7, 1, '#3a3524');
+    P(x0, 4, 5, 1, '#332e20');
+    // v3: grieta con musgo (hash por pilar) — tramos discretos de 4 px
+    const hg = h2(_tx * 13 + side * 7 + 3, _ty * 3 + side * 11 + 1);
+    if (hg < 0.75) {
+      const gy = -17 + (Math.floor(hg * 30) % 5) * 4; // -17..-1
+      P(x0 + 2 + (Math.floor(hg * 70) % 2), gy, 1, 4, '#4a4a58');
+      if (hg < 0.4) P(x0 + 1 + (Math.floor(hg * 110) % 3), gy + 4, 2, 1, PAL_PROP.moss);
+    }
+    if (hg > 0.35) P(x0 + 1 + (Math.floor(hg * 8) % 3), 0, 2, 1, PAL_PROP.mossDark); // musgo al pie
   }
 
   // penumbra del vano
@@ -490,9 +680,21 @@ function drawGate(): void {
     P(x, -19, 2, 21, PAL_PROP.bar);
     P(x, -19, 1, 21, PAL_PROP.barHi);  // filo de luz del barrote
     P(x, 2, 2, 2, PAL_PROP.barDeep);   // punta inferior
+    // v3: REMACHES (cabeza clara + asiento oscuro) arriba y abajo
+    P(x + 1, -16, 1, 1, PAL_PROP.barHi); P(x + 1, -15, 1, 1, PAL_PROP.barDeep);
+    P(x + 1, -5, 1, 1, PAL_PROP.barHi); P(x + 1, -4, 1, 1, PAL_PROP.barDeep);
+    // v3: óxido sutil de 2 tonos (2 parches por barrote, hash independiente)
+    const ra = h2(_tx * 7 + x * 13 + 1, _ty * 5 + x + 2);
+    if (ra < 0.6) P(x + 1, -18 + (Math.floor(ra * 33) % 19), 1, 2, ra < 0.3 ? RUST_A : RUST_B);
+    const rc = h2(_tx * 11 + x * 17 + 5, _ty * 7 + x * 3 + 9);
+    if (rc < 0.55) P(x, -18 + (Math.floor(rc * 41) % 20), 1, 1, rc < 0.22 ? RUST_B : RUST_A);
   }
   P(-6, -10, 14, 1, PAL_PROP.bar);     // travesaño
   P(-6, -9, 14, 1, PAL_PROP.barDeep);
+  // v3: remaches del travesaño + óxido ocasional
+  P(-4, -10, 1, 1, PAL_PROP.barHi); P(2, -10, 1, 1, PAL_PROP.barHi);
+  const rb = h2(_tx * 3 + 5, _ty * 9 + 7);
+  if (rb < 0.65) P(-5 + (Math.floor(rb * 24) % 12), -10, 2, 1, RUST_B);
 
   // dintel con dovelas y clave central
   P(-14, -26, 28, 4, '#6a6a7a');
@@ -514,12 +716,14 @@ function drawGate(): void {
 // ---------------- Entrada principal ----------------
 
 /**
- * Dibuja un prop v2. VER CONTRATO DE COORDENADAS en la cabecera:
+ * Dibuja un prop v3. VER CONTRATO DE COORDENADAS en la cabecera:
  * wx/wy en píxeles de MUNDO (centro del prop = pr.x*16+8, pr.y*16+8).
  * El integrador debe llamarlo dentro del bloque con WORLD_FILTER si
  * quiere heredar el filtro de época; este módulo no toca ctx.filter.
  * `selected`: el prop es el objetivo de interacción más cercano
- * (solo lo usa 'sign' para el temblor de 1 px y el icono de lectura).
+ * (<24 px del jugador) — el cartel tiembla y muestra el globo de
+ * lectura con borde doble, y TODOS los kinds reciben el contorno
+ * claro de 1 px que pulsa (drawSelectedAura).
  */
 export function drawPropV2(
   ctx: CanvasRenderingContext2D, kind: string,
@@ -531,6 +735,7 @@ export function drawPropV2(
   _t = g.globalT;
   _tx = Math.floor(wx / TILE);
   _ty = Math.floor(wy / TILE);
+  _nf = nightFactor(g.dayT); // v3: factor noche para sombras largas (gate)
   ctx.save();
   try {
     switch (kind) {
@@ -542,6 +747,9 @@ export function drawPropV2(
       case 'gate': drawGate(); break;
       default: break; // kinds desconocidos: no-op seguro
     }
+    // v3: contorno de selección para todos los kinds (tras el prop,
+    // alpha sutil → resalta sin tapar).
+    if (selected) drawSelectedAura();
   } finally {
     ctx.restore();
     _ctx = null;

@@ -1,16 +1,24 @@
 // ============================================================
-// ECOS DE AELTHAR — Minimapa v2 (módulo world)
+// ECOS DE AELTHAR — Minimapa v3 (módulo world)
 // Sustituto mejorado del minimapa plano de buildGround():
 //  · 2 px por tile con paleta coherente con los módulos world
 //  · variación de hierba por hash, relieve falso por bloques
 //    de tiles del mismo tipo, contorno costero del agua
 //  · tinte cálido suave en la época 'pasado'
-//  · overlay con marco de madera remachado, placa de título y
-//    marcadores: jugador (ámbar pulsante + flecha), NPC (blanco),
-//    santuario (rombo cian), cofre sin abrir (dorado),
-//    jefe vivo (rojo parpadeante) y salidas (flechas tenues)
-// Todo determinista (sin Math.random): las animaciones derivan
-// de g.globalT. El canvas base se cachea por (mapa+época).
+//  · overlay con marco de madera remachado y placa integrada v3
+//    (hairline dorada + aguja N de 4 px) y marcadores: jugador
+//    (ámbar pulsante + aguja direccional según p.dir + estela de
+//    2 posiciones previas), NPC (blanco), santuario (rombo cian
+//    + anillo expansivo tenue cada ~2.5 s), cofre sin abrir
+//    (dorado), jefe vivo (rojo parpadeante) y salidas (flechas)
+//  · R4-A9/A9b: objetivos de misión vía setMinimapTargets() — diana
+//    dorada que pulsa con sin(t*3) para kind 'quest' y 'salida' (esta
+//    última con marco pálido acorde a las flechas de exit); anillo
+//    expansivo para 'altar'. Mientras nadie llame al setter, es no-op.
+// Todo determinista (sin Math.random): las animaciones derivan de
+// g.globalT. La estela del jugador es historial posicional (misma
+// secuencia de frames → mismo dibujo). El canvas base se cachea
+// por (mapa+época).
 // ============================================================
 
 import type { Game } from '../engine';
@@ -263,6 +271,41 @@ export function buildMinimapV2(
 
 // ---------------- overlay (marco + marcadores) ----------------
 
+// ---------------- objetivos y estado del overlay (R4-A9) ----------------
+
+/**
+ * Objetivo destacable en el minimapa. x/y en TILES del mapa (los mismos
+ * que usa maps.ts); el centro del marcador cae en el centro del tile.
+ */
+export type MinimapTarget = { x: number; y: number; kind: 'quest' | 'altar' | 'salida' };
+
+/** Objetivos actuales; vacío hasta que render.ts llame a setMinimapTargets(). */
+let minimapTargets: MinimapTarget[] = [];
+
+/**
+ * Registra los objetivos a destacar (llamado por render.ts cada vez que
+ * cambian questIdx/questStep, calculado con QUESTS + coords de maps.ts).
+ * Mientras no se llame, la lista queda vacía y el overlay es no-op con
+ * respecto a los objetivos (todo lo demás de la v2 se dibuja igual).
+ * Entradas con coordenadas no finitas se descartan por robustez.
+ */
+export function setMinimapTargets(list: MinimapTarget[]): void {
+  minimapTargets = Array.isArray(list)
+    ? list.filter((tg) => !!tg && Number.isFinite(tg.x) && Number.isFinite(tg.y))
+    : [];
+}
+
+// estela del jugador: historial posicional por mapa (px de mundo). Se
+// muestrea al FINAL del bloque para que lo dibujado en un frame sea
+// siempre estrictamente anterior a la posición actual del jugador.
+const TRAIL_STEP_PX = 24; // 1.5 tiles entre muestras: cola legible sin ruido
+const TRAIL_MAX = 2;      // 2 posiciones previas tenues
+const trailHist: { x: number; y: number }[] = [];
+let trailMapId: string | undefined;
+
+/** Periodo del anillo expansivo del santuario (s). */
+const RING_PERIOD = 2.5;
+
 /** Triángulo/flecha pixel determinista (con contorno oscuro). */
 function arrowTri(
   ctx: CanvasRenderingContext2D, x: number, y: number,
@@ -283,6 +326,29 @@ function arrowTri(
   tri(r);
 }
 
+/** Rombo pixel relleno centrado en (cx,cy) — helper común de marcadores. */
+function diamond(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, col: string): void {
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r);
+  ctx.lineTo(cx + r, cy);
+  ctx.lineTo(cx, cy + r);
+  ctx.lineTo(cx - r, cy);
+  ctx.closePath();
+  ctx.fillStyle = col;
+  ctx.fill();
+}
+
+/**
+ * Aguja Norte de 4 px para la placa: punta arriba, base de cabeza y
+ * mástil de 2 px. Coordenadas enteras (pixel-art limpio sobre la placa).
+ */
+function northNeedle(ctx: CanvasRenderingContext2D, x: number, yBase: number): void {
+  ctx.fillStyle = COL.gold;
+  ctx.fillRect(x, yBase - 2, 1, 1);   // punta
+  ctx.fillRect(x - 1, yBase - 1, 3, 1); // base de la cabeza
+  ctx.fillRect(x, yBase, 1, 2);       // mástil
+}
+
 /** Remache metálico 3×3 con asiento sombreado (esquinas del marco). */
 function rivet(ctx: CanvasRenderingContext2D, rx: number, ry: number): void {
   ctx.fillStyle = '#2a2a33'; ctx.fillRect(rx - 1, ry - 1, 4, 4);
@@ -292,8 +358,9 @@ function rivet(ctx: CanvasRenderingContext2D, rx: number, ry: number): void {
 }
 
 /**
- * Dibuja el minimapa v2 en pantalla (arriba-derecha): marco de madera
- * con esquinas remachadas, placa con el título del mapa y marcadores.
+ * Dibuja el minimapa v3 en pantalla (arriba-derecha): marco de madera
+ * con esquinas remachadas, placa integrada con aguja N, marcadores de
+ * siempre y los objetivos de misión registrados vía setMinimapTargets.
  * El contenido se recorta con clipping al área interior del marco.
  */
 export function drawMinimapOverlay(
@@ -336,19 +403,32 @@ export function drawMinimapOverlay(
   rivet(ctx, fx + 3, fy + fh - 6);
   rivet(ctx, fx + fw - 6, fy + fh - 6);
 
-  // ---- placa del título ----
+  // ---- placa integrada v3: fondo limpio con sombra interna, hairline
+  //      dorada que la funde con el mapa, aguja N (4 px) a la izquierda
+  //      y título con sombra de 1 px ----
+  const plateRows = plateH - 2; // 13 filas de placa; la hairline cierra abajo
+  const plateCy = fy + 3 + Math.round((plateRows - 1) / 2) + 1; // centro óptico
   ctx.fillStyle = past ? '#2c2010' : '#1c1826';
-  ctx.fillRect(mapX, fy + 3, dw, plateH - 1);
-  ctx.fillStyle = past ? '#8a6238' : '#6a4e30'; // filete de la placa
-  ctx.fillRect(mapX, fy + 3, dw, 1);
+  ctx.fillRect(mapX, fy + 3, dw, plateRows);
+  ctx.fillStyle = past ? '#241a0e' : '#131020'; // sombra interna inferior
+  ctx.fillRect(mapX, fy + 2 + plateRows, dw, 1);
+  ctx.fillStyle = past ? '#a87c46' : '#8a6c40'; // hairline dorada (une placa y mapa)
   ctx.fillRect(mapX, fy + plateH + 1, dw, 1);
+  northNeedle(ctx, mapX + 6, plateCy);
+  ctx.font = fBody(11);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#c9b992';
+  ctx.fillText('N', mapX + 9, plateCy + 0.5);
   ctx.font = fBody(14);
   ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
+  const titleX = fx + fw / 2;
+  ctx.fillStyle = '#0e0c16'; // sombra del título
+  ctx.fillText(map.name, titleX, plateCy + 1);
   ctx.fillStyle = COL.goldSoft;
-  ctx.fillText(map.name, fx + fw / 2, fy + 3 + (plateH - 1) / 2 + 1);
+  ctx.fillText(map.name, titleX, plateCy);
   if (past) { // insignia de época: rombo cálido a la derecha
-    const ex2 = fx + fw - 11, ey2 = fy + 3 + (plateH - 1) / 2 + 1;
+    const ex2 = fx + fw - 11, ey2 = plateCy;
     ctx.fillStyle = COL.epochPast;
     ctx.fillRect(ex2, ey2 - 1, 3, 3);
     ctx.fillRect(ex2 + 1, ey2 - 2, 1, 5);
@@ -368,6 +448,29 @@ export function drawMinimapOverlay(
   // proyección mundo(px) → minimapa(px de pantalla)
   const wx = (xpx: number) => mapX + (xpx / (map.w * TILE)) * dw;
   const wy = (ypx: number) => mapY + (ypx / (map.h * TILE)) * dh;
+
+  // ---- estela del jugador (R4-A9): 2 posiciones previas tenues ----
+  // Se dibuja el historial ANTES de muestrear: lo pintado en un frame es
+  // siempre estrictamente anterior a la posición actual. El historial se
+  // resetea al cambiar de mapa (las coordenadas de otro mapa no aplican).
+  const pt = g.player;
+  if (pt) {
+    if (trailMapId !== g.mapId) { trailHist.length = 0; trailMapId = g.mapId; }
+    for (let i = 0; i < trailHist.length; i++) {
+      const ax = Math.round(wx(trailHist[i].x)), ay = Math.round(wy(trailHist[i].y));
+      ctx.globalAlpha = i === 0 ? 0.16 : 0.34; // antigua → reciente
+      ctx.fillStyle = COL.gold;
+      ctx.fillRect(ax - 1, ay, 3, 1);
+      ctx.fillRect(ax, ay - 1, 1, 1);
+      ctx.fillRect(ax, ay + 1, 1, 1);
+    }
+    ctx.globalAlpha = 1;
+    const last = trailHist[trailHist.length - 1];
+    if (!last || (pt.x - last.x) * (pt.x - last.x) + (pt.y - last.y) * (pt.y - last.y) >= TRAIL_STEP_PX * TRAIL_STEP_PX) {
+      trailHist.push({ x: pt.x, y: pt.y });
+      if (trailHist.length > TRAIL_MAX) trailHist.shift();
+    }
+  }
 
   // salidas: flecha tenue apuntando al borde correspondiente
   for (const ex of map.exits) {
@@ -402,6 +505,42 @@ export function drawMinimapOverlay(
     ctx.fillStyle = '#f4f4f0'; ctx.fillRect(cx - 1, cy - 1, 2, 2);
   }
 
+  // ---- pulso del santuario (R4-A9): anillo expansivo tenue cada ~2.5 s ----
+  // Emisores: g.sanctuaryPos(mapId) (público en engine) y, como respaldo,
+  // los objetivos kind 'altar' de setMinimapTargets (deduplicados por tile
+  // contra el santuario del motor para no duplicar anillos).
+  let sancKey: string | null = null;
+  const ringPts: [number, number][] = [];
+  try {
+    if (typeof g.sanctuaryPos === 'function' && g.mapId) {
+      const sp = g.sanctuaryPos(g.mapId);
+      if (sp && Number.isFinite(sp[0]) && Number.isFinite(sp[1])) {
+        sancKey = `${Math.round(sp[0])},${Math.round(sp[1])}`;
+        ringPts.push([sp[0], sp[1]]);
+      }
+    }
+  } catch { /* motor no disponible (juegos falsos): sin emisores propios */ }
+  for (const tg of minimapTargets) {
+    if (tg.kind !== 'altar') continue;
+    const key = `${Math.round(tg.x)},${Math.round(tg.y)}`;
+    if (key === sancKey || ringPts.some(([rx, ry]) => Math.round(rx) === Math.round(tg.x) && Math.round(ry) === Math.round(tg.y))) continue;
+    ringPts.push([tg.x, tg.y]);
+  }
+  if (ringPts.length) {
+    const ph = (t % RING_PERIOD) / RING_PERIOD; // 0..1 dentro del ciclo
+    const rr = 2.5 + ph * 11;
+    ctx.strokeStyle = '#8ef0ff';
+    ctx.lineWidth = 1;
+    for (const [rtx, rty] of ringPts) {
+      const cx = wx(rtx * TILE + 8), cy = wy(rty * TILE + 8);
+      ctx.globalAlpha = 0.36 * (1 - ph); // tenue y desvaneciendo hasta cerrar el ciclo
+      ctx.beginPath();
+      ctx.arc(cx, cy, rr, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
   // santuarios: rombo cian con pulso (filtrando needPast/needPresent)
   for (const pr of map.props) {
     if (pr.kind !== 'sanctuary') continue;
@@ -409,14 +548,6 @@ export function drawMinimapOverlay(
     if (pr.needPresent && past) continue;
     const cx = wx(pr.x * TILE + 8), cy = wy(pr.y * TILE + 8);
     const pulse = 0.5 + 0.5 * Math.sin(t * 2.6 + pr.x);
-    const dia = (r: number, col: string) => {
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - r); ctx.lineTo(cx + r, cy);
-      ctx.lineTo(cx, cy + r); ctx.lineTo(cx - r, cy);
-      ctx.closePath();
-      ctx.fillStyle = col;
-      ctx.fill();
-    };
     ctx.globalAlpha = 0.3 + pulse * 0.25;
     ctx.strokeStyle = '#8ef0ff';
     ctx.lineWidth = 1;
@@ -424,8 +555,8 @@ export function drawMinimapOverlay(
     ctx.arc(cx, cy, 6 + pulse * 2, 0, Math.PI * 2);
     ctx.stroke();
     ctx.globalAlpha = 1;
-    dia(4, '#0c2a30'); // contorno
-    dia(3, '#8ef0ff');
+    diamond(ctx, cx, cy, 4, '#0c2a30'); // contorno
+    diamond(ctx, cx, cy, 3, '#8ef0ff');
   }
 
   // jefe vivo (Guardián): punto rojo parpadeante
@@ -443,10 +574,55 @@ export function drawMinimapOverlay(
     }
   }
 
-  // jugador: punto ámbar pulsante + flecha de dirección
+  // ---- objetivos registrados vía setMinimapTargets (R4-A9/A9b) ----
+  // Diana de misión: rombo dorado con halo que late con sin(t*3) en el
+  // tile del objetivo — para kind 'quest' y también 'salida' (esta última
+  // con vivienda pálida que la hermana con las flechas de exit). Los
+  // altares ya reciben su anillo expansivo (bloque del santuario) y una
+  // marca dorada discreta si no coinciden con el santuario del motor.
+  for (const tg of minimapTargets) {
+    if (tg.kind !== 'quest') continue;
+    const cx = wx(tg.x * TILE + 8), cy = wy(tg.y * TILE + 8);
+    const pulse = 0.5 + 0.5 * Math.sin(t * 3);
+    ctx.globalAlpha = 0.2 + 0.32 * pulse;
+    ctx.strokeStyle = COL.gold;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4.6 + pulse * 2.4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    diamond(ctx, cx, cy, 4.4, '#241503'); // contorno
+    diamond(ctx, cx, cy, 3.4, COL.gold);  // diana dorada
+    diamond(ctx, cx, cy, 1.5, '#fff3d0'); // corazón claro
+  }
+  for (const tg of minimapTargets) {
+    if (tg.kind === 'quest') continue;
+    const cx = Math.round(wx(tg.x * TILE + 8)), cy = Math.round(wy(tg.y * TILE + 8));
+    if (tg.kind === 'altar') {
+      if (sancKey && `${Math.round(tg.x)},${Math.round(tg.y)}` === sancKey) continue; // ya marcado por el motor
+      diamond(ctx, cx, cy, 2.6, '#241503');
+      diamond(ctx, cx, cy, 1.8, COL.gold);
+    } else { // 'salida': diana dorada pulsante (sin(t*3)) — misma familia
+      // que la de misión — con vivienda pálida acorde a las flechas de exit
+      const pulse = 0.5 + 0.5 * Math.sin(t * 3);
+      ctx.globalAlpha = 0.18 + 0.3 * pulse;
+      ctx.strokeStyle = COL.gold;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 4 + pulse * 2.2, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      diamond(ctx, cx, cy, 4, '#241a0e');                // contorno del marco
+      diamond(ctx, cx, cy, 3, '#cfd8e8');                // vivienda pálida (exit)
+      diamond(ctx, cx, cy, 2.2, '#241503');              // asiento del núcleo
+      diamond(ctx, cx, cy, 1.5 + pulse * 0.7, COL.gold); // núcleo dorado que late
+    }
+  }
+
+  // jugador: punto ámbar pulsante + aguja direccional según p.dir (GPS)
   const p = g.player;
   if (p) {
-    const cx = wx(p.x), cy = wy(p.y);
+    const cx = Math.round(wx(p.x)), cy = Math.round(wy(p.y));
     const pulse = 0.5 + 0.5 * Math.sin(t * 5);
     ctx.globalAlpha = 0.22 + pulse * 0.3;
     ctx.strokeStyle = COL.gold;
@@ -458,13 +634,14 @@ export function drawMinimapOverlay(
     ctx.fillStyle = '#241503'; ctx.fillRect(cx - 2, cy - 2, 5, 5);
     ctx.fillStyle = COL.gold; ctx.fillRect(cx - 1, cy - 1, 3, 3);
     ctx.fillStyle = '#ffe9a0'; ctx.fillRect(cx - 1, cy - 1, 1, 1);
-    // flecha de dirección con vaivén suave
+    // aguja direccional anclada al punto: el triángulo nace en el núcleo
+    // y apunta según p.dir, con un vaivén mínimo de vida
     const dirs: Record<string, [number, number]> = {
       down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0],
     };
     const [dx, dy] = dirs[p.dir] ?? [0, 1];
-    const bob = Math.sin(t * 4) * 0.8;
-    arrowTri(ctx, cx + dx * (5.5 + bob), cy + dy * (5.5 + bob), dx, dy, 2.6, '#ffe9a0');
+    const bob = Math.sin(t * 4) * 0.4;
+    arrowTri(ctx, cx + dx * (2.4 + bob), cy + dy * (2.4 + bob), dx, dy, 3.4, '#ffe9a0');
   }
 
   ctx.restore();

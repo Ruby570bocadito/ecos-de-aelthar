@@ -1,12 +1,37 @@
 // ============================================================
-// ECOS DE AELTHAR — Cielo y ciclo día/noche (R1-A8 · mundo)
+// ECOS DE AELTHAR — Cielo y ciclo día/noche (R1-A8 · v2 R4-A2)
 // drawSkyBackdrop  : fondo de cielo completo (TITLE SCREEN y transiciones)
 // drawDayNightGrade: grading de dayT sobre el mundo (se dibuja antes del HUD)
-// drawCloudShadows : sombras de nube en exteriores de día
+//                    + nubes v2 (cuerpos), banda de amanecer/anochecer,
+//                    estrellas fugaces raras y niebla de amanecer (lunaris)
+// drawCloudShadows : sombras en suelo de las nubes v2 (exteriores de día)
 //
 // Todo determinista (hash2 + globalT/dayT), fillRect enteros y cachés
-// perezosas (patrones dither 2×2 / luna pre-pintada) sin allocations
-// masivas por frame.
+// perezosas (patrones dither 2×2 / luna / nubes pre-pintadas) sin
+// allocations masivas por frame.
+//
+// NOVEDADES R4-A2 (aditivo, firmas intactas):
+//  1) NUBES V2 — 5-8 nubes únicas por mapa (semilla por mapId) con silueta
+//     lobulada multi-blob (3-6 blobs, prerender a canvas caché), que derivan
+//     con el VIENTO del mapa (dirección/velocidad por hash(mapId)) y hacen
+//     wrapper por los bordes del mapa. Los CUERPOS se pintan en
+//     drawDayNightGrade (encima de entidades, bajo el HUD — una nube alta
+//     tapa al jugador, no al revés) y las SOMBRAS en drawCloudShadows
+//     (capa suelo, bajo entidades) desplazadas 12-20 px (euclídeo) de la
+//     nube "virtual". Ambas comparten cloudPlanAt() → mismo estado.
+//  2) GRADING V2 — el mezclador Bayer cuantizado (5 saltos) se sustituye
+//     por interpolación continua rgba y la banda de transición se ensancha
+//     (TRANS_W 0.018 → 0.06): sin saltos de alpha entre etapas.
+//     + banda rosada-naranja tenue en los bordes horizontales durante
+//     dayT 0.20-0.30 y 0.65-0.75 (escalones de alpha, sin gradiente).
+//  3) ESTRELLA fugaz rara (≈1 por ~40 s de noche, trazo de ~7 px con fade,
+//     ventana temporal determinista por globalT). Las estrellas fijas viven
+//     en fx.ts (drawAmbient 'sky'), módulo INTOCABLE para este agente;
+//     drawDayNightGrade SÍ puede albergar la fugaz: corre en play/dialogue,
+//     sobre la iluminación y ANTES de drawAmbient('sky') (la fugaz queda
+//     bajo las estrellas fijas, sin conflicto visual).
+//  4) NIEBLA DE AMANECER — bandas horizontales bajas dithered (Bayer 2×2)
+//     solo en lunaris (valle) durante el alba, con deriva por tile.
 //
 // Calibración con el motor (update.ts / engine.ts / render.ts):
 //  - dayT avanza dt/240  → ciclo completo de 240 s.
@@ -18,7 +43,7 @@
 // ============================================================
 
 import type { Game } from '../engine';
-import { VIEW_W, VIEW_H } from '../engine';
+import { VIEW_W, VIEW_H } from '../consts';
 import { hash2, px } from './palette';
 
 // ---------------- Tipos ----------------
@@ -91,17 +116,27 @@ export const DAY_STAGES: readonly DayStage[] = [
 
 const NOCHE = DAY_STAGES.length - 1;        // índice de la franja nocturna
 const TAU = Math.PI * 2;
-const TRANS_W = 0.018;                      // semiancho de transición entre franjas (~4.3 s de los 240 s del ciclo)
+// R4-A2: semiancho de transición entre franjas — ensanchado de 0.018 a 0.06
+// (~14.4 s del ciclo de 240 s) y con interpolación CONTINUA rgba: el grading
+// ya no salta, se funde.
+const TRANS_W = 0.06;
+
+const ZERO_TINT: SkyTint = [0, 0, 0, 0];
 
 /** Modulo positivo (para derivas y parallax que envuelven). */
 function mod(a: number, n: number): number {
   return ((a % n) + n) % n;
 }
 
-/** Índice de DAY_STAGES para un dayT dado (maneja el envuelve de la noche). */
+/**
+ * Índice de DAY_STAGES para un dayT dado (maneja el envuelve de la noche).
+ * FIX R4-A2: el bucle llega hasta i=0 — en v1 la franja 'amanecer'
+ * (0.06-0.22) era inalcanzable (stageIndexAt devolvía NOCHE en toda el
+ * alba: salto de grading y cielo nocturno durante el amanecer).
+ */
 export function stageIndexAt(dayT: number): number {
   const dT = mod(dayT, 1);
-  for (let i = NOCHE; i >= 1; i--) {
+  for (let i = NOCHE; i >= 0; i--) {
     if (dT >= DAY_STAGES[i].from) return i;
   }
   return NOCHE;                              // [0, 0.06) aún es noche
@@ -124,11 +159,67 @@ function transitionAt(dT: number): { a: number; b: number; m: number } | null {
   return null;
 }
 
+// ---------------- Mezcla continua de colores (R4-A2) ----------------
+
+const hexCache = new Map<string, [number, number, number]>();
+
+/** '#rrggbb' → [r, g, b] (parse cacheado). */
+function hexRgb(h: string): [number, number, number] {
+  let v = hexCache.get(h);
+  if (!v) {
+    v = [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+    hexCache.set(h, v);
+  }
+  return v;
+}
+
+/** Mezcla dos colores hex por componentes (m 0..1) → 'rgb(r,g,b)'. */
+function mixHex(ha: string, hb: string, m: number): string {
+  const a = hexRgb(ha), b = hexRgb(hb);
+  const r = Math.round(a[0] + (b[0] - a[0]) * m);
+  const g = Math.round(a[1] + (b[1] - a[1]) * m);
+  const bl = Math.round(a[2] + (b[2] - a[2]) * m);
+  return `rgb(${r},${g},${bl})`;
+}
+
+/** Mezcla dos tintes (null = tinte neutro transparente). */
+function mixTint(a: SkyTint | null, b: SkyTint | null, m: number): SkyTint {
+  const a4 = a ?? ZERO_TINT;
+  const b4 = b ?? ZERO_TINT;
+  return [
+    a4[0] + (b4[0] - a4[0]) * m,
+    a4[1] + (b4[1] - a4[1]) * m,
+    a4[2] + (b4[2] - a4[2]) * m,
+    a4[3] + (b4[3] - a4[3]) * m,
+  ];
+}
+
+/**
+ * Tinte de grading CONTINUO para un dayT (R4-A2): dentro de franja devuelve
+ * su tinte y cerca de una frontera interpola rgba linealmente entre los dos
+ * tintes (antes: mezcla Bayer cuantizada a 5 saltos).
+ */
+export function gradeTintAt(dayT: number): SkyTint {
+  const dT = mod(dayT, 1);
+  const tr = transitionAt(dT);
+  if (tr) return mixTint(DAY_STAGES[tr.a].tint, DAY_STAGES[tr.b].tint, tr.m);
+  return DAY_STAGES[stageIndexAt(dT)].tint ?? ZERO_TINT;
+}
+
+/** Color de una banda del backdrop, interpolado si hay transición activa. */
+function skyBandColorAt(band: number, dT: number, flatNight: boolean): string {
+  if (flatNight) return DAY_STAGES[NOCHE].sky[band];
+  const tr = transitionAt(dT);
+  if (!tr) return DAY_STAGES[stageIndexAt(dT)].sky[band];
+  return mixHex(DAY_STAGES[tr.a].sky[band], DAY_STAGES[tr.b].sky[band], tr.m);
+}
+
 // ---------------- Dither 2×2 (Bayer) ----------------
 // Orden Bayer 2×2 de celdas (en un tile de 4×4 px, celdas de 2×2):
 //   (0,0)=0  (1,1)=¼  (1,0)=½  (0,1)=¾
-// Un color + máscara de 4 bits define qué celdas quedan opacas:
-// así se mezclan DOS tonos en una transición sin alpha intermedio.
+// Un color + máscara de 4 bits define qué celdas quedan opacas.
+// (R4-A2: la mezcla de tintes ya NO usa dither — interpolación continua —
+//  pero el patrón sigue sirviendo al halo lunar y a la niebla de amanecer.)
 
 const ditherTiles = new Map<string, HTMLCanvasElement>();
 const ditherPatterns = new WeakMap<CanvasRenderingContext2D, Map<string, CanvasPattern>>();
@@ -160,14 +251,6 @@ function ditherPattern(ctx: CanvasRenderingContext2D, color: string, mask: numbe
   return p;
 }
 
-// Máscaras de cobertura: celdas con bayer < q (tono entrante) y su complemento.
-function maskLow(q: number): number {
-  return q <= 0.25 ? 0b0001 : q <= 0.5 ? 0b0011 : q <= 0.75 ? 0b0111 : 0b1111;
-}
-function maskHigh(q: number): number {
-  return q <= 0.25 ? 0b1110 : q <= 0.5 ? 0b1100 : q <= 0.75 ? 0b1000 : 0b0000;
-}
-
 // ---------------- Luna pre-pintada (cuerpo escalonado + halo dithered) ----------------
 
 let moonCanvas: HTMLCanvasElement | null = null;
@@ -175,6 +258,14 @@ let moonCanvas: HTMLCanvasElement | null = null;
 /** Círculo pixelado por filas de 2 px (borde en escalones, NO arc liso). */
 function stepCircle(x: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
   for (let dy = -r; dy < r; dy += 2) {
+    const half = Math.floor(Math.sqrt(Math.max(0, r * r - (dy + 1) * (dy + 1))) / 2) * 2;
+    x.fillRect(cx - half, cy + dy, half * 2, 2);
+  }
+}
+
+/** Semicírculo SUPERIOR pixelado (canto iluminado de los lóbulos). */
+function stepCircleTop(x: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
+  for (let dy = -r; dy < -2; dy += 2) {
     const half = Math.floor(Math.sqrt(Math.max(0, r * r - (dy + 1) * (dy + 1))) / 2) * 2;
     x.fillRect(cx - half, cy + dy, half * 2, 2);
   }
@@ -211,41 +302,308 @@ function getMoon(): HTMLCanvasElement {
   return moonCanvas;
 }
 
-// ---------------- Nubes pixeladas (rects superpuestos, base plana) ----------------
+// ============================================================
+// NUBES V2 (R4-A2) — silueta lobulada multi-blob pre-pintada
+// ------------------------------------------------------------ 
+// Cada mapa genera 5-8 nubes ÚNICAS (semilla por mapId). La geometría
+// (3-6 blobs circulares escalonados + base plana) se prerenderiza UNA vez
+// por (nube, franja) a un canvas caché: el cuerpo con sus 3 tonos
+// (cloudLo/cloudBody/cloudHi) y una silueta opaca aparte para la sombra
+// de suelo (dibujada con globalAlpha → sin costuras por solape).
+// El VIENTO (dirección + velocidad) sale del hash del mapId y todas las
+// nubes derivan con él, envolviendo por el borde opuesto del mapa.
+// ============================================================
 
-function pixelCloud(
-  ctx: CanvasRenderingContext2D, x: number, y: number, s: number, seed: number, st: DayStage,
-): void {
-  const w = Math.round(120 * s);
-  const h = Math.round(14 * s);
-  // masa principal con base plana
-  ctx.fillStyle = st.cloudBody;
-  ctx.fillRect(x, y, w, h);
-  // 3 lóbulos superpuestos: cuerpo grueso + escalón superior (silueta escalonada)
-  for (let p = 0; p < 3; p++) {
-    const pw = Math.round((34 + hash2(seed * 3 + p, 73) * 38) * s);
-    const ph = Math.round((10 + hash2(seed * 5 + p, 79) * 14) * s);
-    const lx = Math.round(x + 8 * s + (w - 16 * s - pw) * (p / 2));
-    const ly = y - ph;
-    ctx.fillRect(lx, ly + 4, pw, ph);
-    const pw2 = Math.max(6, Math.round(pw * 0.55));
-    ctx.fillRect(lx + Math.round((pw - pw2) / 2), ly, pw2, 6);
-    if (st.cloudHi) {
-      ctx.fillStyle = st.cloudHi;
-      ctx.fillRect(lx + Math.round((pw - pw2) / 2), ly, pw2, 2);  // canto iluminado
-      ctx.fillStyle = st.cloudBody;
-    }
+interface CloudGeom {
+  w: number; h: number;                       // tamaño del canvas pre-pintado
+  baseY: number;                              // línea plana de la base
+  blobs: { cx: number; cy: number; r: number }[];
+}
+
+interface CloudState {
+  x: number; y: number;                       // nube "virtual" (pantalla)
+  w: number; h: number;                       // tamaño del canvas
+  shX: number; shY: number;                   // sombra en suelo (desplazada)
+}
+
+const geomCache = new Map<string, CloudGeom>();
+const cloudBodyCache = new Map<string, HTMLCanvasElement>();
+const cloudShadowCache = new Map<string, HTMLCanvasElement>();
+
+/** Semilla numérica estable a partir del mapId. */
+function seedFromMapId(mapId: string): number {
+  let s = 7;
+  for (let i = 0; i < mapId.length; i++) s = (s * 131 + mapId.charCodeAt(i)) >>> 0;
+  return s;
+}
+
+/** Geometría lobulada de la nube i de un mapa (cacheada). */
+function cloudGeom(seed: number, i: number): CloudGeom {
+  const key = seed + '|' + i;
+  const hit = geomCache.get(key);
+  if (hit) return hit;
+  const s = seed * 16 + i;
+  const sc = 0.8 + hash2(s, 943) * 0.8;                        // escala 0.8..1.6
+  const nB = 3 + Math.floor(hash2(s, 947) * 4);                // 3..6 blobs
+  const w = Math.max(64, Math.round((80 + hash2(s, 949) * 120) * sc));
+  const blobs: { cx: number; cy: number; r: number }[] = [];
+  let maxR = 8;
+  for (let j = 0; j < nB; j++) {
+    const r = Math.max(8, Math.round((10 + hash2(s * 4 + j, 953) * 15) * sc));
+    if (r > maxR) maxR = r;
+    blobs.push({ cx: 0, cy: 0, r });
   }
-  // sombra de la base plana (de día es lo que define la nube "clásica")
-  ctx.fillStyle = st.cloudLo;
-  ctx.fillRect(x, y + h - 3, w, 3);
+  const baseY = 2 * maxR + 4;                                  // cabe el lóbulo más alto
+  for (let j = 0; j < nB; j++) {
+    const b = blobs[j];
+    const t = nB > 1 ? j / (nB - 1) : 0.5;                     // reparto horizontal
+    b.cx = Math.round(b.r + (w - 2 * b.r) * t);
+    b.cy = Math.round(baseY - b.r + (hash2(s * 4 + j, 957) - 0.5) * 5); // panzas casi alineadas
+  }
+  const gm: CloudGeom = { w, h: baseY + 6, baseY, blobs };
+  geomCache.set(key, gm);
+  return gm;
+}
+
+/** Canvas pre-pintado del cuerpo de la nube (por franja del día). */
+function getCloudBody(seed: number, i: number, stIdx: number): HTMLCanvasElement {
+  const key = seed + '|' + i + '|' + stIdx;
+  let c = cloudBodyCache.get(key);
+  if (!c) {
+    if (cloudBodyCache.size > 120) cloudBodyCache.clear();     // techo de memoria
+    const gm = cloudGeom(seed, i);
+    const st = DAY_STAGES[stIdx];
+    c = document.createElement('canvas');
+    c.width = gm.w; c.height = gm.h;
+    const cc = c.getContext('2d')!;
+    // 1) sombra de la base: blobs +3 px y banda plana baja (canto inferior)
+    cc.fillStyle = st.cloudLo;
+    for (const b of gm.blobs) stepCircle(cc, b.cx, b.cy + 3, b.r);
+    cc.fillRect(0, gm.baseY - 2, gm.w, 4);
+    // 2) cuerpo
+    cc.fillStyle = st.cloudBody;
+    for (const b of gm.blobs) stepCircle(cc, b.cx, b.cy, b.r);
+    cc.fillRect(0, gm.baseY - 8, gm.w, 8);
+    // 3) canto iluminado superior (solo si la franja tiene brillo)
+    if (st.cloudHi) {
+      cc.fillStyle = st.cloudHi;
+      for (const b of gm.blobs) stepCircleTop(cc, b.cx, b.cy - 1, Math.max(4, b.r - 2));
+    }
+    cloudBodyCache.set(key, c);
+  }
+  return c;
+}
+
+/** Silueta opaca (para la sombra de suelo con alpha uniforme). */
+function getCloudShadow(seed: number, i: number): HTMLCanvasElement {
+  const key = seed + '|' + i;
+  let c = cloudShadowCache.get(key);
+  if (!c) {
+    if (cloudShadowCache.size > 40) cloudShadowCache.clear();
+    const gm = cloudGeom(seed, i);
+    c = document.createElement('canvas');
+    c.width = gm.w; c.height = gm.h;
+    const cc = c.getContext('2d')!;
+    cc.fillStyle = '#000014';                                  // = rgba(0,0,20,…) de la v1
+    for (const b of gm.blobs) stepCircle(cc, b.cx, b.cy, b.r);
+    cc.fillRect(0, gm.baseY - 8, gm.w, 8);
+    cloudShadowCache.set(key, c);
+  }
+  return c;
+}
+
+// Memoización del plan (drawCloudShadows + drawDayNightGrade lo piden en el
+// MISMO frame con los mismos argumentos → cero allocations repetidas).
+let planMemoKey = '';
+let planMemoPlan: CloudState[] = [];
+
+/**
+ * Estado determinista de la flota de nubes de un mapa.
+ * VIENTO: dirección/velocidad por hash(mapId); cada nube tiene un factor
+ * propio. Wrapper: las posiciones envuelven en X e Y (salen por un borde y
+ * entran por el opuesto). La sombra queda a 12-20 px (euclídeo, hacia
+ * abajo-derecha: sol arriba-izquierda) de la nube "virtual".
+ */
+export function cloudPlanAt(mapId: string, globalT: number, camX: number, camY: number): CloudState[] {
+  const key = mapId + '|' + globalT + '|' + camX + '|' + camY;
+  if (planMemoKey === key) return planMemoPlan;
+  const seed = seedFromMapId(mapId);
+  const n = 5 + Math.floor(hash2(seed, 901) * 4);              // 5..8 nubes por mapa
+  const wAng = hash2(seed, 911) * TAU;                         // dirección del viento
+  const wSpd = 7 + hash2(seed, 913) * 9;                       // 7..16 px/s
+  const wX = Math.cos(wAng) * wSpd;
+  const wY = Math.sin(wAng) * wSpd;
+  const M = 40;                                                // margen fuera de pantalla
+  const plan: CloudState[] = [];
+  for (let i = 0; i < n; i++) {
+    const s = seed * 16 + i;
+    const f = 0.75 + hash2(s, 931) * 0.5;                      // factor de viento por nube
+    const gm = cloudGeom(seed, i);
+    // wrapper: span = vista + 2*(nube + margen) → sale entera y entra entera
+    const spanX = VIEW_W + 2 * (gm.w + M);
+    const spanY = VIEW_H + 2 * (gm.h + M);
+    const bx = hash2(s, 933) * spanX;
+    const by = hash2(s, 937) * spanY;
+    const x = Math.round(mod(bx + wX * globalT * f - camX * 0.42, spanX) - (gm.w + M));
+    const y = Math.round(mod(by + wY * globalT * f - camY * 0.38, spanY) - (gm.h + M));
+    const off = 12 + hash2(s, 941) * 8;                        // 12..20 px (euclídeo)
+    const ox = Math.round(off * 0.6);                          // dirección (0.6, 0.8)
+    const oy = Math.round(off * 0.8);
+    plan.push({ x, y, w: gm.w, h: gm.h, shX: x + ox, shY: y + oy });
+  }
+  planMemoKey = key;
+  planMemoPlan = plan;
+  return plan;
+}
+
+/** Factor de día de las nubes (0 fuera de 0.08-0.70, rampa en los bordes). */
+function cloudDayFactor(dT: number): number {
+  if (dT < 0.08 || dT > 0.70) return 0;                        // coherente con isNight()
+  if (dT < 0.12) return (dT - 0.08) / 0.04;                    // rampa al alba
+  if (dT > 0.64) return (0.70 - dT) / 0.06;                    // rampa al anochecer
+  return 1;
+}
+
+/** Pinta el cuerpo de una nube, mezclando las dos franjas si hay transición. */
+function drawCloudBlend(
+  ctx: CanvasRenderingContext2D, seed: number, i: number,
+  x: number, y: number, siA: number, siB: number, m: number, alpha: number,
+): void {
+  if (alpha <= 0.004) return;
+  ctx.globalAlpha = alpha * (1 - m);
+  ctx.drawImage(getCloudBody(seed, i, siA), x, y);
+  if (m > 0.002) {
+    ctx.globalAlpha = alpha * m;
+    ctx.drawImage(getCloudBody(seed, i, siB), x, y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---------------- Estrella fugaz rara (R4-A2) ----------------
+// Ventana temporal determinista: cada SHOOT_PERIOD s de globalT hay a lo sumo
+// UNA estrella fugaz (instante, posición y dirección por hash de la ventana).
+// ~1 por ~40 s de noche. NOTA: las estrellas fijas viven en fx.ts
+// (drawAmbient 'sky', módulo no editable aquí); drawDayNightGrade corre
+// ANTES de esa capa, así que la fugaz queda por debajo de las fijas.
+
+/** Periodo de la ventana temporal de estrellas fugaces (s). */
+export const SHOOT_PERIOD = 40;
+
+export interface ShootStar { x: number; y: number; dx: number; dy: number; u: number }
+
+/** Estrella fugaz activa en el instante globalT (o null). Determinista. */
+export function shootingStarAt(globalT: number): ShootStar | null {
+  const T = Math.max(0, globalT);
+  const k = Math.floor(T / SHOOT_PERIOD);
+  const t0 = hash2(k * 7 + 1, 991) * (SHOOT_PERIOD - 1.2);     // instante dentro de la ventana
+  const dur = 0.9;                                             // vida del trazo (s)
+  const u = (T - k * SHOOT_PERIOD - t0) / dur;
+  if (u < 0 || u > 1) return null;
+  const dir = hash2(k * 17 + 7, 1009) > 0.5 ? 1 : -1;          // caída a izq. o der.
+  const spd = 130 + hash2(k * 19 + 9, 1013) * 60;              // px/s
+  return {
+    x: 60 + hash2(k * 11 + 3, 993) * (VIEW_W - 220),
+    y: 24 + hash2(k * 13 + 5, 997) * 130,
+    dx: dir * spd * 0.86,
+    dy: spd * 0.5,
+    u,
+  };
+}
+
+/** Trazo de ~7 px: cabeza 2×2 + 3 colas de 2 px con fade sinusoidal. */
+function drawShootingStar(ctx: CanvasRenderingContext2D, globalT: number, gate: number): void {
+  const s = shootingStarAt(globalT);
+  if (!s || gate <= 0.01) return;
+  const fade = Math.sin(Math.PI * s.u);                        // entra, pico y fade
+  const len = Math.hypot(s.dx, s.dy);
+  const ux = s.dx / len, uy = s.dy / len;
+  const hx = s.x + s.dx * s.u, hy = s.y + s.dy * s.u;
+  const SEG = [0.85, 0.5, 0.28, 0.12];                         // alpha de cabeza→cola
+  for (let j = 0; j < 4; j++) {
+    const a = SEG[j] * fade * gate;
+    if (a <= 0.01) break;
+    ctx.globalAlpha = a;
+    ctx.fillStyle = j === 0 ? '#f4f9ff' : '#cfe0ff';
+    ctx.fillRect(Math.round(hx - ux * 2.2 * j) - 1, Math.round(hy - uy * 2.2 * j) - 1, 2, 2);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---------------- Banda amanecer/anochecer y niebla (R4-A2) ----------------
+
+/** Trapezoide suave: 0 fuera de [a,b], rampa r dentro, meseta 1 en medio. */
+function trap(x: number, a: number, b: number, r: number): number {
+  if (x <= a || x >= b) return 0;
+  return Math.min(1, (x - a) / r, (b - x) / r);
+}
+
+/**
+ * Fuerza de la banda rosada-naranja de bordes horizontales:
+ * ventanas dayT 0.20-0.30 (amanecer) y 0.65-0.75 (anochecer).
+ */
+export function horizonBandStrength(dayT: number): number {
+  const x = mod(dayT, 1);
+  return Math.max(trap(x, 0.20, 0.30, 0.035), trap(x, 0.65, 0.75, 0.035));
+}
+
+/** Escalones de la banda (pixel-art, sin gradiente): 3 franjas por borde. */
+function drawHorizonGlow(ctx: CanvasRenderingContext2D, dayT: number): void {
+  const s = horizonBandStrength(dayT);
+  if (s <= 0.005) return;
+  const HS = [26, 20, 14];                                     // alturas de escalón
+  const AS = [0.11, 0.07, 0.04];                               // alphas tenues
+  let y = 0;
+  for (let i = 0; i < 3; i++) {                                // borde superior (rosado)
+    ctx.fillStyle = `rgba(255,158,150,${(AS[i] * s).toFixed(3)})`;
+    ctx.fillRect(0, y, VIEW_W, HS[i]);
+    y += HS[i];
+  }
+  y = VIEW_H;
+  for (let i = 0; i < 3; i++) {                                // borde inferior (naranja)
+    y -= HS[i];
+    ctx.fillStyle = `rgba(255,152,106,${(AS[i] * s).toFixed(3)})`;
+    ctx.fillRect(0, y, VIEW_W, HS[i]);
+  }
+}
+
+/**
+ * Fuerza de la niebla de amanecer del valle (pico en la "alba" 0.15,
+ * disipada al entrar el mediodía).
+ */
+export function dawnMistStrength(dayT: number): number {
+  return trap(mod(dayT, 1), 0.07, 0.26, 0.05);
+}
+
+// Bandas bajas del valle: cobertura Bayer creciente hacia el suelo.
+const MIST_BANDS = [
+  { y: Math.round(VIEW_H * 0.66), h: 36, mask: 0b0001, a: 0.18, spd: 5, dir: 1 },
+  { y: Math.round(VIEW_H * 0.76), h: 44, mask: 0b0011, a: 0.24, spd: 9, dir: -1 },
+  { y: Math.round(VIEW_H * 0.86), h: 52, mask: 0b0111, a: 0.30, spd: 14, dir: 1 },
+];
+
+/** Niebla de amanecer: bandas horizontales dithered SOLO en lunaris (valle). */
+function drawDawnMist(ctx: CanvasRenderingContext2D, g: Game, dT: number): void {
+  if (g.mapId !== 'lunaris') return;                           // valle de Lunaris
+  const p = dawnMistStrength(dT);
+  if (p <= 0.005) return;
+  for (const b of MIST_BANDS) {
+    const col = `rgba(214,226,238,${(b.a * p).toFixed(3)})`;
+    // deriva cuantizada a píxeles ≤ 1 tile: el patrón es periódico de 4 px,
+    // así que el envuelve del módulo es invisible y el rect sigue entero.
+    const d = Math.floor(mod(g.globalT * b.spd * b.dir, 4));
+    ctx.save();
+    ctx.translate(-d, 0);
+    ctx.fillStyle = ditherPattern(ctx, col, b.mask);
+    ctx.fillRect(d, b.y, VIEW_W, b.h);
+    ctx.restore();
+  }
 }
 
 // ============================================================
 // 1) drawSkyBackdrop — cielo completo para TITLE SCREEN y transiciones
-//    Pinta: bandas de color según franja del día, estrellas en 2 capas
-//    parallax deterministas (hash2), luna escalonada con halo dithered
-//    y nubes pixeladas derivando lento (blancas de base plana de día).
+//    Pinta: bandas de color INTERPOLADAS según franja del día, estrellas
+//    en 2 capas parallax deterministas (hash2), luna escalonada con halo
+//    dithered, estrella fugaz rara y nubes lobuladas v2 derivando.
 // ============================================================
 
 export function drawSkyBackdrop(ctx: CanvasRenderingContext2D, g: Game): void {
@@ -260,15 +618,22 @@ export function drawSkyBackdrop(ctx: CanvasRenderingContext2D, g: Game): void {
   // el título es una escena nocturna: fuerza cielo de noche ahí
   const titleMode = g.state === 'title' || g.state === 'controls';
   if (titleMode) nf = Math.max(nf, 0.9);
-  const st = titleMode ? DAY_STAGES[NOCHE] : DAY_STAGES[stageIndexAt(dT)];
 
-  // ---- bandas de cielo (pixel-art: 6 franjas horizontales, sin gradiente) ----
+  // ---- bandas de cielo (pixel-art: 6 franjas horizontales, sin gradiente;
+  //      interpoladas entre franjas durante las transiciones) ----
   const BH = [128, 104, 92, 84, 72, 60];           // suma = VIEW_H
   let by = 0;
   for (let i = 0; i < 6; i++) {
-    px(ctx, 0, by, VIEW_W, BH[i], st.sky[i]);
+    px(ctx, 0, by, VIEW_W, BH[i], skyBandColorAt(i, dT, titleMode));
     by += BH[i];
   }
+
+  // etapas para la mezcla de nubes (en título: noche plana, sin mezcla)
+  const tr = titleMode ? null : transitionAt(dT);
+  const si = titleMode ? NOCHE : stageIndexAt(dT);
+  const siA = tr ? tr.a : si;
+  const siB = tr ? tr.b : si;
+  const mx = tr ? tr.m : 0;
 
   // ---- estrellas: capa lejana (1 px, deriva lenta) ----
   if (nf > 0.03) {
@@ -304,32 +669,38 @@ export function drawSkyBackdrop(ctx: CanvasRenderingContext2D, g: Game): void {
     }
     ctx.globalAlpha = 1;
 
+    // ---- estrella fugaz rara (comparte ventana temporal con el mundo) ----
+    if (nf > 0.55) drawShootingStar(ctx, t, Math.min(1, (nf - 0.55) / 0.25));
+
     // ---- luna escalonada con halo dithered (pre-pintada, 1 drawImage) ----
     if (nf > 0.25) {
-      const mx = Math.round(VIEW_W * 0.78 - camX * 0.004);
+      const mx2 = Math.round(VIEW_W * 0.78 - camX * 0.004);
       const my = 66;
       ctx.globalAlpha = Math.min(1, (nf - 0.2) * 1.6);
-      ctx.drawImage(getMoon(), mx - 60, my - 60);
+      ctx.drawImage(getMoon(), mx2 - 60, my - 60);
       ctx.globalAlpha = 1;
     }
   }
 
-  // ---- nubes pixeladas derivando lento (de día: blancas de base plana) ----
+  // ---- nubes lobuladas v2 derivando (4 en el backdrop, colores de franja) ----
+  const tSeed = seedFromMapId('titulo');
   for (let i = 0; i < 4; i++) {
-    const spd = 4 + hash2(i * 11 + 3, 61) * 5;                        // 4..9 px/s
+    const spd = 4 + hash2(i * 11 + 3, 61) * 5;                    // 4..9 px/s
     const spanX = VIEW_W + 360;
-    const x0 = mod(hash2(i * 13 + 5, 63) * spanX + t * spd - camX * 0.06, spanX) - 180;
-    const y0 = 26 + hash2(i * 17 + 7, 67) * 150;
-    const sc = 0.8 + hash2(i * 19 + 9, 71) * 0.7;
-    pixelCloud(ctx, Math.round(x0), Math.round(y0), sc, i, st);
+    const x0 = Math.round(mod(hash2(i * 13 + 5, 63) * spanX + t * spd - camX * 0.06, spanX) - 180);
+    const y0 = Math.round(18 + hash2(i * 17 + 7, 67) * 150);
+    drawCloudBlend(ctx, tSeed, i, x0, y0, siA, siB, mx, 1);
   }
 }
 
 // ============================================================
 // 2) drawDayNightGrade — capa de grading sobre el mundo (antes del HUD)
-//    Franjas de dayT (ver DAY_STAGES) con dithering 2×2 entre dos tonos
-//    en las transiciones. En 'pasado' calienta +10%; en 'presente'
-//    desatura simulado (azul-gris). En la cripta: no-op.
+//    R4-A2: tinte CONTINUO por franjas interpoladas (sin saltos Bayer),
+//    banda rosada-naranja en bordes horizontales (dayT 0.20-0.30/0.65-0.75),
+//    niebla de amanecer en lunaris, CUERPOS de las nubes v2 (las sombras
+//    van en drawCloudShadows, capa suelo) y estrella fugaz nocturna.
+//    En 'pasado' calienta +10%; en 'presente' desatura simulado (azul-gris).
+//    En la cripta: no-op.
 // ============================================================
 
 export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void {
@@ -338,37 +709,41 @@ export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void 
   const dT = mod(g.dayT, 1);
   const isPast = g.epoch === 'pasado';
 
-  // pinta un tinte (entero con fillRect o dithered con máscara Bayer)
-  const fillTint = (tn: SkyTint | null, mask: number) => {
-    if (!tn || !mask) return;
-    const a = isPast ? Math.min(0.35, tn[3] * 1.1) : tn[3];  // 'pasado' calienta +10%
-    const col = `rgba(${tn[0]},${tn[1]},${tn[2]},${a})`;
-    if (mask === 0b1111) {
-      ctx.fillStyle = col;
-      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    } else {
-      ctx.fillStyle = ditherPattern(ctx, col, mask);
-      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    }
-  };
-
-  const tr = transitionAt(dT);
-  if (tr) {
-    // mezcla a cuantizada a cobertura Bayer: patrón 2×2 entre los DOS tonos
-    const q = tr.m < 0.125 ? 0 : tr.m < 0.375 ? 0.25 : tr.m < 0.625 ? 0.5 : tr.m < 0.875 ? 0.75 : 1;
-    if (q <= 0) {
-      fillTint(DAY_STAGES[tr.a].tint, 0b1111);
-    } else if (q >= 1) {
-      fillTint(DAY_STAGES[tr.b].tint, 0b1111);
-    } else {
-      fillTint(DAY_STAGES[tr.b].tint, maskLow(q));   // celdas bayer < q
-      fillTint(DAY_STAGES[tr.a].tint, maskHigh(q));  // celdas bayer ≥ q
-    }
-  } else {
-    fillTint(DAY_STAGES[stageIndexAt(dT)].tint, 0b1111);
+  // ---- 1) tinte de grading continuo (franjas interpoladas, R4-A2) ----
+  const tn = gradeTintAt(dT);
+  const ta = isPast ? Math.min(0.35, tn[3] * 1.1) : tn[3];   // 'pasado' calienta +10%
+  if (ta >= 0.004) {
+    ctx.fillStyle = `rgba(${Math.round(tn[0])},${Math.round(tn[1])},${Math.round(tn[2])},${ta})`;
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   }
 
-  // ---- lavado de época ----
+  // ---- 2) banda rosada-naranja tenue en los bordes horizontales ----
+  drawHorizonGlow(ctx, dT);
+
+  // ---- 3) niebla de amanecer (bandas dithered bajas, solo valle) ----
+  drawDawnMist(ctx, g, dT);
+
+  // ---- 4) nubes v2: cuerpos sobre entidades (exterior de día) ----
+  const dayF = cloudDayFactor(dT);
+  if (dayF > 0.004) {
+    const plan = cloudPlanAt(g.mapId, g.globalT, g.camX, g.camY);
+    const seed = seedFromMapId(g.mapId);
+    const tr = transitionAt(dT);
+    const si = stageIndexAt(dT);
+    const siA = tr ? tr.a : si;
+    const siB = tr ? tr.b : si;
+    const mx = tr ? tr.m : 0;
+    for (let i = 0; i < plan.length; i++) {
+      drawCloudBlend(ctx, seed, i, plan[i].x, plan[i].y, siA, siB, mx, 0.6 * dayF);
+    }
+  }
+
+  // ---- 5) estrella fugaz rara (noche cerrada, ventana determinista) ----
+  const dayLight = Math.max(0.1, Math.sin(dT * TAU) * 1.25 + 0.25);
+  const nf = 1 - Math.min(1, dayLight);
+  if (nf > 0.55) drawShootingStar(ctx, g.globalT, Math.min(1, (nf - 0.55) / 0.25));
+
+  // ---- 6) lavado de época ----
   if (isPast) {
     // pasado: calidez extra constante (se suma al +10% de los tintes)
     ctx.fillStyle = 'rgba(255,150,70,0.03)';
@@ -381,39 +756,24 @@ export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void 
 }
 
 // ============================================================
-// 3) drawCloudShadows — sombras de nube SOLO en exteriores de día
-//    5 blobs grandes hechos de filas de rects apiladas (sin solape →
-//    alpha uniforme 0.07), ancladas al mundo con parallax y deriva lenta.
+// 3) drawCloudShadows — sombras en suelo de las NUBES V2, SOLO exterior
+//    de día. Misma flota determinista que pinta los cuerpos en
+//    drawDayNightGrade (cloudPlanAt): cada sombra es la silueta opaca de
+//    su nube desplazada 12-20 px (euclídeo) hacia abajo-derecha, dibujada
+//    con globalAlpha uniforme (canvas opaco → sin costuras por solape).
 // ============================================================
 
 export function drawCloudShadows(ctx: CanvasRenderingContext2D, g: Game): void {
   if (g.map.dark) return;                                    // cripta: nunca
   if (g.state === 'title' || g.state === 'controls') return; // sin mundo debajo
-  const dT = mod(g.dayT, 1);
-  if (dT < 0.08 || dT > 0.70) return;                        // coherente con isNight()
+  const dayF = cloudDayFactor(mod(g.dayT, 1));
+  if (dayF <= 0.004) return;
 
-  // rampa suave en los bordes del día (desaparecen al alba y al anochecer)
-  let dayF = 1;
-  if (dT < 0.12) dayF = (dT - 0.08) / 0.04;
-  else if (dT > 0.64) dayF = (0.70 - dT) / 0.06;
-
-  ctx.fillStyle = 'rgba(0,0,20,0.07)';
-  ctx.globalAlpha = dayF;
-
-  for (let s = 0; s < 5; s++) {
-    const speed = 3.5 + hash2(s * 23 + 9, 41) * 4;           // 3.5..7.5 px/s
-    const spanX = VIEW_W + 520;
-    const spanY = VIEW_H + 320;
-    const x0 = mod(hash2(s * 13 + 5, 31) * spanX + g.globalT * speed - g.camX * 0.45, spanX) - 260;
-    const y0 = mod(hash2(s * 17 + 7, 37) * spanY - g.camY * 0.40, spanY) - 160;
-    const wBase = 150 + hash2(s * 29 + 11, 43) * 170;        // 150..320 px de ancho
-    // silueta blob: 6 filas apiladas SIN solapar (alpha uniforme)
-    for (let j = 0; j < 6; j++) {
-      const prof = 0.35 + 0.65 * Math.sin(((j + 0.5) / 6) * Math.PI);   // panza central
-      const wj = Math.round(wBase * prof * (0.8 + hash2(s * 7 + j, 47) * 0.4));
-      const xj = Math.round(x0 + (wBase - wj) / 2 + (hash2(s * 3 + j, 53) - 0.5) * 26);
-      ctx.fillRect(xj, Math.round(y0 + j * 9), wj, 9);
-    }
+  const plan = cloudPlanAt(g.mapId, g.globalT, g.camX, g.camY);
+  const seed = seedFromMapId(g.mapId);
+  ctx.globalAlpha = 0.07 * dayF;                             // = v1 rgba(0,0,20,0.07)
+  for (let i = 0; i < plan.length; i++) {
+    ctx.drawImage(getCloudShadow(seed, i), plan[i].shX, plan[i].shY);
   }
   ctx.globalAlpha = 1;
 }

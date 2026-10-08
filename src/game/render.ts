@@ -19,12 +19,15 @@ import {
   fxFrame, updateAmbient, drawAmbient, getRollTrail,
   bannerInfo, memoryAlpha, TRAIL_LIFE,
 } from './fx';
-import { drawLightingV2 } from './world/lighting';
+import { drawLightingV2, setEyesVisible } from './world/lighting';
 import { updateWeather, drawWeatherWorld, drawWeatherSky } from './world/weather';
 import { drawDayNightGrade, drawCloudShadows } from './world/sky';
-import { waterOverlay } from './world/water';
+import { waterOverlay, setWaterNight } from './world/water';
 import { drawPropV2 } from './world/props';
-import { drawMinimapOverlay } from './world/minimap';
+import { drawTreeCanopy } from './world/trees';
+import { setVillageNight, drawVillageWindowsNight } from './world/village';
+import { drawMinimapOverlay, setMinimapTargets } from './world/minimap';
+import type { MinimapTarget } from './world/minimap';
 // Ronda 2 · Terror: overlay de pavor, presentación del jefe, FX de fases y frames nuevos
 import { drawHorrorOverlay, getHorrorShake } from './actors/horror';
 import { drawBossIntro } from './actors/bossintro';
@@ -59,6 +62,10 @@ export function drawGame(g: Game) {
   if (g.state === 'play' || g.state === 'dialogue') {
     updateAmbient(g, dtF);
     updateWeather(g, dtF); // clima por mapa (R1): pool determinista, resetea al cambiar mapa/época
+    // Ronda 4: fases nocturnas para agua (camino de luna) y ventanas de la aldea
+    const night = g.dayT > 0.7 || g.dayT < 0.08 ? 1 : 0;
+    setWaterNight(night);
+    setVillageNight(night);
   }
 
   drawWorld(g);
@@ -102,6 +109,10 @@ function drawWorld(g: Game) {
   waterOverlay(ctx, camX, camY, g.globalT, g.mapId,
     (tx, ty) => tileAt(g.map, g.rows, tx, ty, g.epoch));
   ctx.restore();
+
+  // copas que se mecen (Ronda 4): puntas de árbol animadas sobre el terreno
+  drawTreeCanopy(ctx, camX, camY, g.mapId, g.globalT,
+    (tx, ty) => tileAt(g.map, g.rows, tx, ty, g.epoch));
 
   const sx = (wx: number) => wx * ZOOM - camX;
   const sy = (wy: number) => wy * ZOOM - camY;
@@ -186,7 +197,17 @@ function drawWorld(g: Game) {
   drawWeatherWorld(ctx, g);
 
   // iluminación v2 (módulo lighting): ciclo día/noche + oscuridad recortada
-  // por luces + tinte aditivo + viñeta
+  // por luces + tinte aditivo + viñeta. Ronda 4: ojos brillantes de esqueletos
+  // y sombras en la oscuridad (en px de mundo; el módulo aplica cámara)
+  if (g.enemies.length > 0) {
+    const eyes: { x: number; y: number; color: string }[] = [];
+    for (const e of g.enemies) {
+      if (e.dead) continue;
+      if (e.etype === 'sombra') eyes.push({ x: e.x, y: e.y - 9, color: '#b08af0' });
+      else if (e.etype === 'esqueleto') eyes.push({ x: e.x, y: e.y - 9, color: '#ff9a4a' });
+    }
+    setEyesVisible(eyes);
+  }
   drawLightingV2(ctx, g);
   // feedback de juego que vivía en el antiguo drawLighting y NO es iluminación:
   // niebla del presente, destello de daño y viñeta roja por vida baja
@@ -195,6 +216,9 @@ function drawWorld(g: Game) {
   // grading día/noche por franjas (módulo sky), sobre la luz y bajo el HUD
   if (g.state === 'play' || g.state === 'dialogue') {
     drawDayNightGrade(ctx, g);
+    // Ronda 4: ventanas de la aldea que se iluminan de noche (sobre la oscuridad)
+    drawVillageWindowsNight(ctx, camX, camY, g.mapId, g.globalT,
+      (tx, ty) => tileAt(g.map, g.rows, tx, ty, g.epoch));
   }
 
   // capa de cielo: estrellas, luna, antorchas (sobre la iluminación)
@@ -611,10 +635,13 @@ function drawHud(g: Game) {
   text(g, `${p.potions}× poción (F)`, 242, 42, 13, p.potions > 0 ? '#f0a0b8' : COL.dim);
   if (p.weaponPlus > 0) text(g, `arma +${p.weaponPlus}`, 242, 58, 13, '#d8e0f0');
 
-  // ---- minimapa v2 (arriba-derecha): marco remachado + placa + marcadores.
-  // El canvas depende de la época (el pasado se genera aparte en buildGround).
+  // ---- minimapa v3 (Ronda 4): santuario + salidas como objetivos fijos ----
   const mini = g.epoch === 'pasado' && g.miniCanvasPast ? g.miniCanvasPast : g.miniCanvas;
   if (mini) {
+    const [stx, sty] = g.sanctuaryPos(g.mapId);
+    const targets: MinimapTarget[] = [{ x: stx, y: sty, kind: 'altar' }];
+    for (const ex of g.map.exits) targets.push({ x: ex.x, y: ex.y, kind: 'salida' });
+    setMinimapTargets(targets);
     drawMinimapOverlay(ctx, mini, g);
   }
 

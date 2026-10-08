@@ -14,6 +14,16 @@
 // recorra el suelo de lado a lado. Los muros usan su propia tabla
 // de hiladas de 3-5 px con desplazamiento real por fila.
 // Prerrender: drawTile se llama con t=0 → todo determinista.
+//
+// R4-A7b (reintento): 4 patrones de baldosa por BLOQUE 2×2 de tiles
+// (coherentes entre vecinos), hierba infiltrada en las juntas junto a
+// hierba y desgaste donde el camino '=' cruza la plaza, esquinas
+// hundidas; cripta con juntas hondas, humedades en bandas verticales,
+// GRIETAS CON RUTA que continúan al tile vecino, musgo en racimos y
+// runas tenues de 2-3 trazos; pilares/altar con base desgastada y
+// grieta vertical; madera con sombra de contacto de 1px hacia el
+// vecino inferior. Paleta: tonos existentes + 1 acento (WALL_DAMP)
+// + la runa tenue mandatada (RUNE_FAINT).
 // ============================================================
 
 import { hash2, px, pick, PAL, isCrypt, type NeighborFn } from './palette';
@@ -60,6 +70,21 @@ function vnoise(vx: number, vy: number, L: number, seed: number): number {
   const c = h32(x0 + seed, y0 + 1 + seed * 7);
   const d = h32(x0 + 1 + seed, y0 + 1 + seed * 7);
   return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+}
+
+/**
+ * Grieta CON RUTA (R4-A7b): campo global puro — cada ancla de columna
+ * (cada 6 px) decide por hash si abre fisura, dónde empieza y cuánto
+ * dura; el píxel activo de cada fila oscila 0/1 → ruta continua de 1px
+ * que CRUZA los bordes de tile sin costuras (misma función pura en el
+ * tile y en su vecino). ~22% de las anclas, rutas de 24-111 px.
+ */
+function wallCrack(gx: number, gy: number): boolean {
+  const a = gx - (gx % 6);
+  if (h32(a * 3 + 5, 733) >= 0.22) return false;
+  const ys = Math.floor(h32(a + 911, 739) * 256) * 4;
+  if (gy < ys || gy >= ys + 24 + Math.floor(h32(a + 917, 743) * 88)) return false;
+  return a + (h32(a * 7 + gy * 13, 737) < 0.20 ? 1 : 0) === gx;
 }
 
 // ---------------- paleta local de piedra ----------------
@@ -116,6 +141,19 @@ const RUNES: string[][] = [
   ['# #', ' # ', '# #'],
   ['###', ' # ', ' # '],
 ];
+
+// R4-A7b · acentos (política de paleta: tonos existentes ±1 acento)
+const WALL_DAMP = '#2e2e3c';   // humedad difusa de la sillería (cripta)
+const RUNE_FAINT = '#3a3a52';  // runa tenue grabada en el muro (mandatada)
+// trazos de runa tenue: 2-3 trazos de 1px (pares [dx,dy] en caja 4×3)
+const RUNE_STROKES: number[][][] = [
+  [[0, 0], [0, 1], [0, 2], [2, 1], [2, 2]],          // dos verticales
+  [[0, 2], [1, 1], [2, 0], [0, 0], [1, 0]],          // diagonal + techo
+  [[1, 0], [1, 1], [1, 2], [0, 1], [2, 1], [3, 2]],  // cruz + pie
+  [[0, 0], [1, 0], [2, 0], [1, 1], [1, 2]],          // T rúnica
+];
+// chars que cuentan como hierba a efectos de infiltración en juntas
+const GRASS_CHARS = ['.', ',', 'c', 'm'];
 
 // Pilar: paleta por clima
 const PILLAR = {
@@ -218,6 +256,71 @@ function ensureWallRows(): void {
 // SUELO DE PIEDRA (':' y base de 'P'/'A')
 // ============================================================
 
+// ============================================================
+// PATRÓN DE SUELO POR BLOQUE 2×2 (R4-A7b)
+// Los 4 tiles de un bloque de 32×32 px comparten patrón de baldosa
+// (hash del bloque) → las baldosas encajan entre vecinos:
+//   0 · hiladas variables (tablas de arriba)
+//   1 · soga: sillares 16×8 en muro corrido
+//   2 · losas grandes 32×16 con fase por hilada
+//   3 · mosaico 8×8 con fase por fila (borde irregular)
+// ============================================================
+
+function blockPat(bx: number, by: number): number {
+  return pick(h32(bx * 3 + 17, by * 5 + 29), 4);
+}
+
+/** Patrón de la celda 2×2 que contiene el tile (export QA/harness). */
+export function stonePatternAt(tx: number, ty: number, mapId?: string): number {
+  void mapId;
+  return blockPat(tx >> 1, ty >> 1);
+}
+
+// scratch del geometra (sin allocations; prerrender single-thread)
+let sPat = 0, sB = 0, sY0 = 0, sH = 0, sW = 0, sOff = 0;
+let sSi = 0, sUs = 0, sRy = 0, sJH = false;
+
+/** Geometría de losa del píxel global (gx, gy) según el patrón del bloque. */
+function slabGeom(gx: number, gy: number): void {
+  const pat = blockPat(gx >> 4, gy >> 4);
+  sPat = pat;
+  if (pat === 1) {                       // soga 16×8
+    sY0 = gy & ~7; sH = 8; sW = 16; sB = sY0;
+    sOff = ((gy >> 3) & 1) !== 0 ? 8 : 0;
+    sJH = (gy & 7) === 7;
+  } else if (pat === 2) {                // losa grande 32×16
+    sY0 = gy & ~15; sH = 16; sW = 32; sB = sY0;
+    sOff = Math.floor(h32((sY0 >> 4) * 7 + 1, 601) * 32);
+    sJH = (gy & 15) === 15;
+  } else if (pat === 3) {                // mosaico 8×8
+    sY0 = gy & ~7; sH = 8; sW = 8; sB = sY0;
+    sOff = Math.floor(h32((sY0 >> 3) * 11 + 3, 613) * 8);
+    sJH = (gy & 7) === 7;
+  } else {                               // hiladas variables (tablas)
+    ensureFloorRows();
+    sY0 = fY0![gy]; sH = fH![gy]; sW = fW[gy]; sOff = fOff[gy]; sB = fBand[gy];
+    sJH = gy - sY0 === 0 || fMid[gy] === 1;
+  }
+  const u = gx + sOff;
+  sSi = Math.floor(u / sW);
+  sUs = u - sSi * sW;
+  sRy = gy - sY0;
+}
+
+/** ¿Junta? — exige slabGeom(gx, gy) recién calculado. */
+function slabIsJoint(gx: number, gy: number): boolean {
+  if (sJH || sUs === 0) return true;
+  if (sW <= 12 && sUs === 1 && h32(gx * 3 + sB, gy + 41) > 0.72) return true;
+  if (sW <= 12 && sRy === 1 && h32(gx + 17, gy * 3 + sB) > 0.78) return true;
+  return false;
+}
+
+/** ¿Es junta el píxel global? (para costuras/infiltración desde fuera) */
+function slabJoint(gx: number, gy: number): boolean {
+  slabGeom(gx, gy);
+  return slabIsJoint(gx, gy);
+}
+
 /**
  * Campo de losas continuo entre tiles: para cada píxel global decide
  * si es junta y qué tono de losa le corresponde. Tipos de losa:
@@ -239,38 +342,32 @@ function floorBase(
   const px0 = tx * 16, py0 = ty * 16;
   const mossC = crypt ? PAL.stoneMossCrypt : PAL.stoneMoss;
   const mossD = crypt ? '#33503f' : PAL.stoneMossDark;
+  const cornerC = FLOOR_CORNER[ci];
   // musgo: más denso en bosque y cripta que en la plaza del valle
   // (umbral calibrado con la distribución del ruido: ~10/21/26% de área)
   const mossThr = mapId === 'bosque' ? 0.595 : crypt ? 0.625 : 0.70;
 
   for (let ly = 0; ly < 16; ly++) {
     const gy = py0 + ly;
-    const b = fBand[gy], y0 = fY0![gy], h = fH![gy];
-    const w = fW[gy], off = fOff[gy];
-    const ry = gy - y0;                       // fila dentro de la hilada
-    const jointH = ry === 0 || fMid[gy] === 1; // junta horizontal entre losas
-    const big = w >= 24 && h >= 20;
     for (let lx = 0; lx < 16; lx++) {
       const gx = px0 + lx;
-      const u = gx + off;
-      const si = Math.floor(u / w);            // losa horizontal
-      const us = u - si * w;
-      const slabHash = h32(si * 7 + b * 131, b * 17 + si * 3);
-      const tone = tones[pick(slabHash, 5)];
-      // muescas de borde sólo en losas pequeñas (borde irregular)
-      const chipV = w <= 12 && us === 1 && h32(gx * 3 + b, gy + 41) > 0.72;
-      const chipH = w <= 12 && ry === 1 && h32(gx + 17, gy * 3 + b) > 0.78;
+      slabGeom(gx, gy);
+      const w = sW, us = sUs, ry = sRy, b = sB, y0 = sY0, h = sH, si = sSi;
       let c: string;
-      if (jointH || us === 0 || chipV || chipH) {
+      if (slabIsJoint(gx, gy)) {
         // junta desgastada: mayormente mortero, a veces clara, a veces rota
         const jn = h32(gx * 5 + b, gy * 5 + 3);
-        c = jn > 0.30 ? mortar : jn > 0.14 ? joint2 : tone.b;
+        const toneJ = tones[pick(h32(si * 7 + b * 131, b * 17 + si * 3), 5)];
+        c = jn > 0.30 ? mortar : jn > 0.14 ? joint2 : toneJ.b;
       } else {
+        const slabHash = h32(si * 7 + b * 131 + sPat * 57, b * 17 + si * 3 + sPat * 29);
+        const tone = tones[pick(slabHash, 5)];
         const n = hash2(gx, gy);
         // pulido: las losas grandes brillan más que las demás
-        const polished = big && h32(si * 3 + 7, b * 5 + 55) > 0.45;
+        const polished = w >= 24 && h >= 16 && h32(si * 3 + 7, b * 5 + 55) > 0.45;
         const inside = us > 1 && us < w - 1 && ry > 1 && ry < h - 1;
-        if (n > (polished ? 0.86 : 0.95) && inside) {
+        const hl = h32(gx + 913, gy + 317);
+        if (hl > (polished ? 0.86 : 0.95) && inside) {
           c = tone.l;                          // brillo de pulido suelto
         } else if (n < 0.05 && inside) {
           c = tone.d;                          // grano oscuro
@@ -280,6 +377,17 @@ function floorBase(
           c = tone.l;
         } else {
           c = tone.b;
+        }
+        // esquina hundida: ~12% de las losas, cuña oscura en una esquina
+        if (slabHash > 0.88) {
+          const k = pick(h32(si * 13 + b * 7, sPat * 11 + 5), 4);
+          const d = Math.max(
+            Math.abs(gx - (gx - us + ((k & 1) !== 0 ? w - 1 : 0))),
+            Math.abs(gy - (y0 + ((k & 2) !== 0 ? h - 1 : 0))),
+          );
+          if (d === 0) c = cornerC;
+          else if (d === 1) c = tone.d;
+          else if (d === 2 && h32(gx * 3 + gy, 811) > 0.5) c = tone.d;
         }
       }
       p1(x, gx, gy, c);
@@ -298,13 +406,13 @@ function floorBase(
   }
 
   // --- grietas ramificadas (1 px con codo y rama, sólo a veces) ---
-  if (hash2(tx * 3 + 11, ty * 5 + 7) > 0.62) {
+  if (h32(tx * 3 + 11, ty * 5 + 7) > 0.88) {
     const crackC = FLOOR_CRACK[ci];
-    const startX = px0 + 2 + Math.floor(hash2(tx + 21, ty + 3) * 11);
-    const startY = py0 + 2 + Math.floor(hash2(tx + 5, ty + 22) * 11);
-    const horizFirst = hash2(tx + 9, ty + 23) > 0.5;
-    const l1 = 3 + Math.floor(hash2(tx + 13, ty + 14) * 4);
-    const l2 = 3 + Math.floor(hash2(tx + 15, ty + 16) * 4);
+    const startX = px0 + 2 + Math.floor(h32(tx + 21, ty + 3) * 11);
+    const startY = py0 + 2 + Math.floor(h32(tx + 5, ty + 22) * 11);
+    const horizFirst = h32(tx + 9, ty + 23) > 0.5;
+    const l1 = 3 + Math.floor(h32(tx + 13, ty + 14) * 4);
+    const l2 = 3 + Math.floor(h32(tx + 15, ty + 16) * 4);
     const inTile = (X: number, Y: number) =>
       X >= px0 && X < px0 + 16 && Y >= py0 && Y < py0 + 16;
     x.fillStyle = crackC;
@@ -325,10 +433,10 @@ function floorBase(
   }
 
   // --- runas ocasionales de la cripta (glifo 3×3 cian apagado) ---
-  if (crypt && hash2(tx + 41, ty + 777) < 0.03) {
-    const g = RUNES[pick(hash2(tx, ty + 12), 3)];
-    const rx = px0 + 3 + Math.floor(hash2(tx + 1, ty + 2) * 8);
-    const ryy = py0 + 3 + Math.floor(hash2(tx + 3, ty + 4) * 8);
+  if (crypt && h32(tx + 41, ty + 777) < 0.05) {
+    const g = RUNES[pick(h32(tx, ty + 12), 3)];
+    const rx = px0 + 3 + Math.floor(h32(tx + 1, ty + 2) * 8);
+    const ryy = py0 + 3 + Math.floor(h32(tx + 3, ty + 4) * 8);
     for (let j = 0; j < 3; j++) {
       for (let i = 0; i < 3; i++) {
         if (g[j][i] === '#') p1(x, rx + i, ryy + j, PAL.runeCrypt);
@@ -377,6 +485,37 @@ function floorSeams(
   if (up !== ':' && rt !== ':') p1(x, px0 + 15, py0, corner);
   if (dn !== ':' && lf !== ':') p1(x, px0, py0 + 15, corner);
   if (dn !== ':' && rt !== ':') p1(x, px0 + 15, py0 + 15, corner);
+
+  // --- R4-A7b · hierba infiltrada en las juntas junto a hierba ---
+  { // at garantizado (early-return de arriba)
+    const gC = mapId === 'bosque' ? PAL.grassBosque[1] : PAL.grassLunaris[1];
+    const gD = mapId === 'bosque' ? PAL.grassBosque[3] : PAL.grassDark;
+    const infest = (X0: number, Y0: number, W: number, H: number): void => {
+      for (let j = 0; j < H; j++) {
+        for (let i = 0; i < W; i++) {
+          const X = X0 + i, Y = Y0 + j;
+          if (!slabJoint(X, Y)) continue;
+          const r = h32(X * 7 + 3, Y * 5 + 1);
+          if (r < 0.34) p1(x, X, Y, r < 0.11 ? gD : gC);
+        }
+      }
+    };
+    if (GRASS_CHARS.indexOf(up) >= 0) infest(px0, py0, 16, 2);
+    if (GRASS_CHARS.indexOf(dn) >= 0) infest(px0, py0 + 14, 16, 2);
+    if (GRASS_CHARS.indexOf(lf) >= 0) infest(px0, py0, 2, 16);
+    if (GRASS_CHARS.indexOf(rt) >= 0) infest(px0 + 14, py0, 2, 16);
+
+    // --- desgaste donde el camino '=' cruza la piedra ---
+    const wearPx = (X: number, Y: number, edge: boolean): void => {
+      const r = h32(X * 3 + 9, Y * 7 + 5);
+      if (edge && r < 0.68) p1(x, X, Y, r < 0.14 ? PAL.pathDark : PAL.pathShadow);
+      if (!edge && r > 0.72) p1(x, X, Y, PAL.pathShadow);
+    };
+    if (up === '=') for (let i = 0; i < 16; i++) { wearPx(px0 + i, py0, true); wearPx(px0 + i, py0 + 1, false); }
+    if (dn === '=') for (let i = 0; i < 16; i++) { wearPx(px0 + i, py0 + 15, true); wearPx(px0 + i, py0 + 14, false); }
+    if (lf === '=') for (let j = 0; j < 16; j++) { wearPx(px0, py0 + j, true); wearPx(px0 + 1, py0 + j, false); }
+    if (rt === '=') for (let j = 0; j < 16; j++) { wearPx(px0 + 15, py0 + j, true); wearPx(px0 + 14, py0 + j, false); }
+  }
 }
 
 // ============================================================
@@ -409,7 +548,10 @@ function paintWall(
         // piedra faltante: hueco oscuro con dither
         c = ((gx + gy) & 1) === 0 ? '#32323e' : '#2a2a34';
       } else if (ry === h - 1 || us === 0) {
-        c = mortar;                    // juntas de mortero (horiz. y vertical)
+        // juntas hondas (cripta): núcleo más oscuro en cruces y tramos
+        c = crypt && h32(gx + 53, gy + 29) < (ry === h - 1 && us === 0 ? 0.5 : 0.18)
+          ? '#2a2a34'
+          : mortar;                    // juntas de mortero (horiz. y vertical)
       } else {
         const tone = tones[pick(h32(si * 17 + b * 3, b * 5 + si * 11), 5)];
         if (ry === 0 || us === 1) {
@@ -434,18 +576,50 @@ function paintWall(
     px(x, px0, py0, 16, 1, crypt ? '#5e5e76' : '#74748a');
   }
 
-  // musgo/liquen verde-grisáceo en bordes inferiores del muro
+  // --- R4-A7b · humedades: manchas oscuras difusas en bandas verticales ---
+  if (crypt) {
+    for (let ly = 0; ly < 16; ly++) {
+      for (let lx = 0; lx < 16; lx++) {
+        const gx = px0 + lx, gy = py0 + ly;
+        const dv = vnoise(gx >> 1, gy, 5, 711) * 0.7 + vnoise(gx >> 1, gy, 3, 717) * 0.3;
+        if (dv > 0.68) p1(x, gx, gy, WALL_DAMP);
+        else if (dv > 0.63 && ((gx + gy) & 1) === 0) p1(x, gx, gy, WALL_DAMP);
+      }
+    }
+    // --- grietas con ruta: fisura global que continúa en el tile vecino ---
+    x.fillStyle = '#2a2a34';
+    for (let ly = 0; ly < 16; ly++) {
+      for (let lx = 0; lx < 16; lx++) {
+        const gx = px0 + lx, gy = py0 + ly;
+        if (wallCrack(gx, gy)) x.fillRect(gx, gy, 1, 1);
+      }
+    }
+  }
+
+  // musgo/liquen verde-grisáceo en RACIMOS (ruido de valor, no salteado)
   if (!at || at(0, 1) !== '#') {
-    const dens = crypt ? 0.22 : 0.45;
+    const dens = crypt ? 0.58 : 0.53;
     for (let ly = 10; ly <= 14; ly++) {  // fila 15 la pinta el canto del suelo
       for (let lx = 0; lx < 16; lx++) {
         const gx = px0 + lx, gy = py0 + ly;
+        const m = vnoise(gx, gy, 7, 751) * 0.6 + vnoise(gx, gy, 3, 757) * 0.4;
         const edge = (ly - 8) / 7;       // más denso cuanto más abajo
-        if (hash2(gx + 91, gy + 37) < dens * edge) {
-          p1(x, gx, gy, hash2(gx, gy + 5) > 0.6 ? '#56654c' : '#46584a');
+        const wet = crypt && (wallCrack(gx, gy - 1) || wallCrack(gx, gy + 1)) ? 0.05 : 0;
+        if (m > dens + (1 - edge) * 0.10 - wet) {
+          p1(x, gx, gy, h32(gx, gy + 5) > 0.6 ? '#56654c' : '#46584a');
         }
       }
     }
+  }
+
+  // --- R4-A7b · runas tenues de sillería: 2-3 trazos 1px en ~12% ---
+  const ru = h32(tx * 2 + 1, ty * 2 + 3);
+  if (crypt && ru > 0.44 && ru < 0.56) {
+    const g = RUNE_STROKES[pick(h32(tx + 13, ty + 31), 4)];
+    const rx = px0 + 3 + Math.floor(h32(tx + 7, ty + 3) * 8);
+    const ryy = py0 + 4 + Math.floor(h32(tx + 5, ty + 17) * 7);
+    x.fillStyle = RUNE_FAINT;
+    for (const s of g) x.fillRect(rx + s[0], ryy + s[1], 1, 1);
   }
 
   // --- extras de cripta: línea grabada y nicho con vela ---
@@ -486,7 +660,9 @@ const WOOD_GRAIN = '#6e5232';
 const WOOD_KNOT = '#4e3a22';
 const WOOD_NAIL = '#3a2a16';
 
-function paintWood(x: CanvasRenderingContext2D, tx: number, ty: number): void {
+function paintWood(
+  x: CanvasRenderingContext2D, tx: number, ty: number, at?: NeighborFn,
+): void {
   const px0 = tx * 16, py0 = ty * 16;
   for (let ly = 0; ly < 16; ly++) {
     const gy = py0 + ly;
@@ -530,6 +706,15 @@ function paintWood(x: CanvasRenderingContext2D, tx: number, ty: number): void {
       p1(x, gx, gy, c);
     }
   }
+
+  // R4-A7b: sombra de contacto de 1px hacia el vecino inferior
+  if (at && at(0, 1) !== '_') {
+    px(x, px0, py0 + 15, 16, 1, WOOD_NAIL);
+    // calas que dejan entrever la junta (no una línea perfecta)
+    for (let i = 0; i < 16; i += 2) {
+      if (h32(px0 + i, ty * 7 + 3) > 0.5) p1(x, px0 + i, py0 + 15, WOOD_KNOT);
+    }
+  }
 }
 
 // ============================================================
@@ -566,13 +751,16 @@ function paintPillar(
       if (hash2(fx * 3 + j, ty * 7 + 5) > 0.18) p1(x, fx, py0 - 3 + j, P.flute);
     }
   }
-  // grieta ocasional en el fuste (1 px con codo)
-  if (hash2(tx + 7, ty + 41) > 0.55) {
-    const fx = px0 + 4 + Math.floor(hash2(tx + 4, ty + 2) * 6);
-    const fy = py0 - 2 + Math.floor(hash2(tx + 3, ty + 9) * 7);
-    p1(x, fx, fy, P.shaftD);
-    p1(x, fx, fy + 1, P.shaftD);
-    p1(x, fx + 1, fy + 2, P.shaftD);
+  // grieta VERTICAL en el fuste: nace junto a la basa y sube con codo
+  if (h32(tx + 7, ty + 41) > 0.78) {
+    let fx = px0 + 4 + Math.floor(h32(tx + 4, ty + 2) * 6);
+    const fy = py0 + 6 - Math.floor(h32(tx + 3, ty + 9) * 2);
+    const len = Math.min(5 + Math.floor(h32(tx + 9, ty + 13) * 4), fy - (py0 - 2));
+    x.fillStyle = P.shaftD;
+    for (let j = 0; j < len; j++) {
+      x.fillRect(fx, fy - j, 1, 1);
+      if (j === 3 && h32(tx + 2, ty + 5) > 0.5) fx += 1;   // codo
+    }
   }
   // basa más ancha: moldura + plinto
   px(x, px0 + 2, py0 + 9, 12, 2, P.base);
@@ -580,6 +768,15 @@ function paintPillar(
   px(x, px0 + 1, py0 + 11, 14, 4, P.base);
   px(x, px0 + 1, py0 + 11, 14, 1, P.baseL);
   px(x, px0 + 1, py0 + 14, 14, 1, P.baseD);
+  // R4-A7b: moldura de dos tonos (filete en sombra bajo el astrágalo)
+  px(x, px0 + 2, py0 + 10, 12, 1, P.shaftD);
+  // base desgastada: desconchones por hash en el plinto
+  for (const cxx of [px0 + 1, px0 + 3, px0 + 12, px0 + 14]) {
+    if (h32(cxx * 5 + ty, ty * 3 + 21) > 0.55) {
+      p1(x, cxx, py0 + 12, P.baseD);
+      p1(x, cxx, py0 + 13, P.ground);
+    }
+  }
   // contacto con el suelo
   px(x, px0 + 1, py0 + 15, 14, 1, P.ground);
   dither(x, px0 + 0, py0 + 15, 1, 1, P.ground);
@@ -615,6 +812,17 @@ function paintAltar(
   p1(x, px0 + 5, py0 + 12, '#8a6f22');
   p1(x, px0 + 7, py0 + 12, '#8a6f22');
   p1(x, px0 + 9, py0 + 12, '#8a6f22');
+  // R4-A7b: base desgastada — desconchones en las esquinas del cuerpo
+  p1(x, px0 + 3, py0 + 13, '#3e3e4c');
+  p1(x, px0 + 12, py0 + 13, '#3e3e4c');
+  if (h32(tx * 3 + 1, ty * 5 + 9) > 0.5) {
+    p1(x, px0 + 4, py0 + 13, '#3e3e4c');
+    p1(x, px0 + 3, py0 + 12, '#3e3e4c');
+  }
+  if (h32(tx * 3 + 2, ty * 5 + 11) > 0.5) {
+    p1(x, px0 + 11, py0 + 13, '#3e3e4c');
+    p1(x, px0 + 12, py0 + 12, '#3e3e4c');
+  }
   // talco ritual blanco desgastado delante (dither con huecos)
   dither(x, px0 + 4, py0 + 14, 8, 1, '#c9c2ae');
   p1(x, px0 + 5, py0 + 15, '#c9c2ae');
@@ -664,7 +872,7 @@ export function paintStone(
       floorSeams(x, tx, ty, mapId, at);
       break;
     case '_':
-      paintWood(x, tx, ty);
+      paintWood(x, tx, ty, at);
       break;
     case '#':
       paintWall(x, tx, ty, mapId, at);
