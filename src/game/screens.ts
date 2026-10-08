@@ -1,8 +1,9 @@
 // ============================================================
-// ECOS DE AELTHAR — Pantallas y overlays (AGENTE 3-a · visuales)
+// ECOS DE AELTHAR — Pantallas y overlays (AGENTE 3-a · visuales;
+// pestañas y final actualizados al ACTO II por el agente 10-a)
 // Título (niebla en capas + notas flotantes), controles, intro,
-// pausa (Estado con "Velmora te observa", Diario con memorias),
-// diálogo con retratos animados, muerte y final escalonado.
+// pausa (Estado con "Velmora te observa", Diario con memorias y
+// misiones del Acto II), diálogo con retratos, muerte y final.
 // ============================================================
 
 import type { Game } from './engine';
@@ -33,7 +34,30 @@ const LOCKED_HINT: Record<string, string> = {
   mem_nana: 'Una nana medio oída te persigue desde el valle...',
   mem_casa: '¿Dos tazas en un umbral? El olor a pan te resulta conocido...',
   mem_madre: 'Unas manos cosen algo en tu memoria. No ves su rostro.',
+  mem_faro: 'Un faro apagado sueña con una cerilla y una canción...',
+  mem_invierno: 'Bajo el hielo de las cumbres aguardan voces dormidas...',
 };
+
+// Acto II — teasers de las zonas nuevas (Diario, solo misiones futuras:
+// al activarse la misión el paso real los sustituye, y al completarla callan)
+const ZONE_TEASERS: Record<string, string> = {
+  q6: '«Costa de Bruma — el mar guarda las notas»',
+  q8: '«Merrow — la aldea que olvidó su nombre»',
+  q9: '«Cumbres Heladas — el frío que aprendió a escuchar»',
+};
+
+// objetos clave: flag del motor/hooks → clave en KEY_ITEMS (orden de obtención).
+// Lista dinámica: cualquier Eco u objeto nuevo aparece al activarse su flag.
+const KEY_ITEM_FLAGS: [string, string][] = [
+  ['fragmentTouched', 'fragment'],
+  ['ecoVoz', 'ecoVoz'],
+  ['ecoMareas', 'ecoMareas'],
+  ['ecoCumbres', 'ecoCumbres'],
+  ['ecoNombres', 'ecoNombres'],
+];
+
+// números en letra para la pantalla final (restantes de 7)
+const NUM_ES = ['cero', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete'];
 
 export function drawScreens(g: Game) {
   if (g.state !== 'end') endArmed = false; // rearma la escalonada del final
@@ -144,7 +168,7 @@ function drawTitle(g: Game) {
   textShadow(g, 'AELTHAR', VIEW_W / 2, 110 + bob, 42, COL.gold, '#2a1a08', 'center', true);
   ctx.fillStyle = COL.gold;
   ctx.fillRect(VIEW_W / 2 - 180, 168, 360, 2);
-  text(g, 'RPG 2D de acción y exploración · Demo jugable (vertical slice)', VIEW_W / 2, 180, 17, COL.dim, 'center');
+  text(g, 'RPG 2D de acción y exploración · Demo jugable · Acto II incluido', VIEW_W / 2, 180, 17, COL.dim, 'center');
 
   // botones (con brillo de hover)
   const bx = VIEW_W / 2 - 130, bw = 260;
@@ -161,7 +185,7 @@ function drawTitle(g: Game) {
   }
 
   text(g, 'Basado en el Documento de Diseño de @papito · 8 oct 2026', VIEW_W / 2, VIEW_H - 40, 15, 'rgba(154,160,184,0.8)', 'center');
-  text(g, 'v0.2.1 · Lunaris — Bosque Susurrante — Cripta del Primer Canto', VIEW_W / 2, VIEW_H - 20, 14, 'rgba(122,128,148,0.7)', 'center');
+  text(g, 'v0.3.0 · Lunaris — Bosque — Cripta — Costa de Bruma — Merrow — Cumbres Heladas', VIEW_W / 2, VIEW_H - 20, 14, 'rgba(122,128,148,0.7)', 'center');
 }
 
 // helpers deterministas locales (evitan importar hash2 aquí)
@@ -353,55 +377,72 @@ function drawPause(g: Game) {
     text(g, `${p.potions}  (beber con F)`, cx + 100, cy + 58, 18, COL.text);
     text(g, 'OBJETOS CLAVE', cx, cy + 96, 16, COL.gold);
     let ky = cy + 120;
-    if (g.flags.fragmentTouched) { text(g, `◆ ${KEY_ITEMS.fragment.name}`, cx, ky, 16, COL.text); ky += 22; text(g, KEY_ITEMS.fragment.desc, cx + 16, ky, 13, COL.dim); ky += 20; }
-    if (g.flags.ecoVoz) { text(g, `◆ ${KEY_ITEMS.ecoVoz.name}`, cx, ky, 16, '#ffe9a0'); ky += 22; text(g, KEY_ITEMS.ecoVoz.desc, cx + 16, ky, 13, COL.dim); ky += 20; }
+    for (const [flag, id] of KEY_ITEM_FLAGS) {
+      if (!g.flags[flag]) continue;
+      const it = KEY_ITEMS[id];
+      if (!it) continue;
+      text(g, `◆ ${it.name}`, cx, ky, 16, id === 'fragment' ? COL.text : '#ffe9a0');
+      text(g, it.desc, cx + 16, ky + 17, 13, COL.dim);
+      ky += 34;
+    }
     if (ky === cy + 120) { text(g, '(aún no llevas ninguno)', cx, ky, 15, COL.dim); ky += 22; }
     text(g, 'FACCIÓN: Guardianes del Canto', cx, ky + 8, 16, COL.quest);
     bar(g, cx, ky + 30, 200, 8, (p.repGuardianes + 100) / 200, '#4a8a5c', '#1a2a1c', COL.panelBorder);
     text(g, `${p.repGuardianes >= 0 ? '+' : ''}${p.repGuardianes} / +100`, cx + 210, ky + 26, 15, COL.dim);
     text(g, g.companion ? 'Compañera: Ilwen (Arquera Sylvar) — te cubre con su arco' : 'Compañeros: ninguno aún (Ilwen espera en el Bosque)', cx, ky + 56, 15, COL.dim);
   } else if (g.pauseTab === 2) {
-    // DIARIO — misiones (izquierda) + memorias del Portador (derecha)
-    text(g, 'CADENA PRINCIPAL', cx, cy, 15, COL.gold);
-    let y = cy + 24;
+    // DIARIO — misiones por acto (izquierda) + memorias del Portador (derecha)
+    text(g, 'CADENA PRINCIPAL · ACTO I', cx, cy, 15, COL.gold);
+    let y = cy + 22;
     for (let i = 0; i < QUESTS.length; i++) {
+      // sub-cabecera del Acto II justo antes de q6 (leída de QUESTS, sin hardcodear nombres)
+      if (i === 5) {
+        y += 4;
+        text(g, '◆ ACTO II · LAS NOTAS PERDIDAS', cx, y, 14, g.questIdx >= 5 ? COL.quest : 'rgba(142,240,176,0.45)');
+        y += 20;
+      }
       const q = QUESTS[i];
       const done = i < g.questIdx;
       const active = i === g.questIdx;
       text(g, `${done ? '✔' : active ? '◆' : '·'} ${q.name}`, cx, y, 16, done ? '#6a8a6a' : active ? COL.quest : COL.dim);
-      y += 20;
+      y += 18;
       if (active) {
         const stepText = g.questProgressText() ?? q.steps[g.questStep];
-        for (const l of wrapText(stepText, 30)) { text(g, '   ' + l, cx, y, 14, COL.text); y += 16; }
+        for (const l of wrapText(stepText, 42)) { text(g, '   ' + l, cx, y, 14, COL.text); y += 15; }
         y += 4;
+      } else if (ZONE_TEASERS[q.id] && i > g.questIdx) {
+        // rumor de zona nueva: solo mientras la misión siga en el futuro
+        text(g, `   ${ZONE_TEASERS[q.id]}`, cx, y, 13, 'rgba(154,160,184,0.75)');
+        y += 14;
       }
     }
     text(g, `Ecos menores escuchados: ${g.takenEchoes.size}`, cx, py + ph - 52, 14, COL.dim);
     text(g, `Enemigos derrotados: ${p.kills} · Muertes: ${p.deaths}`, cx, py + ph - 32, 14, COL.dim);
 
     // ---- memorias del Portador (biblia: cada Eco devuelve un recuerdo) ----
+    // Con las 5 memorias del Acto II el reparto es fijo y compacto: máximo 3
+    // líneas de texto por recuerdo para que la columna nunca desborde el panel
+    // (el texto íntegro ya se muestra en el overlay de memoria al desbloquearla).
     const mx0 = cx + 316;
-    const myLim = py + ph - 30;
     text(g, 'MEMORIAS DEL PORTADOR', mx0, cy, 15, COL.gold);
-    let my = cy + 24;
+    let my = cy + 20;
     const got = p.memories ?? [];
     for (const mid of Object.keys(MEMORIES)) {
       const m = MEMORIES[mid];
       const unlocked = got.includes(mid);
       text(g, unlocked ? m.title : '??? · Recuerdo perdido', mx0, my, 14, unlocked ? COL.goldSoft : COL.dim);
-      my += 17;
+      my += 15;
       if (unlocked) {
-        const lines = wrapText(m.text, 50);
-        const maxLines = Math.max(1, Math.floor((myLim - my - 10) / 13));
-        const shown = lines.slice(0, maxLines);
-        if (lines.length > maxLines && shown.length > 0) {
-          shown[shown.length - 1] = shown[shown.length - 1].replace(/[.,;:]?$/, '…');
+        const all = wrapText(m.text, 58);
+        const shown = all.slice(0, 3);
+        if (all.length > 3 && shown.length === 3) {
+          shown[2] = shown[2].replace(/[.,;:]?$/, '…');
         }
         shown.forEach((l, i) => text(g, l, mx0, my + i * 13, 13, COL.text));
-        my += shown.length * 13 + 6;
+        my += shown.length * 13 + 3;
       } else {
         text(g, LOCKED_HINT[mid] ?? 'La Niebla aún oculta este recuerdo.', mx0, my, 13, 'rgba(154,160,184,0.75)');
-        my += 30;
+        my += 16;
       }
       // divisor sutil entre memorias
       ctx.strokeStyle = 'rgba(90,74,48,0.45)';
@@ -410,7 +451,7 @@ function drawPause(g: Game) {
       ctx.moveTo(mx0, my);
       ctx.lineTo(mx0 + 330, my);
       ctx.stroke();
-      my += 8;
+      my += 7;
     }
   } else {
     // SISTEMA
@@ -585,15 +626,22 @@ function drawEnd(g: Game) {
     ctx.fillStyle = `rgba(240,200,74,${0.2 + Math.abs(Math.sin(g.globalT + i)) * 0.5})`;
     ctx.fillRect(x, y, 2, 2);
   }
-  textShadow(g, 'PRIMERA NOTA COMPLETA', VIEW_W / 2, 90, 18, COL.goldSoft, '#000', 'center', true);
+  // Ecos mayores recuperados (de los 7 en que se quebró el canto de Aelthar)
+  const ecoCount = (g.flags.ecoVoz ? 1 : 0) + (g.flags.ecoMareas ? 1 : 0) + (g.flags.ecoCumbres ? 1 : 0);
+  const acto2End = g.questIdx >= 9; // el mismo cierre sirve al Acto I o al Acto II (motor)
+  textShadow(g, acto2End ? 'TRES NOTAS COMPLETAS' : 'PRIMERA NOTA COMPLETA', VIEW_W / 2, 90, 18, COL.goldSoft, '#000', 'center', true);
   textShadow(g, 'GRACIAS POR JUGAR LA DEMO', VIEW_W / 2, 130, 26, COL.gold, '#2a1a08', 'center', true);
   ctx.fillStyle = COL.gold;
   ctx.fillRect(VIEW_W / 2 - 160, 175, 320, 2);
 
   const p = g.player!;
-  // estadísticas una a una (cada 0.4 s) + memorias
+  // estadísticas una a una (cada 0.4 s) + memorias + Ecos del Acto II
   const statLines = g.endStats.split('\n');
-  const lines = [...statLines, `Memorias recuperadas: ${(p.memories?.length ?? 0)}/${Object.keys(MEMORIES).length}`];
+  const lines = [
+    ...statLines,
+    `Memorias recuperadas: ${(p.memories?.length ?? 0)}/${Object.keys(MEMORIES).length}`,
+    `Ecos recuperados: ${ecoCount} de 7`,
+  ];
   const panelH = 34 + lines.length * 26 + 10;
   panel(g, VIEW_W / 2 - 250, 200, 500, panelH, COL.panelBorder);
   lines.forEach((l, i) => {
@@ -606,12 +654,13 @@ function drawEnd(g: Game) {
   });
   ctx.globalAlpha = 1;
 
-  // cita final tras las estadísticas
+  // cita final tras las estadísticas (los Ecos restantes dependen del acto)
   const qa = Math.max(0, Math.min(1, (elapsed - 0.6 - lines.length * 0.4) / 0.5));
   ctx.globalAlpha = qa;
   text(g, '«Cuando el miedo te hable, canta más alto.»', VIEW_W / 2, 396, 19, COL.epochPast, 'center');
   text(g, '— Anciana Brisa', VIEW_W / 2, 418, 15, COL.dim, 'center');
-  text(g, 'Los otros seis Ecos aguardan en Velmora...', VIEW_W / 2, 448, 16, COL.dim, 'center');
+  const restantes = NUM_ES[Math.max(0, Math.min(7, 7 - ecoCount))];
+  text(g, `Los otros ${restantes} Ecos aguardan en Velmora...`, VIEW_W / 2, 448, 16, COL.dim, 'center');
   ctx.globalAlpha = 1;
   button(g, 'VOLVER AL TÍTULO (ENTER)', VIEW_W / 2 - 140, VIEW_H - 60, 280, 40, () => g.setState('title'), 11);
   hoverCorners(g, VIEW_W / 2 - 140, VIEW_H - 60, 280, 40);

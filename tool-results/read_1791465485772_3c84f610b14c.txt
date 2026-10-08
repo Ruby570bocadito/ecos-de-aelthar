@@ -1,0 +1,1162 @@
+     1→     1→// ============================================================
+     2→     2→// ECOS DE AELTHAR — Arte pixel procedural (AGENTE 3-a · visuales)
+     3→     3→// Sprites generados en canvas: humanoides con ciclos de andar de
+     4→     4→// 3 fases, paletas de la biblia (Sasha, Brokk, Maelis, Corvin,
+     5→     5→// Kael, Gran Inquisidor, Teo, Doran, Nimue), lobo, Guardián
+     6→     6→// Hueco, cofres, santuario, fragmento, wisps + tiles del mundo.
+     7→     7→// Además: arcos de ataque (slash) y retratos de diálogo.
+     8→     8→// ============================================================
+     9→     9→
+    10→    10→export function hash2(x: number, y: number): number {
+    11→    11→  let h = x * 374761393 + y * 668265263;
+    12→    12→  h = (h ^ (h >> 13)) * 1274126177;
+    13→    13→  return ((h ^ (h >> 16)) >>> 0) / 4294967295;
+    14→    14→}
+    15→    15→
+    16→    16→export type Frames = HTMLCanvasElement[];
+    17→    17→
+    18→    18→const SPR: Record<string, Frames> = {};
+    19→    19→
+    20→    20→function mkCanvas(w: number, h: number): { c: HTMLCanvasElement; x: CanvasRenderingContext2D } {
+    21→    21→  const c = document.createElement('canvas');
+    22→    22→  c.width = w; c.height = h;
+    23→    23→  const x = c.getContext('2d')!;
+    24→    24→  x.imageSmoothingEnabled = false;
+    25→    25→  return { c, x };
+    26→    26→}
+    27→    27→
+    28→    28→// ---------------- Humanoides (16×18 · 3 fases de andar) ----------------
+    29→    29→
+    30→    30→export interface HumanPal {
+    31→    31→  outline: string;
+    32→    32→  hair: string; hairS?: string;
+    33→    33→  skin: string;
+    34→    34→  body: string; bodyS: string;
+    35→    35→  accent: string;
+    36→    36→  legs: string; legsS?: string;
+    37→    37→  boots: string;
+    38→    38→  eye: string;
+    39→    39→  hood?: boolean;
+    40→    40→  ribs?: boolean;
+    41→    41→  beard?: string;
+    42→    42→  // --- rasgos del agente 3-a (biblia de personajes) ---
+    43→    43→  small?: boolean;          // niño (Teo): proporciones compactas
+    44→    44→  big?: boolean;            // Gran Inquisidor: escala ×2 (32×36)
+    45→    45→  ears?: 'cat' | 'elf';     // orejas felinas / élficas
+    46→    46→  mask?: boolean;           // máscara lisa sin boca (Gran Inquisidor)
+    47→    47→  maskC?: string;           // color de la máscara
+    48→    48→  hammer?: boolean;         // martillo en la mano (Brokk)
+    49→    49→  hairLong?: boolean;       // melena larga (Maelis, Nimue)
+    50→    50→  pauldrons?: boolean;      // hombreras (Kael)
+    51→    51→  leafy?: boolean;          // hojas en hombros (Doran)
+    52→    52→  messy?: boolean;          // pelo revuelto (Teo)
+    53→    53→}
+    54→    54→
+    55→    55→function px(x: CanvasRenderingContext2D, X: number, Y: number, W: number, H: number, C: string) {
+    56→    56→  x.fillStyle = C; x.fillRect(X, Y, W, H);
+    57→    57→}
+    58→    58→
+    59→    59→interface Layout {
+    60→    60→  H: number;        // alto del canvas
+    61→    61→  headTop: number;  // fila de la masa de pelo
+    62→    62→  faceTop: number;  // fila de piel
+    63→    63→  bodyTop: number;  // fila del torso
+    64→    64→  bodyH: number;    // filas de torso (incluye fila de contorno)
+    65→    65→  armLen: number;   // largo del brazo sin mano
+    66→    66→}
+    67→    67→
+    68→    68→function layoutFor(pal: HumanPal): Layout {
+    69→    69→  if (pal.small) return { H: 15, headTop: 0, faceTop: 3, bodyTop: 7, bodyH: 4, armLen: 3 };
+    70→    70→  return { H: 18, headTop: 1, faceTop: 4, bodyTop: 8, bodyH: 6, armLen: 4 };
+    71→    71→}
+    72→    72→
+    73→    73→/**
+    74→    74→ * Dibuja un fotograma humanoide. f = fase de andar (0 zancada A,
+    75→    75→ * 1 pase —cuerpo elevado 1px—, 2 zancada B). En reposo se usa f=1
+    76→    76→ * sin bob para una pose neutra de pie.
+    77→    77→ */
+    78→    78→function drawHumanFrame(
+    79→    79→  x: CanvasRenderingContext2D, pal: HumanPal,
+    80→    80→  dir: 'down' | 'up' | 'side', f: number, bob: number, L: Layout,
+    81→    81→): void {
+    82→    82→  const hs = pal.hairS ?? pal.hair;
+    83→    83→  const ls = pal.legsS ?? pal.legs;
+    84→    84→  const hT = L.headTop + bob;
+    85→    85→  const fT = L.faceTop + bob;
+    86→    86→  const bT = L.bodyTop + bob;
+    87→    87→  const bodyBot = bT + L.bodyH - 1;           // última fila del torso (contorno)
+    88→    88→  const legY = bodyBot + 1;                    // piernas ancladas al suelo
+    89→    89→  const bootY = L.H - 1;
+    90→    90→  const legH = bootY - legY;                   // filas de pierna antes de la bota
+    91→    91→
+    92→    92→  // balanceo de brazos (contrario entre izquierda y derecha)
+    93→    93→  const offL = [1, 0, -1][f];
+    94→    94→  const offR = [-1, 0, 1][f];
+    95→    95→
+    96→    96→  if (dir === 'down' || dir === 'up') {
+    97→    97→    // ---------- cabeza ----------
+    98→    98→    px(x, 4, hT, 8, 1, pal.outline);
+    99→    99→    px(x, 3, hT + 1, 10, 5, pal.hair);
+   100→   100→    px(x, 3, hT + 1, 10, 1, hs);
+   101→   101→    if (pal.hood) { px(x, 3, fT + 2, 10, 2, pal.hair); px(x, 4, fT + 3, 8, 1, hs); }
+   102→   102→    if (dir === 'down') {
+   103→   103→      px(x, 5, fT, 6, 4, pal.mask ? (pal.maskC ?? pal.skin) : pal.skin);
+   104→   104→      if (!pal.mask) {
+   105→   105→        px(x, 6, fT + 1, 1, 2, pal.eye); px(x, 9, fT + 1, 1, 2, pal.eye);
+   106→   106→        if (pal.beard) px(x, 5, fT + 3, 6, 2, pal.beard);
+   107→   107→      } else {
+   108→   108→        // máscara lisa: solo un brillo horizontal, sin boca ni ojos
+   109→   109→        px(x, 6, fT + 1, 4, 1, '#eae6dc');
+   110→   110→      }
+   111→   111→      px(x, 3, fT + 2, 1, 2, pal.hair); px(x, 12, fT + 2, 1, 2, pal.hair);
+   112→   112→      if (pal.ears === 'elf') { px(x, 2, fT + 1, 1, 2, pal.skin); px(x, 13, fT + 1, 1, 2, pal.skin); }
+   113→   113→      if (pal.hairLong) { px(x, 3, fT + 4, 2, Math.max(1, bT - fT - 3), pal.hair); px(x, 11, fT + 4, 2, Math.max(1, bT - fT - 3), pal.hair); }
+   114→   114→    }
+   115→   115→    if (pal.ears === 'cat') {
+   116→   116→      // orejas felinas sobre la cabeza (filas fijas para que no "floten")
+   117→   117→      px(x, 3, 0, 1, 1, hs); px(x, 12, 0, 1, 1, hs);
+   118→   118→      px(x, 3, 1, 2, 1, pal.hair); px(x, 11, 1, 2, 1, pal.hair);
+   119→   119→    }
+   120→   120→    if (pal.messy) {
+   121→   121→      // pelo revuelto (mechones sueltos)
+   122→   122→      px(x, 2, hT + 1, 1, 1, pal.hair); px(x, 13, hT + 1, 1, 1, pal.hair);
+   123→   123→      px(x, 5, Math.max(0, hT - 1), 2, 1, pal.hair); px(x, 9, Math.max(0, hT - 1), 3, 1, pal.hair);
+   124→   124→    }
+   125→   125→
+   126→   126→    // ---------- torso ----------
+   127→   127→    px(x, 4, bT, 8, L.bodyH, pal.body);
+   128→   128→    px(x, 4, bT, 8, 1, pal.bodyS);
+   129→   129→    px(x, 5, bT + L.bodyH - 2, 6, 1, pal.accent);
+   130→   130→    px(x, 4, bodyBot, 8, 1, pal.outline);
+   131→   131→    if (pal.ribs) { px(x, 6, bT + 1, 4, 1, pal.bodyS); px(x, 6, bT + 2, 4, 1, pal.bodyS); }
+   132→   132→    if (pal.pauldrons) { px(x, 3, bT, 2, 2, pal.accent); px(x, 11, bT, 2, 2, pal.accent); }
+   133→   133→    if (pal.leafy) { px(x, 3, bT, 2, 1, '#8ac05a'); px(x, 11, bT, 2, 1, '#8ac05a'); }
+   134→   134→
+   135→   135→    // ---------- brazos (oscilación) ----------
+   136→   136→    px(x, 2, bT + offL, 2, L.armLen, pal.body); px(x, 2, bT + offL + L.armLen, 2, 1, pal.skin);
+   137→   137→    px(x, 12, bT + offR, 2, L.armLen, pal.body); px(x, 12, bT + offR + L.armLen, 2, 1, pal.skin);
+   138→   138→    if (pal.hammer) {
+   139→   139→      // martillo en la mano derecha
+   140→   140→      px(x, 13, bT + offR - 2, 1, L.armLen + 1, '#7a5c3a');
+   141→   141→      px(x, 12, bT + offR - 4, 3, 2, '#9aa4b4');
+   142→   142→    }
+   143→   143→
+   144→   144→    // ---------- piernas ----------
+   145→   145→    if (f === 0) {
+   146→   146→      // zancada A: izquierda adelante, derecha atrás
+   147→   147→      px(x, 4, legY, 3, legH, pal.legs); px(x, 9, legY, 3, legH, ls);
+   148→   148→      px(x, 4, bootY, 3, 1, pal.boots); px(x, 9, bootY, 3, 1, pal.boots);
+   149→   149→    } else if (f === 1) {
+   150→   150→      // pase: piernas juntas, cuerpo elevado
+   151→   151→      px(x, 5, legY, 3, legH, pal.legs); px(x, 8, legY, 3, legH, pal.legs);
+   152→   152→      px(x, 5, bootY, 3, 1, pal.boots); px(x, 8, bootY, 3, 1, pal.boots);
+   153→   153→    } else {
+   154→   154→      // zancada B: derecha adelante, izquierda atrás
+   155→   155→      px(x, 4, legY + 1, 3, Math.max(1, legH - 1), ls); px(x, 9, legY, 3, legH, pal.legs);
+   156→   156→      px(x, 4, bootY, 3, 1, pal.boots); px(x, 9, bootY, 3, 1, pal.boots);
+   157→   157→    }
+   158→   158→    return;
+   159→   159→  }
+   160→   160→
+   161→   161→  // ---------- dir === 'side' (mirando a la derecha) ----------
+   162→   162→  px(x, 5, hT, 8, 1, pal.outline);
+   163→   163→  px(x, 4, hT + 1, 9, 5, pal.hair);
+   164→   164→  px(x, 4, hT + 1, 9, 1, hs);
+   165→   165→  if (pal.hood) { px(x, 4, fT + 2, 8, 2, pal.hair); }
+   166→   166→  px(x, 7, fT, 5, 4, pal.mask ? (pal.maskC ?? pal.skin) : pal.skin);
+   167→   167→  if (!pal.mask) {
+   168→   168→    px(x, 10, fT + 1, 1, 2, pal.eye);
+   169→   169→    if (pal.beard) px(x, 8, fT + 3, 4, 2, pal.beard);
+   170→   170→  } else {
+   171→   171→    px(x, 8, fT + 1, 3, 1, '#eae6dc');
+   172→   172→  }
+   173→   173→  px(x, 5, fT + 2, 1, 2, pal.hair);
+   174→   174→  if (pal.ears === 'elf') px(x, 6, fT + 1, 1, 2, pal.skin);
+   175→   175→  if (pal.ears === 'cat') { px(x, 3, 0, 1, 1, hs); px(x, 4, 1, 2, 1, pal.hair); }
+   176→   176→  if (pal.hairLong) px(x, 4, fT + 3, 2, Math.max(1, bT - fT - 2), pal.hair);
+   177→   177→  if (pal.messy) px(x, 5, Math.max(0, hT - 1), 3, 1, pal.hair);
+   178→   178→
+   179→   179→  // torso
+   180→   180→  px(x, 5, bT, 6, L.bodyH, pal.body);
+   181→   181→  px(x, 5, bT, 6, 1, pal.bodyS);
+   182→   182→  px(x, 6, bT + L.bodyH - 2, 4, 1, pal.accent);
+   183→   183→  px(x, 5, bodyBot, 6, 1, pal.outline);
+   184→   184→  if (pal.ribs) { px(x, 6, bT + 1, 3, 1, pal.bodyS); px(x, 6, bT + 2, 3, 1, pal.bodyS); }
+   185→   185→  if (pal.pauldrons) px(x, 4, bT, 2, 2, pal.accent);
+   186→   186→  if (pal.leafy) px(x, 4, bT, 2, 1, '#8ac05a');
+   187→   187→
+   188→   188→  // brazo delantero con balanceo + brazo trasero al tono sombreado
+   189→   189→  const offF = [1, 0, -1][f];
+   190→   190→  px(x, 8, bT + offF, 3, 3, pal.body);
+   191→   191→  px(x, 10, bT + offF + 3, 2, 1, pal.skin);
+   192→   192→  px(x, 5, bT - offF, 2, 3, pal.bodyS);
+   193→   193→  if (pal.hammer) {
+   194→   194→    px(x, 11, bT + offF - 2, 1, 4, '#7a5c3a');
+   195→   195→    px(x, 10, bT + offF - 4, 3, 2, '#9aa4b4');
+   196→   196→  }
+   197→   197→
+   198→   198→  // piernas en zancada (3 fases)
+   199→   199→  if (f === 0) {
+   200→   200→    px(x, 5, legY, 2, legH, ls); px(x, 8, legY, 2, legH, pal.legs);
+   201→   201→    px(x, 5, bootY, 2, 1, pal.boots); px(x, 8, bootY, 2, 1, pal.boots);
+   202→   202→  } else if (f === 1) {
+   203→   203→    px(x, 6, legY, 2, legH, pal.legs); px(x, 8, legY + 1, 2, Math.max(1, legH - 1), ls);
+   204→   204→    px(x, 6, bootY, 2, 1, pal.boots); px(x, 8, bootY, 2, 1, pal.boots);
+   205→   205→  } else {
+   206→   206→    px(x, 4, legY, 2, legH, ls); px(x, 7, legY, 2, legH, pal.legs);
+   207→   207→    px(x, 4, bootY, 2, 1, pal.boots); px(x, 7, bootY, 2, 1, pal.boots);
+   208→   208→  }
+   209→   209→}
+   210→   210→
+   211→   211→function buildHumanoid(pal: HumanPal): Frames {
+   212→   212→  const frames: Frames = [];
+   213→   213→  const dirs: ('down' | 'up' | 'side')[] = ['down', 'up', 'side'];
+   214→   214→  const L = layoutFor(pal);
+   215→   215→  for (const dir of dirs) {
+   216→   216→    for (let f = 0; f < 3; f++) {
+   217→   217→      const bob = f === 1 ? -1 : 0; // el cuerpo se eleva en la fase de pase
+   218→   218→      const { c, x } = mkCanvas(16, L.H);
+   219→   219→      drawHumanFrame(x, pal, dir, f, bob, L);
+   220→   220→      frames.push(c);
+   221→   221→    }
+   222→   222→  }
+   223→   223→  if (pal.big) {
+   224→   224→    // El Gran Inquisidor se dibuja a escala ×2 (32×36): imponente como el Guardián
+   225→   225→    return frames.map(fr => {
+   226→   226→      const { c, x } = mkCanvas(32, L.H * 2);
+   227→   227→      x.imageSmoothingEnabled = false;
+   228→   228→      x.drawImage(fr, 0, 0, 32, L.H * 2);
+   229→   229→      return c;
+   230→   230→    });
+   231→   231→  }
+   232→   232→  return frames;
+   233→   233→}
+   234→   234→
+   235→   235→/** Índice de fotograma legacy (compatible con re-export de engine.ts). */
+   236→   236→export function frameIndex(dir: string, moving: boolean, anim: number): number {
+   237→   237→  const base = dir === 'down' ? 0 : dir === 'up' ? 2 : 4;
+   238→   238→  if (!moving) return base;
+   239→   239→  return base + (Math.floor(anim * 6) % 2);
+   240→   240→}
+   241→   241→
+   242→   242→/**
+   243→   243→ * Selección robusta de fotograma para cualquier sprite:
+   244→   244→ * humanoids nuevos tienen 9 frames (3 por dirección), los demás
+   245→   245→ * (lobo, guardián, wisp...) alternan su ciclo propio al moverse.
+   246→   246→ */
+   247→   247→export function entityFrame(spr: Frames, dir: string, moving: boolean, anim: number): number {
+   248→   248→  const n = spr.length;
+   249→   249→  if (n === 9) {
+   250→   250→    const base = dir === 'up' ? 3 : dir === 'side' ? 6 : 0;
+   251→   251→    if (!moving) return base + 1; // pose de pie = fase de pase sin bob
+   252→   252→    return base + (Math.floor(anim * 8) % 3);
+   253→   253→  }
+   254→   254→  if (n >= 2 && moving) return Math.floor(anim * 6) % Math.min(2, n);
+   255→   255→  return 0;
+   256→   256→}
+   257→   257→
+   258→   258→// ---------------- Lobo de niebla (18×12) ----------------
+   259→   259→
+   260→   260→function buildWolf(): Frames {
+   261→   261→  const frames: Frames = [];
+   262→   262→  for (let f = 0; f < 2; f++) {
+   263→   263→    const { c, x } = mkCanvas(18, 12);
+   264→   264→    const O = '#26243a', B = '#7d7d9f', BS = '#5c5c80', W = '#a7a7c4';
+   265→   265→    px(x, 3, 3, 10, 5, B);            // cuerpo
+   266→   266→    px(x, 3, 3, 10, 1, W);
+   267→   267→    px(x, 2, 7, 12, 1, O);
+   268→   268→    px(x, 11, 1, 4, 5, B);            // cabeza
+   269→   269→    px(x, 13, 0, 1, 2, B);            // oreja
+   270→   270→    px(x, 12, 0, 1, 2, BS);
+   271→   271→    px(x, 14, 3, 3, 2, BS);           // hocico
+   272→   272→    px(x, 12, 2, 1, 1, '#ff6a4d');    // ojo
+   273→   273→    px(x, 16, 4, 1, 1, O);
+   274→   274→    px(x, 0, 2, 3, 2, BS);            // cola
+   275→   275→    px(x, 0, 1, 1, 2, BS);
+   276→   276→    const ly = f === 0 ? 8 : 9;
+   277→   277→    px(x, 4, ly, 2, 3, BS); px(x, 7, f === 0 ? 9 : 8, 2, 3, BS);
+   278→   278→    px(x, 10, ly, 2, 3, BS); px(x, 12, f === 0 ? 9 : 8, 2, 3, BS);
+   279→   279→    // niebla
+   280→   280→    x.globalAlpha = 0.35;
+   281→   281→    px(x, 1 + f, 9, 3, 2, W); px(x, 13 - f, 8, 4, 2, W);
+   282→   282→    x.globalAlpha = 1;
+   283→   283→    frames.push(c);
+   284→   284→  }
+   285→   285→  return frames;
+   286→   286→}
+   287→   287→
+   288→   288→// ---------------- Guardián Hueco (32×34) ----------------
+   289→   289→
+   290→   290→function buildGuardian(): Frames {
+   291→   291→  const frames: Frames = [];
+   292→   292→  for (let f = 0; f < 2; f++) {
+   293→   293→    const { c, x } = mkCanvas(32, 34);
+   294→   294→    const O = '#141220', S = '#4a4660', S2 = '#5f5a7a', HL = '#8a84a8';
+   295→   295→    const GLOW = f === 0 ? '#7ee8ff' : '#baf4ff';
+   296→   296→    // capa
+   297→   297→    px(x, 8, 14, 16, 12, '#2c2440');
+   298→   298→    px(x, 7, 22 + f, 3, 6, '#221c33'); px(x, 22, 21 - f, 3, 6, '#221c33');
+   299→   299→    // hombros
+   300→   300→    px(x, 2, 12, 8, 6, S2); px(x, 22, 12, 8, 6, S2);
+   301→   301→    px(x, 2, 12, 8, 1, HL); px(x, 22, 12, 8, 1, HL);
+   302→   302→    // torso con hueco
+   303→   303→    px(x, 9, 12, 14, 13, S);
+   304→   304→    px(x, 9, 12, 14, 1, HL);
+   305→   305→    px(x, 13, 16, 6, 6, O);            // hueco
+   306→   306→    px(x, 14, 17, 4, 4, GLOW);         // brillo interior
+   307→   307→    // astillas/cracks
+   308→   308→    px(x, 10, 14, 1, 4, O); px(x, 21, 18, 1, 5, O); px(x, 16, 24, 3, 1, O);
+   309→   309→    // cabeza/casco con cuernos
+   310→   310→    px(x, 11, 4, 10, 8, S2);
+   311→   311→    px(x, 11, 4, 10, 1, HL);
+   312→   312→    px(x, 9, 2, 2, 6, HL); px(x, 21, 2, 2, 6, HL);   // cuernos
+   313→   313→    px(x, 8, 1, 2, 3, HL); px(x, 22, 1, 2, 3, HL);
+   314→   314→    px(x, 13, 7, 2, 2, GLOW); px(x, 17, 7, 2, 2, GLOW); // ojos
+   315→   315→    // brazos y garras
+   316→   316→    const ay = f === 0 ? 18 : 16;
+   317→   317→    px(x, 0, ay, 3, 9, S2); px(x, 29, ay, 3, 9, S2);
+   318→   318→    px(x, 0, ay + 9, 3, 2, O); px(x, 29, ay + 9, 3, 2, O);
+   319→   319→    // fragmentos flotantes
+   320→   320→    x.globalAlpha = 0.8;
+   321→   321→    px(x, 5, 27 + f, 2, 2, S2); px(x, 25, 28 - f, 2, 2, S2); px(x, 15, 30, 2, 2, S2);
+   322→   322→    x.globalAlpha = 1;
+   323→   323→    frames.push(c);
+   324→   324→  }
+   325→   325→  return frames;
+   326→   326→}
+   327→   327→
+   328→   328→// ---------------- Objetos ----------------
+   329→   329→
+   330→   330→function buildChest(): { closed: Frames; open: Frames } {
+   331→   331→  const mk = (open: boolean) => {
+   332→   332→    const { c, x } = mkCanvas(16, 14);
+   333→   333→    const O = '#3a2414', W = '#8a5a2b', W2 = '#6d4520', G = '#f0c84a';
+   334→   334→    px(x, 2, open ? 5 : 3, 12, open ? 8 : 9, W);
+   335→   335→    px(x, 2, open ? 5 : 3, 12, 2, W2);
+   336→   336→    px(x, 2, open ? 12 : 10, 12, 1, O);
+   337→   337→    px(x, 1, 3, 14, 1, O); px(x, 1, 12, 14, 1, O);
+   338→   338→    px(x, 7, open ? 8 : 6, 2, 3, G);
+   339→   339→    if (open) {
+   340→   340→      px(x, 2, 1, 12, 3, W2);           // tapa abierta
+   341→   341→      px(x, 3, 4, 10, 2, '#fff3c0');    // brillo interior
+   342→   342→      px(x, 4, 5, 8, 1, G);
+   343→   343→    } else {
+   344→   344→      px(x, 2, 3, 12, 2, W2);
+   345→   345→    }
+   346→   346→    return c;
+   347→   347→  };
+   348→   348→  return { closed: [mk(false)], open: [mk(true)] };
+   349→   349→}
+   350→   350→
+   351→   351→function buildSanctuary(): Frames {
+   352→   352→  const frames: Frames = [];
+   353→   353→  for (let f = 0; f < 2; f++) {
+   354→   354→    const { c, x } = mkCanvas(20, 30);
+   355→   355→    const O = '#1c2438', S = '#5a6a8a', S2 = '#42506c';
+   356→   356→    px(x, 7, 4, 6, 24, S);
+   357→   357→    px(x, 7, 4, 2, 24, S2);
+   358→   358→    px(x, 6, 2, 8, 3, S2);
+   359→   359→    px(x, 5, 27, 10, 3, S2); px(x, 4, 28, 12, 2, O);
+   360→   360→    const g = f === 0 ? '#8ef0ff' : '#d4fbff';
+   361→   361→    x.globalAlpha = 0.9;
+   362→   362→    px(x, 8, 6 + f, 4, 7, g);
+   363→   363→    x.globalAlpha = 0.4;
+   364→   364→    px(x, 7, 5 + f, 6, 9, g);
+   365→   365→    x.globalAlpha = 1;
+   366→   366→    px(x, 9, 14, 2, 10, '#7a8aac');
+   367→   367→    frames.push(c);
+   368→   368→  }
+   369→   369→  return frames;
+   370→   370→}
+   371→   371→
+   372→   372→function buildFragment(): Frames {
+   373→   373→  const frames: Frames = [];
+   374→   374→  for (let f = 0; f < 3; f++) {
+   375→   375→    const { c, x } = mkCanvas(12, 12);
+   376→   376→    const G = '#ffe9a0', G2 = '#f0c84a';
+   377→   377→    if (f === 0) { px(x, 5, 1, 3, 10, G2); px(x, 5, 2, 3, 8, G); }
+   378→   378→    if (f === 1) { px(x, 3, 2, 6, 8, G2); px(x, 4, 3, 4, 6, G); }
+   379→   379→    if (f === 2) { px(x, 2, 3, 8, 6, G2); px(x, 3, 4, 6, 4, G); }
+   380→   380→    px(x, 5, 4, 2, 2, '#fffbe0');
+   381→   381→    frames.push(c);
+   382→   382→  }
+   383→   383→  return frames;
+   384→   384→}
+   385→   385→
+   386→   386→function buildWisp(): Frames {
+   387→   387→  const frames: Frames = [];
+   388→   388→  for (let f = 0; f < 2; f++) {
+   389→   389→    const { c, x } = mkCanvas(10, 10);
+   390→   390→    x.globalAlpha = 0.9; px(x, 3, 3 + f, 4, 4, '#bff4e8');
+   391→   391→    x.globalAlpha = 0.5; px(x, 2, 2 + f, 6, 6, '#7fe0cc');
+   392→   392→    x.globalAlpha = 1; px(x, 4, 4 + f, 2, 2, '#ffffff');
+   393→   393→    frames.push(c);
+   394→   394→  }
+   395→   395→  return frames;
+   396→   396→}
+   397→   397→
+   398→   398→function buildPickups(): void {
+   399→   399→  {
+   400→   400→    const { c, x } = mkCanvas(8, 10);
+   401→   401→    px(x, 2, 0, 4, 2, '#8a5a2b'); px(x, 1, 2, 6, 7, '#e05078');
+   402→   402→    px(x, 2, 3, 2, 3, '#ff9ab0'); px(x, 1, 9, 6, 1, '#8a2a48');
+   403→   403→    SPR['potion'] = [c];
+   404→   404→  }
+   405→   405→  {
+   406→   406→    const { c, x } = mkCanvas(10, 8);
+   407→   407→    px(x, 1, 2, 8, 5, '#e8b23a'); px(x, 1, 2, 8, 1, '#f8d878');
+   408→   408→    px(x, 0, 3, 1, 3, '#b8842a'); px(x, 9, 3, 1, 3, '#b8842a');
+   409→   409→    px(x, 3, 4, 2, 1, '#b8842a'); px(x, 6, 4, 1, 1, '#b8842a');
+   410→   410→    SPR['goldbag'] = [c];
+   411→   411→  }
+   412→   412→  {
+   413→   413→    const { c, x } = mkCanvas(10, 10);
+   414→   414→    px(x, 2, 1, 6, 8, '#cfd6e2'); px(x, 3, 0, 4, 1, '#9aa4b4');
+   415→   415→    px(x, 3, 3, 4, 1, '#7a8494'); px(x, 3, 6, 4, 1, '#7a8494');
+   416→   416→    SPR['keyEcho'] = [c];
+   417→   417→  }
+   418→   418→}
+   419→   419→
+   420→   420→// ---------------- Registro de paletas ----------------
+   421→   421→
+   422→   422→const PALS: Record<string, HumanPal> = {
+   423→   423→  hero_alba: {
+   424→   424→    outline: '#2a1a20', hair: '#c8384a', hairS: '#9a2438', skin: '#f2c99c',
+   425→   425→    body: '#cdd3de', bodyS: '#9aa3b4', accent: '#c8384a',
+   426→   426→    legs: '#5a6070', legsS: '#474c5a', boots: '#6d4520', eye: '#2a2a3a', hood: true,
+   427→   427→  },
+   428→   428→  hero_tejedor: {
+   429→   429→    outline: '#241a30', hair: '#8a5ac0', hairS: '#6a3f9a', skin: '#f2c99c',
+   430→   430→    body: '#7e58b8', bodyS: '#5e3f92', accent: '#f0c84a',
+   431→   431→    legs: '#4a3a6a', legsS: '#3c2f58', boots: '#3a2c50', eye: '#3ae0c8', hood: true,
+   432→   432→  },
+   433→   433→  brisa: {
+   434→   434→    outline: '#2a2a30', hair: '#d8dade', hairS: '#b0b4bc', skin: '#eabf9a',
+   435→   435→    body: '#7a9a6e', bodyS: '#5e7a54', accent: '#e8d8a8',
+   436→   436→    legs: '#6a6a62', boots: '#4a3a2a', eye: '#3a3a3a',
+   437→   437→  },
+   438→   438→  toln: {
+   439→   439→    outline: '#241a14', hair: '#6a4a2e', hairS: '#54381e', skin: '#e0a87a',
+   440→   440→    body: '#8a5a33', bodyS: '#6d4520', accent: '#3a3a3e',
+   441→   441→    legs: '#4a4440', boots: '#3a2c20', eye: '#2a2a2a', beard: '#6a4a2e',
+   442→   442→  },
+   443→   443→  ilwen: {
+   444→   444→    outline: '#1c2a1e', hair: '#8ad058', hairS: '#64a83e', skin: '#f2d0a8',
+   445→   445→    body: '#3e7d4c', bodyS: '#2e5f3a', accent: '#e8c860',
+   446→   446→    legs: '#4a5a3a', boots: '#54381e', eye: '#2a4a2e', ears: 'elf',
+   447→   447→  },
+   448→   448→  esqueleto: {
+   449→   449→    outline: '#20201e', hair: '#e6e0c8', hairS: '#c2bc9e', skin: '#e6e0c8',
+   450→   450→    body: '#d8d2b4', bodyS: '#a8a284', accent: '#7a7460',
+   451→   451→    legs: '#c8c2a4', legsS: '#a8a284', boots: '#8a8468', eye: '#e04838', ribs: true,
+   452→   452→  },
+   453→   453→  sombra: {
+   454→   454→    outline: '#100c1c', hair: '#2c2440', hairS: '#201a30', skin: '#2c2440',
+   455→   455→    body: '#241c38', bodyS: '#181226', accent: '#9f7ae0',
+   456→   456→    legs: '#181226', boots: '#100c1c', eye: '#b48fff', hood: true,
+   457→   457→  },
+   458→   458→  // ----- Nuevos personajes de la biblia (agente 3-a) -----
+   459→   459→  sasha: {
+   460→   460→    // Kaari felina ladrona: capucha oscura, ojos dorados, ágil
+   461→   461→    outline: '#16121e', hair: '#2e2838', hairS: '#221c2c', skin: '#e8c49a',
+   462→   462→    body: '#3a3448', bodyS: '#2a2438', accent: '#c89a3a',
+   463→   463→    legs: '#2e2a3a', legsS: '#242030', boots: '#1a1622', eye: '#f0c040',
+   464→   464→    hood: true, ears: 'cat',
+   465→   465→  },
+   466→   466→  brokk: {
+   467→   467→    // Enano Durn: ancho, barba rojiza trenzada, martillo
+   468→   468→    outline: '#241408', hair: '#8a4a26', hairS: '#6d3a1e', skin: '#e8a878',
+   469→   469→    body: '#5a4a3a', bodyS: '#443828', accent: '#b07030',
+   470→   470→    legs: '#3e342a', boots: '#2e241a', eye: '#2a2a2a', beard: '#a44e28', hammer: true,
+   471→   471→  },
+   472→   472→  maelis: {
+   473→   473→    // Nereida sacerdotisa: perla y turquesa, serena
+   474→   474→    outline: '#12303a', hair: '#7ad8c8', hairS: '#54b0a4', skin: '#f0d8c0',
+   475→   475→    body: '#4aa8b0', bodyS: '#368088', accent: '#e8f0ea',
+   476→   476→    legs: '#3a8890', boots: '#2a6870', eye: '#2a8a8a', hairLong: true,
+   477→   477→  },
+   478→   478→  corvin: {
+   479→   479→    // Erudito desertor: túnica gris oscura elegante, sarcástico
+   480→   480→    outline: '#181820', hair: '#5a5a64', hairS: '#42424a', skin: '#eac8a0',
+   481→   481→    body: '#3e3e48', bodyS: '#2e2e38', accent: '#8a8a96',
+   482→   482→    legs: '#33333c', boots: '#22222a', eye: '#3a3a44',
+   483→   483→  },
+   484→   484→  kael: {
+   485→   485→    // Inquisidora de la Orden: armadura blanca, fría
+   486→   486→    outline: '#3a3a44', hair: '#e8e0c8', hairS: '#c8bc9c', skin: '#f2d4b0',
+   487→   487→    body: '#e8e6de', bodyS: '#c2c0b6', accent: '#8a94a8',
+   488→   488→    legs: '#b8b6ac', boots: '#8a887e', eye: '#7a8894', pauldrons: true,
+   489→   489→  },
+   490→   490→  inquisidor: {
+   491→   491→    // GRAN Inquisidor: armadura blanca sin adornos, máscara lisa, alto
+   492→   492→    outline: '#2a2a30', hair: '#e4e2da', hairS: '#c6c4ba', skin: '#d8d4ca',
+   493→   493→    body: '#e4e2da', bodyS: '#bcbab0', accent: '#8a887e',
+   494→   494→    legs: '#b4b2a8', boots: '#86847a', eye: '#d8d4ca', mask: true, maskC: '#d8d4ca', big: true,
+   495→   495→  },
+   496→   496→  teo: {
+   497→   497→    // Niño de unos 8 años, pelo revuelto
+   498→   498→    outline: '#2a1e14', hair: '#7a5432', hairS: '#5e4026', skin: '#f2cfa4',
+   499→   499→    body: '#c09a54', bodyS: '#9a7a40', accent: '#7a5432',
+   500→   500→    legs: '#6a5a40', boots: '#4a3a28', eye: '#3a2a1a', small: true, messy: true,
+   501→   501→  },
+   502→   502→  doran: {
+   503→   503→    // Druida del Círculo Verde: verde musgo, capucha de hojas
+   504→   504→    outline: '#16241a', hair: '#3e6a34', hairS: '#2e5226', skin: '#d8b088',
+   505→   505→    body: '#4a7a3e', bodyS: '#375e2e', accent: '#8ac05a',
+   506→   506→    legs: '#3a5232', boots: '#4a3a22', eye: '#2a3a24', hood: true, leafy: true,
+   507→   507→  },
+   508→   508→  nimue: {
+   509→   509→    // Elfa pálida espectral (verde wisp)
+   510→   510→    outline: '#1a2a26', hair: '#b8d8c8', hairS: '#94b8a8', skin: '#e4e8de',
+   511→   511→    body: '#5a8a72', bodyS: '#446a58', accent: '#bff0dc',
+   512→   512→    legs: '#4a6a5a', boots: '#38504a', eye: '#7ae8c0', ears: 'elf', hairLong: true,
+   513→   513→  },
+   514→   514→};
+   515→   515→
+   516→   516→export function initSprites(): void {
+   517→   517→  for (const [name, pal] of Object.entries(PALS)) SPR[name] = buildHumanoid(pal);
+   518→   518→  SPR['lobo'] = buildWolf();
+   519→   519→  SPR['guardian'] = buildGuardian();
+   520→   520→  const chest = buildChest();
+   521→   521→  SPR['chest'] = chest.closed;
+   522→   522→  SPR['chest_open'] = chest.open;
+   523→   523→  SPR['sanctuary'] = buildSanctuary();
+   524→   524→  SPR['fragment'] = buildFragment();
+   525→   525→  SPR['wisp'] = buildWisp();
+   526→   526→  buildPickups();
+   527→   527→}
+   528→   528→
+   529→   529→export function getSpr(name: string): Frames {
+   530→   530→  return SPR[name] ?? SPR['hero_alba'];
+   531→   531→}
+   532→   532→
+   533→   533→/**
+   534→   534→ * Registro de sprites para módulos de expansión (ACTO II).
+   535→   535→ * Contrato: los módulos nuevos (p. ej. sprites_expansion.ts) llaman aquí
+   536→   536→ * desde su initExpansionSprites() en vez de tocar este archivo.
+   537→   537→ * Frames: array de canvas (1 = estático, 2+ = ciclo de animación).
+   538→   538→ */
+   539→   539→export function registerSpr(name: string, frames: Frames): void {
+   540→   540→  SPR[name] = frames;
+   541→   541→}
+   542→   542→
+   543→   543→// ---------------- Arco de ataque (slash) ----------------
+   544→   544→
+   545→   545→/**
+   546→   546→ * Dibuja el arco de tajo del jugador. prog: 0→1 progreso del golpe,
+   547→   547→ * combo: 0..2 (blanco → amarillo → dorado), charged: ataque cargado
+   548→   548→ * (más grande, dorado y con estela). Todos los trazos son aditivos
+   549→   549→ * suaves y restauran el estado del contexto.
+   550→   550→ */
+   551→   551→export function drawSlashArc(
+   552→   552→  ctx: CanvasRenderingContext2D, cx: number, cy: number,
+   553→   553→  dir: string, prog: number, combo: number, charged: boolean, zoom: number,
+   554→   554→): void {
+   555→   555→  const base = dir === 'down' ? Math.PI / 2 : dir === 'up' ? -Math.PI / 2 : dir === 'left' ? Math.PI : 0;
+   556→   556→  const colors = charged ? '#ffd24a' : ['#f2f6fa', '#ffe86a', '#ffc040'][Math.max(0, Math.min(2, combo))];
+   557→   557→  const r = (charged ? 27 : 19) * zoom;
+   558→   558→  const span = 1.2;
+   559→   559→  const a0 = base - 1.1 + prog * 1.45;
+   560→   560→  ctx.save();
+   561→   561→  // relleno en cuña (ataque cargado: más presencia)
+   562→   562→  if (charged) {
+   563→   563→    ctx.globalAlpha = 0.14;
+   564→   564→    ctx.fillStyle = '#ffd24a';
+   565→   565→    ctx.beginPath();
+   566→   566→    ctx.moveTo(cx, cy);
+   567→   567→    ctx.arc(cx, cy, r, a0, a0 + span);
+   568→   568→    ctx.closePath();
+   569→   569→    ctx.fill();
+   570→   570→  }
+   571→   571→  // estela: dos arcos anteriores con alpha decreciente
+   572→   572→  for (let i = 2; i >= 1; i--) {
+   573→   573→    const p2 = prog - i * 0.17;
+   574→   574→    if (p2 <= 0) continue;
+   575→   575→    ctx.globalAlpha = charged ? 0.34 - i * 0.12 : 0.26 - i * 0.1;
+   576→   576→    ctx.strokeStyle = colors;
+   577→   577→    ctx.lineWidth = (charged ? 5 : 3) - i;
+   578→   578→    ctx.beginPath();
+   579→   579→    ctx.arc(cx, cy, r * (1 - i * 0.05), base - 1.1 + p2 * 1.45, base - 1.1 + p2 * 1.45 + span * 0.8);
+   580→   580→    ctx.stroke();
+   581→   581→  }
+   582→   582→  // arco principal
+   583→   583→  ctx.globalAlpha = 0.95;
+   584→   584→  ctx.strokeStyle = colors;
+   585→   585→  ctx.lineWidth = charged ? 5 : 3;
+   586→   586→  ctx.lineCap = 'round';
+   587→   587→  ctx.beginPath();
+   588→   588→  ctx.arc(cx, cy, r, a0, a0 + span);
+   589→   589→  ctx.stroke();
+   590→   590→  // filo brillante en el borde delantero
+   591→   591→  ctx.globalAlpha = 1;
+   592→   592→  ctx.strokeStyle = '#ffffff';
+   593→   593→  ctx.lineWidth = 1;
+   594→   594→  ctx.beginPath();
+   595→   595→  ctx.arc(cx, cy, r, a0 + span - 0.22, a0 + span);
+   596→   596→  ctx.stroke();
+   597→   597→  ctx.restore();
+   598→   598→}
+   599→   599→
+   600→   600→// ---------------- Retratos de diálogo (28×40 escalables) ----------------
+   601→   601→
+   602→   602→interface PortraitDef {
+   603→   603→  kind: 'human' | 'guardian' | 'sombra' | 'wisp' | 'crystal' | 'sanctuary' | 'mask';
+   604→   604→  bg: string;
+   605→   605→  skin: string; skinS: string;
+   606→   606→  hair: string; hairS?: string;
+   607→   607→  eye: string;
+   608→   608→  cloth: string; clothS: string;
+   609→   609→  accent?: string;
+   610→   610→  beard?: string;
+   611→   611→  hood?: boolean; hoodCol?: string;
+   612→   612→  ears?: 'cat' | 'elf';
+   613→   613→  hairLong?: boolean;
+   614→   614→  child?: boolean;
+   615→   615→}
+   616→   616→
+   617→   617→const PORTRAITS: Record<string, PortraitDef> = {
+   618→   618→  hero_alba: {
+   619→   619→    kind: 'human', bg: '#1a1218',
+   620→   620→    skin: '#f2c99c', skinS: '#d8a878', hair: '#c8384a', hairS: '#9a2438',
+   621→   621→    eye: '#2a2a3a', cloth: '#5a6070', clothS: '#474c5a', accent: '#c8384a',
+   622→   622→    hood: true, hoodCol: '#a83044',
+   623→   623→  },
+   624→   624→  hero_tejedor: {
+   625→   625→    kind: 'human', bg: '#181228',
+   626→   626→    skin: '#f2c99c', skinS: '#d8a878', hair: '#8a5ac0', hairS: '#6a3f9a',
+   627→   627→    eye: '#3ae0c8', cloth: '#7e58b8', clothS: '#5e3f92', accent: '#f0c84a',
+   628→   628→    hood: true, hoodCol: '#6a44a0',
+   629→   629→  },
+   630→   630→  brisa: {
+   631→   631→    kind: 'human', bg: '#141a14',
+   632→   632→    skin: '#eabf9a', skinS: '#c89a74', hair: '#d8dade', hairS: '#b0b4bc',
+   633→   633→    eye: '#3a3a3a', cloth: '#7a9a6e', clothS: '#5e7a54', accent: '#e8d8a8',
+   634→   634→    hairLong: true,
+   635→   635→  },
+   636→   636→  toln: {
+   637→   637→    kind: 'human', bg: '#1a140e',
+   638→   638→    skin: '#e0a87a', skinS: '#c08858', hair: '#6a4a2e', hairS: '#54381e',
+   639→   639→    eye: '#2a2a2a', cloth: '#8a5a33', clothS: '#6d4520', accent: '#3a3a3e',
+   640→   640→    beard: '#6a4a2e',
+   641→   641→  },
+   642→   642→  ilwen: {
+   643→   643→    kind: 'human', bg: '#101a10',
+   644→   644→    skin: '#f2d0a8', skinS: '#d0ac84', hair: '#8ad058', hairS: '#64a83e',
+   645→   645→    eye: '#2a4a2e', cloth: '#3e7d4c', clothS: '#2e5f3a', accent: '#e8c860',
+   646→   646→    ears: 'elf', hairLong: true,
+   647→   647→  },
+   648→   648→  sasha: {
+   649→   649→    kind: 'human', bg: '#120e18',
+   650→   650→    skin: '#e8c49a', skinS: '#c49a70', hair: '#2e2838', hairS: '#221c2c',
+   651→   651→    eye: '#f0c040', cloth: '#3a3448', clothS: '#2a2438', accent: '#c89a3a',
+   652→   652→    hood: true, hoodCol: '#262032', ears: 'cat',
+   653→   653→  },
+   654→   654→  brokk: {
+   655→   655→    kind: 'human', bg: '#1a120a',
+   656→   656→    skin: '#e8a878', skinS: '#c4885a', hair: '#8a4a26', hairS: '#6d3a1e',
+   657→   657→    eye: '#2a2a2a', cloth: '#5a4a3a', clothS: '#443828', accent: '#b07030',
+   658→   658→    beard: '#a44e28',
+   659→   659→  },
+   660→   660→  maelis: {
+   661→   661→    kind: 'human', bg: '#0e1c20',
+   662→   662→    skin: '#f0d8c0', skinS: '#ccb094', hair: '#7ad8c8', hairS: '#54b0a4',
+   663→   663→    eye: '#2a8a8a', cloth: '#4aa8b0', clothS: '#368088', accent: '#e8f0ea',
+   664→   664→    hairLong: true,
+   665→   665→  },
+   666→   666→  corvin: {
+   667→   667→    kind: 'human', bg: '#141418',
+   668→   668→    skin: '#eac8a0', skinS: '#c6a67e', hair: '#5a5a64', hairS: '#42424a',
+   669→   669→    eye: '#3a3a44', cloth: '#3e3e48', clothS: '#2e2e38', accent: '#8a8a96',
+   670→   670→  },
+   671→   671→  kael: {
+   672→   672→    kind: 'human', bg: '#16161c',
+   673→   673→    skin: '#f2d4b0', skinS: '#d0b088', hair: '#e8e0c8', hairS: '#c8bc9c',
+   674→   674→    eye: '#7a8894', cloth: '#e8e6de', clothS: '#c2c0b6', accent: '#8a94a8',
+   675→   675→  },
+   676→   676→  inquisidor: {
+   677→   677→    kind: 'mask', bg: '#141416',
+   678→   678→    skin: '#d8d4ca', skinS: '#b8b4aa', hair: '#e4e2da', hairS: '#c6c4ba',
+   679→   679→    eye: '#d8d4ca', cloth: '#e4e2da', clothS: '#bcbab0', accent: '#8a887e',
+   680→   680→  },
+   681→   681→  teo: {
+   682→   682→    kind: 'human', bg: '#181208',
+   683→   683→    skin: '#f2cfa4', skinS: '#d0aa78', hair: '#7a5432', hairS: '#5e4026',
+   684→   684→    eye: '#3a2a1a', cloth: '#c09a54', clothS: '#9a7a40', accent: '#7a5432',
+   685→   685→    child: true,
+   686→   686→  },
+   687→   687→  doran: {
+   688→   688→    kind: 'human', bg: '#101a10',
+   689→   689→    skin: '#d8b088', skinS: '#b4906a', hair: '#3e6a34', hairS: '#2e5226',
+   690→   690→    eye: '#2a3a24', cloth: '#4a7a3e', clothS: '#375e2e', accent: '#8ac05a',
+   691→   691→    hood: true, hoodCol: '#2e5226',
+   692→   692→  },
+   693→   693→  nimue: {
+   694→   694→    kind: 'human', bg: '#0e1614',
+   695→   695→    skin: '#e4e8de', skinS: '#c0c8ba', hair: '#b8d8c8', hairS: '#94b8a8',
+   696→   696→    eye: '#7ae8c0', cloth: '#5a8a72', clothS: '#446a58', accent: '#bff0dc',
+   697→   697→    ears: 'elf', hairLong: true,
+   698→   698→  },
+   699→   699→  guardian: {
+   700→   700→    kind: 'guardian', bg: '#0c0a16',
+   701→   701→    skin: '#4a4660', skinS: '#3a364c', hair: '#5f5a7a', hairS: '#4a4660',
+   702→   702→    eye: '#7ee8ff', cloth: '#2c2440', clothS: '#221c33',
+   703→   703→  },
+   704→   704→  sombra: {
+   705→   705→    kind: 'sombra', bg: '#0a0812',
+   706→   706→    skin: '#241c38', skinS: '#181226', hair: '#2c2440', hairS: '#201a30',
+   707→   707→    eye: '#b48fff', cloth: '#241c38', clothS: '#181226',
+   708→   708→  },
+   709→   709→  wisp: {
+   710→   710→    kind: 'wisp', bg: '#0a1414',
+   711→   711→    skin: '#bff4e8', skinS: '#7fe0cc', hair: '#bff4e8', hairS: '#7fe0cc',
+   712→   712→    eye: '#ffffff', cloth: '#7fe0cc', clothS: '#5ab8a8',
+   713→   713→  },
+   714→   714→  fragment: {
+   715→   715→    kind: 'crystal', bg: '#141020',
+   716→   716→    skin: '#ffe9a0', skinS: '#f0c84a', hair: '#ffe9a0', hairS: '#f0c84a',
+   717→   717→    eye: '#fffbe0', cloth: '#f0c84a', clothS: '#c89830',
+   718→   718→  },
+   719→   719→  sanctuary: {
+   720→   720→    kind: 'sanctuary', bg: '#0c1420',
+   721→   721→    skin: '#8ef0ff', skinS: '#5ac8dc', hair: '#8ef0ff', hairS: '#5ac8dc',
+   722→   722→    eye: '#e8fbff', cloth: '#5a6a8a', clothS: '#42506c',
+   723→   723→  },
+   724→   724→};
+   725→   725→
+   726→   726→const PORTRAIT_OUTLINE = '#1a1420';
+   727→   727→
+   728→   728→/**
+   729→   729→ * Dibuja el retrato pixel de diálogo por clave (28×40 unidades × scale).
+   730→   730→ * Fallback seguro a 'wisp' si la clave no existe.
+   731→   731→ */
+   732→   732→export function drawPortrait(
+   733→   733→  ctx: CanvasRenderingContext2D, key: string,
+   734→   734→  dx: number, dy: number, scale: number, blink = false,
+   735→   735→): void {
+   736→   736→  const P = PORTRAITS[key] ?? PORTRAITS['wisp'];
+   737→   737→  const q = (X: number, Y: number, W: number, H: number, C: string) => {
+   738→   738→    ctx.fillStyle = C;
+   739→   739→    ctx.fillRect(dx + X * scale, dy + Y * scale, W * scale, H * scale);
+   740→   740→  };
+   741→   741→  const O = PORTRAIT_OUTLINE;
+   742→   742→
+   743→   743→  // fondo con viñeta simple
+   744→   744→  q(0, 0, 28, 40, P.bg);
+   745→   745→  q(0, 0, 28, 1, 'rgba(255,255,255,0.05)');
+   746→   746→  ctx.globalAlpha = 0.25;
+   747→   747→  q(0, 34, 28, 6, '#000');
+   748→   748→  ctx.globalAlpha = 1;
+   749→   749→
+   750→   750→  if (P.kind === 'guardian') {
+   751→   751→    // Guardián Hueco: petreo, hueco y con cuernos
+   752→   752→    q(1, 30, 26, 10, P.cloth);                    // capa
+   753→   753→    q(5, 27, 18, 6, P.hairS ?? P.hair);                     // peto
+   754→   754→    q(11, 31, 6, 6, O);                           // hueco
+   755→   755→    q(12, 32, 4, 4, P.eye);                       // brillo interior
+   756→   756→    q(7, 7, 14, 13, P.hair);                      // casco
+   757→   757→    q(7, 7, 14, 2, '#8a84a8');
+   758→   758→    q(4, 2, 3, 9, '#8a84a8'); q(21, 2, 3, 9, '#8a84a8');  // cuernos
+   759→   759→    q(3, 0, 2, 3, '#8a84a8'); q(23, 0, 2, 3, '#8a84a8');
+   760→   760→    q(10, 13, 3, 3, O); q(15, 13, 3, 3, O);       // cuencas
+   761→   761→    q(10, 13, 2, 2, P.eye); q(16, 13, 2, 2, P.eye);
+   762→   762→    q(6, 10, 1, 6, O); q(21, 16, 1, 4, O);        // grietas
+   763→   763→    return;
+   764→   764→  }
+   765→   765→  if (P.kind === 'sombra') {
+   766→   766→    // Sombra sin rostro: capucha vacía y ojos violáceos
+   767→   767→    q(2, 30, 24, 10, P.clothS);
+   768→   768→    q(3, 2, 22, 11, P.hair);                      // capucha
+   769→   769→    q(3, 13, 5, 21, P.hair); q(20, 13, 5, 21, P.hair);
+   770→   770→    q(7, 10, 14, 18, '#0c0816');                  // vacío
+   771→   771→    q(10, 16, 3, 3, P.eye); q(15, 16, 3, 3, P.eye);
+   772→   772→    ctx.globalAlpha = 0.5;
+   773→   773→    q(9, 15, 5, 5, P.eye); q(14, 15, 5, 5, P.eye);
+   774→   774→    ctx.globalAlpha = 1;
+   775→   775→    return;
+   776→   776→  }
+   777→   777→  if (P.kind === 'wisp') {
+   778→   778→    // Wisp: rostro etéreo sin boca
+   779→   779→    ctx.globalAlpha = 0.3; q(7, 8, 14, 20, P.skinS);
+   780→   780→    ctx.globalAlpha = 0.55; q(9, 10, 10, 16, P.skin);
+   781→   781→    ctx.globalAlpha = 1; q(11, 13, 6, 10, '#eafff8');
+   782→   782→    q(12, 16, 1, 2, P.eye); q(15, 16, 1, 2, P.eye);
+   783→   783→    if (blink) { q(12, 17, 4, 1, P.skinS); }
+   784→   784→    ctx.globalAlpha = 0.3;
+   785→   785→    q(6, 6, 2, 2, P.skinS); q(20, 9, 2, 2, P.skinS); q(8, 28, 2, 2, P.skinS);
+   786→   786→    ctx.globalAlpha = 1;
+   787→   787→    return;
+   788→   788→  }
+   789→   789→  if (P.kind === 'crystal') {
+   790→   790→    // Fragmento de Eco: cristal facetado dorado
+   791→   791→    q(12, 6, 4, 28, P.skinS);
+   792→   792→    q(9, 10, 10, 20, P.skinS);
+   793→   793→    q(11, 12, 6, 16, P.skin);
+   794→   794→    q(13, 15, 2, 6, P.eye);
+   795→   795→    q(4, 30, 20, 8, '#3a3020');                   // peana
+   796→   796→    q(4, 30, 20, 1, '#5a4a2c');
+   797→   797→    ctx.globalAlpha = 0.6;
+   798→   798→    q(6, 12, 2, 2, P.skinS); q(20, 18, 2, 2, P.skinS); q(8, 24, 2, 2, P.skinS);
+   799→   799→    ctx.globalAlpha = 1;
+   800→   800→    return;
+   801→   801→  }
+   802→   802→  if (P.kind === 'sanctuary') {
+   803→   803→    // Santuario: cristal turquesa sobre piedra
+   804→   804→    q(10, 5, 8, 24, P.skinS);
+   805→   805→    q(12, 7, 4, 20, P.skin);
+   806→   806→    q(13, 12, 2, 5, P.eye);
+   807→   807→    q(4, 29, 20, 9, P.clothS);                    // piedra
+   808→   808→    q(4, 29, 20, 1, P.cloth);
+   809→   809→    q(6, 31, 2, 1, '#2c3448'); q(14, 33, 3, 1, '#2c3448'); q(19, 30, 2, 1, '#2c3448');
+   810→   810→    ctx.globalAlpha = 0.35;
+   811→   811→    q(8, 4, 12, 26, P.skinS);
+   812→   812→    ctx.globalAlpha = 1;
+   813→   813→    return;
+   814→   814→  }
+   815→   815→
+   816→   816→  // ----- humanos (y la máscara del Gran Inquisidor) -----
+   817→   817→  // hombros / ropa
+   818→   818→  q(1, 31, 26, 9, P.cloth);
+   819→   819→  q(1, 31, 26, 2, P.clothS);
+   820→   820→  if (P.accent) q(1, 31, 26, 1, P.accent);
+   821→   821→  // cuello
+   822→   822→  q(11, 27, 6, 6, P.skinS);
+   823→   823→  // melena trasera
+   824→   824→  if (P.hairLong) { q(4, 8, 20, 22, P.hair); }
+   825→   825→  // rostro
+   826→   826→  q(7, 9, 14, 17, P.skin);
+   827→   827→  q(9, 25, 10, 4, P.skin);                       // mentón
+   828→   828→  q(7, 23, 2, 5, P.skinS); q(19, 23, 2, 5, P.skinS); // mandíbula
+   829→   829→  // orejas
+   830→   830→  if (P.ears === 'elf') {
+   831→   831→    q(5, 15, 2, 4, P.skin); q(21, 15, 2, 4, P.skin);
+   832→   832→    q(4, 14, 1, 2, P.skin); q(23, 14, 1, 2, P.skin);
+   833→   833→  }
+   834→   834→  if (P.kind === 'mask') {
+   835→   835→    // máscara LISA: sin ojos, sin nariz, sin boca
+   836→   836→    q(7, 9, 14, 17, P.skin);
+   837→   837→    q(9, 25, 10, 4, P.skin);
+   838→   838→    q(9, 11, 4, 9, 'rgba(255,255,255,0.14)');    // brillo vertical
+   839→   839→    q(14, 10, 1, 15, 'rgba(0,0,0,0.12)');        // costura central
+   840→   840→    q(7, 9, 14, 1, P.hairS ?? P.hair);                     // borde del yelmo
+   841→   841→    q(5, 4, 18, 7, P.hair);                      // yelmo blanco
+   842→   842→    q(5, 4, 18, 2, P.hairS ?? P.hair);
+   843→   843→    q(3, 9, 3, 10, P.hair); q(22, 9, 3, 10, P.hair);
+   844→   844→    return;
+   845→   845→  }
+   846→   846→  // cejas
+   847→   847→  q(9, 14, 4, 1, P.hairS ?? P.hair); q(15, 14, 4, 1, P.hairS ?? P.hair);
+   848→   848→  // ojos grandes y legibles
+   849→   849→  if (P.child) {
+   850→   850→    q(8, 16, 5, 4, O); q(15, 16, 5, 4, O);
+   851→   851→    if (blink) {
+   852→   852→      q(8, 18, 5, 1, P.hairS ?? P.hair); q(15, 18, 5, 1, P.hairS ?? P.hair);
+   853→   853→    } else {
+   854→   854→      q(9, 17, 3, 2, P.eye); q(16, 17, 3, 2, P.eye);
+   855→   855→      q(9, 17, 1, 1, '#ffffff'); q(16, 17, 1, 1, '#ffffff');
+   856→   856→    }
+   857→   857→  } else {
+   858→   858→    q(9, 17, 4, 3, O); q(15, 17, 4, 3, O);
+   859→   859→    if (blink) {
+   860→   860→      q(9, 18, 4, 1, P.hairS ?? P.hair); q(15, 18, 4, 1, P.hairS ?? P.hair);
+   861→   861→    } else {
+   862→   862→      q(10, 17, 2, 2, P.eye); q(16, 17, 2, 2, P.eye);
+   863→   863→      q(10, 17, 1, 1, '#ffffff'); q(16, 17, 1, 1, '#ffffff');
+   864→   864→    }
+   865→   865→  }
+   866→   866→  // nariz
+   867→   867→  q(13, 21, 2, 2, P.skinS);
+   868→   868→  // boca (los sarcásticos sonríen ladeados)
+   869→   869→  if (!P.beard) {
+   870→   870→    if (key === 'corvin' || key === 'sasha') { q(11, 24, 5, 1, '#9a5a50'); q(16, 23, 1, 1, '#9a5a50'); }
+   871→   871→    else q(11, 24, 6, 1, '#9a5a50');
+   872→   872→  }
+   873→   873→  // barba (con trenza si es Brokk)
+   874→   874→  if (P.beard) {
+   875→   875→    q(8, 22, 12, 9, P.beard);
+   876→   876→    q(8, 22, 12, 1, P.hairS ?? P.beard);
+   877→   877→    if (key === 'brokk') {
+   878→   878→      q(12, 27, 4, 6, P.beard);
+   879→   879→      q(12, 27, 1, 6, P.hairS ?? P.beard);
+   880→   880→      q(12, 32, 4, 1, P.accent ?? '#b07030');    // anilla de la trenza
+   881→   881→      q(11, 24, 1, 3, P.hairS ?? P.beard); q(16, 24, 1, 3, P.hairS ?? P.beard);
+   882→   882→    }
+   883→   883→  }
+   884→   884→  // pelo frontal
+   885→   885→  q(6, 5, 16, 7, P.hair);
+   886→   886→  q(7, 11, 14, 2, P.hairS ?? P.hair);
+   887→   887→  q(5, 10, 3, 9, P.hair); q(20, 10, 3, 9, P.hair);
+   888→   888→  if (P.hairLong) { q(4, 8, 3, 22, P.hair); q(21, 8, 3, 22, P.hair); }
+   889→   889→  if (P.child) {
+   890→   890→    // mechones revueltos de Teo
+   891→   891→    q(5, 3, 3, 2, P.hair); q(12, 2, 4, 3, P.hair); q(19, 3, 3, 2, P.hair);
+   892→   892→  }
+   893→   893→  // capucha
+   894→   894→  if (P.hood) {
+   895→   895→    const hc = P.hoodCol ?? P.hair;
+   896→   896→    q(3, 2, 22, 9, hc);
+   897→   897→    q(3, 11, 4, 16, hc); q(21, 11, 4, 16, hc);
+   898→   898→    q(6, 9, 2, 15, 'rgba(0,0,0,0.3)'); q(20, 9, 2, 15, 'rgba(0,0,0,0.3)');
+   899→   899→    q(3, 2, 22, 1, 'rgba(255,255,255,0.12)');
+   900→   900→    if (P.ears === 'cat') {
+   901→   901→      // orejas felinas atravesando la capucha
+   902→   902→      q(5, 0, 3, 4, hc); q(20, 0, 3, 4, hc);
+   903→   903→      q(6, 1, 1, 2, '#d88a8a'); q(21, 1, 1, 2, '#d88a8a');
+   904→   904→    }
+   905→   905→  }
+   906→   906→  // arrugas de la anciana Brisa
+   907→   907→  if (key === 'brisa') {
+   908→   908→    q(9, 13, 10, 1, 'rgba(0,0,0,0.10)');
+   909→   909→    q(10, 22, 8, 1, 'rgba(0,0,0,0.08)');
+   910→   910→  }
+   911→   911→}
+   912→   912→export const TILE = 16;
+   913→   913→
+   914→   914→export function drawTile(
+   915→   915→  x: CanvasRenderingContext2D, ch: string, tx: number, ty: number,
+   916→   916→  mapId: string, t: number,
+   917→   917→): void {
+   918→   918→  const px0 = tx * TILE, py0 = ty * TILE;
+   919→   919→  const r = hash2(tx, ty);
+   920→   920→  const r2 = hash2(tx * 7 + 3, ty * 11 + 5);
+   921→   921→  switch (ch) {
+   922→   922→    case '.': case ',': { // hierba
+   923→   923→      const g = mapId === 'bosque' ? ['#3f6d3a', '#396334'] : ['#4f8a46', '#467c3e'];
+   924→   924→      px(x, px0, py0, TILE, TILE, r < 0.5 ? g[0] : g[1]);
+   925→   925→      for (let i = 0; i < 4; i++) {
+   926→   926→        const hx = hash2(tx * 4 + i, ty * 9 + i);
+   927→   927→        if (hx < 0.35) {
+   928→   928→          x.fillStyle = '#5a9a50';
+   929→   929→          x.fillRect(px0 + Math.floor(hx * 14), py0 + Math.floor(hash2(tx + i, ty * 3 + i) * 14), 1, 2);
+   930→   930→        }
+   931→   931→      }
+   932→   932→      if (ch === ',') {
+   933→   933→        const cols = ['#f0d060', '#e878a0', '#f0f0f0', '#e88a4a'];
+   934→   934→        const col = cols[Math.floor(r2 * cols.length)];
+   935→   935→        x.fillStyle = col;
+   936→   936→        x.fillRect(px0 + 4 + Math.floor(r * 7), py0 + 4 + Math.floor(r2 * 7), 2, 2);
+   937→   937→        x.fillStyle = '#fff';
+   938→   938→        x.fillRect(px0 + 4 + Math.floor(r * 7), py0 + 4 + Math.floor(r2 * 7), 1, 1);
+   939→   939→      }
+   940→   940→      break;
+   941→   941→    }
+   942→   942→    case '=': { // camino
+   943→   943→      px(x, px0, py0, TILE, TILE, '#b89a6a');
+   944→   944→      px(x, px0, py0, TILE, 1, '#c4a878');
+   945→   945→      for (let i = 0; i < 5; i++) {
+   946→   946→        const hx = hash2(tx * 13 + i, ty * 5 + i * 3);
+   947→   947→        if (hx < 0.4) {
+   948→   948→          x.fillStyle = '#a08454';
+   949→   949→          x.fillRect(px0 + Math.floor(hx * 13), py0 + Math.floor(hash2(tx + i * 7, ty + i) * 13), 2, 1);
+   950→   950→        }
+   951→   951→      }
+   952→   952→      break;
+   953→   953→    }
+   954→   954→    case '~': { // agua
+   955→   955→      const w = Math.sin((t * 2 + tx * 0.9 + ty * 1.3)) * 0.5 + 0.5;
+   956→   956→      px(x, px0, py0, TILE, TILE, '#3a6a9a');
+   957→   957→      px(x, px0, py0, TILE, TILE, w > 0.5 ? '#3f72a4' : '#3a6a9a');
+   958→   958→      x.fillStyle = '#6aa0cc';
+   959→   959→      if (r > 0.5) x.fillRect(px0 + 2, py0 + 4 + Math.floor(w * 3), 6, 1);
+   960→   960→      if (r2 > 0.5) x.fillRect(px0 + 8, py0 + 10 + Math.floor(w * 2), 5, 1);
+   961→   961→      break;
+   962→   962→    }
+   963→   963→    case 'B': case 'x': { // puente / roto
+   964→   964→      px(x, px0, py0, TILE, TILE, '#3a6a9a');
+   965→   965→      if (ch === 'B') {
+   966→   966→        px(x, px0, py0 + 2, TILE, 12, '#9a7040');
+   967→   967→        for (let i = 0; i < 4; i++) px(x, px0, py0 + 2 + i * 3, TILE, 1, '#7a5530');
+   968→   968→        px(x, px0, py0 + 2, TILE, 1, '#b89058');
+   969→   969→      } else {
+   970→   970→        px(x, px0 + 1, py0 + 3, 5, 3, '#8a6438');
+   971→   971→        px(x, px0 + 9, py0 + 9, 6, 3, '#8a6438');
+   972→   972→      }
+   973→   973→      break;
+   974→   974→    }
+   975→   975→    case ':': case '_': { // suelo piedra / madera
+   976→   976→      if (ch === ':') {
+   977→   977→        px(x, px0, py0, TILE, TILE, '#6a6a7a');
+   978→   978→        px(x, px0, py0, TILE, 1, '#7a7a8a');
+   979→   979→        if (r > 0.7) { x.fillStyle = '#5a5a6a'; x.fillRect(px0 + 3, py0 + 9, 7, 1); }
+   980→   980→        x.fillStyle = '#585868';
+   981→   981→        x.fillRect(px0, py0, TILE, 1); x.fillRect(px0, py0, 1, TILE);
+   982→   982→      } else {
+   983→   983→        px(x, px0, py0, TILE, TILE, '#8a6a44');
+   984→   984→        px(x, px0, py0 + 7, TILE, 1, '#6a4e30');
+   985→   985→        px(x, px0, py0, 1, TILE, '#6a4e30');
+   986→   986→        px(x, px0 + (r > 0.5 ? 4 : 10), py0 + 2, 1, 5, '#7a5c3a');
+   987→   987→      }
+   988→   988→      break;
+   989→   989→    }
+   990→   990→    case '#': { // muro piedra
+   991→   991→      px(x, px0, py0, TILE, TILE, '#5a5a6e');
+   992→   992→      x.fillStyle = '#4a4a5c';
+   993→   993→      for (let row = 0; row < 4; row++) {
+   994→   994→        x.fillRect(px0, py0 + row * 4 + 3, TILE, 1);
+   995→   995→        const off = row % 2 === 0 ? 0 : 8;
+   996→   996→        x.fillRect(px0 + ((off + 3) % 16), py0 + row * 4, 1, 3);
+   997→   997→        x.fillRect(px0 + ((off + 11) % 16), py0 + row * 4, 1, 3);
+   998→   998→      }
+   999→   999→      x.fillStyle = '#6e6e84';
+  1000→  1000→      x.fillRect(px0, py0, TILE, 1);
+  1001→  1001→      if (r > 0.75) { x.fillStyle = '#3e3e50'; x.fillRect(px0 + 5, py0 + 6, 3, 2); }
+  1002→  1002→      break;
+  1003→  1003→    }
+  1004→  1004→    case 'H': { // pared casa
+  1005→  1005→      px(x, px0, py0, TILE, TILE, '#e2d0ac');
+  1006→  1006→      x.fillStyle = '#7a5c38';
+  1007→  1007→      x.fillRect(px0, py0, TILE, 2);
+  1008→  1008→      x.fillRect(px0, py0, 2, TILE);
+  1009→  1009→      x.fillRect(px0 + 14, py0, 2, TILE);
+  1010→  1010→      x.fillStyle = '#d0bc94';
+  1011→  1011→      x.fillRect(px0 + 4, py0 + 6, 8, 6);
+  1012→  1012→      break;
+  1013→  1013→    }
+  1014→  1014→    case 'r': { // tejado
+  1015→  1015→      px(x, px0, py0, TILE, TILE, '#a8503a');
+  1016→  1016→      for (let row = 0; row < 4; row++) {
+  1017→  1017→        x.fillStyle = row % 2 === 0 ? '#94422e' : '#a8503a';
+  1018→  1018→        x.fillRect(px0, py0 + row * 4, TILE, 4);
+  1019→  1019→        x.fillStyle = '#7e3626';
+  1020→  1020→        x.fillRect(px0, py0 + row * 4 + 3, TILE, 1);
+  1021→  1021→      }
+  1022→  1022→      x.fillStyle = '#c86850';
+  1023→  1023→      x.fillRect(px0, py0, TILE, 1);
+  1024→  1024→      break;
+  1025→  1025→    }
+  1026→  1026→    case 'd': { // puerta
+  1027→  1027→      px(x, px0, py0, TILE, TILE, '#e2d0ac');
+  1028→  1028→      px(x, px0 + 3, py0 + 2, 10, 14, '#5c3a1e');
+  1029→  1029→      px(x, px0 + 4, py0 + 3, 8, 13, '#7a5230');
+  1030→  1030→      px(x, px0 + 10, py0 + 9, 1, 2, '#f0c84a');
+  1031→  1031→      break;
+  1032→  1032→    }
+  1033→  1033→    case 'F': { // valla
+  1034→  1034→      px(x, px0, py0 + 4, TILE, 2, '#8a6a3e');
+  1035→  1035→      px(x, px0, py0 + 10, TILE, 2, '#8a6a3e');
+  1036→  1036→      px(x, px0 + 2, py0 + 2, 3, 13, '#9a7848');
+  1037→  1037→      px(x, px0 + 11, py0 + 2, 3, 13, '#9a7848');
+  1038→  1038→      px(x, px0 + 2, py0 + 2, 3, 1, '#b89868');
+  1039→  1039→      break;
+  1040→  1040→    }
+  1041→  1041→    case 'c': { // cultivo
+  1042→  1042→      px(x, px0, py0, TILE, TILE, '#6a4e30');
+  1043→  1043→      for (let row = 0; row < 3; row++) {
+  1044→  1044→        x.fillStyle = '#4f8a46';
+  1045→  1045→        x.fillRect(px0 + 2, py0 + 3 + row * 5, 12, 2);
+  1046→  1046→        x.fillStyle = '#5a9a50';
+  1047→  1047→        x.fillRect(px0 + 2, py0 + 3 + row * 5, 12, 1);
+  1048→  1048→      }
+  1049→  1049→      break;
+  1050→  1050→    }
+  1051→  1051→    case 'w': { // pozo
+  1052→  1052→      px(x, px0, py0, TILE, TILE, '#4f8a46');
+  1053→  1053→      px(x, px0 + 2, py0 + 4, 12, 10, '#6a6a7a');
+  1054→  1054→      px(x, px0 + 3, py0 + 5, 10, 8, '#2a3444');
+  1055→  1055→      px(x, px0 + 2, py0 + 4, 12, 2, '#7a7a8a');
+  1056→  1056→      px(x, px0 + 3, py0 - 4, 10, 2, '#8a6a3e');
+  1057→  1057→      break;
+  1058→  1058→    }
+  1059→  1059→    case 'R': { // roca
+  1060→  1060→      px(x, px0, py0, TILE, TILE, r < 0.5 ? '#4f8a46' : '#396334');
+  1061→  1061→      px(x, px0 + 3, py0 + 6, 10, 8, '#7a7a88');
+  1062→  1062→      px(x, px0 + 5, py0 + 4, 7, 4, '#8a8a98');
+  1063→  1063→      px(x, px0 + 4, py0 + 13, 9, 2, '#5a5a6a');
+  1064→  1064→      px(x, px0 + 6, py0 + 5, 3, 2, '#a0a0b0');
+  1065→  1065→      break;
+  1066→  1066→    }
+  1067→  1067→    case 'g': { // lápida
+  1068→  1068→      px(x, px0, py0, TILE, TILE, '#396334');
+  1069→  1069→      px(x, px0 + 4, py0 + 5, 8, 9, '#8a8a98');
+  1070→  1070→      px(x, px0 + 5, py0 + 3, 6, 4, '#9a9aa8');
+  1071→  1071→      px(x, px0 + 6, py0 + 7, 4, 1, '#6a6a7a');
+  1072→  1072→      px(x, px0 + 4, py0 + 14, 8, 1, '#5a5a6a');
+  1073→  1073→      break;
+  1074→  1074→    }
+  1075→  1075→    case 'P': { // pilar
+  1076→  1076→      px(x, px0, py0, TILE, TILE, ch === 'P' ? '#6a6a7a' : '#6a6a7a');
+  1077→  1077→      px(x, px0 + 2, py0 - 6, 12, 22, '#8a8a9a');
+  1078→  1078→      px(x, px0 + 2, py0 - 6, 3, 22, '#a4a4b4');
+  1079→  1079→      px(x, px0 + 1, py0 - 8, 14, 3, '#9a9aaa');
+  1080→  1080→      px(x, px0 + 1, py0 + 14, 14, 2, '#5a5a6a');
+  1081→  1081→      break;
+  1082→  1082→    }
+  1083→  1083→    case 'A': { // altar
+  1084→  1084→      px(x, px0, py0, TILE, TILE, '#585868');
+  1085→  1085→      px(x, px0 + 2, py0 + 4, 12, 9, '#7a7a8a');
+  1086→  1086→      px(x, px0 + 3, py0 + 2, 10, 3, '#8a8a9a');
+  1087→  1087→      px(x, px0 + 4, py0 + 6, 8, 1, '#f0c84a');
+  1088→  1088→      px(x, px0 + 5, py0 + 8, 6, 1, '#f0c84a');
+  1089→  1089→      break;
+  1090→  1090→    }
+  1091→  1091→    case 'V': { // vacío
+  1092→  1092→      px(x, px0, py0, TILE, TILE, '#0c0a14');
+  1093→  1093→      if (r > 0.8) { x.fillStyle = '#1c1828'; x.fillRect(px0 + 3, py0 + 5, 4, 2); }
+  1094→  1094→      break;
+  1095→  1095→    }
+  1096→  1096→    case 'm': { // niebla muda (suelo)
+  1097→  1097→      px(x, px0, py0, TILE, TILE, '#4a5a52');
+  1098→  1098→      x.globalAlpha = 0.3;
+  1099→  1099→      px(x, px0, py0 + 4 + Math.floor(Math.sin(t + tx) * 2), TILE, 8, '#9ec4b4');
+  1100→  1100→      x.globalAlpha = 1;
+  1101→  1101→      break;
+  1102→  1102→    }
+  1103→  1103→    case 'n': { // niebla densa (bloquea)
+  1104→  1104→      px(x, px0, py0, TILE, TILE, '#3c4a48');
+  1105→  1105→      x.globalAlpha = 0.55;
+  1106→  1106→      px(x, px0, py0 + 3, TILE, 10, '#7ea49a');
+  1107→  1107→      x.globalAlpha = 1;
+  1108→  1108→      px(x, px0, py0 + 2, TILE, 2, '#2c3a38');
+  1109→  1109→      break;
+  1110→  1110→    }
+  1111→  1111→    default: {
+  1112→  1112→      px(x, px0, py0, TILE, TILE, '#4f8a46');
+  1113→  1113→      break;
+  1114→  1114→    }
+  1115→  1115→  }
+  1116→  1116→}
+  1117→  1117→
+  1118→  1118→// Objetos altos (dibujados por encima del suelo, con orden por fila)
+  1119→  1119→export function isTallTile(ch: string): boolean {
+  1120→  1120→  return ch === 't' || ch === 'p';
+  1121→  1121→}
+  1122→  1122→
+  1123→  1123→export function drawTallTile(
+  1124→  1124→  x: CanvasRenderingContext2D, ch: string, tx: number, ty: number, mapId: string,
+  1125→  1125→): void {
+  1126→  1126→  const px0 = tx * TILE, py0 = ty * TILE;
+  1127→  1127→  const r = hash2(tx * 3 + 1, ty * 5 + 7);
+  1128→  1128→  if (ch === 't') { // árbol coposo
+  1129→  1129→    x.fillStyle = '#5c4028';
+  1130→  1130→    x.fillRect(px0 + 6, py0 + 8, 4, 8);
+  1131→  1131→    x.fillStyle = '#4a3420';
+  1132→  1132→    x.fillRect(px0 + 6, py0 + 14, 4, 2);
+  1133→  1133→    const c1 = mapId === 'bosque' ? '#2e5d34' : '#3a703c';
+  1134→  1134→    const c2 = mapId === 'bosque' ? '#3e7244' : '#4a8a4c';
+  1135→  1135→    x.fillStyle = c1;
+  1136→  1136→    x.fillRect(px0 + 1, py0 - 6, 14, 14);
+  1137→  1137→    x.fillRect(px0 + 3, py0 - 10, 10, 6);
+  1138→  1138→    x.fillStyle = c2;
+  1139→  1139→    x.fillRect(px0 + 2, py0 - 8, 8, 6);
+  1140→  1140→    x.fillRect(px0 + 4, py0 - 11, 5, 4);
+  1141→  1141→    if (r > 0.6) {
+  1142→  1142→      x.fillStyle = r > 0.8 ? '#e05858' : '#e8c860';
+  1143→  1143→      x.fillRect(px0 + 3 + Math.floor(r * 6), py0 - 4, 2, 2);
+  1144→  1144→    }
+  1145→  1145→  } else if (ch === 'p') { // pino
+  1146→  1146→    x.fillStyle = '#54381e';
+  1147→  1147→    x.fillRect(px0 + 6, py0 + 10, 4, 6);
+  1148→  1148→    x.fillStyle = '#1e4a2c';
+  1149→  1149→    x.fillRect(px0 + 3, py0 - 2, 10, 8);
+  1150→  1150→    x.fillRect(px0 + 5, py0 - 8, 6, 7);
+  1151→  1151→    x.fillRect(px0 + 6, py0 - 12, 4, 5);
+  1152→  1152→    x.fillStyle = '#2e6238';
+  1153→  1153→    x.fillRect(px0 + 4, py0 - 4, 6, 4);
+  1154→  1154→    x.fillRect(px0 + 6, py0 - 10, 3, 3);
+  1155→  1155→    x.fillStyle = '#e8f0f4';
+  1156→  1156→    if (r > 0.7) x.fillRect(px0 + 5, py0 - 9, 2, 1);
+  1157→  1157→  }
+  1158→  1158→}
+  1159→  1159→
+  1160→  1160→// Árbol cortado en el pasado (diffs usan '.')
+  1161→  1161→export const SOLID_CHARS = new Set(['t', 'p', '#', 'H', 'r', 'F', 'R', 'w', 'g', 'P', 'A', 'V', '~', 'd', 'x', 'n']);
+  1162→  1162→

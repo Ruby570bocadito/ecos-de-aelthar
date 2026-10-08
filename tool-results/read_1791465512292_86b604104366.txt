@@ -1,0 +1,681 @@
+     1→// ============================================================
+     2→// ECOS DE AELTHAR — Update por frame
+     3→// Jugador, IA de enemigos, jefe, proyectiles, compañera, mundo
+     4→// ============================================================
+     5→
+     6→import type { Game } from './engine';
+     7→import { TILE, playerMeleeDmg } from './engine';
+     8→import type { Enemy, Dir, Element, Player, Companion } from './types';
+     9→import { ENEMY_DEFS } from './data';
+    10→import { audio } from './audio';
+    11→import { addShake, addFlash, requestSlowmo, applyKnockback, stepKnockback } from './fxcore';
+    12→
+    13→const DIRS: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
+    14→
+    15→// ---------------- Estado transitorio de mecánicas (3-b) ----------------
+    16→// WeakMap/WeakSet a nivel de módulo: no persiste en el guardado y no
+    17→// ensucia types.ts (contrato).
+    18→
+    19→/** Ciclo elemental de las flechas de Ilwen (biblia: fuego → hielo → rayo). */
+    20→const ARROW_CYCLE: Element[] = ['fuego', 'hielo', 'rayo'];
+    21→
+    22→/** Memoria transitoria de Ilwen por compañero: cds de técnica/marca, ciclo de flechas y vínculo. */
+    23→interface IlwenMem { rainCd: number; markCd: number; arrowIdx: number; bondT: number }
+    24→const ilwenMem = new WeakMap<Companion, IlwenMem>();
+    25→
+    26→/** REMATE: bonus único por periodo de quebrado/aturdimiento por enemigo. */
+    27→const finisherUsed = new WeakSet<Enemy>();
+    28→const wasAturdido = new WeakMap<Enemy, boolean>();
+    29→
+    30→/** Detección de golpe recién liberado (empuje cargado y remate). */
+    31→const lastAttackT = new WeakMap<Player, number>();
+    32→
+    33→function dist(ax: number, ay: number, bx: number, by: number): number {
+    34→  return Math.hypot(bx - ax, by - ay);
+    35→}
+    36→
+    37→export function updateGame(g: Game, dt: number) {
+    38→  // cosmética siempre
+    39→  if (g.state === 'dialogue' && g.dlgNode) g.dlgCharT += dt * 45;
+    40→  g.mapTitleT = Math.max(0, g.mapTitleT - dt);
+    41→  g.epochFx = Math.max(0, g.epochFx - dt);
+    42→  g.shake = Math.max(0, g.shake - dt * 22);
+    43→  for (const t of g.toasts) t.t -= dt;
+    44→  g.toasts = g.toasts.filter(t => t.t > 0);
+    45→  for (const f of g.floats) { f.t -= dt; f.y += f.vy * dt; }
+    46→  g.floats = g.floats.filter(f => f.t > 0);
+    47→  for (const p of g.particles) { p.t -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.grav * dt; }
+    48→  g.particles = g.particles.filter(p => p.t > 0);
+    49→  if (g.state !== 'play') { g.updateCamera(); return; }
+    50→
+    51→  const p = g.player;
+    52→  if (!p) return;
+    53→  p.playTime += dt;
+    54→  g.dayT = (g.dayT + dt / 240) % 1;
+    55→  if (p.buffT) { p.buffT -= dt; if (p.buffT <= 0) p.buffT = undefined; }
+    56→
+    57→  // ---------------- fades y transición de mapa ----------------
+    58→  // enfriamiento de salidas: tras cargar un mapa se ignoran sus zonas de
+    59→  // salida un instante (defensa extra anti-bucle de teletransporte)
+    60→  if (g.exitCd > 0) g.exitCd -= dt;
+    61→  if (g.fadeDir !== 0) {
+    62→    g.fadeT += g.fadeDir * dt * 2.4;
+    63→    if (g.fadeT >= 1 && g.fadeDir > 0) {
+    64→      g.fadeT = 1;
+    65→      if (g.pendingMap) {
+    66→        const { to, tx, ty } = g.pendingMap;
+    67→        g.pendingMap = null;
+    68→        g.loadMap(to, tx, ty);
+    69→        audio.playTrack(g.map.music);
+    70→        g.save();
+    71→        g.toast('Autoguardado', '#8ef0ff');
+    72→      }
+    73→      g.fadeDir = -1;
+    74→    }
+    75→    if (g.fadeT <= 0 && g.fadeDir < 0) { g.fadeT = 0; g.fadeDir = 0; }
+    76→    if (g.fadeDir !== 0) { g.updateCamera(); return; }
+    77→  }
+    78→
+    79→  // ---------------- input del jugador ----------------
+    80→  const k = g.keys;
+    81→  let mx = 0, my = 0;
+    82→  if (k.has('a') || k.has('arrowleft')) mx -= 1;
+    83→  if (k.has('d') || k.has('arrowright')) mx += 1;
+    84→  if (k.has('w') || k.has('arrowup')) my -= 1;
+    85→  if (k.has('s') || k.has('arrowdown')) my += 1;
+    86→  const mlen = Math.hypot(mx, my) || 1;
+    87→
+    88→  p.sta = Math.min(p.maxSta, p.sta + (p.rollT > 0 ? 0 : 26) * dt);
+    89→  if (p.iframes > 0) p.iframes -= dt;
+    90→  if (p.parryT > 0) p.parryT -= dt;
+    91→  if (p.parryFx > 0) p.parryFx -= dt;
+    92→  if (p.lastHitT > 0) p.lastHitT -= dt;
+    93→  for (let i = 0; i < p.cds.length; i++) if (p.cds[i] > 0) p.cds[i] -= dt;
+    94→
+    95→  // knockback suave del jugador (ondas del jefe, slams) — contrato fxcore
+    96→  stepKnockback(g, p, dt);
+    97→
+    98→  // carga de ataque
+    99→  if (p.charging) {
+   100→    p.chargeT += dt;
+   101→    if (p.chargeT > 0.35 && Math.random() < 0.4) {
+   102→      g.particles.push({ x: p.x + (Math.random() - 0.5) * 14, y: p.y - 10, vx: 0, vy: -30, t: 0.3, maxT: 0.3, color: '#ffe86a', size: 1.5, grav: 0 });
+   103→    }
+   104→  }
+   105→
+   106→  if (p.rollT > 0) {
+   107→    // rodar
+   108→    p.rollT -= dt;
+   109→    const rd = (p as unknown as { rollDir?: Dir }).rollDir ?? p.dir;
+   110→    const [rx, ry] = DIRS[rd];
+   111→    const spd = 168;
+   112→    g.moveEntity(p, rx * spd * dt, ry * spd * dt);
+   113→    p.moving = true;
+   114→    p.anim += dt * 1.4;
+   115→    if (Math.random() < 0.5) g.particles.push({ x: p.x, y: p.y, vx: 0, vy: 0, t: 0.25, maxT: 0.25, color: '#d8dce4', size: 2, grav: 0 });
+   116→  } else if (p.attackT > 0) {
+   117→    p.attackT -= dt;
+   118→    p.moving = false;
+   119→    p.anim += dt;
+   120→  } else {
+   121→    // movimiento normal
+   122→    const spd = 74;
+   123→    if (mx !== 0 || my !== 0) {
+   124→      g.moveEntity(p, (mx / mlen) * spd * dt, (my / mlen) * spd * dt);
+   125→      p.moving = true;
+   126→      p.anim += dt;
+   127→      if (!p.charging || p.chargeT < 0.2) {
+   128→        if (Math.abs(mx) > Math.abs(my)) p.dir = mx > 0 ? 'right' : 'left';
+   129→        else p.dir = my > 0 ? 'down' : 'up';
+   130→      }
+   131→    } else {
+   132→      p.moving = false;
+   133→      p.anim += dt * 0.4;
+   134→    }
+   135→  }
+   136→
+   137→  // ---------------- ventana de combo · golpe recién liberado · REMATE ----------------
+   138→  const prevAttackT = lastAttackT.get(p) ?? 0;
+   139→  const attackStarted = p.attackT > 0 && prevAttackT <= 0;
+   140→  lastAttackT.set(p, p.attackT);
+   141→  // p.chargedHit es del motor (la usa render para el arco cargado); se limpia al
+   142→  // terminar el golpe para que el siguiente ataque no herede el flag.
+   143→  if (p.attackT <= 0 && p.chargedHit) p.chargedHit = false;
+   144→
+   145→  // ventana de combo: se mantiene mientras encadenas; al caducar el combo se reinicia
+   146→  if (p.attackT > 0) {
+   147→    p.comboT = 1.2;
+   148→  } else if ((p.comboT ?? 0) > 0) {
+   149→    p.comboT = (p.comboT ?? 0) - dt;
+   150→    if ((p.comboT ?? 0) <= 0) { p.comboT = 0; p.combo = 0; }
+   151→  }
+   152→
+   153→  if (attackStarted) {
+   154→    // impacto cargado: onda de empuje frontal (el peso del Portador)
+   155→    if (p.chargedHit) {
+   156→      const [fdx, fdy] = DIRS[p.dir];
+   157→      const cx2 = p.x + fdx * 20, cy2 = p.y + fdy * 20;
+   158→      for (const e of g.enemies) {
+   159→        if (e.dead) continue;
+   160→        if (Math.hypot(e.x - cx2, e.y - cy2) < 36 + e.w / 2) {
+   161→          applyKnockback(e, e.x - p.x, e.y - p.y, 200);
+   162→        }
+   163→      }
+   164→    }
+   165→    // REMATE: enemigo quebrado cerca + golpe recién liberado → bonus único por quebrado
+   166→    for (const e of g.enemies) {
+   167→      if (e.dead || e.ai !== 'aturdido' || e.maxSta <= 0) continue;
+   168→      if (finisherUsed.has(e)) continue;
+   169→      if (dist(p.x, p.y, e.x, e.y) < 30) {
+   170→        finisherUsed.add(e);
+   171→        const [rdx, rdy] = DIRS[p.dir];
+   172→        g.damageEnemy(e, playerMeleeDmg(p) * 0.6, 'ninguno', 90, rdx, rdy);
+   173→        g.floatAt(e.x, e.y - 26, '¡REMATE!', '#ffe86a', 12);
+   174→        addShake(g, 4);
+   175→        requestSlowmo(g, 0.2);
+   176→        p.res = Math.min(p.maxRes, p.res + 15);
+   177→        // sfx 'break' es nuevo del contrato (lo añade 3-a); audio.sfx no tiene
+   178→        // default: nombre desconocido = no-op seguro.
+   179→        audio.sfx('break');
+   180→        break;
+   181→      }
+   182→    }
+   183→  }
+   184→
+   185→  // esquiva (detección de borde: la pulsación se pone en cola en keydown;
+   186→  // mantener Espacio ya no encadena volteretas con invulnerabilidad continua)
+   187→  if (g.rollQueued && p.rollT <= 0 && p.attackT <= 0 && p.sta >= 20) {
+   188→    g.rollQueued = false;
+   189→    p.rollT = 0.3;
+   190→    p.iframes = 0.34;
+   191→    p.sta -= 20;
+   192→    let rd: Dir = p.dir;
+   193→    if (mx !== 0 || my !== 0) rd = Math.abs(mx) > Math.abs(my) ? (mx > 0 ? 'right' : 'left') : (my > 0 ? 'down' : 'up');
+   194→    (p as unknown as { rollDir?: Dir }).rollDir = rd;
+   195→    audio.sfx('dodge');
+   196→  }
+   197→
+   198→  // impacto del ataque (instantáneo en la liberación, ver releaseCharge)
+   199→
+   200→  // ---------------- recoger oro perdido ----------------
+   201→  for (let i = g.deadGolds.length - 1; i >= 0; i--) {
+   202→    const dgl = g.deadGolds[i];
+   203→    if (dgl.map !== g.mapId) continue;
+   204→    if (dist(p.x, p.y, dgl.x, dgl.y) < 14) {
+   205→      p.gold += dgl.amount;
+   206→      g.deadGolds.splice(i, 1);
+   207→      audio.sfx('coin');
+   208→      g.floatAt(dgl.x, dgl.y - 10, `+${dgl.amount}`, '#f0c84a');
+   209→      g.toast(`Recuperas tu eco de oro (+${dgl.amount})`, '#f0c84a');
+   210→    }
+   211→  }
+   212→
+   213→  // ---------------- salidas de mapa ----------------
+   214→  if (g.fadeDir === 0 && g.exitCd <= 0) {
+   215→    const ptx = Math.floor(p.x / TILE), pty = Math.floor(p.y / TILE);
+   216→    for (const ex of g.map.exits) {
+   217→      if (ex.needPast && g.epoch !== 'pasado') continue;
+   218→      if (ptx >= ex.x && ptx < ex.x + ex.w && pty >= ex.y && pty < ex.y + ex.h) {
+   219→        g.fadeTo(ex.to, ex.tx, ex.ty);
+   220→        audio.sfx('echo');
+   221→        break;
+   222→      }
+   223→    }
+   224→  }
+   225→
+   226→  // ---------------- watchers de contenido (baratos, O(1) por frame) ----------------
+   227→  // q2_done: Brisa da por completada la misión de los lobos → Ilwen aparece en el Bosque
+   228→  // (la bandera no la fijaba nadie y su showFlag dejaba a la elfa invisible para siempre)
+   229→  if (g.questIdx >= 2 && !g.flags.q2_done) g.flags.q2_done = true;
+   230→  // Memoria II: tras recuperar el Eco de la Voz, la casa junto al río aflora al pisar el Bosque
+   231→  if (g.flags.ecoVoz && g.mapId === 'bosque' && !g.flags.mem_casa) {
+   232→    g.flags.mem_casa = true;
+   233→    if (!(p.memories ?? []).includes('mem_casa')) g.applyAction('memory_mem_casa');
+   234→  }
+   235→  // Memoria III: la madre sin rostro aflora al vencer al Guardián Hueco
+   236→  if (g.flags.guardianDefeated && !g.flags.mem_madre) {
+   237→    g.flags.mem_madre = true;
+   238→    if (!(p.memories ?? []).includes('mem_madre')) g.applyAction('memory_mem_madre');
+   239→  }
+   240→
+   241→  // ---------------- compañera ----------------
+   242→  if (g.companion) updateCompanion(g, dt);
+   243→
+   244→  // ---------------- enemigos ----------------
+   245→  let anyAggro = false;
+   246→  for (const e of g.enemies) {
+   247→    if (e.dead) continue;
+   248→    updateEnemy(g, e, dt);
+   249→    if (e.aggro && e.ai !== 'muerto') anyAggro = true;
+   250→  }
+   251→  g.enemies = g.enemies.filter(e => !e.dead);
+   252→  if (g.bossRef && g.bossRef.dead) g.bossRef = null;
+   253→  audio.setCombat(anyAggro);
+   254→
+   255→  // ---------------- jefe: activación ----------------
+   256→  if (g.mapId === 'cripta' && !g.flags.guardianDefeated && !g.bossActive) {
+   257→    const boss = g.enemies.find(e => e.etype === 'guardian');
+   258→    if (boss) {
+   259→      g.bossRef = boss;
+   260→      if (dist(p.x, p.y, boss.x, boss.y) < 190) {
+   261→        g.bossActive = true;
+   262→        audio.playTrack('boss');
+   263→        g.toast('El Guardián Hueco despierta: ROMPE SU BARRA DE QUIEBRE', '#7ee8ff');
+   264→        audio.sfx('roar');
+   265→      }
+   266→    }
+   267→  }
+   268→
+   269→  // ---------------- proyectiles ----------------
+   270→  for (let i = g.projectiles.length - 1; i >= 0; i--) {
+   271→    const pr = g.projectiles[i];
+   272→    pr.t -= dt;
+   273→    pr.x += pr.vx * dt;
+   274→    pr.y += pr.vy * dt;
+   275→    // colisión de pared: tileSolidAt es el método público del motor (SOLID_CHARS + época)
+   276→    let dead = pr.t <= 0 || g.tileSolidAt(pr.x, pr.y);
+   277→    if (pr.from !== 'enemy') {
+   278→      // proyectil aliado (Portador o Ilwen): daña enemigos
+   279→      if (Math.random() < 0.5) g.particles.push({ x: pr.x, y: pr.y, vx: 0, vy: 0, t: 0.22, maxT: 0.22, color: pr.element === 'fuego' ? '#ff9040' : pr.element === 'hielo' ? '#a0e8ff' : '#ffe86a', size: 1.5, grav: 0 });
+   280→      for (const e of g.enemies) {
+   281→        if (e.dead) continue;
+   282→        if (dist(pr.x, pr.y, e.x, e.y - 4) < pr.radius + e.w / 2 + 2) {
+   283→          g.damageEnemy(e, pr.dmg, pr.element, 30, Math.sign(pr.vx), Math.sign(pr.vy));
+   284→          // empuje según elemento: el fuego arrea más (contrato fxcore)
+   285→          const kbForce = pr.from === 'companion' ? 90 : pr.element === 'fuego' ? 150 : pr.element === 'rayo' ? 110 : 85;
+   286→          applyKnockback(e, pr.vx, pr.vy, kbForce);
+   287→          dead = true;
+   288→          break;
+   289→        }
+   290→      }
+   291→    } else {
+   292→      // proyectil enemigo: parable o dañino para el Portador
+   293→      if (dist(pr.x, pr.y, p.x, p.y - 4) < pr.radius + 7) {
+   294→        if (p.parryT > 0) {
+   295→          // ¡parada perfecta de proyectil!
+   296→          audio.sfx('parry');
+   297→          p.res = Math.min(p.maxRes, p.res + 15);
+   298→          g.floatAt(p.x, p.y - 22, '¡PARADA!', '#fff8c0', 7);
+   299→          dead = true;
+   300→        } else if (p.iframes <= 0 && p.rollT <= 0) {
+   301→          g.damagePlayer(pr.dmg, pr.x, pr.y);
+   302→          dead = true;
+   303→        }
+   304→      }
+   305→      if (Math.random() < 0.4) g.particles.push({ x: pr.x, y: pr.y, vx: 0, vy: 0, t: 0.25, maxT: 0.25, color: '#b48fff', size: 1.5, grav: 0 });
+   306→    }
+   307→    if (dead) {
+   308→      g.burst(pr.x, pr.y, pr.element === 'fuego' ? '#ff9040' : pr.element === 'hielo' ? '#a0e8ff' : '#e8d0ff', 6, 40);
+   309→      g.projectiles.splice(i, 1);
+   310→    }
+   311→  }
+   312→
+   313→  // ---------------- ondas expansivas ----------------
+   314→  for (let i = g.waves.length - 1; i >= 0; i--) {
+   315→    const w = g.waves[i];
+   316→    w.r += w.speed * dt;
+   317→    if (w.dmg > 0 && !w.hit) {
+   318→      if (Math.abs(dist(w.x, w.y, p.x, p.y) - w.r) < 8) {
+   319→        // onda del Guardián: empuja al Portador si el golpe entra (no en parada)
+   320→        if (p.parryT <= 0 && p.iframes <= 0 && p.rollT <= 0) applyKnockback(p, p.x - w.x, p.y - w.y, 260);
+   321→        g.damagePlayer(w.dmg, w.x, w.y);
+   322→        w.hit = true;
+   323→      }
+   324→    }
+   325→    if (w.r >= w.maxR) g.waves.splice(i, 1);
+   326→  }
+   327→
+   328→  // ---------------- telegrafías ----------------
+   329→  for (let i = g.telegraphs.length - 1; i >= 0; i--) {
+   330→    const t = g.telegraphs[i];
+   331→    t.t -= dt;
+   332→    if (t.t <= 0) {
+   333→      audio.sfx('slam');
+   334→      g.shake = 6;
+   335→      g.burst(t.x, t.y, '#c8b8a0', 18, 90);
+   336→      if (dist(p.x, p.y, t.x, t.y) < t.r && p.rollT <= 0 && p.iframes <= 0) {
+   337→        // slam del Guardián: el impacto arrea al Portador
+   338→        if (p.parryT <= 0) applyKnockback(p, p.x - t.x, p.y - t.y, 260);
+   339→        g.damagePlayer(t.dmg, t.x, t.y);
+   340→      }
+   341→      g.telegraphs.splice(i, 1);
+   342→    }
+   343→  }
+   344→
+   345→  g.updateCamera();
+   346→}
+   347→
+   348→// ---------------- Compañera (Ilwen mejorada, biblia) ----------------
+   349→
+   350→function updateCompanion(g: Game, dt: number) {
+   351→  const c = g.companion!;
+   352→  const p = g.player!;
+   353→  const mem = ilwenMem.get(c) ?? { rainCd: 8, markCd: 3, arrowIdx: 0, bondT: 0 };
+   354→  ilwenMem.set(c, mem);
+   355→
+   356→  // knockback suave (la empujan ondas/impactos)
+   357→  stepKnockback(g, c, dt);
+   358→
+   359→  if (c.downT > 0) {
+   360→    c.downT -= dt;
+   361→    if (c.downT <= 0) { c.hp = Math.floor(c.maxHp * 0.5); g.toast('Ilwen se incorpora de nuevo', '#8ef0b0'); }
+   362→    return;
+   363→  }
+   364→  c.atkCd -= dt;
+   365→  const d = dist(c.x, c.y, p.x, p.y);
+   366→  // mantener posición de escolta
+   367→  if (d > 30) {
+   368→    const spd = Math.min(92, 40 + (d - 30) * 2);
+   369→    const dx = (p.x - c.x) / d, dy = (p.y - c.y) / d;
+   370→    g.moveEntity(c, dx * spd * dt, dy * spd * dt);
+   371→    c.moving = true; c.anim += dt;
+   372→    c.dir = dx > 0 ? 'right' : dx < 0 ? 'left' : dy > 0 ? 'down' : 'up';
+   373→  } else { c.moving = false; c.anim += dt * 0.4; }
+   374→  // disparo a enemigos aggro cercanos: flechas elementales cíclicas fuego→hielo→rayo
+   375→  // (fuego/hielo aplican sus estados vía damageEnemy; rayo solo daño)
+   376→  if (c.atkCd <= 0) {
+   377→    let best: Enemy | null = null, bd = 150;
+   378→    for (const e of g.enemies) {
+   379→      if (e.dead) continue;
+   380→      const dd = dist(c.x, c.y, e.x, e.y);
+   381→      if (dd < bd) { bd = dd; best = e; }
+   382→    }
+   383→    if (best) {
+   384→      c.atkCd = 1.5;
+   385→      const el = ARROW_CYCLE[mem.arrowIdx % ARROW_CYCLE.length];
+   386→      mem.arrowIdx = (mem.arrowIdx + 1) % ARROW_CYCLE.length;
+   387→      // flechas focalizadas: a enemigos marcados +60% de daño
+   388→      const dmg = (7 + p.level * 1.5) * ((best.marked ?? 0) > 0 ? 1.6 : 1);
+   389→      const dx = best.x - c.x, dy = best.y - 4 - (c.y - 6);
+   390→      const l = Math.max(1, Math.hypot(dx, dy));
+   391→      g.projectiles.push({
+   392→        x: c.x, y: c.y - 6, vx: (dx / l) * 190, vy: (dy / l) * 190, t: 1.2,
+   393→        dmg, element: el, from: 'companion', sprite: 'p_arrow', radius: 3, pierce: 0,
+   394→      });
+   395→      audio.sfx('companionShot');
+   396→    }
+   397→  }
+   398→  // MARCA de Ilwen: en combate, cada 6 s fija al enemigo aggro más cercano (5 s)
+   399→  mem.markCd -= dt;
+   400→  if (mem.markCd <= 0) {
+   401→    let best: Enemy | null = null, bd = 180;
+   402→    for (const e of g.enemies) {
+   403→      if (e.dead || !e.aggro) continue;
+   404→      const dd = dist(c.x, c.y, e.x, e.y);
+   405→      if (dd < bd) { bd = dd; best = e; }
+   406→    }
+   407→    if (best) {
+   408→      best.marked = 5;
+   409→      g.floatAt(best.x, best.y - 24, 'MARCADO', '#e8a8c8', 6);
+   410→      mem.markCd = 6;
+   411→    }
+   412→  }
+   413→  // Técnica combinada «Lluvia de estrellas» (afinidad ≥ 20 · cd 24 s · biblia)
+   414→  mem.rainCd -= dt;
+   415→  if (mem.rainCd <= 0 && c.affinity >= 20) {
+   416→    const targets = g.enemies.filter(e => !e.dead && e.aggro && dist(c.x, c.y, e.x, e.y) < 140);
+   417→    if (targets.length > 0) {
+   418→      mem.rainCd = 24;
+   419→      const t0 = targets[0];
+   420→      const baseAng = Math.atan2(t0.y - c.y, t0.x - c.x);
+   421→      // ráfaga de 10 flechas elementales en abanico hacia los enemigos
+   422→      for (let i = 0; i < 10; i++) {
+   423→        const ang = baseAng + ((i / 9) - 0.5) * 1.6;
+   424→        g.projectiles.push({
+   425→          x: c.x, y: c.y - 8, vx: Math.cos(ang) * 210, vy: Math.sin(ang) * 210, t: 1.1,
+   426→          dmg: 9 + p.level * 1.8, element: ARROW_CYCLE[i % ARROW_CYCLE.length],
+   427→          from: 'companion', sprite: 'p_arrow', radius: 3, pierce: 0,
+   428→        });
+   429→      }
+   430→      g.waves.push({ x: c.x, y: c.y, r: 4, maxR: 64, speed: 150, dmg: 0, hit: true });
+   431→      g.waves.push({ x: c.x, y: c.y, r: 4, maxR: 96, speed: 190, dmg: 0, hit: true });
+   432→      addFlash(g, '#ffe9a0', 0.15);
+   433→      addShake(g, 3);
+   434→      g.floatAt(c.x, c.y - 26, 'LLUVIA DE ESTRELLAS', '#ffe9a0', 9);
+   435→      audio.sfx('holy');
+   436→      audio.sfx('bolt');
+   437→    }
+   438→  }
+   439→  // vínculo: combatir codo con codo fortalece la afinidad (+1 cada 10 s de combate)
+   440→  const fighting = g.enemies.some(e => !e.dead && e.aggro);
+   441→  if (fighting) {
+   442→    mem.bondT += dt;
+   443→    if (mem.bondT >= 10) {
+   444→      mem.bondT -= 10;
+   445→      c.affinity = Math.min(30, c.affinity + 1);
+   446→      g.floatAt(c.x, c.y - 20, '♥', '#8ef0b0');
+   447→    }
+   448→  } else {
+   449→    mem.bondT = Math.max(0, mem.bondT - dt * 0.5);
+   450→  }
+   451→  if (c.hp < c.maxHp) c.hp = Math.min(c.maxHp, c.hp + 2 * dt);
+   452→  if (c.hp <= 0) { c.downT = 8; g.toast('Ilwen cae... se repondrá en unos segundos', '#e8a0a0'); }
+   453→}
+   454→
+   455→// ---------------- Enemigos ----------------
+   456→
+   457→function speedMult(e: Enemy): number {
+   458→  let m = 1;
+   459→  if (e.statuses.some(s => s.kind === 'congelado')) m *= 0.5;
+   460→  return m;
+   461→}
+   462→
+   463→function updateEnemy(g: Game, e: Enemy, dt: number) {
+   464→  const p = g.player!;
+   465→  const def = ENEMY_DEFS[e.etype];
+   466→  if (e.hitFlash > 0) e.hitFlash -= dt;
+   467→  if (e.spawnGuard && e.spawnGuard > 0) { e.spawnGuard -= dt; return; }
+   468→
+   469→  // REMATE disponible al entrar en aturdimiento/quebrado (una vez por periodo)
+   470→  const prevStun = wasAturdido.get(e) ?? false;
+   471→  if (e.ai === 'aturdido' && !prevStun) finisherUsed.delete(e);
+   472→  wasAturdido.set(e, e.ai === 'aturdido');
+   473→
+   474→  // knockback suave (proyectiles, cargas, ondas) — contrato fxcore
+   475→  stepKnockback(g, e, dt);
+   476→
+   477→  // estados
+   478→  for (let i = e.statuses.length - 1; i >= 0; i--) {
+   479→    const s = e.statuses[i];
+   480→    s.t -= dt;
+   481→    if (s.kind === 'quemado') {
+   482→      e.hp -= s.power * dt;
+   483→      if (Math.random() < 0.15) g.particles.push({ x: e.x + (Math.random() - 0.5) * 8, y: e.y - 6, vx: 0, vy: -24, t: 0.3, maxT: 0.3, color: '#ff9040', size: 1.5, grav: 0 });
+   484→      if (e.hp <= 0) { g.killEnemy(e); return; }
+   485→    }
+   486→    if (s.t <= 0) e.statuses.splice(i, 1);
+   487→  }
+   488→  // decae la marca de Ilwen (el icono lo dibuja 3-a)
+   489→  if (e.marked !== undefined) {
+   490→    e.marked -= dt;
+   491→    if (e.marked <= 0) e.marked = undefined;
+   492→  }
+   493→  if (e.hp < e.maxHp) e.aggro = true;
+   494→
+   495→  const d = dist(e.x, e.y, p.x, p.y);
+   496→  const nightMult = isNight(g) ? 1.3 : 1;
+   497→  const aggroR = def.aggroR * nightMult * (e.etype === 'guardian' ? (g.bossActive ? 99 : 1) : 1);
+   498→  if (!e.aggro && d < aggroR && g.state === 'play') {
+   499→    e.aggro = true;
+   500→    if (e.etype === 'guardian') {
+   501→      // primera vez que entra en aggro: banner del jefe (render lo dibuja)
+   502→      if (!g.flags.bossIntro) {
+   503→        g.flags.bossIntro = true;
+   504→        g.bossBannerT = 3.2;
+   505→        g.bossBannerText = 'GUARDIÁN HUECO';
+   506→        g.bossBannerSub = 'Custodio del Eco de la Voz';
+   507→        addFlash(g, '#7ee8ff', 0.25);
+   508→        // sfx 'banner' es nuevo del contrato (3-a); no-op seguro hasta entonces
+   509→        audio.sfx('banner');
+   510→      }
+   511→    }
+   512→    else audio.sfx('blip');
+   513→  }
+   514→  e.atkCd -= dt;
+   515→  e.anim += dt * (e.ai === 'persigue' ? 1.4 : 0.6);
+   516→
+   517→  if (e.ai === 'aturdido') {
+   518→    e.aiT -= dt;
+   519→    e.moving = false;
+   520→    if (e.aiT <= 0) { e.ai = 'persigue'; if (e.maxSta > 0) e.sta = e.maxSta; }
+   521→    return;
+   522→  }
+   523→
+   524→  switch (e.ai) {
+   525→    case 'patrulla': {
+   526→      e.aiT -= dt;
+   527→      if (e.aiT <= 0) {
+   528→        e.aiT = 1.5 + Math.random() * 2;
+   529→        e.patrolAngle = Math.random() * Math.PI * 2;
+   530→      }
+   531→      // si se aleja de su hogar, vuelve; si no, deambula
+   532→      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 60;
+   533→      const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
+   534→      const vx = Math.cos(ang) * 22, vy = Math.sin(ang) * 22;
+   535→      const before = { x: e.x, y: e.y };
+   536→      g.moveEntity(e, vx * dt * speedMult(e), vy * dt * speedMult(e));
+   537→      if (Math.abs(e.x - before.x) < 0.01 && Math.abs(e.y - before.y) < 0.01) {
+   538→        e.patrolAngle += Math.PI * (0.5 + Math.random());
+   539→      }
+   540→      e.moving = true;
+   541→      e.dir = Math.cos(ang) > 0 ? 'right' : 'left';
+   542→      if (e.aggro) e.ai = 'persigue';
+   543→      break;
+   544→    }
+   545→    case 'persigue': {
+   546→      if (!e.aggro) { e.ai = 'patrulla'; break; }
+   547→      if (d > aggroR * 2.4) { e.aggro = false; e.ai = 'patrulla'; break; }
+   548→      const dx = (p.x - e.x) / (d || 1), dy = (p.y - e.y) / (d || 1);
+   549→      const spd = def.speed * speedMult(e);
+   550→      if (d > def.atkR * 0.8) {
+   551→        g.moveEntity(e, dx * spd * dt, dy * spd * dt);
+   552→        e.moving = true;
+   553→        e.dir = dx > 0 ? 'right' : 'left';
+   554→      } else e.moving = false;
+   555→      if (d <= def.atkR && e.atkCd <= 0) {
+   556→        e.ai = 'carga';
+   557→        e.windup = def.windup * (e.etype === 'guardian' && e.phase >= 3 ? 0.7 : 1);
+   558→        e.telegraphKind = undefined;
+   559→      }
+   560→      // jefe: acciones especiales
+   561→      if (e.etype === 'guardian') guardianBrain(g, e, dt, d);
+   562→      break;
+   563→    }
+   564→    case 'carga': {
+   565→      e.windup -= dt;
+   566→      e.moving = false;
+   567→      // mirar al jugador
+   568→      e.dir = p.x > e.x ? 'right' : 'left';
+   569→      if (e.windup <= 0) {
+   570→        if (e.telegraphKind === 'onda') {
+   571→          // onda expansiva del Guardián
+   572→          g.waves.push({ x: e.x, y: e.y, r: 10, maxR: 150, speed: 130, dmg: 13 * e.phase, hit: false });
+   573→          audio.sfx('slam');
+   574→          g.shake = 5;
+   575→          e.telegraphKind = undefined;
+   576→          e.ai = 'recupera';
+   577→          e.aiT = 0.6;
+   578→          e.atkCd = 2.6;
+   579→        } else if (e.etype === 'guardian') {
+   580→          // golpe en área
+   581→          e.ai = 'ataca';
+   582→          e.aiT = 0.22;
+   583→          audio.sfx('slam');
+   584→          if (d < 46) {
+   585→            // el slam del Guardián arrea al Portador
+   586→            if (p.parryT <= 0 && p.iframes <= 0 && p.rollT <= 0) applyKnockback(p, p.x - e.x, p.y - e.y, 260);
+   587→            g.damagePlayer(def.dmg * e.phase, e.x, e.y);
+   588→          }
+   589→          g.burst(e.x, e.y, '#8a84a8', 14, 80);
+   590→          g.shake = 5;
+   591→        } else {
+   592→          // estampida del lobo / mandoble del esqueleto
+   593→          e.ai = 'ataca';
+   594→          e.aiT = 0.22;
+   595→          const dx = (p.x - e.x) / (d || 1), dy = (p.y - e.y) / (d || 1);
+   596→          g.moveEntity(e, dx * 14, dy * 14);
+   597→          if (d < def.atkR + 10) {
+   598→            g.damagePlayer(def.dmg, e.x, e.y);
+   599→          }
+   600→        }
+   601→      }
+   602→      break;
+   603→    }
+   604→    case 'ataca': {
+   605→      e.aiT -= dt;
+   606→      if (e.aiT <= 0) {
+   607→        e.ai = 'recupera';
+   608→        e.aiT = 0.45;
+   609→        e.atkCd = def.atkCd * (0.85 + Math.random() * 0.3);
+   610→      }
+   611→      break;
+   612→    }
+   613→    case 'recupera': {
+   614→      e.aiT -= dt;
+   615→      e.moving = false;
+   616→      if (e.aiT <= 0) e.ai = e.aggro ? 'persigue' : 'patrulla';
+   617→      break;
+   618→    }
+   619→    default: break;
+   620→  }
+   621→
+   622→  // huida de lobos heridos
+   623→  if (e.etype === 'lobo' && e.hp < e.maxHp * 0.25 && e.ai !== 'huye' && Math.random() < 0.01) {
+   624→    e.ai = 'huye'; e.aiT = 2.2;
+   625→  }
+   626→  if (e.ai === 'huye') {
+   627→    e.aiT -= dt;
+   628→    const dx = (e.x - p.x) / (d || 1), dy = (e.y - p.y) / (d || 1);
+   629→    g.moveEntity(e, dx * def.speed * 1.2 * dt, dy * def.speed * 1.2 * dt);
+   630→    if (e.aiT <= 0) e.ai = 'persigue';
+   631→  }
+   632→}
+   633→
+   634→function guardianBrain(g: Game, e: Enemy, dt: number, d: number) {
+   635→  const p = g.player!;
+   636→  const hpPct = e.hp / e.maxHp;
+   637→  const newPhase = hpPct > 0.6 ? 1 : hpPct > 0.3 ? 2 : 3;
+   638→  if (newPhase !== e.phase) {
+   639→    e.phase = newPhase;
+   640→    audio.sfx('roar');
+   641→    g.toast(`El Guardián cambia de fase (${e.phase}/3)`, '#7ee8ff');
+   642→    addShake(g, 5);
+   643→    addFlash(g, e.phase === 3 ? '#e8a0ff' : '#7ee8ff', 0.2);
+   644→    requestSlowmo(g, 0.25);
+   645→    if (e.phase === 2) {
+   646→      // invoca sombras
+   647→      for (let i = 0; i < 2; i++) {
+   648→        const s = g.makeEnemy('sombra', e.x + (i === 0 ? -24 : 24), e.y + 12, 0, 'boss');
+   649→        s.aggro = true;
+   650→        g.enemies.push(s);
+   651→      }
+   652→      g.toast('El Guardián llama a sombras sin rostro', '#b48fff');
+   653→    }
+   654→  }
+   655→  e.sumT -= dt;
+   656→  if (e.atkCd <= 0) {
+   657→    // elegir acción: slam a distancia, onda en fase 2+, swipe si muy cerca
+   658→    if (d < 40) {
+   659→      e.ai = 'carga';
+   660→      e.windup = 0.55;
+   661→      e.atkCd = 2.2;
+   662→    } else if (e.phase >= 2 && Math.random() < 0.5) {
+   663→      // onda expansiva
+   664→      e.windup = 0.9;
+   665→      e.ai = 'carga';
+   666→      e.telegraphKind = 'onda';
+   667→      e.atkCd = 3.2;
+   668→    } else {
+   669→      // slam telegrafiado sobre el jugador
+   670→      g.telegraphs.push({ x: p.x, y: p.y, r: 34, t: 0.85, maxT: 0.85, dmg: 16 * e.phase, kind: 'slam' });
+   671→      e.atkCd = 2.4 / (e.phase >= 3 ? 1.4 : 1);
+   672→      e.ai = 'recupera';
+   673→      e.aiT = 0.5;
+   674→    }
+   675→  }
+   676→}
+   677→
+   678→export function isNight(g: Game): boolean {
+   679→  return g.dayT > 0.7 || g.dayT < 0.08;
+   680→}
+   681→

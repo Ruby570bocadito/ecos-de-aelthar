@@ -1,0 +1,1450 @@
+     1→// ============================================================
+     2→// ECOS DE AELTHAR — Motor principal
+     3→// Máquina de estados, bucle, input, mundo, diálogos, guardado
+     4→// ============================================================
+     5→
+     6→import type {
+     7→  Player, Enemy, Npc, Companion, MapId, Epoch, Projectile, Particle, FloatText,
+     8→  Toast, Shockwave, TeleGraph, SaveData, DialogueNode, Dir, Element,
+     9→} from './types';
+    10→import { MAPS, mapRows, tileAt } from './maps';
+    11→import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
+    12→import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
+    13→import { audio } from './audio';
+    14→import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue } from './data';
+    15→import { updateGame } from './update';
+    16→import { drawGame } from './render';
+    17→import { handleCustomAction, recordDialogueTone } from './hooks';
+    18→
+    19→export const VIEW_W = 960, VIEW_H = 540;
+    20→export const ZOOM = 2;
+    21→
+    22→/** Flag de derrota por tipo de JEFE (Acto II: sirena/golem se suman al Guardián). */
+    23→export const BOSS_DEFEAT_FLAG: Record<string, string> = {
+    24→  guardian: 'guardianDefeated',
+    25→  sirena: 'sirenaDefeated',
+    26→  golem: 'golemDefeated',
+    27→};
+    28→
+    29→export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end';
+    30→
+    31→export interface UiHit { x: number; y: number; w: number; h: number; cb: () => void; hover?: boolean }
+    32→
+    33→export class Game {
+    34→  canvas: HTMLCanvasElement;
+    35→  ctx: CanvasRenderingContext2D;
+    36→  state: GState = 'title';
+    37→  onStateChange?: (s: GState) => void;
+    38→  onRequestCreate?: () => void;
+    39→  musicVolUi = 0.7;
+    40→  sfxVolUi = 0.8;
+    41→
+    42→  requestCreate() {
+    43→    audio.sfx('confirm');
+    44→    this.onRequestCreate?.();
+    45→  }
+    46→
+    47→  // mundo
+    48→  mapId: MapId = 'lunaris';
+    49→  map = MAPS.lunaris;
+    50→  rows: string[] = [];
+    51→  groundCanvas: HTMLCanvasElement | null = null;
+    52→  groundPastCanvas: HTMLCanvasElement | null = null;
+    53→  miniCanvas: HTMLCanvasElement | null = null;
+    54→  epoch: Epoch = 'presente';
+    55→  epochFx = 0;
+    56→
+    57→  // entidades
+    58→  player: Player | null = null;
+    59→  enemies: Enemy[] = [];
+    60→  npcs: Npc[] = [];
+    61→  companion: Companion | null = null;
+    62→  visitedMaps: Record<string, boolean> = { lunaris: true };
+    63→
+    64→  // efectos y proyectiles
+    65→  projectiles: Projectile[] = [];
+    66→  particles: Particle[] = [];
+    67→  floats: FloatText[] = [];
+    68→  toasts: Toast[] = [];
+    69→  waves: Shockwave[] = [];
+    70→  telegraphs: TeleGraph[] = [];
+    71→  lastNote: Element = 'fuego';
+    72→
+    73→  // feedback visual compartido (contrato fxcore)
+    74→  flashT = 0;
+    75→  flashColor = '#ffffff';
+    76→  slowmoT = 0;
+    77→  memoryReveal: { id: string; title: string; text: string; t: number } | null = null;
+    78→  bossBannerT = 0;
+    79→  bossBannerText = '';
+    80→  bossBannerSub = '';
+    81→
+    82→  // progreso
+    83→  flags: Record<string, number | boolean> = {};
+    84→  questIdx = 0;
+    85→  questStep = 0;
+    86→  openedChests = new Set<string>();
+    87→  takenEchoes = new Set<string>();
+    88→  deadGolds: { map: MapId; x: number; y: number; amount: number }[] = [];
+    89→
+    90→  // cámara / tiempo
+    91→  camX = 0; camY = 0;
+    92→  dayT = 0.15;              // 0..1 ciclo día/noche
+    93→  globalT = 0;
+    94→  mapTitleT = 0;
+    95→  hitStop = 0;
+    96→  shake = 0;
+    97→  fadeT = 0; fadeDir = 0;   // transición de mapa
+    98→  pendingMap: { to: MapId; tx: number; ty: number } | null = null;
+    99→  exitCd = 0;               // enfriamiento anti-bucle tras loadMap (ignora zonas de salida)
+   100→  rollQueued = false;       // esquiva en cola (detección de borde: 1 pulsación = 1 voltereta)
+   101→  lastGoldLost = 0;         // oro perdido en la última muerte (lo muestra la pantalla de muerte)
+   102→
+   103→  // UI
+   104→  uiHit: UiHit[] = [];
+   105→  mouse = { x: 0, y: 0, down: false, rdown: false, worldX: 0, worldY: 0 };
+   106→  keys = new Set<string>();
+   107→  pauseTab: 0 | 1 | 2 | 3 = 0;
+   108→  introIdx = 0;
+   109→  endStats = '';
+   110→
+   111→  // diálogo
+   112→  dlgKey: string | null = null;
+   113→  dlgNode: DialogueNode | null = null;
+   114→  dlgCharT = 0;
+   115→  dlgSel = 0;
+   116→  dynNodes: Record<string, DialogueNode> = {};
+   117→
+   118→  // jefe
+   119→  bossRef: Enemy | null = null;
+   120→  bossActive = false;
+   121→
+   122→  // bucle
+   123→  private raf = 0;
+   124→  private lastTs = 0;
+   125→  private running = false;
+   126→  loopError: string | null = null;
+   127→
+   128→  constructor(canvas: HTMLCanvasElement) {
+   129→    this.canvas = canvas;
+   130→    this.ctx = canvas.getContext('2d')!;
+   131→    this.ctx.imageSmoothingEnabled = false;
+   132→    initSprites();
+   133→    initExpansionSprites(); // Acto II: sprites de neumo/espectro/arpi/sirena/golem + proyectiles
+   134→    this.bindInput();
+   135→    // volúmenes persistidos (sistema → sliders)
+   136→    try {
+   137→      const v = JSON.parse(localStorage.getItem('ecos-vol') ?? 'null');
+   138→      if (v && typeof v.m === 'number' && typeof v.s === 'number') {
+   139→        this.musicVolUi = Math.min(1, Math.max(0, v.m));
+   140→        this.sfxVolUi = Math.min(1, Math.max(0, v.s));
+   141→        audio.setMusicVol(this.musicVolUi * 0.9);
+   142→        audio.setSfxVol(this.sfxVolUi * 0.9);
+   143→      }
+   144→    } catch { /* noop */ }
+   145→    (window as unknown as { __g?: Game }).__g = this;
+   146→  }
+   147→
+   148→  setState(s: GState) {
+   149→    this.state = s;
+   150→    // transición fantasma: si se sale de play/dialogue a mitad de un fade
+   151→    // (pausa, muerte…), el viaje pendiente se cancela para no teletransportar
+   152→    // al reanudar ni reescribir el autoguardado con posición incorrecta.
+   153→    if (s !== 'play' && s !== 'dialogue') this.pendingMap = null;
+   154→    if (s !== 'play') this.rollQueued = false;
+   155→    this.onStateChange?.(s);
+   156→    if (s === 'title') audio.playTrack('title');
+   157→  }
+   158→
+   159→  update(dt: number) {
+   160→    updateGame(this, dt);
+   161→  }
+   162→
+   163→  // ---------------- Ciclo de vida ----------------
+   164→
+   165→  start() {
+   166→    if (this.running) return;
+   167→    this.running = true;
+   168→    this.lastTs = performance.now();
+   169→    const loop = (ts: number) => {
+   170→      if (!this.running) return;
+   171→      try {
+   172→        let dt = Math.min(0.05, (ts - this.lastTs) / 1000);
+   173→        this.lastTs = ts;
+   174→        if (this.flashT > 0) this.flashT = Math.max(0, this.flashT - dt);
+   175→        if (this.bossBannerT > 0) this.bossBannerT = Math.max(0, this.bossBannerT - dt);
+   176→        if (this.memoryReveal) { this.memoryReveal.t -= dt; if (this.memoryReveal.t <= 0) this.memoryReveal = null; }
+   177→        if (this.hitStop > 0) { this.hitStop -= dt; dt *= 0.12; }
+   178→        if (this.slowmoT > 0) { this.slowmoT -= dt; dt *= 0.35; }
+   179→        this.globalT += dt;
+   180→        if (this.state === 'play' || this.state === 'dialogue') this.update(dt);
+   181→        drawGame(this);
+   182→        this.loopError = null;
+   183→      } catch (err) {
+   184→        this.loopError = err instanceof Error ? (err.stack ?? String(err)) : String(err);
+   185→        console.error('[EcosAelthar loop]', err);
+   186→        try {
+   187→          this.ctx.fillStyle = '#000';
+   188→          this.ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   189→          this.ctx.font = '12px monospace';
+   190→          this.ctx.fillStyle = '#ff7060';
+   191→          this.ctx.textAlign = 'left';
+   192→          this.ctx.textBaseline = 'top';
+   193→          this.ctx.fillText('Error: ' + String(err).slice(0, 90), 20, 20);
+   194→          this.ctx.fillText((err instanceof Error ? (err.stack ?? '') : '').slice(0, 600).replace(/\n/g, ' | '), 20, 44);
+   195→        } catch { /* noop */ }
+   196→      }
+   197→      this.raf = requestAnimationFrame(loop);
+   198→    };
+   199→    this.raf = requestAnimationFrame(loop);
+   200→  }
+   201→
+   202→  stop() {
+   203→    this.running = false;
+   204→    cancelAnimationFrame(this.raf);
+   205→    audio.stopMusic();
+   206→  }
+   207→
+   208→  newGame(name: string, disc: 'alba' | 'tejedor') {
+   209→    const maxHp = disc === 'alba' ? 110 : 96;
+   210→    this.player = {
+   211→      kind: 'player', name: name || 'Portador', discipline: disc,
+   212→      x: 25 * TILE + 8, y: 20 * TILE, w: 10, h: 8,
+   213→      vx: 0, vy: 0, dir: 'down', hp: maxHp, maxHp,
+   214→      sprite: disc === 'alba' ? 'hero_alba' : 'hero_tejedor',
+   215→      anim: 0, moving: false,
+   216→      level: 1, xp: 0, sta: 100, maxSta: 100, res: 0, maxRes: 100,
+   217→      attrs: { fue: 2, des: 2, int: 2, esp: 2, vig: 2 },
+   218→      points: 0, gold: 20, weaponPlus: 0, potions: 2, cds: [0, 0, 0, 0],
+   219→      iframes: 0, parryT: 0, parryFx: 0, attackT: 0, combo: 0,
+   220→      chargeT: 0, charging: false, rollT: 0, lastHitT: 0,
+   221→      hasEcho: false, kills: 0, deaths: 0, repGuardianes: 0, playTime: 0,
+   222→      tones: { empatico: 0, pragmatico: 0, sarcastico: 0, amenazante: 0 },
+   223→      memories: [],
+   224→      repFacciones: { guardianes: 0, orden: 0, circulo: 0, liga: 0 },
+   225→    };
+   226→    this.flags = {};
+   227→    this.questIdx = 0; this.questStep = 0;
+   228→    this.openedChests = new Set();
+   229→    this.takenEchoes = new Set();
+   230→    this.deadGolds = [];
+   231→    this.companion = null;
+   232→    this.visitedMaps = { lunaris: true };
+   233→    this.dayT = 0.15;
+   234→    this.setState('intro');
+   235→    this.introIdx = 0;
+   236→    audio.playTrack('title');
+   237→  }
+   238→
+   239→  startPlay() {
+   240→    this.loadMap('lunaris', 25, 20);
+   241→    this.mapTitleT = 3.2;
+   242→    this.setState('play');
+   243→    audio.playTrack('village');
+   244→  }
+   245→
+   246→  hasSave(): boolean {
+   247→    try { return !!localStorage.getItem('ecos-aelthar-save'); } catch { return false; }
+   248→  }
+   249→
+   250→  continueGame() {
+   251→    const raw = (() => { try { return localStorage.getItem('ecos-aelthar-save'); } catch { return null; } })();
+   252→    if (!raw) return;
+   253→    let d: SaveData;
+   254→    try {
+   255→      d = JSON.parse(raw) as SaveData;
+   256→      if (!d || !d.player || typeof d.x !== 'number' || typeof d.y !== 'number' || !MAPS[d.map]) throw new Error('forma inválida');
+   257→    } catch {
+   258→      // save corrupto: nunca dejar el juego muerto — se descarta y se puede empezar de nuevo
+   259→      try { localStorage.removeItem('ecos-aelthar-save'); } catch { /* noop */ }
+   260→      this.toast('La partida guardada estaba dañada y no pudo recuperarse.', '#ff8060');
+   261→      return;
+   262→    }
+   263→    const p = d.player;
+   264→    const maxHp = p.maxHp;
+   265→    this.player = {
+   266→      kind: 'player', name: p.name, discipline: p.discipline,
+   267→      x: d.x, y: d.y, w: 10, h: 8, vx: 0, vy: 0, dir: 'down',
+   268→      hp: Math.max(1, p.hp), maxHp, sprite: p.discipline === 'alba' ? 'hero_alba' : 'hero_tejedor',
+   269→      anim: 0, moving: false,
+   270→      level: p.level, xp: p.xp, sta: p.maxSta, maxSta: p.maxSta, res: p.res, maxRes: 100,
+   271→      attrs: { ...p.attrs }, points: p.points,
+   272→      gold: p.gold, weaponPlus: p.weaponPlus, potions: p.potions, cds: [0, 0, 0, 0],
+   273→      iframes: 0, parryT: 0, parryFx: 0, attackT: 0, combo: 0,
+   274→      chargeT: 0, charging: false, rollT: 0, lastHitT: 0,
+   275→      hasEcho: p.hasEcho, kills: p.kills, deaths: p.deaths,
+   276→      repGuardianes: p.repGuardianes, playTime: p.playTime,
+   277→      tones: p.tones ?? { empatico: 0, pragmatico: 0, sarcastico: 0, amenazante: 0 },
+   278→      memories: p.memories ?? [],
+   279→      repFacciones: p.repFacciones ?? { guardianes: 0, orden: 0, circulo: 0, liga: 0 },
+   280→    };
+   281→    this.flags = { ...d.flags };
+   282→    this.questIdx = d.questIdx; this.questStep = d.questStep;
+   283→    this.openedChests = new Set(d.openedChests);
+   284→    this.takenEchoes = new Set(d.takenEchoes);
+   285→    this.deadGolds = d.deadGolds ?? [];
+   286→    this.epoch = d.epoch === 'pasado' && p.hasEcho ? 'pasado' : 'presente';
+   287→    this.companion = d.companion ? this.makeCompanion() : null;
+   288→    this.visitedMaps = { lunaris: true };
+   289→    if (this.flags.visitedBosque) this.visitedMaps.bosque = true;
+   290→    if (this.flags.visitedCripta) this.visitedMaps.cripta = true;
+   291→    this.loadMap(d.map, Math.floor(d.x / TILE), Math.floor(d.y / TILE));
+   292→    // restaura la posición fina del guardado SOLO si su tile es seguro
+   293→    // (ni sólido ni dentro de una zona de salida); si no, conserva el tile
+   294→    // seguro que eligió loadMap — rescate de partidas atrapadas en el bucle
+   295→    const stx = Math.floor(d.x / TILE), sty = Math.floor(d.y / TILE);
+   296→    if (this.player && !this.tileSolidAt(d.x, d.y) && !this.inExitZone(stx, sty)) {
+   297→      this.player.x = d.x; this.player.y = d.y;
+   298→    }
+   299→    this.mapTitleT = 2.5;
+   300→    this.setState('play');
+   301→    audio.playTrack(this.map.music);
+   302→  }
+   303→
+   304→  save() {
+   305→    if (!this.player) return;
+   306→    const p = this.player;
+   307→    const d: SaveData = {
+   308→      v: 1,
+   309→      player: {
+   310→        name: p.name, discipline: p.discipline, level: p.level, xp: p.xp,
+   311→        hp: p.hp, maxHp: p.maxHp, sta: p.sta, maxSta: p.maxSta, res: p.res,
+   312→        attrs: { ...p.attrs }, points: p.points,
+   313→        gold: p.gold, weaponPlus: p.weaponPlus, potions: p.potions,
+   314→        hasEcho: p.hasEcho, kills: p.kills, deaths: p.deaths,
+   315→        repGuardianes: p.repGuardianes, playTime: p.playTime,
+   316→        tones: p.tones, memories: p.memories, repFacciones: p.repFacciones,
+   317→      },
+   318→      map: this.mapId, x: Math.round(p.x), y: Math.round(p.y),
+   319→      epoch: this.epoch,
+   320→      flags: { ...this.flags, visitedBosque: !!this.visitedMaps.bosque, visitedCripta: !!this.visitedMaps.cripta },
+   321→      questIdx: this.questIdx, questStep: this.questStep,
+   322→      openedChests: [...this.openedChests],
+   323→      takenEchoes: [...this.takenEchoes],
+   324→      deadGolds: this.deadGolds,
+   325→      companion: !!this.companion,
+   326→      saveTime: Date.now(),
+   327→    };
+   328→    try { localStorage.setItem('ecos-aelthar-save', JSON.stringify(d)); } catch { /* noop */ }
+   329→  }
+   330→
+   331→  // ---------------- Mapa ----------------
+   332→
+   333→  loadMap(id: MapId, tx: number, ty: number) {
+   334→    // memoria del jefe: si sales de la cripta con el Guardián herido, no se
+   335→    // regenera al volver (cierra el exploit de reseteo de combate)
+   336→    // memoria del jefe (generalizada Acto II): si sales de un mapa con su JEFE vivo, no se regenera
+   337→    if (this.bossRef && !this.bossRef.dead) {
+   338→      this.flags[`bossHp_${this.mapId}`] = this.bossRef.hp;
+   339→      if (this.mapId === 'cripta') this.flags.bossHp = this.bossRef.hp; // compat con saves antiguos
+   340→    }
+   341→    this.mapId = id;
+   342→    this.map = MAPS[id];
+   343→    this.rows = mapRows(this.map);
+   344→    this.buildGround();
+   345→    if (this.player) {
+   346→      // defensa anti-softlock: nunca aterrizar sobre un tile sólido ni dentro
+   347→      // de una zona de salida del destino (provocaba el bucle cripta↔bosque)
+   348→      const [sx, sy] = this.findSafeTile(tx, ty);
+   349→      this.player.x = sx * TILE + 8;
+   350→      this.player.y = sy * TILE + 8;
+   351→    }
+   352→    this.exitCd = 0.9;
+   353→    this.spawnEnemies();
+   354→    // restaura la vida memorizada del Guardián si la partida sigue en curso
+   355→    const savedBossHp = typeof this.flags[`bossHp_${id}`] === 'number' ? (this.flags[`bossHp_${id}`] as number)
+   356→      : id === 'cripta' && typeof this.flags.bossHp === 'number' ? (this.flags.bossHp as number) : null;
+   357→    if (savedBossHp !== null) {
+   358→      const boss = this.enemies.find(e => BOSS_DEFEAT_FLAG[e.etype] !== undefined);
+   359→      if (boss) boss.hp = Math.max(1, Math.min(boss.maxHp, savedBossHp));
+   360→    }
+   361→    this.spawnNpcs();
+   362→    this.projectiles = []; this.waves = []; this.telegraphs = [];
+   363→    this.bossRef = null; this.bossActive = false;
+   364→    audio.setCombat(false);
+   365→    this.visitedMaps[id] = true;
+   366→    if (id === 'bosque' && !this.flags.visitedBosque) {
+   367→      this.flags.visitedBosque = true;
+   368→      if (this.questIdx === 2 && this.questStep === 0) this.questAdvance();
+   369→    }
+   370→    if (id === 'cripta' && !this.flags.visitedCripta) {
+   371→      this.flags.visitedCripta = true;
+   372→      if (this.questIdx === 3 && this.questStep === 0) this.questAdvance();
+   373→    }
+   374→    // Acto II: primera visita a los mapas nuevos avanza el objetivo de viaje
+   375→    if ((id === 'costa' || id === 'aldea' || id === 'cumbres') && !this.flags[`visited_${id}`]) {
+   376→      this.flags[`visited_${id}`] = true;
+   377→      if (id === 'costa' && this.questIdx === 5 && this.questStep === 0) this.questAdvance();
+   378→      if (id === 'aldea' && this.questIdx === 7 && this.questStep === 0) this.questAdvance();
+   379→      if (id === 'cumbres' && this.questIdx === 8 && this.questStep === 0) this.questAdvance();
+   380→    }
+   381→    this.mapTitleT = 2.6;
+   382→    this.updateCamera(true);
+   383→  }
+   384→
+   385→  buildGround() {
+   386→    const { w, h } = this.map;
+   387→    const mk = (ep: Epoch) => {
+   388→      const c = document.createElement('canvas');
+   389→      c.width = w * TILE; c.height = h * TILE;
+   390→      const x = c.getContext('2d')!;
+   391→      x.imageSmoothingEnabled = false;
+   392→      // suelo
+   393→      for (let ty = 0; ty < h; ty++) {
+   394→        for (let tx = 0; tx < w; tx++) {
+   395→          const ch = tileAt(this.map, this.rows, tx, ty, ep);
+   396→          // Acto II: arena/nieve/hielo y suelos por bioma los dibuja la expansión; fallback genérico
+   397→          if (!drawExpansionTile(x, ch, tx, ty, this.mapId)) drawTile(x, ch, tx, ty, this.mapId, 0);
+   398→        }
+   399→      }
+   400→      // objetos altos por orden de fila
+   401→      for (let ty = 0; ty < h; ty++) {
+   402→        for (let tx = 0; tx < w; tx++) {
+   403→          const ch = tileAt(this.map, this.rows, tx, ty, ep);
+   404→          if (SOLID_CHARS.has(ch) && (ch === 't' || ch === 'p')) {
+   405→            if (!drawExpansionTallTile(x, ch, tx, ty, this.mapId)) drawTallTile(x, ch, tx, ty, this.mapId);
+   406→          }
+   407→        }
+   408→      }
+   409→      return c;
+   410→    };
+   411→    this.groundCanvas = mk('presente');
+   412→    this.groundPastCanvas = this.map.epochDiffs.length ? mk('pasado') : this.groundCanvas;
+   413→    // minimapa
+   414→    const mini = document.createElement('canvas');
+   415→    mini.width = w; mini.height = h;
+   416→    const mx = mini.getContext('2d')!;
+   417→    for (let ty = 0; ty < h; ty++) {
+   418→      for (let tx = 0; tx < w; tx++) {
+   419→        const ch = tileAt(this.map, this.rows, tx, ty, 'presente');
+   420→        mx.fillStyle =
+   421→          ch === 's' ? '#d8c07a' : ch === 'S' ? '#dfe8f2' : ch === 'i' ? '#a8cfe8' :
+   422→          ch === '~' ? '#3a6a9a' : ch === '=' ? '#b89a6a' :
+   423→          ch === ':' ? '#6a6a7a' : ch === 't' || ch === 'p' ? '#24512a' :
+   424→          ch === '#' || ch === 'H' || ch === 'r' ? '#7a7a8a' :
+   425→          ch === 'n' ? '#7ea49a' : '#4a8a44';
+   426→        mx.fillRect(tx, ty, 1, 1);
+   427→      }
+   428→    }
+   429→    this.miniCanvas = mini;
+   430→  }
+   431→
+   432→  spawnEnemies() {
+   433→    this.enemies = [];
+   434→    for (const s of this.map.spawns) {
+   435→      if (s.needPast && this.epoch !== 'pasado') continue;
+   436→      if (s.needPresent && this.epoch !== 'presente') continue;
+   437→      const defFlag = BOSS_DEFEAT_FLAG[s.type];
+   438→      if (defFlag && this.flags[defFlag]) continue; // jefes derrotados no renacen
+   439→      this.enemies.push(this.makeEnemy(s.type, s.x * TILE + 8, s.y * TILE + 8, s.patrol ?? 2, s.zone));
+   440→    }
+   441→  }
+   442→
+   443→  makeEnemy(type: Enemy['etype'], x: number, y: number, patrol: number, zone?: string): Enemy {
+   444→    const d = ENEMY_DEFS[type];
+   445→    return {
+   446→      kind: 'enemy', etype: type, x, y,
+   447→      w: type === 'guardian' || type === 'sirena' || type === 'golem' ? 22 : 12,
+   448→      h: type === 'guardian' || type === 'sirena' || type === 'golem' ? 16 : 10,
+   449→      vx: 0, vy: 0, dir: 'down', hp: d.hp, maxHp: d.hp, sprite: d.sprite, anim: Math.random() * 9, moving: false,
+   450→      ai: 'patrulla', aiT: Math.random() * 2, homeX: x, homeY: y, patrolAngle: Math.random() * Math.PI * 2,
+   451→      aggro: false, windup: 0, atkCd: Math.random(), sta: d.breakBar ?? 0, maxSta: d.breakBar ?? 0,
+   452→      statuses: [], slowT: 0, phase: 1, sumT: 0, hitFlash: 0, spawnGuard: zone === 'boss' ? 0.5 : 0,
+   453→    };
+   454→  }
+   455→
+   456→  spawnNpcs() {
+   457→    this.npcs = [];
+   458→    for (const n of this.map.npcs) {
+   459→      if (n.hideFlag && this.flags[n.hideFlag]) continue;
+   460→      if (n.showFlag && !this.flags[n.showFlag]) continue;
+   461→      this.npcs.push({
+   462→        kind: 'npc', nid: n.id, dispName: n.name,
+   463→        x: n.x * TILE + 8, y: n.y * TILE + 8, w: 10, h: 8,
+   464→        vx: 0, vy: 0, dir: 'down', hp: 1, maxHp: 1, sprite: n.sprite,
+   465→        anim: Math.random() * 9, moving: false,
+   466→      });
+   467→    }
+   468→  }
+   469→
+   470→  makeCompanion(): Companion {
+   471→    return {
+   472→      kind: 'companion', cname: 'Ilwen',
+   473→      x: (this.player?.x ?? 0) - 14, y: (this.player?.y ?? 0), w: 10, h: 8,
+   474→      vx: 0, vy: 0, dir: 'down', hp: 60, maxHp: 60, sprite: 'ilwen',
+   475→      anim: 0, moving: false, atkCd: 0, downT: 0, affinity: 10,
+   476→    };
+   477→  }
+   478→
+   479→  tileSolidAt(px: number, py: number): boolean {
+   480→    const tx = Math.floor(px / TILE), ty = Math.floor(py / TILE);
+   481→    const ch = tileAt(this.map, this.rows, tx, ty, this.epoch);
+   482→    return SOLID_CHARS.has(ch);
+   483→  }
+   484→
+   485→  /** ¿(tx,ty) está dentro de alguna zona de salida del mapa actual? */
+   486→  private inExitZone(tx: number, ty: number): boolean {
+   487→    return this.map.exits.some(ex => {
+   488→      if (ex.needPast && this.epoch !== 'pasado') return false;
+   489→      return tx >= ex.x && tx < ex.x + ex.w && ty >= ex.y && ty < ex.y + ex.h;
+   490→    });
+   491→  }
+   492→
+   493→  /**
+   494→   * Busca el tile más cercano (búsqueda por anillos) que sea transitable y
+   495→   * NO esté dentro de una zona de salida. Garantiza que ningún viaje aterrice
+   496→   * en un muro ni en un teletransporte (bucle cripta↔bosque, P0-1).
+   497→   */
+   498→  private findSafeTile(tx: number, ty: number): [number, number] {
+   499→    const ok = (x: number, y: number) =>
+   500→      x >= 0 && y >= 0 && x < this.map.w && y < this.map.h &&
+   501→      !this.tileSolidAt(x * TILE + 8, y * TILE + 8) &&
+   502→      !this.inExitZone(x, y);
+   503→    if (ok(tx, ty)) return [tx, ty];
+   504→    for (let r = 1; r <= 8; r++) {
+   505→      for (let dy = -r; dy <= r; dy++) {
+   506→        for (let dx = -r; dx <= r; dx++) {
+   507→          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+   508→          if (ok(tx + dx, ty + dy)) return [tx + dx, ty + dy];
+   509→        }
+   510→      }
+   511→    }
+   512→    return [tx, ty]; // sin sitio libre: comportamiento anterior
+   513→  }
+   514→
+   515→  boxFree(x: number, y: number, w: number, h: number): boolean {
+   516→    const x0 = x - w / 2, x1 = x + w / 2, y0 = y - h / 2 - 2, y1 = y + h / 2;
+   517→    return !(this.tileSolidAt(x0, y0) || this.tileSolidAt(x1, y0) || this.tileSolidAt(x0, y1) || this.tileSolidAt(x1, y1));
+   518→  }
+   519→
+   520→  moveEntity(e: { x: number; y: number; w: number; h: number }, dx: number, dy: number) {
+   521→    if (dx !== 0 && this.boxFree(e.x + dx, e.y, e.w, e.h)) e.x += dx;
+   522→    if (dy !== 0 && this.boxFree(e.x, e.y + dy, e.w, e.h)) e.y += dy;
+   523→  }
+   524→
+   525→  updateCamera(snap = false) {
+   526→    if (!this.player) return;
+   527→    const targetX = this.player.x * ZOOM - VIEW_W / 2;
+   528→    const targetY = this.player.y * ZOOM - VIEW_H / 2;
+   529→    const maxX = this.map.w * TILE * ZOOM - VIEW_W;
+   530→    const maxY = this.map.h * TILE * ZOOM - VIEW_H;
+   531→    const cx = Math.max(0, Math.min(maxX, targetX));
+   532→    const cy = Math.max(0, Math.min(maxY, targetY));
+   533→    if (snap) { this.camX = cx; this.camY = cy; }
+   534→    else { this.camX += (cx - this.camX) * 0.14; this.camY += (cy - this.camY) * 0.14; }
+   535→  }
+   536→
+   537→  epochSwitch() {
+   538→    if (!this.player || !this.player.hasEcho) {
+   539→      this.toast('Aún no puedes oír el pasado...', '#c8b0e8');
+   540→      return;
+   541→    }
+   542→    if (this.map.epochDiffs.length === 0) {
+   543→      this.toast('La Cripta existe fuera del tiempo.', '#9aa0b8');
+   544→      return;
+   545→    }
+   546→    this.epoch = this.epoch === 'presente' ? 'pasado' : 'presente';
+   547→    this.epochFx = 0.8;
+   548→    audio.sfx('epoch');
+   549→    // el cambio de época puede traer un muro hasta ti: recoloca si quedas dentro
+   550→    if (this.player && this.tileSolidAt(this.player.x, this.player.y)) {
+   551→      const [sx, sy] = this.findSafeTile(Math.floor(this.player.x / TILE), Math.floor(this.player.y / TILE));
+   552→      this.player.x = sx * TILE + 8;
+   553→      this.player.y = sy * TILE + 8;
+   554→      this.toast('El mundo cambia a tu alrededor... y te aparta del muro.', '#c8b0e8');
+   555→    }
+   556→    this.toast(this.epoch === 'pasado' ? 'El pasado canta a tu alrededor' : 'Vuelves al presente en ruinas', '#ffe9a0');
+   557→  }
+   558→
+   559→  // ---------------- Interacción ----------------
+   560→
+   561→  nearestInteract(): { kind: string; label: string; act: () => void; dist: number } | null {
+   562→    const p = this.player;
+   563→    if (!p) return null;
+   564→    let best: { kind: string; label: string; act: () => void; dist: number } | null = null;
+   565→    const consider = (x: number, y: number, kind: string, label: string, act: () => void, r = 30) => {
+   566→      const d = Math.hypot(x - p.x, y - p.y);
+   567→      if (d < r && (!best || d < best.dist)) best = { kind, label, act, dist: d };
+   568→    };
+   569→    for (const n of this.npcs) consider(n.x, n.y, 'npc', `Hablar con ${n.dispName}`, () => this.talkTo(n.nid), 34);
+   570→    for (const ch of this.map.chests) {
+   571→      if (this.openedChests.has(ch.id)) continue;
+   572→      if (ch.needPast && this.epoch !== 'pasado') continue;
+   573→      consider(ch.x * TILE + 8, ch.y * TILE + 8, 'chest', 'Abrir cofre', () => this.openChest(ch.id), 26);
+   574→    }
+   575→    for (const pr of this.map.props) {
+   576→      if (pr.needPast && this.epoch !== 'pasado') continue;
+   577→      if (pr.needPresent && this.epoch !== 'presente') continue;
+   578→      const px = pr.x * TILE + 8, py = pr.y * TILE + 8;
+   579→      if (pr.kind === 'sanctuary') consider(px, py, 'sanc', 'Santuario del Eco', () => this.openSanctuary(), 26);
+   580→      else if (pr.kind === 'forge') consider(px, py, 'forge', 'Forja de Toln', () => this.talkTo('toln'), 28);
+   581→      else if (pr.kind === 'fragment') consider(px, py, 'frag', 'Fragmento de Eco', () => this.openDialogue('voz_fragment'), 30);
+   582→      else if (pr.kind === 'altarEcho') consider(px, py, 'altar', 'Altar del Eco', () => this.tryTakeEco(), 30);
+   583→      else if (pr.kind === 'sign') consider(px, py, 'sign', 'Leer cartel', () => this.readSign(pr.label ?? ''), 28);
+   584→      else if (pr.kind === 'lamp' && !this.flags[pr.id]) consider(px, py, 'lamp', 'Encender el Farol del Recuerdo', () => this.lightLamp(pr.id), 28);
+   585→    }
+   586→    for (const ec of this.map.echoes) {
+   587→      if (this.takenEchoes.has(ec.id)) continue;
+   588→      consider(ec.x * TILE + 8, ec.y * TILE + 8, 'echo', 'Escuchar eco menor', () => this.takeEchoMinor(ec.id, ec.title, ec.text), 26);
+   589→    }
+   590→    return best;
+   591→  }
+   592→
+   593→  openChest(id: string) {
+   594→    const ch = this.map.chests.find(c => c.id === id);
+   595→    if (!ch || this.openedChests.has(id)) return;
+   596→    this.openedChests.add(id);
+   597→    audio.sfx('chest');
+   598→    const parts: string[] = [];
+   599→    if (ch.gold) { this.player!.gold += ch.gold; parts.push(`${ch.gold} coronas`); this.floatAt(ch.x * TILE + 8, ch.y * TILE, `+${ch.gold}`, '#f0c84a'); }
+   600→    if (ch.potions) { this.player!.potions += ch.potions; parts.push(`${ch.potions} poción(es)`); }
+   601→    if (ch.item) parts.push(ch.item);
+   602→    this.toast(`Cofre abierto: ${parts.join(', ')}`, '#f0c84a');
+   603→    this.burst(ch.x * TILE + 8, ch.y * TILE, '#ffe9a0', 10);
+   604→  }
+   605→
+   606→  takeEchoMinor(id: string, title: string, text: string) {
+   607→    this.takenEchoes.add(id);
+   608→    audio.sfx('echo');
+   609→    this.dynNodes['lore'] = { name: title, portrait: 'wisp', text };
+   610→    this.openDialogue('lore');
+   611→    this.player!.res = Math.min(this.player!.maxRes, this.player!.res + 15);
+   612→  }
+   613→
+   614→  readSign(text: string) {
+   615→    this.dynNodes['lore'] = { name: 'Cartel', portrait: 'wisp', text };
+   616→    this.openDialogue('lore');
+   617→  }
+   618→
+   619→  /** Enciende un Farol del Recuerdo de Merrow (Acto II, misión q8). */
+   620→  lightLamp(id: string) {
+   621→    this.flags[id] = true;
+   622→    audio.sfx('lamp');
+   623→    const pr = this.map.props.find(x => x.id === id);
+   624→    if (pr) {
+   625→      this.burst(pr.x * TILE + 8, pr.y * TILE - 6, '#ffe9a0', 14, 60);
+   626→      this.floatAt(pr.x * TILE + 8, pr.y * TILE - 14, 'Un nombre vuelve', '#ffe9a0', 5);
+   627→    }
+   628→    const lamps = ['lamp1', 'lamp2', 'lamp3'].filter(l => this.flags[l]).length;
+   629→    if (this.questIdx === 7 && this.questStep === 1) {
+   630→      if (lamps >= 3) {
+   631→        this.questAdvance();
+   632→        this.toast('Los tres faroles arden: la Espectro de Merrow te espera', '#ffe9a0');
+   633→      } else {
+   634→        this.toast(`Farol encendido (${lamps}/3)`, '#8ef0b0');
+   635→      }
+   636→    } else {
+   637→      this.toast('El farol se enciende: un recuerdo de Merrow regresa', '#ffe9a0');
+   638→    }
+   639→  }
+   640→
+   641→  tryTakeEco() {
+   642→    // Acto II: cada mapa con altar tiene su Eco y su custodio
+   643→    if (this.mapId === 'costa') {
+   644→      if (this.flags.ecoMareas) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
+   645→      if (!this.flags.sirenaDefeated) { this.toast('La Sirena custodia el Eco. Calma su canto primero.', '#e88'); return; }
+   646→      if (DIALOGUES['eco_mareas']) { this.openDialogue('eco_mareas'); return; }
+   647→      this.dynNodes['eco_mareas'] = {
+   648→        name: 'Eco de las Mareas', portrait: 'fragment',
+   649→        text: 'El segundo canto asciende del naufragio, salado y vivo. «El mar guardó mi nota bajo la quilla de un barco que soñaba con estrellas. Cántala, Portador: hay mareás que solo se curan cantando.» (Eco de las Mareas recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
+   650→        onEnd: 'eco_mareas_taken',
+   651→      };
+   652→      this.openDialogue('eco_mareas');
+   653→      return;
+   654→    }
+   655→    if (this.mapId === 'cumbres') {
+   656→      if (this.flags.ecoCumbres) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
+   657→      if (!this.flags.golemDefeated) { this.toast('El Gólem custodia el Eco. Rompe su hielo primero.', '#e88'); return; }
+   658→      if (DIALOGUES['eco_cumbres']) { this.openDialogue('eco_cumbres'); return; }
+   659→      this.dynNodes['eco_cumbres'] = {
+   660→        name: 'Eco de las Cumbres', portrait: 'fragment',
+   661→        text: 'El tercer canto desciende con la ventisca, limpio y paciente. «Las montañas aprendieron a guardar voces bajo el hielo. La primera fue la de los pastores que cantaban por turnos para no dormirse. Toma la suya: ahora canta contigo.» (Eco de las Cumbres recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
+   662→        onEnd: 'eco_cumbres_taken',
+   663→      };
+   664→      this.openDialogue('eco_cumbres');
+   665→      return;
+   666→    }
+   667→    if (this.flags.ecoVoz) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
+   668→    if (!this.flags.guardianDefeated) { this.toast('El Guardián custodia el Eco. Derótalo primero.', '#e88'); return; }
+   669→    this.openDialogue('eco_voz');
+   670→  }
+   671→
+   672→  openSanctuary() {
+   673→    const opts: { text: string; next?: string; action?: string }[] = [
+   674→      { text: 'Descansar y guardar la partida', action: 'rest' },
+   675→    ];
+   676→    for (const mid of Object.keys(this.visitedMaps) as MapId[]) {
+   677→      if (this.visitedMaps[mid] && mid !== this.mapId) {
+   678→        const nm = MAPS[mid as MapId].name;
+   679→        opts.push({ text: `Viajar: ${nm}`, action: `travel_${mid}` });
+   680→      }
+   681→    }
+   682→    opts.push({ text: 'Marcharse', action: 'close' });
+   683→    this.dynNodes['sanctuary'] = {
+   684→      name: 'Santuario del Eco', portrait: 'sanctuary',
+   685→      text: 'El cristal zumba con una melodía antigua. La luz del Santuario te envuelve: aquí puedes descansar, guardar tu canto... o dejarte llevar por él.',
+   686→      options: opts,
+   687→    };
+   688→    this.openDialogue('sanctuary');
+   689→  }
+   690→
+   691→  talkTo(nid: string) {
+   692→    const key = getDialogue(nid, { questIdx: this.questIdx, questStep: this.questStep, flags: this.flags, companion: !!this.companion });
+   693→    this.openDialogue(key);
+   694→  }
+   695→
+   696→  // ---------------- Diálogo ----------------
+   697→
+   698→  openDialogue(key: string) {
+   699→    this.dlgKey = key;
+   700→    this.dlgNode = this.dynNodes[key] ?? DIALOGUES[key] ?? null;
+   701→    this.dlgCharT = 0;
+   702→    this.dlgSel = 0;
+   703→    if (this.dlgNode) this.setState('dialogue');
+   704→    audio.sfx('uiOpen');
+   705→  }
+   706→
+   707→  dialogueFinishedText(): boolean {
+   708→    if (!this.dlgNode) return true;
+   709→    return this.dlgCharT >= this.dlgNode.text.length;
+   710→  }
+   711→
+   712→  advanceDialogue() {
+   713→    if (!this.dlgNode) return;
+   714→    if (!this.dialogueFinishedText()) { this.dlgCharT = this.dlgNode.text.length; return; }
+   715→    if (this.dlgNode.action) this.applyAction(this.dlgNode.action);
+   716→    if (this.dlgNode.onEnd) this.applyAction(this.dlgNode.onEnd);
+   717→    if (this.dlgNode.options && this.dlgNode.options.length > 0) {
+   718→      const opt = this.dlgNode.options[this.dlgSel];
+   719→      recordDialogueTone(this, opt);
+   720→      if (opt.action) this.applyAction(opt.action);
+   721→      if (opt.next) { this.openDialogue(opt.next); return; }
+   722→      this.closeDialogue();
+   723→      return;
+   724→    }
+   725→    if (this.dlgNode.next) { this.openDialogue(this.dlgNode.next); return; }
+   726→    this.closeDialogue();
+   727→  }
+   728→
+   729→  closeDialogue() {
+   730→    this.dlgKey = null;
+   731→    this.dlgNode = null;
+   732→    if (this.state === 'dialogue') this.setState('play');
+   733→  }
+   734→
+   735→  applyAction(action: string) {
+   736→    const p = this.player;
+   737→    if (!p) return;
+   738→    switch (true) {
+   739→      case action === 'accept_q2':
+   740→        this.questIdx = 1; this.questStep = 0; this.flags.q2 = true;
+   741→        audio.sfx('quest'); this.toast('Nueva misión: Lobos en la Niebla', '#8ef0b0');
+   742→        break;
+   743→      case action === 'accept_q3':
+   744→        this.questIdx = 2; this.questStep = this.flags.visitedBosque ? 1 : 0;
+   745→        p.gold += 50; p.potions += 2; p.repGuardianes += 10;
+   746→        audio.sfx('quest'); this.toast('Misión completada: Lobos en la Niebla (+50 coronas, +2 pociones, +10 reputación)', '#8ef0b0');
+   747→        this.toast('Nueva misión: El Susurro del Bosque', '#8ef0b0');
+   748→        break;
+   749→      case action === 'accept_q4':
+   750→        this.questIdx = 3; this.questStep = 0;
+   751→        audio.sfx('quest'); this.toast('Nueva misión: La Cripta del Primer Canto', '#8ef0b0');
+   752→        break;
+   753→      case action === 'accept_q5':
+   754→        this.questIdx = 4; this.questStep = 0;
+   755→        audio.sfx('quest'); this.toast('Nueva misión: Ecos de Esperanza', '#8ef0b0');
+   756→        break;
+   757→      case action === 'fragment_touched':
+   758→        this.flags.fragmentTouched = true;
+   759→        p.hasEcho = true;
+   760→        audio.sfx('echo');
+   761→        this.burst(p.x, p.y - 8, '#ffe9a0', 24, 80);
+   762→        if (this.questIdx === 2) this.questAdvance();
+   763→        this.toast('Resonancia despierta: pulsa Q para alternar entre presente y pasado', '#ffe9a0');
+   764→        break;
+   765→      case action === 'eco_taken':
+   766→        this.flags.ecoVoz = true;
+   767→        p.points += 1; p.repGuardianes += 10;
+   768→        p.hp = p.maxHp;
+   769→        if (this.questIdx === 3 && this.questStep === 2) this.questAdvance();
+   770→        this.toast('Eco de la Voz recuperado: +1 punto de habilidad, +10 reputación', '#ffe9a0');
+   771→        break;
+   772→      case action === 'eco_mareas_taken':
+   773→        this.flags.ecoMareas = true;
+   774→        p.points += 1; p.repGuardianes += 10;
+   775→        p.hp = p.maxHp;
+   776→        if (this.questIdx === 6 && this.questStep === 2) this.questAdvance();
+   777→        this.applyAction('memory_mem_faro');
+   778→        this.toast('Eco de las Mareas recuperado: +1 punto de habilidad, +10 reputación', '#ffe9a0');
+   779→        break;
+   780→      case action === 'eco_cumbres_taken':
+   781→        this.flags.ecoCumbres = true;
+   782→        p.points += 1; p.repGuardianes += 10;
+   783→        p.hp = p.maxHp;
+   784→        if (this.questIdx === 8 && this.questStep === 2) this.questAdvance();
+   785→        this.applyAction('memory_mem_invierno');
+   786→        this.toast('Eco de las Cumbres recuperado: +1 punto de habilidad, +10 reputación', '#ffe9a0');
+   787→        break;
+   788→      case action === 'fragment':
+   789→        break;
+   790→      case action === 'forge': {
+   791→        const cost = 30 + p.weaponPlus * 25;
+   792→        if (p.weaponPlus >= 5) { this.toast('Toln: «+5 es lo que da de sí esta forja, Portador.»', '#e8a'); audio.sfx('error'); }
+   793→        else if (p.gold >= cost) {
+   794→          p.gold -= cost; p.weaponPlus++;
+   795→          audio.sfx('confirm');
+   796→          this.toast(`Arma mejorada a +${p.weaponPlus} (${cost} coronas)`, '#f0c84a');
+   797→        } else { this.toast(`Te faltan coronas (${cost} necesarias)`, '#e88'); audio.sfx('error'); }
+   798→        break;
+   799→      }
+   800→      case action === 'buy_potion':
+   801→        if (p.gold >= 15) { p.gold -= 15; p.potions++; audio.sfx('coin'); this.toast('Poción comprada (15 coronas)', '#f0c84a'); }
+   802→        else { this.toast('Te faltan coronas', '#e88'); audio.sfx('error'); }
+   803→        break;
+   804→      case action === 'recruit_ilwen':
+   805→        if (!this.companion) {
+   806→          this.companion = this.makeCompanion();
+   807→          this.toast('Ilwen se une al grupo: cubre tu espalda con su arco', '#8ef0b0');
+   808→          audio.sfx('confirm');
+   809→        }
+   810→        break;
+   811→      case action === 'rest':
+   812→        p.hp = p.maxHp; p.sta = p.maxSta;
+   813→        this.save();
+   814→        audio.sfx('save');
+   815→        this.toast('Descansas junto al cristal. Partida guardada. Vida restaurada.', '#8ef0ff');
+   816→        break;
+   817→      case action.startsWith('travel_'): {
+   818→        const dest = action.slice(7) as MapId;
+   819→        if (MAPS[dest]) {
+   820→          this.closeDialogue();
+   821→          this.fadeTo(dest, ...this.sanctuaryPos(dest));
+   822→        }
+   823→        break;
+   824→      }
+   825→      case action === 'end_demo': {
+   826→        const mins = Math.floor(p.playTime / 60), secs = Math.floor(p.playTime % 60);
+   827→        this.endStats =
+   828→          `Nivel ${p.level} · ${p.kills} enemigos derrotados · ${p.gold} coronas\n` +
+   829→          `Reputación Guardianes: ${p.repGuardianes >= 0 ? '+' : ''}${p.repGuardianes} · Muertes: ${p.deaths}\n` +
+   830→          `Tiempo de juego: ${mins}m ${secs}s · Época favorita: la que tú elijas`;
+   831→        this.save();
+   832→        this.setState('end');
+   833→        audio.playTrack('title');
+   834→        break;
+   835→      }
+   836→      case action === 'close':
+   837→        this.closeDialogue();
+   838→        break;
+   839→      default:
+   840→        // acciones extendidas (sistema de tono, memorias, facciones...) — ver hooks.ts
+   841→        handleCustomAction(this, action);
+   842→        break;
+   843→    }
+   844→  }
+   845→
+   846→  sanctuaryPos(id: MapId): [number, number] {
+   847→    if (id === 'lunaris') return [25, 19];
+   848→    if (id === 'bosque') return [38, 27];
+   849→    return [19, 24];
+   850→  }
+   851→
+   852→  questAdvance() {
+   853→    if (this.questStep < QUESTS[this.questIdx].steps.length - 1) {
+   854→      this.questStep++;
+   855→    } else {
+   856→      this.questIdx = Math.min(QUESTS.length - 1, this.questIdx + 1);
+   857→      this.questStep = 0;
+   858→      if (this.questIdx === 4) this.toast('Nueva misión: Ecos de Esperanza', '#8ef0b0');
+   859→    }
+   860→    audio.sfx('quest');
+   861→  }
+   862→
+   863→  questProgressText(): string | null {
+   864→    if (this.questIdx === 1 && this.questStep === 0) {
+   865→      const n = Number(this.flags.wolfKills ?? 0);
+   866→      return `Caza 3 Lobos de Niebla en el sur del valle (${n}/3)`;
+   867→    }
+   868→    return null;
+   869→  }
+   870→
+   871→  fadeTo(to: MapId, tx: number, ty: number) {
+   872→    this.pendingMap = { to, tx, ty };
+   873→    this.fadeDir = 1;
+   874→  }
+   875→
+   876→  // ---------------- Mensajes ----------------
+   877→
+   878→  toast(text: string, color?: string) {
+   879→    this.toasts.push({ text, t: 3.4, color });
+   880→    if (this.toasts.length > 4) this.toasts.shift();
+   881→  }
+   882→
+   883→  floatAt(x: number, y: number, text: string, color: string, size = 8) {
+   884→    this.floats.push({ x, y, text, t: 0.9, color, vy: -26, size });
+   885→  }
+   886→
+   887→  burst(x: number, y: number, color: string, n: number, spd = 60) {
+   888→    for (let i = 0; i < n; i++) {
+   889→      const a = Math.random() * Math.PI * 2;
+   890→      const s = spd * (0.4 + Math.random() * 0.8);
+   891→      this.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 20, t: 0.5 + Math.random() * 0.4, maxT: 0.9, color, size: 1 + Math.random() * 2, grav: 90 });
+   892→    }
+   893→  }
+   894→
+   895→  // ---------------- Muerte ----------------
+   896→
+   897→  playerDied() {
+   898→    const p = this.player!;
+   899→    p.deaths++;
+   900→    const lost = Math.floor(p.gold / 2);
+   901→    this.lastGoldLost = lost;
+   902→    if (lost > 0) {
+   903→      p.gold -= lost;
+   904→      this.deadGolds.push({ map: this.mapId, x: p.x, y: p.y, amount: lost });
+   905→    }
+   906→    audio.sfx('die');
+   907→    this.setState('dead');
+   908→  }
+   909→
+   910→  respawn() {
+   911→    const p = this.player!;
+   912→    const [sx, sy] = this.sanctuaryPos(this.mapId);
+   913→    this.epoch = 'presente';
+   914→    this.loadMap(this.mapId, sx, sy);
+   915→    p.hp = p.maxHp; p.sta = p.maxSta; p.res = 0;
+   916→    this.setState('play');
+   917→    audio.playTrack(this.map.music);
+   918→    this.toast('Despiertas junto al Santuario. Un eco de tu oro sigue donde caíste...', '#c8b0e8');
+   919→  }
+   920→
+   921→  // ---------------- Input ----------------
+   922→
+   923→  private bindInput() {
+   924→    window.addEventListener('keydown', this.onKeyDown);
+   925→    window.addEventListener('keyup', this.onKeyUp);
+   926→    this.canvas.addEventListener('mousemove', this.onMouseMove);
+   927→    this.canvas.addEventListener('mousedown', this.onMouseDown);
+   928→    this.canvas.addEventListener('mouseup', this.onMouseUp);
+   929→    this.canvas.addEventListener('contextmenu', e => e.preventDefault());
+   930→    // teclas pegadas tras alt-tab / cambio de ventana: soltar todo
+   931→    window.addEventListener('blur', this.onLoseFocus);
+   932→    document.addEventListener('visibilitychange', this.onLoseFocus);
+   933→  }
+   934→
+   935→  private onLoseFocus = () => {
+   936→    this.keys.clear();
+   937→    this.mouse.down = false;
+   938→    this.mouse.rdown = false;
+   939→  };
+   940→
+   941→  dispose() {
+   942→    window.removeEventListener('keydown', this.onKeyDown);
+   943→    window.removeEventListener('keyup', this.onKeyUp);
+   944→    window.removeEventListener('blur', this.onLoseFocus);
+   945→    document.removeEventListener('visibilitychange', this.onLoseFocus);
+   946→    this.stop();
+   947→  }
+   948→
+   949→  private onKeyDown = (e: KeyboardEvent) => {
+   950→    const k = e.key.toLowerCase();
+   951→    // no interceptar teclas cuando se escribe en un input DOM (nombre del Portador)
+   952→    const t = e.target as HTMLElement | null;
+   953→    const isDomInput = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+   954→    if (!isDomInput && [' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
+   955→    if (e.repeat) return;
+   956→    this.keys.add(k);
+   957→    audio.resume();
+   958→
+   959→    if (this.state === 'title') {
+   960→      if (k === 'enter' || k === 'e' || k === ' ') { /* botones por click; enter = nueva partida */ }
+   961→    } else if (this.state === 'intro') {
+   962→      if (k === 'e' || k === ' ' || k === 'enter') {
+   963→        this.introIdx++;
+   964→        audio.sfx('blip');
+   965→        if (this.introIdx >= 3) this.startPlay();
+   966→      }
+   967→    } else if (this.state === 'dialogue') {
+   968→      if (k === 'e' || k === ' ' || k === 'enter') this.advanceDialogue();
+   969→      else if (k === 'arrowup' || k === 'w') { if (this.dlgNode?.options) { this.dlgSel = (this.dlgSel + this.dlgNode.options.length - 1) % this.dlgNode.options.length; audio.sfx('blip'); } }
+   970→      else if (k === 'arrowdown' || k === 's') { if (this.dlgNode?.options) { this.dlgSel = (this.dlgSel + 1) % this.dlgNode.options.length; audio.sfx('blip'); } }
+   971→    } else if (this.state === 'play') {
+   972→      if (k === ' ' && this.player && this.player.rollT <= 0 && this.player.attackT <= 0 && this.player.sta >= 20) {
+   973→        this.rollQueued = true; // 1 pulsación = 1 voltereta (no en cadena)
+   974→      }
+   975→      if (k === 'e') this.tryInteract();
+   976→      else if (k === 'q') this.epochSwitch();
+   977→      else if (k === 'escape' || k === 'm') { this.setState('pause'); audio.sfx('uiOpen'); }
+   978→      else if (k === 'f') this.drinkPotion();
+   979→      else if (k === 't' && e.shiftKey) {
+   980→        // accesibilidad / QoL: esperar hasta el alba
+   981→        this.dayT = 0.22;
+   982→        this.toast('Esperas junto al camino hasta el alba...', '#ffe86a');
+   983→        audio.sfx('save');
+   984→      }
+   985→      else if (['1', '2', '3', '4'].includes(k)) this.useSkill(parseInt(k, 10) - 1);
+   986→    } else if (this.state === 'pause') {
+   987→      if (k === 'escape' || k === 'm') this.setState('play');
+   988→    } else if (this.state === 'dead') {
+   989→      if (k === 'e' || k === 'enter') this.respawn();
+   990→    } else if (this.state === 'end') {
+   991→      if (k === 'enter' || k === 'e') this.setState('title');
+   992→    }
+   993→  };
+   994→
+   995→  private onKeyUp = (e: KeyboardEvent) => {
+   996→    this.keys.delete(e.key.toLowerCase());
+   997→    if (this.player && e.key.toLowerCase() === 'j' && this.player.charging) {
+   998→      this.releaseCharge();
+   999→    }
+  1000→  };
+  1001→
+  1002→  private canvasPos(e: MouseEvent): { x: number; y: number } {
+  1003→    const r = this.canvas.getBoundingClientRect();
+  1004→    return { x: (e.clientX - r.left) * (VIEW_W / r.width), y: (e.clientY - r.top) * (VIEW_H / r.height) };
+  1005→  }
+  1006→
+  1007→  private onMouseMove = (e: MouseEvent) => {
+  1008→    const p = this.canvasPos(e);
+  1009→    this.mouse.x = p.x; this.mouse.y = p.y;
+  1010→  };
+  1011→
+  1012→  private onMouseDown = (e: MouseEvent) => {
+  1013→    audio.resume();
+  1014→    const p = this.canvasPos(e);
+  1015→    this.mouse.x = p.x; this.mouse.y = p.y;
+  1016→    // UI hits primero
+  1017→    for (const h of this.uiHit) {
+  1018→      if (p.x >= h.x && p.x <= h.x + h.w && p.y >= h.y && p.y <= h.y + h.h) {
+  1019→        audio.sfx('select');
+  1020→        h.cb();
+  1021→        return;
+  1022→      }
+  1023→    }
+  1024→    if (e.button === 2) { this.mouse.rdown = true; this.startParry(); return; }
+  1025→    if (e.button !== 0) return;
+  1026→    this.mouse.down = true;
+  1027→    if (this.state === 'dialogue') this.advanceDialogue();
+  1028→    else if (this.state === 'intro') { this.introIdx++; if (this.introIdx >= 3) this.startPlay(); else audio.sfx('blip'); }
+  1029→    else if (this.state === 'end') this.setState('title');
+  1030→    else if (this.state === 'play') this.startAttack();
+  1031→  };
+  1032→
+  1033→  private onMouseUp = (e: MouseEvent) => {
+  1034→    if (e.button === 0) {
+  1035→      this.mouse.down = false;
+  1036→      if (this.player?.charging) this.releaseCharge();
+  1037→    }
+  1038→    if (e.button === 2) this.mouse.rdown = false;
+  1039→  };
+  1040→
+  1041→  tryInteract() {
+  1042→    const it = this.nearestInteract();
+  1043→    if (it) { audio.sfx('select'); it.act(); }
+  1044→    else this.toast('No hay nada que interactuar aquí.', '#9aa0b8');
+  1045→  }
+  1046→
+  1047→  drinkPotion() {
+  1048→    if (!this.player) return;
+  1049→    const p = this.player;
+  1050→    if (p.potions <= 0) { this.toast('No te quedan pociones', '#e88'); audio.sfx('error'); return; }
+  1051→    if (p.hp >= p.maxHp) { this.toast('Vida al máximo', '#9aa0b8'); return; }
+  1052→    p.potions--;
+  1053→    const heal = Math.round(p.maxHp * 0.4);
+  1054→    p.hp = Math.min(p.maxHp, p.hp + heal);
+  1055→    audio.sfx('potion');
+  1056→    this.floatAt(p.x, p.y - 14, `+${heal}`, '#7ef0a0');
+  1057→    this.burst(p.x, p.y - 6, '#7ef0a0', 8, 30);
+  1058→  }
+  1059→
+  1060→  startAttack() {
+  1061→    if (!this.player) return;
+  1062→    const p = this.player;
+  1063→    if (p.attackT > 0 || p.rollT > 0) return;
+  1064→    p.charging = true;
+  1065→    p.chargeT = 0;
+  1066→  }
+  1067→
+  1068→  releaseCharge() {
+  1069→    const p = this.player!;
+  1070→    const wasCharging = p.charging;
+  1071→    p.charging = false;
+  1072→    const charged = wasCharging && p.chargeT > 0.35;
+  1073→    const chargeTime = p.chargeT;
+  1074→    p.chargeT = 0;
+  1075→    if (!wasCharging) return;
+  1076→    if (p.attackT > 0 || p.rollT > 0 || this.state !== 'play') return;
+  1077→    if (p.sta < 8) { audio.sfx('parryFail'); return; }
+  1078→    p.attackT = charged ? 0.4 : 0.26;
+  1079→    p.combo = (p.combo + 1) % 3;
+  1080→    p.sta -= charged ? 18 : 8;
+  1081→    p.chargedHit = charged;
+  1082→    this.aimAtMouse();
+  1083→    audio.sfx(charged ? 'swing2' : 'swing');
+  1084→    // daño del golpe
+  1085→    const comboMult = [1, 1.12, 1.28][p.combo];
+  1086→    const dmg = playerMeleeDmg(p) * comboMult * (charged ? 2.1 : 1);
+  1087→    if (charged) {
+  1088→      const dirs: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
+  1089→      const [dx, dy] = dirs[p.dir];
+  1090→      this.aoeHit(p.x + dx * 20, p.y + dy * 20, 34, dmg, 'ninguno', false);
+  1091→      this.shake = 3;
+  1092→      this.burst(p.x + dx * 18, p.y + dy * 18, '#ffe86a', 12, 70);
+  1093→    } else {
+  1094→      this.meleeHit(24, 20, dmg, 'ninguno', 50);
+  1095→    }
+  1096→    void chargeTime;
+  1097→  }
+  1098→
+  1099→  startParry() {
+  1100→    if (!this.player) return;
+  1101→    const p = this.player;
+  1102→    if (this.state !== 'play' || p.rollT > 0) return;
+  1103→    if (p.sta < 12) { audio.sfx('parryFail'); return; }
+  1104→    p.sta -= 12;
+  1105→    p.parryT = 0.2;
+  1106→    p.parryFx = 0.32;
+  1107→    audio.sfx('swing');
+  1108→  }
+  1109→
+  1110→  aimAtMouse() {
+  1111→    if (!this.player) return;
+  1112→    const p = this.player;
+  1113→    const wx = this.mouse.x / ZOOM + this.camX / ZOOM;
+  1114→    const wy = this.mouse.y / ZOOM + this.camY / ZOOM;
+  1115→    const dx = wx - p.x, dy = wy - p.y;
+  1116→    if (Math.abs(dx) > Math.abs(dy)) p.dir = dx > 0 ? 'right' : 'left';
+  1117→    else p.dir = dy > 0 ? 'down' : 'up';
+  1118→  }
+  1119→
+  1120→  useSkill(i: number) {
+  1121→    if (!this.player) return;
+  1122→    const p = this.player;
+  1123→    const disc = SKILLS[p.discipline];
+  1124→    if (i < 0 || i >= disc.length) return;
+  1125→    const sk = disc[i];
+  1126→    if (p.cds[i] > 0) { this.toast(`${sk.name}: aún en recarga`, '#9aa0b8'); return; }
+  1127→    if (p.res < sk.cost) { this.toast(`Resonancia insuficiente (${sk.cost})`, '#e88'); audio.sfx('error'); return; }
+  1128→    p.res -= sk.cost;
+  1129→    p.cds[i] = sk.cd;
+  1130→    this.castSkill(sk.id, sk.element);
+  1131→  }
+  1132→
+  1133→  castSkill(id: string, element: Element) {
+  1134→    if (!this.player) return;
+  1135→    const p = this.player;
+  1136→    this.aimAtMouse();
+  1137→    const wx = this.mouse.x / ZOOM + this.camX / ZOOM;
+  1138→    const wy = this.mouse.y / ZOOM + this.camY / ZOOM;
+  1139→    const dx = wx - p.x, dy = wy - p.y;
+  1140→    const len = Math.max(1, Math.hypot(dx, dy));
+  1141→    const nx = dx / len, ny = dy / len;
+  1142→    const spellDmg = 10 + p.attrs.int * 1.6 + p.level * 1;
+  1143→    if (id !== 'grito' && element !== 'ninguno') this.lastNote = element;
+  1144→    switch (id) {
+  1145→      case 'tajo': {
+  1146→        audio.sfx('dodge');
+  1147→        const dash = 34;
+  1148→        this.moveEntity(p, nx * dash, ny * dash);
+  1149→        this.meleeHit(26, 22, playerMeleeDmg(p) * 1.6, 'ninguno', 90);
+  1150→        this.burst(p.x + nx * 12, p.y + ny * 12, '#cdd3de', 8);
+  1151→        break;
+  1152→      }
+  1153→      case 'grito':
+  1154→        audio.sfx('holy');
+  1155→        (p as Player & { buffT?: number }).buffT = 8;
+  1156→        this.toast('Grito de Guerra: +50% de daño (8 s)', '#f0a050');
+  1157→        this.burst(p.x, p.y - 6, '#f0a050', 14);
+  1158→        break;
+  1159→      case 'muro':
+  1160→        audio.sfx('slam');
+  1161→        this.aoeHit(p.x, p.y, 44, playerMeleeDmg(p) * 1.2, 'sagrado', true);
+  1162→        this.waves.push({ x: p.x, y: p.y, r: 6, maxR: 46, speed: 120, dmg: 0, hit: true });
+  1163→        break;
+  1164→      case 'filo':
+  1165→        audio.sfx('holy');
+  1166→        for (let k = 0; k < 3; k++) {
+  1167→          window.setTimeout(() => {
+  1168→            if (this.state !== 'play' && this.state !== 'pause') return;
+  1169→            this.aoeHit(p.x, p.y, 60, playerMeleeDmg(p) * 1.1, 'sagrado', false);
+  1170→            this.waves.push({ x: p.x, y: p.y, r: 6, maxR: 64, speed: 160, dmg: 0, hit: true });
+  1171→            audio.sfx('swing2');
+  1172→          }, k * 180);
+  1173→        }
+  1174→        break;
+  1175→      case 'ascuas':
+  1176→        audio.sfx('fire');
+  1177→        this.projectiles.push({ x: p.x + nx * 8, y: p.y - 6 + ny * 8, vx: nx * 150, vy: ny * 150, t: 1.6, dmg: spellDmg, element: 'fuego', from: 'player', sprite: 'p_fire', radius: 4, pierce: 0 });
+  1178→        break;
+  1179→      case 'escarcha':
+  1180→        audio.sfx('ice');
+  1181→        this.projectiles.push({ x: p.x + nx * 8, y: p.y - 6 + ny * 8, vx: nx * 170, vy: ny * 170, t: 1.4, dmg: spellDmg * 0.9, element: 'hielo', from: 'player', sprite: 'p_ice', radius: 4, pierce: 0 });
+  1182→        break;
+  1183→      case 'chispa':
+  1184→        audio.sfx('bolt');
+  1185→        this.chainLightning(p.x, p.y - 6, spellDmg, 3, nx, ny);
+  1186→        break;
+  1187→      case 'cantomayor': {
+  1188→        const el = this.lastNote === 'ninguno' ? 'fuego' : this.lastNote;
+  1189→        audio.sfx(el === 'fuego' ? 'fire' : el === 'hielo' ? 'ice' : 'bolt');
+  1190→        const wx2 = wx, wy2 = wy;
+  1191→        this.aoeHit(wx2, wy2, 52, spellDmg * 2.2, el, false);
+  1192→        this.waves.push({ x: wx2, y: wy2, r: 4, maxR: 56, speed: 150, dmg: 0, hit: true });
+  1193→        this.burst(wx2, wy2, el === 'fuego' ? '#ff9040' : el === 'hielo' ? '#a0e8ff' : '#ffe86a', 24, 90);
+  1194→        this.shake = 5;
+  1195→        break;
+  1196→      }
+  1197→    }
+  1198→  }
+  1199→
+  1200→  meleeHit(reach: number, width: number, dmg: number, element: Element, kb: number) {
+  1201→    const p = this.player!;
+  1202→    const dirs: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
+  1203→    const [dx, dy] = dirs[p.dir];
+  1204→    const cx = p.x + dx * reach * 0.6, cy = p.y + dy * reach * 0.6;
+  1205→    for (const e of this.enemies) {
+  1206→      if (e.dead) continue;
+  1207→      if (Math.hypot(e.x - cx, e.y - cy) < reach + e.w / 2 + 4) {
+  1208→        this.damageEnemy(e, dmg, element, kb, dx, dy);
+  1209→      }
+  1210→    }
+  1211→    void width;
+  1212→  }
+  1213→
+  1214→  aoeHit(x: number, y: number, r: number, dmg: number, element: Element, stun: boolean) {
+  1215→    for (const e of this.enemies) {
+  1216→      if (e.dead) continue;
+  1217→      if (Math.hypot(e.x - x, e.y - y) < r + e.w / 2) {
+  1218→        this.damageEnemy(e, dmg, element, 60, Math.sign(e.x - x), Math.sign(e.y - y));
+  1219→        if (stun) { e.ai = 'aturdido'; e.aiT = 1.5; }
+  1220→      }
+  1221→    }
+  1222→  }
+  1223→
+  1224→  chainLightning(x: number, y: number, dmg: number, jumps: number, nx: number, ny: number) {
+  1225→    let cx = x + nx * 14, cy = y + ny * 14;
+  1226→    const hitSet = new Set<Enemy>();
+  1227→    for (let j = 0; j < jumps; j++) {
+  1228→      let best: Enemy | null = null, bd = 90;
+  1229→      for (const e of this.enemies) {
+  1230→        if (e.dead || hitSet.has(e)) continue;
+  1231→        const d = Math.hypot(e.x - cx, e.y - cy);
+  1232→        if (d < bd) { bd = d; best = e; }
+  1233→      }
+  1234→      if (!best) break;
+  1235→      hitSet.add(best);
+  1236→      this.damageEnemy(best, dmg * (1 - j * 0.2), 'rayo', 20, 0, 0);
+  1237→      this.lightningFx(cx, cy, best.x, best.y);
+  1238→      cx = best.x; cy = best.y;
+  1239→    }
+  1240→  }
+  1241→
+  1242→  lightningFx(x0: number, y0: number, x1: number, y1: number) {
+  1243→    const steps = 6;
+  1244→    for (let i = 0; i <= steps; i++) {
+  1245→      const t = i / steps;
+  1246→      this.particles.push({
+  1247→        x: x0 + (x1 - x0) * t + (Math.random() - 0.5) * 6,
+  1248→        y: y0 + (y1 - y0) * t + (Math.random() - 0.5) * 6,
+  1249→        vx: 0, vy: 0, t: 0.18, maxT: 0.18, color: '#ffe86a', size: 2, grav: 0,
+  1250→      });
+  1251→    }
+  1252→  }
+  1253→
+  1254→  damageEnemy(e: Enemy, dmg: number, element: Element, kb: number, kbx = 0, kby = 0) {
+  1255→    if (e.invulT !== undefined && e.invulT > 0) {
+  1256→      // fase intangible (espectro desvaneciéndose / sirena sumergida): el golpe atraviesa
+  1257→      this.floatAt(e.x, e.y - 16, 'intangible', '#b8c8e0', 5);
+  1258→      audio.sfx('wraith');
+  1259→      return;
+  1260→    }
+  1261→    if (e.dead) return;
+  1262→    const def = ENEMY_DEFS[e.etype];
+  1263→    e.aggro = true;
+  1264→    let final = dmg;
+  1265→    let crit = false;
+  1266→    const p = this.player!;
+  1267→    if (Math.random() * 100 < Math.min(40, 5 + p.attrs.des * 2)) { final *= 2; crit = true; }
+  1268→    if (def.weakTo !== 'ninguno' && element === def.weakTo) final *= 1.5;
+  1269→    if (e.ai === 'aturdido' && e.etype === 'guardian') final *= 1.5;
+  1270→    final = Math.max(1, Math.round(final));
+  1271→    e.hp -= final;
+  1272→    e.hitFlash = 0.12;
+  1273→    // quiebre
+  1274→    if (e.maxSta > 0) {
+  1275→      e.sta -= final * 1.1;
+  1276→      if (e.sta <= 0 && e.ai !== 'aturdido') {
+  1277→        e.sta = 0;
+  1278→        e.ai = 'aturdido';
+  1279→        e.aiT = 4;
+  1280→        this.toast('¡QUEBRADO! El enemigo queda vulnerable', '#ffe86a');
+  1281→        this.floatAt(e.x, e.y - 20, 'QUEBRADO', '#ffe86a', 7);
+  1282→        audio.sfx('roar');
+  1283→      }
+  1284→    }
+  1285→    // estados
+  1286→    // estados: se REFRESCAN en vez de apilarse sin tope (el quemado infinito
+  1287→    // multiplicaba el DPS y trivializaba el quiebre del jefe)
+  1288→    if (element === 'fuego') {
+  1289→      const b = e.statuses.find(s => s.kind === 'quemado');
+  1290→      if (b) { b.t = Math.min(6, b.t + 3); b.power = Math.min(8, b.power + 2); }
+  1291→      else e.statuses.push({ kind: 'quemado', t: 3, power: 4 });
+  1292→    }
+  1293→    if (element === 'hielo') {
+  1294→      const c = e.statuses.find(s => s.kind === 'congelado');
+  1295→      if (c) c.t = Math.min(5, c.t + 2.5);
+  1296→      else e.statuses.push({ kind: 'congelado', t: 2.5, power: 0.5 });
+  1297→    }
+  1298→    // reacciones elementales
+  1299→    if (element === 'hielo' && e.statuses.some(s => s.kind === 'quemado' && s.t > 1)) {
+  1300→      this.aoeHit(e.x, e.y, 30, 12, 'ninguno', false);
+  1301→      this.floatAt(e.x, e.y - 16, 'VAPOR', '#d0f0f8', 6);
+  1302→      this.burst(e.x, e.y - 6, '#d0f0f8', 12);
+  1303→    }
+  1304→    // knockback
+  1305→    if (kb > 0) this.moveEntity(e, kbx * kb * 0.06, kby * kb * 0.06);
+  1306→    // feedback
+  1307→    this.floatAt(e.x + (Math.random() - 0.5) * 8, e.y - 14, `${final}`, crit ? '#ffd24a' : '#fff');
+  1308→    if (crit) this.floatAt(e.x, e.y - 22, '¡CRÍTICO!', '#ffd24a', 6);
+  1309→    this.burst(e.x, e.y - 4, crit ? '#ffd24a' : '#f0e8e0', crit ? 10 : 5);
+  1310→    audio.sfx(crit ? 'crit' : 'hit');
+  1311→    this.hitStop = crit ? 0.09 : 0.04;
+  1312→    // resonancia
+  1313→    const espMult = 1 + p.attrs.esp * 0.1;
+  1314→    p.res = Math.min(p.maxRes, p.res + 6 * espMult);
+  1315→    if (e.hp <= 0) this.killEnemy(e);
+  1316→  }
+  1317→
+  1318→  killEnemy(e: Enemy) {
+  1319→    e.dead = true;
+  1320→    const def = ENEMY_DEFS[e.etype];
+  1321→    const p = this.player!;
+  1322→    p.kills++;
+  1323→    const espMult = 1 + p.attrs.esp * 0.1;
+  1324→    p.res = Math.min(p.maxRes, p.res + 10 * espMult);
+  1325→    this.gainXp(def.xp);
+  1326→    const gold = Math.round(def.gold[0] + Math.random() * (def.gold[1] - def.gold[0]));
+  1327→    p.gold += gold;
+  1328→    this.floatAt(e.x, e.y - 20, `+${gold} coronas`, '#f0c84a');
+  1329→    this.burst(e.x, e.y - 4, e.etype === 'guardian' ? '#7ee8ff' : '#9ec4b4', e.etype === 'guardian' ? 40 : 14, e.etype === 'guardian' ? 120 : 60);
+  1330→    audio.sfx('enemyDie');
+  1331→    // cuenta de lobos para la misión
+  1332→    if (e.etype === 'lobo' && this.questIdx === 1 && this.questStep === 0) {
+  1333→      const n = Number(this.flags.wolfKills ?? 0) + 1;
+  1334→      this.flags.wolfKills = n;
+  1335→      this.toast(`Lobo de Niebla cazado (${n}/3)`, '#8ef0b0');
+  1336→      if (n >= 3) { this.questAdvance(); this.toast('Vuelve con la Anciana Brisa', '#8ef0b0'); }
+  1337→    }
+  1338→    if (e.etype === 'guardian') {
+  1339→      this.flags.guardianDefeated = true;
+  1340→      delete this.flags.bossHp;
+  1341→      delete this.flags.bossHp_cripta;
+  1342→      this.bossActive = false;
+  1343→      audio.setCombat(false);
+  1344→      audio.playTrack('crypt');
+  1345→      this.shake = 8;
+  1346→      this.toast('El Guardián Hueco se deshace en notas de silencio...', '#7ee8ff');
+  1347→      this.toast('El altar del Eco brilla al norte', '#ffe9a0');
+  1348→      if (this.questIdx === 3 && this.questStep === 1) this.questAdvance();
+  1349→    } else if (e.etype === 'sirena') {
+  1350→      this.flags.sirenaDefeated = true;
+  1351→      delete this.flags.bossHp_costa;
+  1352→      this.bossActive = false;
+  1353→      audio.setCombat(false);
+  1354→      audio.playTrack('costa');
+  1355→      this.shake = 8;
+  1356→      audio.sfx('song');
+  1357→      this.toast('La Sirena Abisal se deshace en espuma que susurra un nombre...', '#8ef0ff');
+  1358→      this.toast('El altar del naufragio brilla: el Eco de las Mareas es libre', '#ffe9a0');
+  1359→      if (this.questIdx === 6 && this.questStep === 1) this.questAdvance();
+  1360→    } else if (e.etype === 'golem') {
+  1361→      this.flags.golemDefeated = true;
+  1362→      delete this.flags.bossHp_cumbres;
+  1363→      this.bossActive = false;
+  1364→      audio.setCombat(false);
+  1365→      audio.playTrack('cumbres');
+  1366→      this.shake = 8;
+  1367→      this.toast('El Gólem de Escarcha se aquieta: las cumbres recuerdan su canto', '#a8d8ff');
+  1368→      this.toast('El altar del paso brilla: el Eco de las Cumbres es libre', '#ffe9a0');
+  1369→      if (this.questIdx === 8 && this.questStep === 1) this.questAdvance();
+  1370→    }
+  1371→  }
+  1372→
+  1373→  gainXp(xp: number) {
+  1374→    const p = this.player!;
+  1375→    p.xp += xp;
+  1376→    let next = this.xpNext(p.level);
+  1377→    while (p.xp >= next) {
+  1378→      p.xp -= next;
+  1379→      p.level++;
+  1380→      p.maxHp += 7;
+  1381→      p.hp = p.maxHp;
+  1382→      p.points += 3;
+  1383→      audio.sfx('levelup');
+  1384→      this.toast(`¡Nivel ${p.level}! +3 puntos de atributo (menú > Estado)`, '#ffe86a');
+  1385→      this.burst(p.x, p.y - 8, '#ffe86a', 20, 70);
+  1386→      next = this.xpNext(p.level);
+  1387→    }
+  1388→  }
+  1389→
+  1390→  xpNext(level: number): number {
+  1391→    return Math.round(36 * Math.pow(level, 1.45));
+  1392→  }
+  1393→
+  1394→  damagePlayer(dmg: number, fromX: number, fromY: number) {
+  1395→    const p = this.player!;
+  1396→    if (p.iframes > 0 || p.rollT > 0 || this.state !== 'play') return;
+  1397→    if (p.parryT > 0) {
+  1398→      // ¡parada perfecta!
+  1399→      audio.sfx('parry');
+  1400→      p.res = Math.min(p.maxRes, p.res + 20);
+  1401→      p.parryFx = 0.4;
+  1402→      this.hitStop = 0.12;
+  1403→      this.burst(p.x + (fromX - p.x) * 0.3, p.y - 8 + (fromY - p.y) * 0.3, '#fff8c0', 14, 100);
+  1404→      this.floatAt(p.x, p.y - 22, '¡PARADA!', '#fff8c0', 7);
+  1405→      // aturde al atacante cercano
+  1406→      let best: Enemy | null = null, bd = 34;
+  1407→      for (const e of this.enemies) {
+  1408→        if (e.dead) continue;
+  1409→        const d = Math.hypot(e.x - p.x, e.y - p.y);
+  1410→        if (d < bd) { bd = d; best = e; }
+  1411→      }
+  1412→      if (best) { best.ai = 'aturdido'; best.aiT = 1.6; best.windup = 0; }
+  1413→      p.parryT = 0;
+  1414→      return;
+  1415→    }
+  1416→    const red = Math.min(0.5, p.attrs.vig * 0.01);
+  1417→    const final = Math.max(1, Math.round(dmg * (1 - red)));
+  1418→    p.hp -= final;
+  1419→    p.iframes = 0.6;
+  1420→    p.lastHitT = 0.3;
+  1421→    this.shake = 4;
+  1422→    audio.sfx('hurt');
+  1423→    this.floatAt(p.x, p.y - 16, `-${final}`, '#ff7060');
+  1424→    const dx = p.x - fromX, dy = p.y - fromY;
+  1425→    const l = Math.max(1, Math.hypot(dx, dy));
+  1426→    this.moveEntity(p, (dx / l) * 8, (dy / l) * 8);
+  1427→    if (p.hp <= 0) this.playerDied();
+  1428→  }
+  1429→}
+  1430→
+  1431→// ---------------- utilidades de daño ----------------
+  1432→
+  1433→export function playerMeleeDmg(p: Player): number {
+  1434→  const base = p.discipline === 'alba' ? 12 : 8;
+  1435→  const stat = p.discipline === 'alba' ? p.attrs.fue * 1.5 : p.attrs.int * 1.2;
+  1436→  const buff = (p.buffT ?? 0) > 0 ? 1.5 : 1;
+  1437→  return (base + stat + p.level * 1 + p.weaponPlus * 2.5) * buff;
+  1438→}
+  1439→
+  1440→export function playerSpellDmg(p: Player): number {
+  1441→  return 10 + p.attrs.int * 1.6 + p.level;
+  1442→}
+  1443→
+  1444→export function initGame(canvas: HTMLCanvasElement): Game {
+  1445→  return new Game(canvas);
+  1446→}
+  1447→
+  1448→// re-exportar helpers usados por update/render
+  1449→export { MAPS, tileAt, getSpr, frameIndex, SKILLS, ENEMY_DEFS, QUESTS, DIALOGUES, audio, hash2, TILE };
+  1450→

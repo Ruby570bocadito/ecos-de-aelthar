@@ -1,0 +1,222 @@
+- data.ts: export MEMORIES (3 memorias de la biblia: nana, casa, madre sin rostro) para Diario y overlays.
+
+Stage Summary:
+- Contrato listo: agentes pueden trabajar en paralelo sin tocar engine.ts/types.ts/fxcore.ts.
+- Propiedad de archivos: 3-a = sprites/render/screens/audio + fx.ts (nuevo); 3-b = update/data/maps + hooks.ts.
+- Lint base en verde y dev.log compila.
+
+---
+Task ID: 3-b
+Agent: full-stack-developer (3-b mecánicas)
+Task: Profundizar mecánicas de combate (knockback, combo, remate, Ilwen mejorada, feedback de jefe) y añadir contenido de la biblia (tono de diálogo, memorias, facciones, NPC Doran/Heraldo/Teo, ecos menores, easter egg Nimue).
+
+Work Log:
+- Leído worklog.md y TODOS los archivos del contrato (engine, types, fxcore, audio, render, screens, data, maps, hooks, update) antes de escribir.
+- T1 · hooks.ts (implementación completa, sustituye el stub):
+  - handleCustomAction: 'memory_<id>' (concede memoria única + overlay memoryReveal t=5.5 + toast + sfx), 'rep_<faccion>_<±n>' (guardianes|orden|circulo|liga, clamp ±100, toast coloreado), 'eco_taken_mem' (llama g.applyAction('eco_taken') y concede mem_nana), 'flag_<clave>' (utilidad). Documentado en comentario para el equipo.
+  - recordDialogueTone: mantiene conteo + g.flags.tonoDominante; NUEVO: primera vez que un tono se vuelve dominante → +1 afinidad de Ilwen si está reclutada (biblia: los compañeros reaccionan a tu personalidad).
+  - dominantTone y TONE_LABEL intactos; añadido helper toneFlagOf() exportado (lee el tono de flags con narrowing seguro: flags es Record<string, number|boolean> congelado, el tono se guarda como string en runtime con cast documentado).
+- T2 · update.ts (combate):
+  - stepKnockback aplicado a jugador, enemigos e Ilwen. Knockback generado con applyKnockback en: proyectiles aliados (fuego 150 > rayo 110 > resto 85; flechas de Ilwen 90), ondas y slams del jefe contra el Portador (260, sin empujar si parada), impactos cargados del jugador (onda de empuje frontal 200, detectando p.chargedHit recién activo y limpiándolo al terminar el golpe para que no se herede al render/siguiente ataque).
+  - Ventana de combo: p.comboT = 1.2 mientras attackT > 0; decae al terminar el golpe; al caducar p.combo = 0.
+  - REMATE: enemigo ai='aturdido' con maxSta>0 a <30px en golpe recién liberado → damageEnemy ×0.6 extra, float '¡REMATE!' grande, addShake(4), requestSlowmo(0.2), +15 resonancia, sfx 'break'. Una vez por periodo de quebrado (WeakSet/WeakMap a nivel de módulo, reset al re-aturdirse).
+  - Ilwen: flechas elementales cíclicas fuego→hielo→rayo (fuego/hielo aplican estados vía damageEnemy, rayo solo daño); MARCA cada 6 s al enemigo aggro más cercano (e.marked=5, decae en mi update; flechas a marcados +60% daño); técnica combinada «Lluvia de estrellas» con affinity>=20 + enemigos aggro <140px + cd 24 s (WeakMap<Companion>): ráfaga de 10 proyectiles elementales en abanico + 2 ondas visuales + addFlash('#ffe9a0') + addShake(3) + float + sfx holy/bolt. Fuente de afinidad nueva: +1 cada 10 s de combate codo con codo (cap 30) + tonos (máx +4).
+  - Jefe (guardianBrain): banner de primera entrada en aggro (bossBannerT 3.2, 'GUARDIÁN HUECO' / 'Custodio del Eco de la Voz', addFlash #7ee8ff, sfx 'banner', flag bossIntro); cambios de fase con addFlash + addShake(5) + requestSlowmo(0.25); slam directo y ondas arrea al Portador (applyKnockback 260).
+  - Estados: e.marked decae; quemado/congelado intactos; balance del jefe sin tocar.
+  - FIX en mi archivo: el bucle de proyectiles enviaba las flechas de Ilwen (from='companion') a la rama de proyectiles ENEMIGOS: nunca dañaban a enemigos y podían herir al Portador por fuego amigo. Ahora `pr.from !== 'enemy'` daña enemigos; solo 'enemy' puede dañar al jugador.
+  - FIX en mi archivo: flags.q2_done no lo fijaba nadie → el showFlag de Ilwen la dejaba invisible para siempre. Watcher O(1) en updateGame (questIdx>=2 → q2_done=true).
+- T3 · data.ts (contenido biblia):
+  - Opciones con tone (empático/pragmático/sarcástico/amenazante) en: brisa_intro3, brisa_reward, toln_forge, ilwen_intro, voz_fragment, eco_voz, + nodos de reacción cortos (brisa_reac_*, brisa_rw_*, toln_forge_sarc, ilwen_reac_amenaz, voz_frag_*, eco_voz_*).
+  - eco_voz onEnd → 'eco_taken_mem' (primera memoria: la nana, al recuperar el Eco de la Voz).
+  - Variantes por tono dominante vía getDialogue (firma intacta): Toln llama 'Listillo' al sarcástico (toln_intro_listillo), Brisa usa 'alma' con el empático y desconfía del amenazante (brisa_idle_emp / brisa_idle_amenaz), Ilwen respeta al pragmático (ilwen_chat_prag 'Hablamos claro, los dos').
+  - Watchers de memorias en updateGame (no hooks): flags.ecoVoz + bosque → mem_casa; flags.guardianDefeated → mem_madre (una vez, flags mem_casa/mem_madre).
+  - NPC nuevos (diálogos): doran_intro/verde/sarc/orden/reject/bye (Círculo Verde: «no es maldad, es lo que había antes»; rep_circulo_5 en empático/pragmático; rep_orden_-5 al rechazar a la Orden), heraldo_intro/amenaz/prag/emp (te llama «el recipiente», «la Lanza ya está preparada para la segunda vez», Gran Inquisidor; rep_orden_-5 al desafiar), teo_intro/emp/prag/sarc (niño rescatado; la nana de su madre = guiño a la melodía del Portador).
+  - Ecos menores nuevos: e3 'Los Guardianes que aún cantan' (Lunaris), b_e4 'La Rebelión de los Sordos' (Bosque), c_e3 'La Lanza Muda' de los Durn (Cripta, conecta con la cita del Heraldo).
+  - Easter egg Nimue: cartel needPast en el Bosque (donde la Niebla se disipa en el pasado) que susurra «...nimue... nimue...» y juega con el nombre Naia que usa Ilwen. readSign consume pr.label (verificado: pasa el texto completo).
+- T4 · maps.ts: NPC teo (23,20, showFlag wolfKills), heraldo (28,17, showFlag ecoVoz, sprite 'sombra' seguro mientras 3-a crea el suyo), doran (36,24, sprite/portrait 'doran'); ecos/props nuevos en tiles libres sin tocar layout ni diffs de época; fix import Epoch (faltaba y rompía tsc).
+- sfx nuevos del contrato ('break', 'memory', 'banner'): verificado que el switch de audio.sfx NO tiene default → nombre desconocido = no-op seguro; se llaman directamente (documentado en comentarios).
+- Verificación: bun run lint 0 errores; bunx tsc --noEmit 0 errores en mis 4 archivos; dev.log compila y sirve 200.
+
+Stage Summary:
+- Combate: knockback físico suave (fxcore) en jugador/enemigos/Ilwen, ventana de combo real (1.2 s), REMATE potenciado sobre quebrados, ondas y slams del jefe empujan, impactos cargados desplazan.
+- Ilwen: arco elemental cíclico, sistema de MARCA (+60% daño focalizado), técnica combinada «Lluvia de estrellas» gated por afinidad (crece combatiendo y con tu tono), y FIX crítico: sus flechas ahora dañan enemigos (antes fuego amigo / inútiles).
+- Jefe: banner cinematográfico en su despertar + flash/shake/slowmo en cambios de fase.
+- Narrativa: sistema de tono con consecuencias (apodos y trato de Brisa/Toln/Ilwen), 3 memorias del Portador encadenadas al progreso (nana vía Eco, casa vía Bosque post-Eco, madre vía Guardián), reputación de 4 facciones viva en diálogos, 3 NPC nuevos (Doran, Heraldo de Vesh, Teo), 3 ecos menores nuevos y easter egg de Nimue.
+- Para el integrador: nuevas acciones de hooks ('memory_<id>', 'rep_<faccion>_<±n>', 'eco_taken_mem', 'flag_<clave>') documentadas en hooks.ts; usarlas en cualquier diálogo futuro. g.flags.tonoDominante contiene un string en runtime (cast documentado).
+- Notas para 3-a: sprites/portraits que faltan por crear: 'doran' (mundo+retrato), 'teo' (mundo+retrato), 'kael' (retrato del Heraldo; su sprite de mundo uso 'sombra'), icono de MARCADO (e.marked) sobre enemigos. render/screens aún no dibujan memoryReveal/bossBanner/flashT (los decae el motor). sprites.ts a medio refactor en paralelo: mientras tanto update.ts ya no importa SOLID_CHARS (usa g.tileSolidAt, método público del motor, semántica idéntica).
+- Errores preexistentes vistos en archivos congelados/ajenos (NO tocados): engine.ts redeclara VIEW_W/VIEW_H/ZOOM (línea 1209 vs 18-19), render.ts(316) usa e.dispName sin estrechar Entity, sprites.ts WIP de 3-a sin exportar aún SOLID_CHARS/TILE/drawTile/drawTallTile (engine.ts falla igual, se reconciliará al terminar 3-a).
+
+---
+Task ID: 3
+Agent: Super Z (agente principal) + agentes 3-a y 3-b
+Task: Mejora integral de la demo con 2 agentes en paralelo: animaciones/visuales (3-a), mecánicas/funciones/contenido (3-b), integración y QA (principal). Alineado con la biblia de la historia proporcionada por el usuario.
+
+Work Log:
+- Contrato compartido (Task 3-0): types.ts (ToneKind, tones/memories/repFacciones, kbVx/kbVy, marked, comboT), fxcore.ts congelado (shake/flash/slowmo/knockback), hooks.ts, integración en engine.ts (applyAction default→hooks, recordDialogueTone, decaimientos de feedback en el bucle, serialización compatible), MEMORIES en data.ts.
+- Agente 3-b (mecánicas) COMPLETÓ: hooks.ts completo (memory_<id>, rep_<faccion>_<n>, eco_taken_mem, flag_<k>), tono dominante con +1 afinidad; combate: knockback suave por elemento, ventana de combo, REMATE sobre quebrados (WeakSet), Ilwen con flechas elementales cíclicas + MARCA + «Lluvia de estrellas» (afinidad ≥20, cd 24s), jefe con banner y flash/slowmo por fase; FIX: flechas de Ilwen iban a rama enemiga y Ilwen era invisible (flags.q2_done); contenido: opciones de tono en 6 diálogos, variantes por tono (Listillo/alma/claridad), 3 NPC nuevos (Doran Círculo Verde, Heraldo de Vesh «el recipiente», Teo), 3 ecos menores nuevos, easter egg Nimue (cartel needPast).
+- Agente 3-a (visuales) murió por timeout a mitad del refactor de sprites.ts (perdió exports TILE/SOLID_CHARS/drawTile/drawTallTile) PERO completó: ciclos de andar humanoides (drawHumanFrame/layout), paletas y retratos de 9 personajes nuevos (sasha/brokk/maelis/corvin/kael/inquisidor/teo/doran/nimue) + drawPortrait con fallback, drawSlashArc, fx.ts (partículas ambientales por mapa, estelas de esquiva, bannerInfo, memoryAlpha), render (flash, overlay de memoria tipo vitral con marca de onda, banner de jefe con temblor, iconos de estado con marcado, ping de santuarios en minimapa), screens (título con niebla/notas/estrellas, Estado con «Velmora te observa» [tono/memorias/facciones], Diario con memorias y teasers, final con memorias), audio (sfx break/memory/banner/whoosh + default seguro).
+- Integración (principal): restaurada sección de tiles desde git HEAD; corregidos reexport VIEW_W/H/ZOOM en engine.ts (conflicto tsc), export TRAIL_LIFE en fx.ts, cast de chargedHit y dispName en render.ts, guards hairS en retratos; loopError ahora guarda stack.
+- FIX de UI detectado en navegador: las opciones de diálogo solapaban el texto del nodo → drawDialogue recalcula altura de caja según líneas totales y opciones (box crece, opciones bajo el texto).
+- Verificación E2E con agent-browser: título → creación (DOM) → intro → juego (HUD/retrato/partículas/minimapa); diálogo Brisa con 4 tonos visibles sin solape y contador empatico:1; overlay Memoria I y II (watcher automático en bosque); banner GUARDIÁN HUECO; pausa Estado (tono/memorias 1/3/facciones) y Diario (memoria desbloqueada + teasers); combate real: arcos de slash, daño, muerte/respawn, REMATE confirmado (doble golpe 18+18); apodo sarcástico «Listillo» en Toln; NPC Teo y Heraldo con retratos; noche con luna/estrellas/luz radial; Bosque pasado/presente y Cripta sin errores de bucle. Un error transitorio drawImage tras loadMap por consola no fue reproducible tras la integración (loopError con stack quedó instrumentado).
+- Final: lint 0, tsc 0 (src), dev.log compila y sirve 200.
+
+Stage Summary:
+- Demo mejorada: sistema de Tono con apodos, 3 Memorias del Portador con overlay vitral, reputación de 4 facciones, REMATE, knockback suave, Ilwen elemental con Lluvia de Estrellas, banner de jefe, 3 NPC nuevos de la biblia, 9 sprites/retratos nuevos, partículas ambientales por mapa, ciclo día/noche con luna/estrellas, sfx nuevos, título y menús pulidos.
+- Contrato de extensión documentado en hooks.ts para futuro contenido (Actos II-IV).
+
+---
+Task ID: 4
+Agent: Super Z (agente principal)
+Task: Corregir bug reportado por el usuario: "al entrar a la cripta se queda en negro" (pantalla negra en la Cripta de Aelthar).
+
+Work Log:
+- Reproducido con agent-browser: nueva partida → fadeTo('cripta',19,30) → pantalla negra total (solo HUD/minimapa). Sin loopError (el render no lanzaba excepción).
+- Descartadas causas: groundCanvas con contenido (muestreo de píxeles OK), ctx.filter soportado y funcional (blit con/sin filtro verificado leyendo píxeles), drawWorld alcanzado (niebla/estrellas sí se dibujaban).
+- CAUSA RAÍZ (preexistente desde Task 1, latente): drawLighting rellenaba la pantalla con color de oscuridad OPACO y recortaba los "agujeros de luz" con destination-out SOBRE EL CANVAS PRINCIPAL → borraba los píxeles del mundo dibujado (mundo+entidades), dejando ver el fondo CSS de la página (#06070f, casi negro). En la cripta (darkness=0.8 constante) era 100% negro; de noche en exteriores (darkness>0.02) también ocultaba el mundo (captura histórica shot_cryptdoor.png del QA original ya lo mostraba en Bosque-presente nocturno; pasó desapercibido porque la mayoría del QA fue diurno).
+- FIX en render.ts (drawLighting): capa de oscuridad en canvas offscreen (getLightCanvas, singleton perezoso VIEW_W×VIEW_H). Secuencia: clear → fillRect con globalAlpha=darkness (0.62 noche / 0.8 cripta con parpadeo) → destination-out para el gradiente del Portador (r 130 cripta / 170 exterior, 0.95 centro) y de santuarios (pulso) sobre SOLO la capa → componer con drawImage sobre el mundo → tintes posteriores intactos (púrpura cripta / azul noche / cálido amanecer).
+- Verificación E2E: cripta muestra suelo, muros, esqueletos, cofres, eco y círculo de luz del jugador (shot_cripta_fixed.png); noche de Lunaris con tinte azul, luna, estrellas, santuario iluminado y mundo visible (shot_lunaris_noche_fixed.png); combate en cripta con telegrafías, daño flotante, banner GUARDIÁN HUECO, barra de jefe y santuario brillando (shot_cripta_combate.png); loopError=null en todo el recorrido.
+- Lint 0 errores; tsc: 0 errores en src/ del juego (los restantes son de examples/ y skills/ de la plantilla, preexistentes y ajenos).
+
+Stage Summary:
+- Bug de pantalla negra corregido de raíz para TODAS las capas de oscuridad: cripta, noches de Lunaris/Bosque y futuros mapas oscuros. La técnica de capa offscreen es la estándar (oscuridad con agujeros de luz compuesta sobre el mundo) y desbloquea el paso del Bosque → Cripta → Guardián Hueco.
+- Capturas de verificación en scripts/shot_cripta_fixed.png, shot_lunaris_noche_fixed.png, shot_cripta_combate.png.
+
+---
+Task ID: 5
+Agent: Super Z (agente principal)
+Task: Corregir el bucle cripta↔bosque (P0-1 del informe de 30 agentes + reporte del usuario) + quick-wins asociados y push a GitHub.
+
+Work Log:
+- CONFIRMADO el softlock: la salida de la cripta aterriza en bosque (10,3) = tile 'A' (altar SÓLIDO) DENTRO de la zona de salida bosque→cripta (x:8..12, y:2..3) → ping-pong de teletransporte con autoguardado en cada ciclo.
+- FIX P0-1 (3 capas):
+  1. maps.ts: destino de la salida cripta→bosque cambiado (10,3)→(10,5) — tile libre bajo la puerta (x=9..11,y=4) y fuera de toda zona de salida.
+  2. engine.ts loadMap: findSafeTile() — búsqueda por anillos que rechaza tiles sólidos Y dentro de zonas de salida (inExitZone); nunca se aterriza en un muro ni en un teletransporte.
+  3. engine.ts/update.ts: exitCd=0.9 tras loadMap, decae en update y las zonas de salida se ignoran mientras exitCd>0 (defensa extra anti-bucle).
+- FIX rescate de saves atrapados: continueGame sobreescribía la posición segura de loadMap con las coords crudas del save → ahora solo restaura la posición fina si su tile es seguro (ni sólido ni en zona de salida). Un save del bucle (bosque, altar 10,3) ahora aterriza en (9,4) y queda estable.
+- FIX save corrupto (P1): continueGame valida forma (player/x/y/map) con try/catch; si está dañado lo borra, avisa con toast y no deja el juego muerto.
+- FIX transición fantasma (P1): setState limpia pendingMap al salir de play/dialogue (Esc durante un fade ya no teletransporta ni reescribe el autoguardado).
+- FIX teclas pegadas (P1): blur/visibilitychange limpian keys y botones de ratón (onLoseFocus), con limpieza en dispose().
+- FIX nombre con espacios (P1): onKeyDown ya no hace preventDefault cuando el target es un INPUT/TEXTAREA.
+- Verificación E2E (agent-browser): (19,31) reubicado a (18,30) por la defensa; salida cripta→bosque aterriza en (10,5) estable sin re-teletransporte; vuelta bosque→cripta aterriza en (19,30); save atrapado rescatado a (9,4) estable; loopError=null en todo el recorrido.
+- P0-2 (flechas de Ilwen) y q2_done: YA corregidos en Task 3-b (update.ts pr.from!=='enemy' + watcher); el informe de los 30 agentes revisó el commit 71d290e (anterior a Task 3) y varios hallazgos están desactualizados.
+- P0-4: tsconfig excluye examples/skills/scripts (scaffold de plantilla) → `bun run typecheck` (nuevo script) en verde para todo el proyecto; eliminado typescript.ignoreBuildErrors de next.config.ts (el build vuelve a validar tipos).
+- README.md reescrito: controles reales (clic izq atacar, clic der parada, Espacio esquiva, 1-4 skills, F poción, Q época, Shift+T alba, Esc/M pausa), Node ≥20.9, novedades v0.2.1 y estructura actual (13 módulos).
+- Push a GitHub: sincronizado staging (.zpackage/ecos-de-aelthar) con el proyecto actual, commit 123b8ee "v0.2.1: ..." → main de Ruby570bocadito/ecos-de-aelthar (verificado via API: 13 módulos en src/game). Lint 0, typecheck 0, dev server 200.
+
+Stage Summary:
+- Bucle cripta↔bosque roto a 3 niveles (destino seguro + findSafeTile + exitCd) y rescate de saves atrapados; fixes rápidos de save corrupto, transición fantasma, teclas pegadas y nombre con espacios.
+- El repo privado quedó en v0.2.1 (123b8ee) con README honesto y typecheck exigente en build.
+- Pendiente (backlog del informe): controles táctiles móviles (P0-3), persistencia de volúmenes, fórmulas de ESTADO desde fuente única, rebalance de jefe/quemado, poda de scaffold, OG/SEO, CI.
+- Recordatorio reiterado: revocar/rotar el PAT ghp_... (sigue activo a fecha de este push).
+
+---
+Task ID: 6
+Agent: Super Z (agente principal)
+Task: Segunda tanda de fixes del informe de 30 agentes (P1 de jugabilidad) + push.
+
+Work Log:
+- P1 crash: startAttack/startParry/drinkPotion/useSkill/castSkill/aimAtMouse con guard `if (!this.player) return` — el clic derecho en título ya no lanza TypeError (verificado: state=title, playerNull=true, err=null).
+- P1 esquiva en cadena: detección de borde — keydown ' ' en play encola rollQueued solo si la acción es posible (rollT/attackT/sta válidos), update la consume; mantener Espacio ya no encadena i-frames (verificado: tap → 1 voltereta; mantener 0,6 s → no se relanza).
+- P1 quemado infinito: los estados se REFRESCAN en vez de apilarse (quemado: t cap 6 s, power cap 8; congelado: t cap 5). Verificado: 3 impactos de fuego → 1 status, t=6, power=8.
+- P1 exploit del jefe: loadMap memoriza bossHp en flags al salir de la cripta con el Guardián vivo y lo restaura al volver (se limpia al derrotarlo). Verificado: 250/300 → salir → volver → sigue 250/300.
+- P1 muro por cambio de época: epochSwitch recoloca al Portador con findSafeTile si el nuevo presente/pasado trae un tile sólido hasta su posición (toast informativo).
+- P1 pantalla de muerte mentía: playerDied guarda lastGoldLost y drawDead lo muestra (40 coronas → dice 20, no 10). Verificado.
+- P1 ESTADO duplicaba fórmula: ahora importa playerMeleeDmg del motor (fuente única); nota: ATTR_INFO de vigor ya era correcta en el código actual (maxHp+=7 y reducción vig*0.01 existen) — hallazgo obsoleto del informe.
+- P1 volúmenes: sliders persisten en localStorage 'ecos-vol' y el constructor los restaura (verificado: 0.2/0.2 sobreviven reload).
+- P2 título: v0.1 → v0.2.1.
+- P1 animación de lobo/guardián clavada: el informe era contra el commit 71d290e; el entityFrame actual ya cicla correctamente los 2 frames (mod min(2,n)) — sin acción.
+- Typecheck 0, lint 0. Push 2949fe7 a main (verificado via API).
+
+Stage Summary:
+- 8 fixes de jugabilidad del informe aplicados y verificados E2E; repo en 2949fe7.
+- Quedan del backlog: controles táctiles móviles (P0-3), contenido narrativo muerto (voz_vesh/voz_guardian/brisa_end), rebalance jefe/quiebre, poda de scaffold, OG/SEO/CI.
+
+---
+Task ID: 7-c
+Agent: general-purpose (música+fx)
+Task: R1-c — Música y FX ambiente para los 3 biomas nuevos (Costa de Bruma, Aldea de Merrow, Las Cumbres). Solo toqué src/game/audio.ts y src/game/fx.ts.
+
+Work Log:
+- Leído worklog.md (Task 1: motor de audio; Task 3-a: fx.ts) y los dos archivos completos antes de escribir. types.ts ya tenía el contrato extendido (TrackName/MapId += 'costa'|'aldea'|'cumbres'); tsc fallaba pidiendo las 3 pistas nuevas.
+
+A) audio.ts (379→495 líneas):
+- 3 Patterns nuevos con la firma EXACTA de los existentes (bpm/lead/bass/pad + tipos de osc + gains + drums de 32 chars; verificado por script que lead/bass tienen 32 entradas y drums 32 caracteres en TODAS las pistas):
+  - COSTA (92 bpm, mixolidio en Sol): arpegios triangle que suben y bajan como olas (G-B-D-G-F-D / A-C-E-A / B-D-F-B / C-E-G-E), bajo sine profundo G1/C2/A1 con "vaivén" G1↔G2, pad cálido G-C-Am-F-G, espuma = hats de ruido agudo dispersos de forma irregular (canal drums). Melancólica y amplia.
+  - ALDEA (58 bpm, Re menor, caja de música rota): melodía sine con HUECOS (compases casi vacíos y pasos silenciosos donde debería haber nota), frases que responden como ecos tardíos, bajo mínimo (una nota cada 2 compases: D-G-Bb-A), pad sine largo. Drums = 2 clics de mecanismo por loop (solo respiran en combate). La más melancólica del juego.
+  - CUMBRES (76 bpm, pentatónica fría de La m): notas-campana sine muy espaciadas (el envelope exponencial del motor las hace tintinear; el pad a dur*15.5 hace de campana grave con su quinta), bajo sine con bajada de lamento A1-G1-F1-E1, drums = destellos de hielo casi imperceptibles. Sensación de altura y silencio inmenso.
+- Capa de combate adaptativa VERIFICADA GENÉRICA: el mecanismo (drumGain → target 1 en combate / 0.55 fuera, 1 siempre en boss) opera sobre pat.drums de CUALQUIER pista de TRACKS, no hay lógica por-nombre para las nuevas → costa/aldea/cumbres la heredan sin cambios (las 3 tienen drums). Comentario documentado junto a setCombat.
+- 5 SFX nuevos al switch (estilo sTone/sNoise existente): 'splash' (lowpass 1500→260 + 2 burbujas sine), 'song' (3 tonos sine largos con vibrato REAL vía LFO — nuevo helper privado sSongTone(f0,dur,gain,delay,vib) — + brillo de agua highpass), 'gust' (bandpass barrido 400→2000 Hz, 0.5 s), 'lamp' (triangle cálido 196→524 + chispa highpass), 'wraith' (aliento highpass 6200→8200 muy suave + tono fantasmal descendente 880→240 con detune de 50 cents).
+- Switch de sfx SIN default (según protocolo): nombres desconocidos = no-op seguro por diseño; comentario documentado en el propio switch (sustituye el default seguro que añadiera 3-a, misma garantía).
+- FIX menor en mi archivo: drums de VILLAGE tenía 31 chars (off-by-one preexistente) → deriva de 1 paso de la batería vs melodía de 32; ahora 32 chars ('h...k...h...k...h...k...h.s.k...').
+
+B) fx.ts (403→487 líneas):
+- 5 tipos nuevos al pool: SEAMIST(6) bruma salina (motas grandes blanco-azuladas #cfe0f2, vx oeste constante -9..-14, ondulación en y con sin en el dibujo, vida larga 7-10.5 s, alpha 0.14 semitransparente, doble pompa), FOAM(7) espuma (chispas blancas cerca del suelo, vida corta 0.5-0.9 s, estallan en 2-3 destellos discretos por strobe sin(t·9..14)), MEMORA(8) (motas doradas pálidas que suben MUY lento, pulso de alpha al morir — "los nombres que flotan" — y alpha global reducida de noche), SNOW(9) (copos blancos tamaño variado, vy caída lenta constante 13-23, vx = sin(t·0.9+seed)·(7..18) fijado cada frame → ventisca determinista), WISPFRIO(10) (wisps azul-hielo erráticos lentos cerca del suelo, pariente frío del CRYPTWISP).
+- Selección por mapId con coherencia día/noche (isNight ya importado): costa → FOAM 42% día / 16% noche (de noche menos espuma, más bruma); aldea → MEMORA 85% + ASH 15% (duelo de Merrow); cumbres → SNOW 80% día / 70% noche (de noche algo más de wisps).
+- AMB_CAP 90 → 110 (dentro del máximo autorizado 120; la ventisca necesita más ranuras). Rates por mapa: costa 13/s, aldea 8/s (nostalgia quieta), cumbres 17/s (ventisca densa); con vidas medias ajustadas el pool no se satura (estimado ~65 costa, ~68 aldea, ~99 cumbres activos) y los mixes no se ahogan entre sí.
+- Polvo de pasos por bioma: el paso del Portador consulta tileAt(g.map, g.rows, p.x/TILE, p.y/TILE, g.epoch) (imports de solo lectura: tileAt de maps.ts, TILE de sprites.ts); sobre 'S' (nieve) o 's' (arena) levanta un soplo blanco que flota (rgba(240,246,255), grav 16, deriva horizontal) en vez del polvo marrón.
+- drawAmbient y updateAmbient: cases nuevos añadidos a ambos switches (sin tocar los existentes); Niebla del Bosque, cielo/estrellas/luna y feedback (banner/memoria) intactos.
+
+Verificación:
+- bunx tsc --noEmit → 0 errores en audio.ts y fx.ts (grep audio|fx vacío). Único error del proyecto: maps.ts(234) Record<MapId,MapDef> sin costa/aldea/cumbres — archivo del agente de mapas en paralelo, IGNORADO según protocolo (desaparecerá cuando registre los 3 mapas).
+- bun run lint → sin errores ni warnings.
+- Verificación estructural por script (bun): 8 claves en TRACKS, 32 pasos en lead/bass de las 8 pistas, drums de 32 chars en las 8, pads 8 (BOSS 4 por diseño, preexistente).
+- NO se ejecutó dev server ni navegador (protocolo).
+
+Notas para el equipo:
+- Agente de mapas: al definir los 3 MapDef, usar music: 'costa' | 'aldea' | 'cumbres' (ya resuelven en TRACKS); tiles 'S'/'s' activan automáticamente el soplo blanco de pasos.
+- Wiring de sfx disponible para quien integre eventos: 'splash' (pisar agua/barcos), 'song' (sirena/enemigo sirena), 'gust' (ráfaga, telegraph 'ventisca'), 'lamp' (props kind 'lamp'), 'wraith' (espectro).
+- audio.sfx sin default: cualquier nombre futuro desconocido es no-op seguro (intencional, documentado en el switch).
+
+Stage Summary:
+- 3 pistas chiptune nuevas (costa/aldea/cumbres) con identidad propia dentro de la disciplina Pattern existente, capa de combate adaptativa funcionando de forma genérica, 5 SFX ambientales nuevos con síntesis 100% procedural, y partículas ambientales completas para los 3 biomas (bruma/espuma, memoras, ventisca/wisps fríos) con variación día/noche y polvo de pasos por bioma. tsc y lint en verde para mis archivos.
+
+---
+Task ID: 7-a
+Agent: general-purpose (mapas) [informe escrito por el integrador: el agente completó el trabajo pero superó el límite de tiempo antes de reportar]
+Task: Crear los 3 mapas nuevos del Acto II (Costa de Bruma, Aldea de Merrow, Cumbres Heladas) y cablearlos al mundo.
+
+Work Log:
+- Creado src/game/maps_expansion.ts (422 líneas) con EXPANSION_MAPS: costa (52×40, arena 's', mar, muelle 'B', wreck, faro, NPCs mara/vult, 4 neumos + 2 espectros + JEFA sirena zone boss), aldea (44×34, ruinas de Merrow, 3 lamp needPast, NPC mera, 4 espectros needPresent + 2 neumos, diffs de época presente-ruina/pasado-vivo), cumbres (50×42, nieve 'S', hielo 'i', NPC ivo, 3 arpías + 2 lobos + 1 espectro + JEFE golem).
+- maps.ts: BASE_MAPS + export const MAPS = { ...BASE_MAPS, ...EXPANSION_MAPS }; abertura sur de lunaris (exit x:25,y:36 → costa 26,2) y abertura este de bosque (exit x:54,y:6 → cumbres 25,39); carteles nuevos.
+- Exits inversos: costa→lunaris y costa→aldea; aldea→costa; cumbres→bosque (24,40 → bosque 51,7).
+
+Stage Summary:
+- 6 conexiones entre mapas verificadas E2E por el integrador: lunaris↔costa, costa↔aldea, bosque↔cumbres; todos los aterrizajes en tile transitable y fuera de zonas de salida (lección softlock).
+
+---
+Task ID: 7-b
+Agent: general-purpose (enemigos+sprites) [informe escrito por el integrador: mismo caso de timeout]
+Task: 5 enemigos nuevos con IA propia + sprites/proyectiles/props/tiles de la expansión.
+
+Work Log:
+- sprites_expansion.ts (867 líneas): initExpansionSprites registra neumo/espectro/arpi/sirena(32px)/golem(32px) + proyectiles orb/shard/nota; drawExpansionTile (s/S/i + suelos por bioma), drawExpansionTallTile (palmera costa, pinos nevados), drawExpansionProp (wreck/faro/lamp), drawExpansionProjectile.
+- enemies_expansion.ts (953 líneas): expansionTick(g,e,dt,def) → cerebro completo por tipo: neumo tirador que mantiene distancia y escupe 'orb'; espectro flotante con invulT 0.9 tras golpe (intangible) y lunge; arpi orbital con picado en dash; SIRENA 3 fases (salvas en abanico con telegraph aro, invocación de neumos, teleport-splash fase 2, anillo radial fase 3, banner propio); GOLEM 2 fases (slam + onda, lanzas de hielo, ventisca de 4 telegraphs, embestida), quiebre/aturdido replicando al Guardián.
+
+Stage Summary:
+- Verificado E2E: sirena aggro con proyectiles+telegrafías+banner+barra; golem presente en cumbres; espectros solo en presente de aldea; sprites nuevos visibles y animados.
+
+---
+Task ID: 7-c
+Agent: general-purpose (música+fx)
+Task: 3 pistas chiptune nuevas + SFX + partículas ambientales de los 3 biomas.
+
+Work Log:
+- audio.ts: TRACKS costa (92bpm mixolidio olas), aldea (58bpm Re menor caja de música rota), cumbres (76bpm pentatónica campanas); capa de combate genérica heredada; SFX splash/song/gust/lamp/wraith; fix off-by-one drums de village (31→32).
+- fx.ts: partículas SEAMIST/FOAM (costa), MEMORA (aldea), SNOW/WISPFRIO (cumbres) con variación día/noche; polvo de pasos blanco en nieve/arena; AMB_CAP 90→110.
+
+Stage Summary:
+- tsc/lint verdes; las 8 pistas verificadas estructuralmente (32 pasos).
+
+---
+Task ID: 7-int
+Agent: Super Z (agente principal)
+Task: Contrato de expansión + integración de la Ronda 1 + verificación E2E.
+
+Work Log:
+- CONTRATO (propio): types.ts (MapId/EnemyType/TrackName ampliados, SpawnDef.needPast/needPresent, PropKind wreck/faro/lamp, telegraphKind salva/ventisca, Enemy.subT/invulT); data.ts (QUESTS q6-q10 del Acto II, ENEMY_DEFS de 5 enemigos, MEMORIES mem_faro/mem_invierno, KEY_ITEMS ecoMareas/ecoCumbres/ecoNombres); sprites.ts registerSpr().
+- INTEGRACIÓN: engine.ts (spawnEnemies con epoch+jefes genérico via BOSS_DEFEAT_FLAG; makeEnemy tamaños jefe; minimapa s/S/i; buildGround delega en drawExpansionTile/TallTile; damageEnemy respeta invulT con 'intangible'; killEnemy de sirena/golem con toasts+music+questAdvance; tryTakeEco por mapa con dynNodes eco_mareas/eco_cumbres y acciones eco_*_taken que conceden memoria IV/V; loadMap memoria de jefe generalizada bossHp_<mapId>; visited costa/aldea/cumbres avanzan misiones; lightLamp con watcher 3 faroles → q8). update.ts (expansionTick dispatch para los 5 tipos + decaimiento invulT; activación de jefe generalizada por spawns zone:'boss' con toasts propios). render.ts (drawProps → drawExpansionProp para wreck/faro/lamp; altarEcho generalizado por id con colores propios; proyectiles orb/shard/nota → drawExpansionProjectile; shimmer de intangibilidad; barra de jefe generalizada ENEMY_DEFS[etype] + FASE x/maxPhase).
+- E2E (agent-browser): 3 mapas visitados con enemigos/NPCs/props correctos; sirena: aggro, banner 'SIRENA ABISAL', barra generalizada, proyectiles y telegrafías activas, loopError=null; aldea presente 4 espectros vs pasado 0 (needPresent ok); 6 viajes entre mapas OK con aterrizajes seguros; fix barra de jefe hardcodeada al Guardián (crash drawImage era residuo de HMR, no reproducible tras reload con instrumentación de drawImage).
+- Capturas: scripts/shot_r1_costa.png, shot_r1_costa_sur.png, shot_r1_sirena.png, shot_r1_aldea_pasado.png, shot_r1_cumbres.png.
+
+Stage Summary:
+- Acto II jugable de punta a punta: Lunaris→Costa (Sirena)→Merrow (faroles/época)→Bosque→Cumbres (Gólem). tsc 0, lint 0. Ronda 2 lista: historia/diálogos (data+hooks), motor/misiones (engine), animaciones de combate (update+fx).

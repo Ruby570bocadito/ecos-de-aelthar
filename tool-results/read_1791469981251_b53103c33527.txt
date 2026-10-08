@@ -1,0 +1,954 @@
+     1→     1→// ============================================================
+     2→     2→// ECOS DE AELTHAR — ACTO II · IA de la EXPANSIÓN
+     3→     3→// (AGENTE 7-b · enemigos + sprites)
+     4→     4→//
+     5→     5→// Cerebros completos para los 5 enemigos nuevos:
+     6→     6→//   · neumo    — esquiva-tirador: mantiene banda 90-130 px y
+     7→     7→//                escupe un 'orb' telegrafiado. Huye a <40 px.
+     8→     8→//   · espectro — tanque fantasma: se DESVANECE (invulT) al recibir
+     9→     9→//                un golpe y arremete con dash ×3.
+    10→    10→//   · arpi     — asaltante aéreo: orbita a ~75 px y PICADO cada 2.5 s.
+    11→    11→//   · sirena   — JEFA 3 fases: salvas de marea, coro de neumos,
+    12→    12→//                teletransporte acuático y Canto del Abismo.
+    13→    13→//   · golem    — JEFE 2 fases: slam telegrafiado, lanza de cristales,
+    14→    14→//                ventisca y embestida que rebota en los muros.
+    15→    15→//
+    16→    16→// INTEGRACIÓN (para el agente principal):
+    17→    17→//   Llamar expansionTick(g, e, dt, def) DENTRO de stepEnemy
+    18→    18→//   (update.ts, updateEnemy) para e.etype ∈ {neumo, espectro, arpi,
+    19→    19→//   sirena, golem}. Lugar recomendado: justo antes del
+    20→    20→//   `switch (e.ai)`, DESPUÉS del bloque común (hitFlash, estados,
+    21→    21→//   stepKnockback, marca, aggro, atkCd, aturdido, anim). Si devuelve
+    22→    22→//   true, SALTAR la IA genérica (no ejecutar el switch ni la huida
+    23→    23→//   final); si devuelve false, continuar con el flujo normal.
+    24→    24→//
+    25→    25→//   El tick es ROBUSTO a la colocación: detecta (vía WeakMap) si el
+    26→    26→//   bloque común ya corrió este frame y, si no, replica las partes
+    27→    27→//   que necesita (hitFlash, knockback, estados, aggro, atkCd, anim,
+    28→    28→//   aturdido, spawnGuard). ÚNICO requisito para el REMATE del
+    29→    29→//   jugador: el bloque de bookkeeping de aturdido de update.ts
+    30→    30→//   (WeakMaps wasAturdido/finisherUsed) debe correr como siempre.
+    31→    31→//
+    32→    32→//   Daño al Portador: SOLO vía proyectiles (from:'enemy'), ondas y
+    33→    33→//   g.damagePlayer() — el motor gestiona i-frames, parada y knockback.
+    34→    34→//   invulT (espectro/sirena) lo decae este módulo; que damageEnemy
+    35→    35→//   lo respete es tarea del integrador (contrato types.ts).
+    36→    36→//   bossRef/bossActive/música de jefe: los cablea el integrador.
+    37→    37→// ============================================================
+    38→    38→
+    39→    39→import type { Game } from './engine';
+    40→    40→import type { Enemy, Player } from './types';
+    41→    41→import type { EnemyDef } from './data';
+    42→    42→import { audio } from './audio';
+    43→    43→import { addShake, addFlash, requestSlowmo, stepKnockback } from './fxcore';
+    44→    44→
+    45→    45→// ---------------- utilidades ----------------
+    46→    46→
+    47→    47→function dist(ax: number, ay: number, bx: number, by: number): number {
+    48→    48→  return Math.hypot(bx - ax, by - ay);
+    49→    49→}
+    50→    50→
+    51→    51→function isNightG(g: Game): boolean {
+    52→    52→  return g.dayT > 0.7 || g.dayT < 0.08;
+    53→    53→}
+    54→    54→
+    55→    55→/** Mueve hacia (dx,dy) normalizado con colisión de tiles y fija dir/moving. */
+    56→    56→function moveDir(g: Game, e: Enemy, dx: number, dy: number, spd: number, dt: number): void {
+    57→    57→  const l = Math.hypot(dx, dy);
+    58→    58→  if (l < 1e-4) { e.moving = false; return; }
+    59→    59→  g.moveEntity(e, (dx / l) * spd * dt, (dy / l) * spd * dt);
+    60→    60→  e.moving = true;
+    61→    61→  if (Math.abs(dx) > 0.01) e.dir = dx > 0 ? 'right' : 'left';
+    62→    62→}
+    63→    63→
+    64→    64→// ---------------- memoria por enemigo (WeakMap: no persiste) ----------------
+    65→    65→
+    66→    66→interface ExpMem {
+    67→    67→  // señales de colocación (¿corrió ya el bloque común del motor?)
+    68→    68→  lastAnim?: number;
+    69→    69→  lastAtkCd?: number;
+    70→    70→  prevHitFlash?: number;
+    71→    71→  freshHit?: boolean;
+    72→    72→  // dashes (arremetida/picado/embestida)
+    73→    73→  dashDx?: number;
+    74→    74→  dashDy?: number;
+    75→    75→  dashHit?: boolean;
+    76→    76→  // espectro
+    77→    77→  pauseT?: number;      // se detiene a susurrar
+    78→    78→  // arpi
+    79→    79→  orbitDir?: number;    // sentido de la órbita
+    80→    80→  // sirena
+    81→    81→  pendingSalva?: number; // notas de la salva al terminar el windup (0 = Canto)
+    82→    82→  tpT?: number;          // acumulador del teletransporte acuático (fase 2)
+    83→    83→  // golem
+    84→    84→  act?: 'slam' | 'lanza' | 'embiste';
+    85→    85→  actIdx?: number;       // alternancia de acciones
+    86→    86→  slamPend?: number;     // tiempo restante del telegraph del slam → onda visual
+    87→    87→  ventT?: number;        // acumulador de la ventisca (fase 2)
+    88→    88→}
+    89→    89→
+    90→    90→const MEM = new WeakMap<Enemy, ExpMem>();
+    91→    91→
+    92→    92→function mem(e: Enemy): ExpMem {
+    93→    93→  let m = MEM.get(e);
+    94→    94→  if (!m) { m = {}; MEM.set(e, m); }
+    95→    95→  return m;
+    96→    96→}
+    97→    97→
+    98→    98→// ---------------- bloque común (réplica robusta del prep de update.ts) ----------------
+    99→    99→
+   100→   100→/**
+   101→   101→ * Devuelve TRUE si el frame quedó consumido (aturdido/spawnGuard).
+   102→   102→ * Efectos: freshHit, decaimiento de hitFlash/invulT/atkCd, aggro, anim.
+   103→   103→ * Todo es idempotente con el bloque común del motor gracias a la
+   104→   104→ * detección por anim/atkCd (ver ExpMem.lastAnim/lastAtkCd).
+   105→   105→ */
+   106→   106→function commonTick(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boolean {
+   107→   107→  const p = g.player;
+   108→   108→
+   109→   109→  // ¿el motor ya pasó por updateEnemy este frame? (anim solo cambia ahí)
+   110→   110→  const motorRan = m.lastAnim !== undefined && e.anim !== m.lastAnim;
+   111→   111→  m.lastAnim = e.anim;
+   112→   112→
+   113→   113→  // spawnGuard (invocaciones: sin aggro inicial)
+   114→   114→  if (e.spawnGuard && e.spawnGuard > 0) {
+   115→   115→    if (!motorRan) e.spawnGuard = Math.max(0, e.spawnGuard - dt);
+   116→   116→    if (e.spawnGuard > 0) return true;
+   117→   117→  }
+   118→   118→
+   119→   119→  // golpe nuevo: hitFlash SUBIÓ desde el frame pasado (damageEnemy pone 0.12)
+   120→   120→  const prev = m.prevHitFlash ?? 0;
+   121→   121→  m.freshHit = e.hitFlash > prev + 5e-4 && e.hitFlash > 0.06;
+   122→   122→  // decaimiento de hitFlash si el motor aún no lo hizo (colocación temprana)
+   123→   123→  if (!motorRan && e.hitFlash > 0 && Math.abs(e.hitFlash - prev) < 1e-9) {
+   124→   124→    e.hitFlash = Math.max(0, e.hitFlash - dt);
+   125→   125→  }
+   126→   126→  m.prevHitFlash = e.hitFlash;
+   127→   127→
+   128→   128→  // knockback (contrato fxcore) si el motor no lo aplicó
+   129→   129→  if (!motorRan) stepKnockback(g, e, dt);
+   130→   130→
+   131→   131→  // estados (quemado/congelado) + marca — réplica del bloque común
+   132→   132→  if (!motorRan) {
+   133→   133→    for (let i = e.statuses.length - 1; i >= 0; i--) {
+   134→   134→      const s = e.statuses[i];
+   135→   135→      s.t -= dt;
+   136→   136→      if (s.kind === 'quemado') {
+   137→   137→        e.hp -= s.power * dt;
+   138→   138→        if (Math.random() < 0.15) {
+   139→   139→          g.particles.push({ x: e.x + (Math.random() - 0.5) * 8, y: e.y - 6, vx: 0, vy: -24, t: 0.3, maxT: 0.3, color: '#ff9040', size: 1.5, grav: 0 });
+   140→   140→        }
+   141→   141→        if (e.hp <= 0) { g.killEnemy(e); return true; }
+   142→   142→      }
+   143→   143→      if (s.t <= 0) e.statuses.splice(i, 1);
+   144→   144→    }
+   145→   145→    if (e.marked !== undefined) {
+   146→   146→      e.marked -= dt;
+   147→   147→      if (e.marked <= 0) e.marked = undefined;
+   148→   148→    }
+   149→   149→  }
+   150→   150→  if (e.hp < e.maxHp) e.aggro = true;
+   151→   151→
+   152→   152→  // invulT: campo nuevo de la expansión — SIEMPRE lo decaemos aquí
+   153→   153→  if (e.invulT && e.invulT > 0) e.invulT = Math.max(0, e.invulT - dt);
+   154→   154→
+   155→   155→  // atkCd: decae solo si el motor no lo hizo ya este frame
+   156→   156→  if (m.lastAtkCd === undefined || Math.abs(e.atkCd - m.lastAtkCd) < 1e-9) e.atkCd -= dt;
+   157→   157→
+   158→   158→  // anim (cosmético) si el motor no lo hizo
+   159→   159→  if (!motorRan) e.anim += dt * (e.ai === 'persigue' ? 1.4 : 0.6);
+   160→   160→
+   161→   161→  // timer auxiliar de la expansión
+   162→   162→  e.subT = (e.subT ?? 0) + dt;
+   163→   163→
+   164→   164→  // aggro (idempotente: si el motor ya lo fijó, no-op)
+   165→   165→  if (p && !e.aggro && g.state === 'play') {
+   166→   166→    const nightMult = isNightG(g) ? 1.3 : 1;
+   167→   167→    if (dist(e.x, e.y, p.x, p.y) < def.aggroR * nightMult) {
+   168→   168→      e.aggro = true;
+   169→   169→      if (e.etype !== 'sirena' && e.etype !== 'golem') audio.sfx('blip');
+   170→   170→      // el banner de jefes lo disparan sus cerebros (flags sirenaIntro/golemIntro)
+   171→   171→    }
+   172→   172→  }
+   173→   173→
+   174→   174→  // QUEBRADO/ATURDIDO — mismo patrón que update.ts (líneas 517-522):
+   175→   175→  // cuenta atrás y, al salir, recupera la barra de quiebre completa
+   176→   176→  // (clave para el REMATE del Portador). El motor fija aiT=4 genérico
+   177→   177→  // en damageEnemy al quebrar; los jefes lo ajustan a su duración.
+   178→   178→  if (e.ai === 'aturdido') {
+   179→   179→    const stunT = e.etype === 'sirena' ? 2.6 : e.etype === 'golem' ? 2.8 : 1.6;
+   180→   180→    if (e.aiT > stunT) e.aiT = stunT;
+   181→   181→    e.aiT -= dt;
+   182→   182→    e.moving = false;
+   183→   183→    e.windup = 0;
+   184→   184→    if (e.aiT <= 0) {
+   185→   185→      e.ai = 'persigue';
+   186→   186→      if (e.maxSta > 0) e.sta = e.maxSta;
+   187→   187→    }
+   188→   188→    return true;
+   189→   189→  }
+   190→   190→  return false;
+   191→   191→}
+   192→   192→
+   193→   193→/** Daño por contacto durante dashes (una vez por dash). */
+   194→   194→function contactHit(g: Game, e: Enemy, def: EnemyDef, m: ExpMem): void {
+   195→   195→  if (m.dashHit) return;
+   196→   196→  const p = g.player;
+   197→   197→  if (!p) return;
+   198→   198→  if (dist(e.x, e.y, p.x, p.y) < 8 + e.w / 2 + 4) {
+   199→   199→    m.dashHit = true;
+   200→   200→    // damagePlayer gestiona i-frames y parada perfecta (que aturde al atacante)
+   201→   201→    g.damagePlayer(def.dmg, e.x, e.y);
+   202→   202→  }
+   203→   203→}
+   204→   204→
+   205→   205→/** Flotación de espera sin Portador presente. */
+   206→   206→function idleFloat(g: Game, e: Enemy, dt: number): void {
+   207→   207→  e.moving = false;
+   208→   208→  e.anim += dt * 0.4;
+   209→   209→}
+   210→   210→
+   211→   211→// ============================================================
+   212→   212→// NEUMO DE MAREA — esquiva-tirador
+   213→   213→// ============================================================
+   214→   214→
+   215→   215→function tickNeumo(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boolean {
+   216→   216→  if (commonTick(g, e, dt, def, m)) return true;
+   217→   217→  const st = e.subT ?? 0; // timer auxiliar (commonTick lo incrementa)
+   218→   218→  const p = g.player;
+   219→   219→  if (!p) { idleFloat(g, e, dt); return true; }
+   220→   220→  const d = dist(e.x, e.y, p.x, p.y);
+   221→   221→
+   222→   222→  // huida por proximidad: el Portador a <40 px lo espanta 1.5 s
+   223→   223→  if (e.aggro && e.ai !== 'huye' && e.ai !== 'carga' && d < 40) {
+   224→   224→    e.ai = 'huye';
+   225→   225→    e.aiT = 1.5;
+   226→   226→  }
+   227→   227→
+   228→   228→  switch (e.ai) {
+   229→   229→    case 'huye': {
+   230→   230→      e.aiT -= dt;
+   231→   231→      const ang = Math.atan2(e.y - p.y, e.x - p.x) + Math.sin(st * 5) * 0.6;
+   232→   232→      moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 1.25, dt);
+   233→   233→      if (e.aiT <= 0) e.ai = e.aggro ? 'persigue' : 'patrulla';
+   234→   234→      break;
+   235→   235→    }
+   236→   236→    case 'patrulla': {
+   237→   237→      // errando cerca de su hogar, con deriva de burbuja
+   238→   238→      e.aiT -= dt;
+   239→   239→      if (e.aiT <= 0) {
+   240→   240→        e.aiT = 1.5 + Math.random() * 1.5;
+   241→   241→        e.patrolAngle = Math.random() * Math.PI * 2;
+   242→   242→      }
+   243→   243→      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 60;
+   244→   244→      const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
+   245→   245→      const drift = Math.sin(st * 2) * 8;
+   246→   246→      const tx = Math.cos(ang) * 20 + Math.cos(ang + Math.PI / 2) * drift * 0.4;
+   247→   247→      const ty = Math.sin(ang) * 20 + Math.sin(ang + Math.PI / 2) * drift * 0.4;
+   248→   248→      g.moveEntity(e, tx * dt, ty * dt);
+   249→   249→      e.moving = true;
+   250→   250→      e.dir = tx > 0 ? 'right' : 'left';
+   251→   251→      if (e.aggro) e.ai = 'persigue';
+   252→   252→      break;
+   253→   253→    }
+   254→   254→    case 'persigue':
+   255→   255→    case 'recupera': {
+   256→   256→      if (!e.aggro) { e.ai = 'patrulla'; break; }
+   257→   257→      if (d > def.aggroR * 2.6) { e.aggro = false; e.ai = 'patrulla'; break; }
+   258→   258→      // banda de flotación 90-130 px
+   259→   259→      const ang = Math.atan2(p.y - e.y, p.x - e.x);
+   260→   260→      if (d < 80) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), def.speed, dt);
+   261→   261→      else if (d > 140) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
+   262→   262→      else {
+   263→   263→        // deriva lateral sinusoidal (subT)
+   264→   264→        const tang = ang + Math.PI / 2;
+   265→   265→        const s = Math.sin(st * 1.4);
+   266→   266→        moveDir(g, e, Math.cos(tang) * s, Math.sin(tang) * s, def.speed * 0.6, dt);
+   267→   267→      }
+   268→   268→      e.dir = p.x > e.x ? 'right' : 'left';
+   269→   269→      if (e.ai === 'recupera') {
+   270→   270→        e.aiT -= dt;
+   271→   271→        if (e.aiT > 0) break;
+   272→   272→        e.ai = 'persigue';
+   273→   273→      }
+   274→   274→      // disparo telegrafiado
+   275→   275→      if (e.atkCd <= 0 && d < def.atkR) {
+   276→   276→        e.ai = 'carga';
+   277→   277→        e.windup = def.windup; // 0.7: el motor dibuja '!' por windup>0 en 'carga'
+   278→   278→      }
+   279→   279→      break;
+   280→   280→    }
+   281→   281→    case 'carga': {
+   282→   282→      e.windup -= dt;
+   283→   283→      e.moving = false;
+   284→   284→      e.dir = p.x > e.x ? 'right' : 'left';
+   285→   285→      if (e.windup <= 0) {
+   286→   286→        // escupe 1 'orb' hacia el Portador
+   287→   287→        const dx = p.x - e.x, dy = p.y - 4 - e.y;
+   288→   288→        const l = Math.max(1, Math.hypot(dx, dy));
+   289→   289→        g.projectiles.push({
+   290→   290→          x: e.x, y: e.y - 2, vx: (dx / l) * 120, vy: (dy / l) * 120, t: 1.8,
+   291→   291→          dmg: def.dmg, element: 'ninguno', from: 'enemy', sprite: 'orb', radius: 5, pierce: 0,
+   292→   292→        });
+   293→   293→        // sfx 'splash' lo añade el agente de pistas; si aún no existe, no-op seguro
+   294→   294→        audio.sfx('splash');
+   295→   295→        e.atkCd = def.atkCd * (0.9 + Math.random() * 0.2);
+   296→   296→        e.ai = 'recupera';
+   297→   297→        e.aiT = 0.4;
+   298→   298→      }
+   299→   299→      break;
+   300→   300→    }
+   301→   301→    default:
+   302→   302→      break;
+   303→   303→  }
+   304→   304→  m.lastAtkCd = e.atkCd;
+   305→   305→  return true;
+   306→   306→}
+   307→   307→
+   308→   308→// ============================================================
+   309→   309→// ESPECTRO SIN NOMBRE — tanque fantasma
+   310→   310→// ============================================================
+   311→   311→
+   312→   312→function tickEspectro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boolean {
+   313→   313→  if (commonTick(g, e, dt, def, m)) return true;
+   314→   314→  const p = g.player;
+   315→   315→  if (!p) { idleFloat(g, e, dt); return true; }
+   316→   316→  const d = dist(e.x, e.y, p.x, p.y);
+   317→   317→
+   318→   318→  // DESVANECERSE bajo los golpes: invulnerable 0.9 s en bruma
+   319→   319→  // (el integrador cablea invulT en damageEnemy; aquí lo fijamos y decaemos)
+   320→   320→  if (m.freshHit && (e.invulT ?? 0) <= 0) {
+   321→   321→    e.invulT = 0.9;
+   322→   322→    for (let i = 0; i < 3; i++) {
+   323→   323→      g.particles.push({
+   324→   324→        x: e.x + (i - 1) * 5, y: e.y - 4 - i * 3,
+   325→   325→        vx: (Math.random() - 0.5) * 24, vy: -16 - Math.random() * 16,
+   326→   326→        t: 0.5, maxT: 0.5, color: '#c9d4e4', size: 2, grav: -8,
+   327→   327→      });
+   328→   328→    }
+   329→   329→    audio.sfx('shadow');
+   330→   330→  }
+   331→   331→
+   332→   332→  switch (e.ai) {
+   333→   333→    case 'patrulla': {
+   334→   334→      // erra y a veces se DETIENE 1-2 s (susurra)
+   335→   335→      if ((m.pauseT ?? 0) > 0) {
+   336→   336→        m.pauseT = (m.pauseT ?? 0) - dt;
+   337→   337→        e.moving = false;
+   338→   338→        if (Math.random() < 0.06) {
+   339→   339→          g.particles.push({ x: e.x + (Math.random() - 0.5) * 10, y: e.y - 8, vx: 0, vy: -12, t: 0.7, maxT: 0.7, color: '#c9d4e4', size: 1.5, grav: -4 });
+   340→   340→        }
+   341→   341→        break;
+   342→   342→      }
+   343→   343→      e.aiT -= dt;
+   344→   344→      if (e.aiT <= 0) {
+   345→   345→        e.aiT = 1.6 + Math.random() * 2;
+   346→   346→        e.patrolAngle = Math.random() * Math.PI * 2;
+   347→   347→        if (Math.random() < 0.45) { m.pauseT = 1 + Math.random(); break; }
+   348→   348→      }
+   349→   349→      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 60;
+   350→   350→      const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
+   351→   351→      moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.45, dt);
+   352→   352→      if (e.aggro) e.ai = 'persigue';
+   353→   353→      break;
+   354→   354→    }
+   355→   355→    case 'persigue': {
+   356→   356→      if (!e.aggro) { e.ai = 'patrulla'; break; }
+   357→   357→      if (d > def.aggroR * 2.4) { e.aggro = false; e.ai = 'patrulla'; break; }
+   358→   358→      // flota persiguiendo lento (colisión de tiles normal)
+   359→   359→      if (d > 18) moveDir(g, e, p.x - e.x, p.y - e.y, def.speed, dt);
+   360→   360→      else e.moving = false;
+   361→   361→      e.dir = p.x > e.x ? 'right' : 'left';
+   362→   362→      // arremetida desde la bruma
+   363→   363→      if (e.atkCd <= 0 && d < 58) {
+   364→   364→        e.ai = 'carga';
+   365→   365→        e.windup = def.windup; // 0.5
+   366→   366→      }
+   367→   367→      break;
+   368→   368→    }
+   369→   369→    case 'carga': {
+   370→   370→      e.windup -= dt;
+   371→   371→      e.moving = false;
+   372→   372→      e.dir = p.x > e.x ? 'right' : 'left';
+   373→   373→      if (e.windup <= 0) {
+   374→   374→        const l = Math.max(1, d);
+   375→   375→        m.dashDx = (p.x - e.x) / l;
+   376→   376→        m.dashDy = (p.y - 4 - e.y) / l;
+   377→   377→        m.dashHit = false;
+   378→   378→        e.ai = 'ataca';
+   379→   379→        e.aiT = 0.35; // dash ×3 durante 0.35 s
+   380→   380→        audio.sfx('whoosh');
+   381→   381→      }
+   382→   382→      break;
+   383→   383→    }
+   384→   384→    case 'ataca': {
+   385→   385→      e.aiT -= dt;
+   386→   386→      g.moveEntity(e, m.dashDx! * def.speed * 3 * dt, m.dashDy! * def.speed * 3 * dt);
+   387→   387→      e.moving = true;
+   388→   388→      if (Math.random() < 0.4) {
+   389→   389→        g.particles.push({ x: e.x, y: e.y - 4, vx: 0, vy: -6, t: 0.3, maxT: 0.3, color: '#c9d4e4', size: 2, grav: 0 });
+   390→   390→      }
+   391→   391→      contactHit(g, e, def, m);
+   392→   392→      if (e.aiT <= 0) {
+   393→   393→        e.ai = 'recupera';
+   394→   394→        e.aiT = 0.5;
+   395→   395→        e.atkCd = def.atkCd * (0.85 + Math.random() * 0.3);
+   396→   396→      }
+   397→   397→      break;
+   398→   398→    }
+   399→   399→    case 'recupera': {
+   400→   400→      e.aiT -= dt;
+   401→   401→      e.moving = false;
+   402→   402→      if (e.aiT <= 0) e.ai = 'persigue';
+   403→   403→      break;
+   404→   404→    }
+   405→   405→    default:
+   406→   406→      break;
+   407→   407→  }
+   408→   408→  m.lastAtkCd = e.atkCd;
+   409→   409→  return true;
+   410→   410→}
+   411→   411→
+   412→   412→// ============================================================
+   413→   413→// ARPÍA DE CUMBRE — asaltante aéreo
+   414→   414→// ============================================================
+   415→   415→
+   416→   416→function tickArpi(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boolean {
+   417→   417→  if (commonTick(g, e, dt, def, m)) return true;
+   418→   418→  const st = e.subT ?? 0; // acumulador del picado (commonTick lo incrementa)
+   419→   419→  const p = g.player;
+   420→   420→  if (!p) { idleFloat(g, e, dt); return true; }
+   421→   421→  const d = dist(e.x, e.y, p.x, p.y);
+   422→   422→
+   423→   423→  // frágil: herida grave → huida errática volando
+   424→   424→  if (e.aggro && e.ai !== 'huye' && e.hp < e.maxHp * 0.3) {
+   425→   425→    e.ai = 'huye';
+   426→   426→    e.aiT = 2.5;
+   427→   427→  }
+   428→   428→
+   429→   429→  switch (e.ai) {
+   430→   430→    case 'huye': {
+   431→   431→      e.aiT -= dt;
+   432→   432→      const ang = Math.atan2(e.y - p.y, e.x - p.x) + Math.sin(st * 6) * 0.7;
+   433→   433→      moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 1.35, dt);
+   434→   434→      if (e.aiT <= 0) e.ai = 'persigue';
+   435→   435→      break;
+   436→   436→    }
+   437→   437→    case 'patrulla': {
+   438→   438→      e.aiT -= dt;
+   439→   439→      if (e.aiT <= 0) {
+   440→   440→        e.aiT = 1.2 + Math.random() * 1.6;
+   441→   441→        e.patrolAngle = Math.random() * Math.PI * 2;
+   442→   442→      }
+   443→   443→      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 70;
+   444→   444→      const wob = Math.sin(st * 3) * 0.4;
+   445→   445→      const base = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
+   446→   446→      moveDir(g, e, Math.cos(base + wob), Math.sin(base + wob), def.speed * 0.55, dt);
+   447→   447→      if (e.aggro) e.ai = 'persigue';
+   448→   448→      break;
+   449→   449→    }
+   450→   450→    case 'persigue': {
+   451→   451→      if (!e.aggro) { e.ai = 'patrulla'; break; }
+   452→   452→      if (d > def.aggroR * 2.4) { e.aggro = false; e.ai = 'patrulla'; break; }
+   453→   453→      // órbita a ~75 px: tangencial + corrección radial
+   454→   454→      if (m.orbitDir === undefined) m.orbitDir = e.patrolAngle > Math.PI ? -1 : 1;
+   455→   455→      if (Math.random() < 0.002) m.orbitDir *= -1;
+   456→   456→      const ang = Math.atan2(e.y - p.y, e.x - p.x); // del Portador a mí
+   457→   457→      const corr = Math.max(-1, Math.min(1, (d - 75) / 26));
+   458→   458→      const tang = ang + (Math.PI / 2) * m.orbitDir;
+   459→   459→      const vx = Math.cos(tang) * def.speed - Math.cos(ang) * corr * def.speed * 0.95;
+   460→   460→      const vy = Math.sin(tang) * def.speed - Math.sin(ang) * corr * def.speed * 0.95;
+   461→   461→      g.moveEntity(e, vx * dt, vy * dt);
+   462→   462→      e.moving = true;
+   463→   463→      e.dir = vx > 0 ? 'right' : 'left';
+   464→   464→      // PICADO cada ~2.5 s (subT)
+   465→   465→      if (st >= 2.5 && d < 150 && d > 30) {
+   466→   466→        e.subT = 0;
+   467→   467→        e.ai = 'carga';
+   468→   468→        e.windup = def.windup; // 0.35
+   469→   469→      }
+   470→   470→      break;
+   471→   471→    }
+   472→   472→    case 'carga': {
+   473→   473→      e.windup -= dt;
+   474→   474→      e.moving = false;
+   475→   475→      e.dir = p.x > e.x ? 'right' : 'left';
+   476→   476→      if (e.windup <= 0) {
+   477→   477→        // dash hacia la posición actual del Portador (240 px/s, 0.45 s)
+   478→   478→        const l = Math.max(1, d);
+   479→   479→        m.dashDx = (p.x - e.x) / l;
+   480→   480→        m.dashDy = (p.y - 4 - e.y) / l;
+   481→   481→        m.dashHit = false;
+   482→   482→        e.ai = 'ataca';
+   483→   483→        e.aiT = 0.45;
+   484→   484→        audio.sfx('whoosh');
+   485→   485→      }
+   486→   486→      break;
+   487→   487→    }
+   488→   488→    case 'ataca': {
+   489→   489→      e.aiT -= dt;
+   490→   490→      g.moveEntity(e, m.dashDx! * 240 * dt, m.dashDy! * 240 * dt);
+   491→   491→      e.moving = true;
+   492→   492→      if (Math.random() < 0.5) {
+   493→   493→        g.particles.push({
+   494→   494→          x: e.x - m.dashDx! * 6, y: e.y - m.dashDy! * 6,
+   495→   495→          vx: (Math.random() - 0.5) * 20, vy: (Math.random() - 0.5) * 20,
+   496→   496→          t: 0.3, maxT: 0.3, color: '#e8f4fc', size: 1.5, grav: 0,
+   497→   497→        });
+   498→   498→      }
+   499→   499→      contactHit(g, e, def, m);
+   500→   500→      if (e.aiT <= 0) {
+   501→   501→        e.ai = 'recupera';
+   502→   502→        e.aiT = 0.8; // tras el picado: se aleja 0.8 s
+   503→   503→      }
+   504→   504→      break;
+   505→   505→    }
+   506→   506→    case 'recupera': {
+   507→   507→      e.aiT -= dt;
+   508→   508→      const ang = Math.atan2(e.y - p.y, e.x - p.x);
+   509→   509→      moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.9, dt);
+   510→   510→      if (e.aiT <= 0) {
+   511→   511→        e.ai = 'persigue';
+   512→   512→        e.atkCd = def.atkCd * (0.85 + Math.random() * 0.3);
+   513→   513→      }
+   514→   514→      break;
+   515→   515→    }
+   516→   516→    default:
+   517→   517→      break;
+   518→   518→  }
+   519→   519→  m.lastAtkCd = e.atkCd;
+   520→   520→  return true;
+   521→   521→}
+   522→   522→
+   523→   523→// ============================================================
+   524→   524→// SIRENA ABISAL — JEFA, 3 fases (SIEMPRE return true)
+   525→   525→// ============================================================
+   526→   526→
+   527→   527→function pushNota(g: Game, x: number, y: number, vx: number, vy: number): void {
+   528→   528→  g.projectiles.push({
+   529→   529→    x, y, vx, vy, t: 2.0, dmg: 10, element: 'hielo', from: 'enemy', sprite: 'nota', radius: 5, pierce: 0,
+   530→   530→  });
+   531→   531→}
+   532→   532→
+   533→   533→function fireNotas(g: Game, e: Enemy, p: Player, m: ExpMem): void {
+   534→   534→  const base = Math.atan2(p.y - 4 - e.y, p.x - e.x);
+   535→   535→  if (m.pendingSalva === 0) {
+   536→   536→    // CANTO DEL ABISMO: anillo de 8 notas radiales + salva dirigida de 3
+   537→   537→    for (let i = 0; i < 8; i++) {
+   538→   538→      const a = (i / 8) * Math.PI * 2;
+   539→   539→      pushNota(g, e.x, e.y - 4, Math.cos(a) * 120, Math.sin(a) * 120);
+   540→   540→    }
+   541→   541→    for (let i = 0; i < 3; i++) {
+   542→   542→      const a = base + (i / 2 - 0.5) * 0.52;
+   543→   543→      pushNota(g, e.x, e.y - 4, Math.cos(a) * 145, Math.sin(a) * 145);
+   544→   544→    }
+   545→   545→    audio.sfx('holy');
+   546→   546→    audio.sfx('ice');
+   547→   547→  } else {
+   548→   548→    // salva de marea en abanico de 40° hacia el Portador
+   549→   549→    const n = m.pendingSalva ?? 3;
+   550→   550→    for (let i = 0; i < n; i++) {
+   551→   551→      const a = base + (i / (n - 1) - 0.5) * 0.7;
+   552→   552→      pushNota(g, e.x, e.y - 4, Math.cos(a) * 130, Math.sin(a) * 130);
+   553→   553→    }
+   554→   554→    audio.sfx('ice');
+   555→   555→  }
+   556→   556→  m.pendingSalva = 0;
+   557→   557→}
+   558→   558→
+   559→   559→/** Invoca 1 neumo (máx 2 vivos) en un tile libre junto a la sirena. */
+   560→   560→function summonNeumo(g: Game, e: Enemy, fase: number, m: ExpMem): void {
+   561→   561→  // 'zone' no se guarda en Enemy: contamos todos los neumos vivos
+   562→   562→  // (solo existen los suyos, junto a la jefa)
+   563→   563→  const vivos = g.enemies.filter(o => !o.dead && o.etype === 'neumo').length;
+   564→   564→  if (vivos >= 2) { e.sumT = 4; return; }
+   565→   565→  for (let i = 0; i < 12; i++) {
+   566→   566→    const a = (i / 12) * Math.PI * 2 + e.patrolAngle;
+   567→   567→    const x = e.x + Math.cos(a) * 26, y = e.y + Math.sin(a) * 26;
+   568→   568→    if (!g.tileSolidAt(x, y)) {
+   569→   569→      const s = g.makeEnemy('neumo', x, y, 1, 'boss');
+   570→   570→      s.aggro = true;
+   571→   571→      g.enemies.push(s);
+   572→   572→      g.burst(x, y, '#8ef0ff', 14, 70);
+   573→   573→      g.floatAt(s.x, s.y - 18, '¡un neumo emerge!', '#8ef0ff', 7);
+   574→   574→      audio.sfx('splash');
+   575→   575→      e.sumT = fase === 2 ? 10 : 12;
+   576→   576→      m.lastAtkCd = e.atkCd;
+   577→   577→      return;
+   578→   578→    }
+   579→   579→  }
+   580→   580→  e.sumT = 3; // sin sitio libre: reintenta pronto
+   581→   581→}
+   582→   582→
+   583→   583→/** Teletransporte acuático: se sumerge y reaparece al lado opuesto. */
+   584→   584→function teleportSirena(g: Game, e: Enemy, p: Player, m: ExpMem): void {
+   585→   585→  m.tpT = 0;
+   586→   586→  g.burst(e.x, e.y, '#8ef0ff', 16, 80); // splash al sumergirse
+   587→   587→  audio.sfx('splash');
+   588→   588→  audio.sfx('whoosh');
+   589→   589→  e.invulT = 0.6; // sumergida: intocable un instante
+   590→   590→  const baseAng = Math.atan2(e.y - p.y, e.x - p.x) + Math.PI; // lado opuesto
+   591→   591→  const radii = [135, 120, 150, 128, 142];
+   592→   592→  const jit = [0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2];
+   593→   593→  for (const rr of radii) {
+   594→   594→    for (const j of jit) {
+   595→   595→      const a = baseAng + j;
+   596→   596→      const x = p.x + Math.cos(a) * rr, y = p.y + Math.sin(a) * rr;
+   597→   597→      if (!g.tileSolidAt(x, y)) {
+   598→   598→        e.x = x;
+   599→   599→        e.y = y;
+   600→   600→        g.burst(x, y, '#8ef0ff', 16, 80); // splash al emerger
+   601→   601→        return;
+   602→   602→      }
+   603→   603→    }
+   604→   604→  }
+   605→   605→  // sin sitio: se queda donde está
+   606→   606→}
+   607→   607→
+   608→   608→function tickSirena(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boolean {
+   609→   609→  if (commonTick(g, e, dt, def, m)) return true;
+   610→   610→  const st = e.subT ?? 0; // deriva de flotación (commonTick lo incrementa)
+   611→   611→  const p = g.player;
+   612→   612→  if (!p) { idleFloat(g, e, dt); return true; }
+   613→   613→  const d = dist(e.x, e.y, p.x, p.y);
+   614→   614→
+   615→   615→  // ---- banner de la jefa (misma técnica que guardianBrain) ----
+   616→   616→  if (e.aggro && !g.flags.sirenaIntro) {
+   617→   617→    g.flags.sirenaIntro = true;
+   618→   618→    g.bossBannerT = 3.2;
+   619→   619→    g.bossBannerText = 'SIRENA ABISAL';
+   620→   620→    g.bossBannerSub = 'La que olvidó su nombre';
+   621→   621→    addFlash(g, '#8ef0ff', 0.25);
+   622→   622→    addShake(g, 4);
+   623→   623→    audio.sfx('banner');
+   624→   624→    e.sumT = 12;
+   625→   625→    g.toast('La Sirena Abisal alza su canto entre la bruma', '#8ef0ff');
+   626→   626→  }
+   627→   627→
+   628→   628→  // ---- fases (1: >60% · 2: 60-30% · 3: <30%) ----
+   629→   629→  const hpPct = e.hp / e.maxHp;
+   630→   630→  const newPhase = hpPct > 0.6 ? 1 : hpPct > 0.3 ? 2 : 3;
+   631→   631→  if (newPhase > e.phase) {
+   632→   632→    e.phase = newPhase;
+   633→   633→    addFlash(g, newPhase === 3 ? '#b48fff' : '#8ef0ff', 0.2);
+   634→   634→    addShake(g, 5);
+   635→   635→    requestSlowmo(g, 0.2);
+   636→   636→    audio.sfx('roar');
+   637→   637→    g.toast(`La Sirena cambia de fase (${e.phase}/3)`, '#8ef0ff');
+   638→   638→    e.windup = 0;
+   639→   639→    m.pendingSalva = 0;
+   640→   640→    if (e.ai === 'carga') e.ai = 'persigue';
+   641→   641→    if (e.phase === 2) { m.tpT = 0; e.sumT = Math.min(e.sumT, 10); }
+   642→   642→  }
+   643→   643→
+   644→   644→  switch (e.ai) {
+   645→   645→    case 'patrulla': {
+   646→   646→      // flota en calma cerca de su hogar hasta el aggro
+   647→   647→      e.aiT -= dt;
+   648→   648→      if (e.aiT <= 0) {
+   649→   649→        e.aiT = 2 + Math.random() * 2;
+   650→   650→        e.patrolAngle = Math.random() * Math.PI * 2;
+   651→   651→      }
+   652→   652→      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 50;
+   653→   653→      const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
+   654→   654→      moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.4, dt);
+   655→   655→      if (e.aggro) e.ai = 'persigue';
+   656→   656→      break;
+   657→   657→    }
+   658→   658→    case 'persigue': {
+   659→   659→      if (!e.aggro) { e.ai = 'patrulla'; break; }
+   660→   660→      // reposicionamiento por fase (banda de distancia)
+   661→   661→      let minD = 90, maxD = 140;
+   662→   662→      if (e.phase === 2) { minD = 100; maxD = 150; }
+   663→   663→      if (e.phase === 3) { minD = 60; maxD = 100; }
+   664→   664→      const ang = Math.atan2(p.y - e.y, p.x - e.x);
+   665→   665→      if (d > maxD) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
+   666→   666→      else if (d < minD) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), def.speed, dt);
+   667→   667→      else if (e.phase === 3) {
+   668→   668→        // órbita lenta manteniendo 60-100 px
+   669→   669→        if (m.orbitDir === undefined) m.orbitDir = 1;
+   670→   670→        const tang = ang + (Math.PI / 2) * m.orbitDir;
+   671→   671→        moveDir(g, e, Math.cos(tang), Math.sin(tang), def.speed * 0.55, dt);
+   672→   672→      } else {
+   673→   673→        const tang = ang + Math.PI / 2;
+   674→   674→        const s = Math.sin(st * 0.8);
+   675→   675→        moveDir(g, e, Math.cos(tang) * s, Math.sin(tang) * s, def.speed * 0.4, dt);
+   676→   676→      }
+   677→   677→      e.dir = p.x > e.x ? 'right' : 'left';
+   678→   678→      // ataque cuando toca
+   679→   679→      if (e.atkCd <= 0) {
+   680→   680→        e.ai = 'carga';
+   681→   681→        e.windup = e.phase === 3 ? 0.6 : 0.55;
+   682→   682→        m.pendingSalva = e.phase === 3 ? 0 : e.phase === 2 ? 4 : 3;
+   683→   683→        if (e.phase < 3) {
+   684→   684→          // 'aro' de marea en su posición: el motor lo explota (daño si
+   685→   685→          // el Portador se pega a ella) al expirar el telegraph
+   686→   686→          e.telegraphKind = 'aro';
+   687→   687→          g.telegraphs.push({ x: e.x, y: e.y, r: 26, t: 0.55, maxT: 0.55, dmg: def.dmg, kind: 'aro' });
+   688→   688→        } else {
+   689→   689→          e.telegraphKind = 'salva';
+   690→   690→        }
+   691→   691→      }
+   692→   692→      break;
+   693→   693→    }
+   694→   694→    case 'carga': {
+   695→   695→      e.windup -= dt;
+   696→   696→      e.moving = false;
+   697→   697→      e.dir = p.x > e.x ? 'right' : 'left';
+   698→   698→      if (e.windup <= 0) {
+   699→   699→        e.telegraphKind = undefined;
+   700→   700→        fireNotas(g, e, p, m);
+   701→   701→        e.atkCd = (e.phase === 3 ? 2.2 : 2.0) * (0.9 + Math.random() * 0.2);
+   702→   702→        e.ai = 'recupera';
+   703→   703→        e.aiT = 0.35;
+   704→   704→      }
+   705→   705→      break;
+   706→   706→    }
+   707→   707→    case 'recupera': {
+   708→   708→      e.aiT -= dt;
+   709→   709→      e.moving = false;
+   710→   710→      if (e.aiT <= 0) e.ai = 'persigue';
+   711→   711→      break;
+   712→   712→    }
+   713→   713→    default:
+   714→   714→      break;
+   715→   715→  }
+   716→   716→
+   717→   717→  // ---- coro de neumos (fases 1-2, cadencia 12 s / 10 s) ----
+   718→   718→  if (e.aggro && e.phase < 3) {
+   719→   719→    e.sumT -= dt;
+   720→   720→    if (e.sumT <= 0) summonNeumo(g, e, e.phase, m);
+   721→   721→  }
+   722→   722→
+   723→   723→  // ---- teletransporte acuático (solo fase 2, cada 6 s) ----
+   724→   724→  if (e.aggro && e.phase === 2) {
+   725→   725→    m.tpT = (m.tpT ?? 0) + dt;
+   726→   726→    if (m.tpT >= 6) teleportSirena(g, e, p, m);
+   727→   727→  }
+   728→   728→
+   729→   729→  m.lastAtkCd = e.atkCd;
+   730→   730→  return true;
+   731→   731→  // NOTA: su muerte la gestiona el motor (killEnemy genérico + XP/oro).
+   732→   732→  // El integrador pondrá g.flags.sirenaDefeated en killEnemy (o watcher).
+   733→   733→}
+   734→   734→
+   735→   735→// ============================================================
+   736→   736→// GÓLEM DE ESCARCHA — JEFE, 2 fases (SIEMPRE return true)
+   737→   737→// ============================================================
+   738→   738→
+   739→   739→/** Ventisca: 4 telegraphs 'aro' alrededor del Portador (2 en su posición futura). */
+   740→   740→function ventisca(g: Game, e: Enemy, p: Player, def: EnemyDef): void {
+   741→   741→  audio.sfx('gust'); // no-op seguro si el sfx no existe aún
+   742→   742→  audio.sfx('ice');
+   743→   743→  // posición futura aproximada: sigue alejándose del gólem
+   744→   744→  const a = Math.atan2(p.y - e.y, p.x - e.x);
+   745→   745→  const fx = p.x + Math.cos(a) * 20, fy = p.y + Math.sin(a) * 20;
+   746→   746→  const spots: [number, number][] = [
+   747→   747→    [p.x - 9, p.y], [p.x + 9, p.y],
+   748→   748→    [fx - 9, fy - 4], [fx + 9, fy + 4],
+   749→   749→  ];
+   750→   750→  for (const [sx, sy] of spots) {
+   751→   751→    // el daño en área lo aplican los telegraphs al explotar (el motor
+   752→   752→    // gestiona i-frames/parada; los 4 puntos nunca apilan daño)
+   753→   753→    g.telegraphs.push({ x: sx, y: sy, r: 22, t: 0.85, maxT: 0.85, dmg: def.dmg, kind: 'aro' });
+   754→   754→    // onda visual pequeña en cada punto (el "estallido" de la ventisca)
+   755→   755→    g.waves.push({ x: sx, y: sy, r: 2, maxR: 26, speed: 90, dmg: 0, hit: true });
+   756→   756→  }
+   757→   757→}
+   758→   758→
+   759→   759→function tickGolem(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boolean {
+   760→   760→  if (commonTick(g, e, dt, def, m)) return true;
+   761→   761→  const p = g.player;
+   762→   762→  if (!p) { idleFloat(g, e, dt); return true; }
+   763→   763→  const d = dist(e.x, e.y, p.x, p.y);
+   764→   764→
+   765→   765→  // ---- banner del jefe ----
+   766→   766→  if (e.aggro && !g.flags.golemIntro) {
+   767→   767→    g.flags.golemIntro = true;
+   768→   768→    g.bossBannerT = 3.2;
+   769→   769→    g.bossBannerText = 'GÓLEM DE ESCARCHA';
+   770→   770→    g.bossBannerSub = 'Memoria de la montaña';
+   771→   771→    addFlash(g, '#a8d8ff', 0.25);
+   772→   772→    addShake(g, 4);
+   773→   773→    audio.sfx('banner');
+   774→   774→    g.toast('El Gólem de Escarcha despierta en el paso', '#a8d8ff');
+   775→   775→  }
+   776→   776→
+   777→   777→  // ---- fases (1: >50% · 2: <50%) ----
+   778→   778→  const hpPct = e.hp / e.maxHp;
+   779→   779→  const newPhase = hpPct > 0.5 ? 1 : 2;
+   780→   780→  if (newPhase > e.phase) {
+   781→   781→    e.phase = newPhase;
+   782→   782→    addFlash(g, '#a8d8ff', 0.22);
+   783→   783→    addShake(g, 5);
+   784→   784→    requestSlowmo(g, 0.25);
+   785→   785→    audio.sfx('roar');
+   786→   786→    g.toast(`El hielo del Gólem se agrieta (${e.phase}/2)`, '#a8d8ff');
+   787→   787→    m.ventT = 0;
+   788→   788→    m.actIdx = 0;
+   789→   789→    if (e.ai === 'carga') e.ai = 'persigue';
+   790→   790→  }
+   791→   791→
+   792→   792→  // ---- onda visual del slam: al expirar el telegraph (0.9 s) ----
+   793→   793→  // El daño real lo aplica el telegraph al explotar (r=44, como el slam
+   794→   794→  // del Guardián): la onda es visual para NO golpear dos veces.
+   795→   795→  if ((m.slamPend ?? 0) > 0) {
+   796→   796→    m.slamPend = (m.slamPend ?? 0) - dt;
+   797→   797→    if ((m.slamPend ?? 0) <= 0) {
+   798→   798→      g.waves.push({ x: e.x, y: e.y, r: 0, maxR: 70, speed: 220, dmg: 0, hit: true });
+   799→   799→      // el motor ya ejecuta sfx('slam') + shake 6 + burst al expirar el telegraph
+   800→   800→    }
+   801→   801→  }
+   802→   802→
+   803→   803→  // ---- ventisca (fase 2, cada 7 s, independiente del ciclo) ----
+   804→   804→  if (e.aggro && e.phase === 2 && e.ai !== 'carga') {
+   805→   805→    m.ventT = (m.ventT ?? 0) + dt;
+   806→   806→    if (m.ventT >= 7) {
+   807→   807→      m.ventT = 0;
+   808→   808→      ventisca(g, e, p, def);
+   809→   809→    }
+   810→   810→  }
+   811→   811→
+   812→   812→  switch (e.ai) {
+   813→   813→    case 'patrulla': {
+   814→   814→      // pisa lento cerca de su hogar; casi una montaña
+   815→   815→      e.aiT -= dt;
+   816→   816→      if (e.aiT <= 0) {
+   817→   817→        e.aiT = 2.5 + Math.random() * 2.5;
+   818→   818→        e.patrolAngle = Math.random() * Math.PI * 2;
+   819→   819→      }
+   820→   820→      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 40;
+   821→   821→      const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
+   822→   822→      moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.4, dt);
+   823→   823→      if (e.aggro) e.ai = 'persigue';
+   824→   824→      break;
+   825→   825→    }
+   826→   826→    case 'persigue': {
+   827→   827→      if (!e.aggro) { e.ai = 'patrulla'; break; }
+   828→   828→      if (d > def.aggroR * 2.4) { e.aggro = false; e.ai = 'patrulla'; break; }
+   829→   829→      if (d > def.atkR * 0.8) moveDir(g, e, p.x - e.x, p.y - e.y, def.speed, dt);
+   830→   830→      else e.moving = false;
+   831→   831→      e.dir = p.x > e.x ? 'right' : 'left';
+   832→   832→      if (e.atkCd <= 0 && d < def.aggroR) {
+   833→   833→        // elegir acción: slam/lanza (fase 1) · slam/embiste/lanza (fase 2)
+   834→   834→        m.actIdx = (m.actIdx ?? 0) + 1;
+   835→   835→        m.act = e.phase === 1
+   836→   836→          ? (m.actIdx % 2 === 1 ? 'slam' : 'lanza')
+   837→   837→          : (['slam', 'embiste', 'lanza'] as const)[m.actIdx % 3];
+   838→   838→        e.ai = 'carga';
+   839→   839→        e.windup = m.act === 'embiste' ? 0.7 : def.windup; // 0.9 el slam/lanza
+   840→   840→        e.telegraphKind = m.act === 'slam' ? 'slam' : 'salva';
+   841→   841→        if (m.act === 'slam') {
+   842→   842→          // telegraph EN SU FRENTE (hacia el Portador)
+   843→   843→          const a = Math.atan2(p.y - e.y, p.x - e.x);
+   844→   844→          g.telegraphs.push({
+   845→   845→            x: e.x + Math.cos(a) * 26, y: e.y + Math.sin(a) * 26,
+   846→   846→            r: 44, t: 0.9, maxT: 0.9, dmg: def.dmg, kind: 'slam',
+   847→   847→          });
+   848→   848→          m.slamPend = 0.9;
+   849→   849→        }
+   850→   850→      }
+   851→   851→      break;
+   852→   852→    }
+   853→   853→    case 'carga': {
+   854→   854→      e.windup -= dt;
+   855→   855→      e.moving = false;
+   856→   856→      e.dir = p.x > e.x ? 'right' : 'left';
+   857→   857→      if (e.windup <= 0) {
+   858→   858→        e.telegraphKind = undefined;
+   859→   859→        if (m.act === 'lanza') {
+   860→   860→          // 2 cristales 'shard' en arco hacia el Portador
+   861→   861→          const a = Math.atan2(p.y - 4 - e.y, p.x - e.x);
+   862→   862→          for (const off of [-0.13, 0.13]) {
+   863→   863→            g.projectiles.push({
+   864→   864→              x: e.x, y: e.y - 6, vx: Math.cos(a + off) * 150, vy: Math.sin(a + off) * 150,
+   865→   865→              t: 1.7, dmg: 12, element: 'hielo', from: 'enemy', sprite: 'shard', radius: 5, pierce: 0,
+   866→   866→            });
+   867→   867→          }
+   868→   868→          audio.sfx('ice');
+   869→   869→          e.atkCd = def.atkCd * (0.9 + Math.random() * 0.2);
+   870→   870→          e.ai = 'recupera';
+   871→   871→          e.aiT = 0.5;
+   872→   872→        } else if (m.act === 'embiste') {
+   873→   873→          // embestida en línea hacia el Portador
+   874→   874→          const l = Math.max(1, d);
+   875→   875→          m.dashDx = (p.x - e.x) / l;
+   876→   876→          m.dashDy = (p.y - e.y) / l;
+   877→   877→          m.dashHit = false;
+   878→   878→          e.ai = 'ataca';
+   879→   879→          e.aiT = 0.9;
+   880→   880→          audio.sfx('whoosh');
+   881→   881→        } else {
+   882→   882→          // slam: el telegraph ya colocada hace el trabajo; solo respira
+   883→   883→          e.atkCd = def.atkCd * (0.9 + Math.random() * 0.2);
+   884→   884→          e.ai = 'recupera';
+   885→   885→          e.aiT = 0.55;
+   886→   886→        }
+   887→   887→      }
+   888→   888→      break;
+   889→   889→    }
+   890→   890→    case 'ataca': {
+   891→   891→      // EMBESTIDA (180 px/s · 0.9 s) con rebote contra muros
+   892→   892→      e.aiT -= dt;
+   893→   893→      const stepX = m.dashDx! * 180 * dt;
+   894→   894→      const stepY = m.dashDy! * 180 * dt;
+   895→   895→      const freeX = g.boxFree(e.x + stepX, e.y, e.w, e.h);
+   896→   896→      const freeY = g.boxFree(e.x, e.y + stepY, e.w, e.h);
+   897→   897→      if (!freeX && !freeY) {
+   898→   898→        // ¡rebote! detiene la embestida
+   899→   899→        addShake(g, 3);
+   900→   900→        g.burst(e.x, e.y, '#dceef8', 12, 60);
+   901→   901→        e.ai = 'recupera';
+   902→   902→        e.aiT = 0.6;
+   903→   903→        e.atkCd = def.atkCd * (0.9 + Math.random() * 0.2);
+   904→   904→        break;
+   905→   905→      }
+   906→   906→      g.moveEntity(e, stepX, stepY);
+   907→   907→      e.moving = true;
+   908→   908→      // nieve levantada al embestir
+   909→   909→      if (Math.random() < 0.6) {
+   910→   910→        g.particles.push({
+   911→   911→          x: e.x + (Math.random() - 0.5) * 14, y: e.y + 4,
+   912→   912→          vx: -m.dashDx! * 30, vy: -20 - Math.random() * 20,
+   913→   913→          t: 0.4, maxT: 0.4, color: '#eef6fc', size: 2, grav: 30,
+   914→   914→        });
+   915→   915→      }
+   916→   916→      contactHit(g, e, def, m);
+   917→   917→      if (e.aiT <= 0) {
+   918→   918→        e.ai = 'recupera';
+   919→   919→        e.aiT = 0.6;
+   920→   920→        e.atkCd = def.atkCd * (0.9 + Math.random() * 0.2);
+   921→   921→      }
+   922→   922→      break;
+   923→   923→    }
+   924→   924→    case 'recupera': {
+   925→   925→      e.aiT -= dt;
+   926→   926→      e.moving = false;
+   927→   927→      if (e.aiT <= 0) e.ai = e.aggro ? 'persigue' : 'patrulla';
+   928→   928→      break;
+   929→   929→    }
+   930→   930→    default:
+   931→   931→      break;
+   932→   932→  }
+   933→   933→  m.lastAtkCd = e.atkCd;
+   934→   934→  return true;
+   935→   935→  // NOTA: su muerte la gestiona el motor (killEnemy genérico + XP/oro).
+   936→   936→  // El integrador pondrá g.flags.golemDefeated en killEnemy (o watcher).
+   937→   937→}
+   938→   938→
+   939→   939→// ============================================================
+   940→   940→// ENTRADA ÚNICA — se llama AL PASAR por los 5 tipos nuevos;
+   941→   941→// true = frame gestionado por completo (el motor salta su IA).
+   942→   942→// ============================================================
+   943→   943→
+   944→   944→export function expansionTick(g: Game, e: Enemy, dt: number, def: EnemyDef): boolean {
+   945→   945→  switch (e.etype) {
+   946→   946→    case 'neumo': return tickNeumo(g, e, dt, def, mem(e));
+   947→   947→    case 'espectro': return tickEspectro(g, e, dt, def, mem(e));
+   948→   948→    case 'arpi': return tickArpi(g, e, dt, def, mem(e));
+   949→   949→    case 'sirena': return tickSirena(g, e, dt, def, mem(e));
+   950→   950→    case 'golem': return tickGolem(g, e, dt, def, mem(e));
+   951→   951→    default: return false; // tipos base: IA genérica del motor
+   952→   952→  }
+   953→   953→}
+   954→   954→

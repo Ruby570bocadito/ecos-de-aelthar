@@ -1,0 +1,1029 @@
+     1→// ============================================================
+     2→// ECOS DE AELTHAR — Render de mundo y HUD (AGENTE 3-a · visuales)
+     3→// Capas: suelo → props → estelas → entidades → FX → ambiente →
+     4→// iluminación → cielo → números flotantes → HUD → overlays.
+     5→// ============================================================
+     6→
+     7→import type { Game } from './engine';
+     8→import type { Entity, Enemy } from './types';
+     9→import { VIEW_W, VIEW_H, ZOOM, TILE, getSpr, SKILLS, QUESTS } from './engine';
+    10→import { ENEMY_DEFS } from './data';
+    11→import { COL, text, textShadow, panel, bar, clearHits, wrapText, fBody } from './ui';
+    12→import { drawScreens } from './screens';
+    13→import { drawSlashArc, entityFrame, drawPortrait } from './sprites';
+    14→import { drawExpansionProp, drawExpansionProjectile } from './sprites_expansion';
+    15→import {
+    16→  fxFrame, updateAmbient, drawAmbient, getRollTrail,
+    17→  bannerInfo, memoryAlpha, TRAIL_LIFE,
+    18→} from './fx';
+    19→
+    20→const WORLD_FILTER: Record<string, string> = {
+    21→  presente: 'saturate(0.74) contrast(0.98)',
+    22→  pasado: 'saturate(1.35) brightness(1.1)',
+    23→};
+    24→
+    25→export function drawGame(g: Game) {
+    26→  const ctx = g.ctx;
+    27→  clearHits(g);
+    28→  const dtF = fxFrame(g); // dt de dibujado + decaimiento seguro del shake
+    29→  ctx.imageSmoothingEnabled = false;
+    30→  ctx.clearRect(0, 0, VIEW_W, VIEW_H);
+    31→
+    32→  if (g.state === 'title' || g.state === 'controls') {
+    33→    drawScreens(g);
+    34→    return;
+    35→  }
+    36→
+    37→  if (g.state === 'play' || g.state === 'dialogue') {
+    38→    updateAmbient(g, dtF);
+    39→  }
+    40→
+    41→  drawWorld(g);
+    42→  drawHud(g);
+    43→  drawOverlays(g); // destello, memoria, banner de jefe (sobre el HUD)
+    44→  drawScreens(g); // intro, pause, dialogue, dead, end (overlays)
+    45→}
+    46→
+    47→// ---------------- Mundo ----------------
+    48→
+    49→function drawWorld(g: Game) {
+    50→  const ctx = g.ctx;
+    51→  // sacudida de cámara (g.shake decae en update y, por seguridad, en fxFrame)
+    52→  const shx = g.shake > 0.2 ? (Math.random() - 0.5) * g.shake * 2 : 0;
+    53→  const shy = g.shake > 0.2 ? (Math.random() - 0.5) * g.shake * 2 : 0;
+    54→  ctx.save();
+    55→  ctx.translate(shx, shy);
+    56→  const camX = Math.round(g.camX), camY = Math.round(g.camY);
+    57→
+    58→  // suelo (prerenderizado por época) — el canvas está en píxeles de mundo (1x)
+    59→  const ground = g.epoch === 'pasado' && g.groundPastCanvas ? g.groundPastCanvas : g.groundCanvas;
+    60→  if (ground) {
+    61→    ctx.save();
+    62→    ctx.filter = WORLD_FILTER[g.epoch] ?? 'none';
+    63→    const gx = Math.floor(camX / ZOOM), gy = Math.floor(camY / ZOOM);
+    64→    ctx.drawImage(ground, gx, gy, VIEW_W / ZOOM, VIEW_H / ZOOM, 0, 0, VIEW_W, VIEW_H);
+    65→    ctx.restore();
+    66→  }
+    67→
+    68→  const sx = (wx: number) => wx * ZOOM - camX;
+    69→  const sy = (wy: number) => wy * ZOOM - camY;
+    70→
+    71→  ctx.save();
+    72→  ctx.filter = WORLD_FILTER[g.epoch] ?? 'none';
+    73→
+    74→  // oro perdido
+    75→  for (const dgl of g.deadGolds) {
+    76→    if (dgl.map !== g.mapId) continue;
+    77→    const bob = Math.sin(g.globalT * 3) * 2;
+    78→    ctx.drawImage(getSpr('goldbag')[0], sx(dgl.x - 5), sy(dgl.y - 8 + bob), 10 * ZOOM, 8 * ZOOM);
+    79→  }
+    80→
+    81→  // ecos menores (susurros)
+    82→  for (const ec of g.map.echoes) {
+    83→    if (g.takenEchoes.has(ec.id)) continue;
+    84→    const bob = Math.sin(g.globalT * 2 + ec.x) * 2;
+    85→    const fr = Math.floor(g.globalT * 3) % 2;
+    86→    ctx.globalAlpha = 0.75;
+    87→    ctx.drawImage(getSpr('wisp')[fr], sx(ec.x * TILE + 8 - 5), sy(ec.y * TILE + 2 + bob), 10 * ZOOM, 10 * ZOOM);
+    88→    ctx.globalAlpha = 1;
+    89→  }
+    90→
+    91→  // props
+    92→  drawProps(g, sx, sy);
+    93→
+    94→  // estelas de esquiva (afterimages del jugador, bajo las entidades)
+    95→  drawRollTrail(g, sx, sy);
+    96→
+    97→  // entidades ordenadas por Y
+    98→  type Drawable = { e: Entity; y: number };
+    99→  const ents: Drawable[] = [];
+   100→  for (const n of g.npcs) ents.push({ e: n, y: n.y });
+   101→  if (g.companion && g.companion.downT <= 0) ents.push({ e: g.companion, y: g.companion.y });
+   102→  for (const e of g.enemies) if (!e.dead) ents.push({ e, y: e.y });
+   103→  if (g.player) ents.push({ e: g.player, y: g.player.y });
+   104→  ents.sort((a, b) => a.y - b.y);
+   105→
+   106→  for (const { e } of ents) {
+   107→    drawEntity(g, e, sx, sy);
+   108→  }
+   109→
+   110→  ctx.restore();
+   111→
+   112→  // cofres (encima, siempre visibles)
+   113→  for (const ch of g.map.chests) {
+   114→    if (ch.needPast && g.epoch !== 'pasado') continue;
+   115→    const opened = g.openedChests.has(ch.id);
+   116→    const sprC = getSpr(opened ? 'chest_open' : 'chest')[0];
+   117→    ctx.drawImage(sprC, sx(ch.x * TILE), sy(ch.y * TILE - 2), 16 * ZOOM, 14 * ZOOM);
+   118→  }
+   119→
+   120→  drawCombatFx(g, sx, sy);
+   121→
+   122→  // partículas
+   123→  for (const p of g.particles) {
+   124→    ctx.globalAlpha = Math.max(0, p.t / p.maxT);
+   125→    ctx.fillStyle = p.color;
+   126→    ctx.fillRect(sx(p.x) - p.size, sy(p.y) - p.size, p.size * 2 * ZOOM * 0.6, p.size * 2 * ZOOM * 0.6);
+   127→  }
+   128→  ctx.globalAlpha = 1;
+   129→
+   130→  // partículas ambientales del mapa (motas, hojas, ceniza, niebla...)
+   131→  drawAmbient(g, 'world');
+   132→
+   133→  drawLighting(g);
+   134→
+   135→  // capa de cielo: estrellas, luna, antorchas (sobre la iluminación)
+   136→  drawAmbient(g, 'sky');
+   137→
+   138→  // textos flotantes (después de la luz: siempre legibles)
+   139→  drawFloats(g, sx, sy);
+   140→
+   141→  // prompt de interacción
+   142→  drawInteractPrompt(g, sx, sy);
+   143→
+   144→  // banner del mapa
+   145→  if (g.mapTitleT > 0) {
+   146→    const a = Math.min(1, g.mapTitleT);
+   147→    ctx.globalAlpha = Math.min(1, a * 1.5);
+   148→    textShadow(g, g.map.name, VIEW_W / 2, 90, 18, COL.goldSoft, '#000', 'center', true);
+   149→    text(g, g.map.subtitle, VIEW_W / 2, 120, 16, COL.dim, 'center');
+   150→    ctx.globalAlpha = 1;
+   151→  }
+   152→
+   153→  // aviso de época
+   154→  if (g.epochFx > 0) {
+   155→    const a = g.epochFx / 0.8;
+   156→    ctx.fillStyle = g.epoch === 'pasado' ? `rgba(255, 216, 138, ${a * 0.5})` : `rgba(120, 140, 190, ${a * 0.5})`;
+   157→    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   158→    if (a > 0.4) {
+   159→      textShadow(g, g.epoch === 'pasado' ? '◆ EL PASADO ◆' : '◆ EL PRESENTE ◆', VIEW_W / 2, 180, 16, g.epoch === 'pasado' ? COL.epochPast : COL.epochNow, '#000', 'center', true);
+   160→    }
+   161→  }
+   162→
+   163→  // fade de transición
+   164→  if (g.fadeT > 0) {
+   165→    ctx.fillStyle = `rgba(4,4,10,${g.fadeT})`;
+   166→    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   167→  }
+   168→  ctx.restore();
+   169→}
+   170→
+   171→// ---------------- Estelas de esquiva ----------------
+   172→
+   173→function drawRollTrail(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
+   174→  const ctx = g.ctx;
+   175→  const p = g.player;
+   176→  if (!p) return;
+   177→  const trail = getRollTrail();
+   178→  if (trail.length === 0) return;
+   179→  const spr = getSpr(p.sprite);
+   180→  for (const tp of trail) {
+   181→    const a = Math.max(0, tp.life / TRAIL_LIFE) * 0.35;
+   182→    if (a <= 0.02) continue;
+   183→    const fr = Math.min(entityFrame(spr, tp.dir, true, tp.anim), spr.length - 1);
+   184→    const dx = sx(tp.x) - (spr[0].width * ZOOM) / 2;
+   185→    const dy = sy(tp.y + 4) - spr[0].height * ZOOM;
+   186→    ctx.save();
+   187→    ctx.filter = WORLD_FILTER[g.epoch] ?? 'none';
+   188→    ctx.globalAlpha = a;
+   189→    if (tp.dir === 'left') {
+   190→      ctx.translate(dx + spr[0].width * ZOOM, 0);
+   191→      ctx.scale(-1, 1);
+   192→      ctx.drawImage(spr[fr], 0, dy, spr[0].width * ZOOM, spr[0].height * ZOOM);
+   193→    } else {
+   194→      ctx.drawImage(spr[fr], dx, dy, spr[0].width * ZOOM, spr[0].height * ZOOM);
+   195→    }
+   196→    ctx.restore();
+   197→  }
+   198→  ctx.globalAlpha = 1;
+   199→}
+   200→
+   201→// ---------------- Props ----------------
+   202→
+   203→function drawProps(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
+   204→  const ctx = g.ctx;
+   205→  for (const pr of g.map.props) {
+   206→    if (pr.needPast && g.epoch !== 'pasado') continue;
+   207→    if (pr.needPresent && g.epoch !== 'presente') continue;
+   208→    const px = pr.x * TILE + 8, py = pr.y * TILE + 8;
+   209→    if (pr.kind === 'sanctuary') {
+   210→      const fr = Math.floor(g.globalT * 2) % 2;
+   211→      const s = getSpr('sanctuary')[fr];
+   212→      ctx.drawImage(s, sx(px - 10), sy(py - 22), 20 * ZOOM, 30 * ZOOM);
+   213→      // aura
+   214→      ctx.globalAlpha = 0.18 + Math.sin(g.globalT * 2) * 0.08;
+   215→      ctx.fillStyle = '#8ef0ff';
+   216→      ctx.beginPath();
+   217→      ctx.arc(sx(px), sy(py - 6), 26, 0, Math.PI * 2);
+   218→      ctx.fill();
+   219→      ctx.globalAlpha = 1;
+   220→    } else if (pr.kind === 'forge') {
+   221→      // yunque + brasa
+   222→      ctx.fillStyle = '#4a4a58';
+   223→      ctx.fillRect(sx(px - 6), sy(py - 4), 12 * ZOOM, 6 * ZOOM);
+   224→      ctx.fillStyle = '#5a5a6a';
+   225→      ctx.fillRect(sx(px - 8), sy(py - 6), 6 * ZOOM, 4 * ZOOM);
+   226→      const fl = 0.6 + Math.sin(g.globalT * 7) * 0.3;
+   227→      ctx.fillStyle = `rgba(255,120,40,${fl})`;
+   228→      ctx.fillRect(sx(px - 3), sy(py - 9), 6 * ZOOM, 5 * ZOOM);
+   229→      ctx.fillStyle = `rgba(255,200,80,${fl})`;
+   230→      ctx.fillRect(sx(px - 2), sy(py - 8), 4 * ZOOM, 3 * ZOOM);
+   231→    } else if (pr.kind === 'fragment') {
+   232→      const fr = Math.floor(g.globalT * 4) % 3;
+   233→      const bob = Math.sin(g.globalT * 2.4) * 3;
+   234→      ctx.globalAlpha = 0.25;
+   235→      ctx.fillStyle = '#ffe9a0';
+   236→      ctx.beginPath();
+   237→      ctx.arc(sx(px), sy(py - 6 + bob), 18, 0, Math.PI * 2);
+   238→      ctx.fill();
+   239→      ctx.globalAlpha = 1;
+   240→      ctx.drawImage(getSpr('fragment')[fr], sx(px - 6), sy(py - 12 + bob), 12 * ZOOM, 12 * ZOOM);
+   241→    } else if (pr.kind === 'altarEcho') {
+   242→      // altar con el Eco (si no recogido) — generalizado Acto II: cada altar
+   243→      // consulta sus propias flags de eco/custodio según su id
+   244→      const ecoFlag = pr.id === 'altar_mareas' ? 'ecoMareas' : pr.id === 'altar_cumbres' ? 'ecoCumbres' : 'ecoVoz';
+   245→      const bossFlag = pr.id === 'altar_mareas' ? 'sirenaDefeated' : pr.id === 'altar_cumbres' ? 'golemDefeated' : 'guardianDefeated';
+   246→      const ecoColor = pr.id === 'altar_mareas' ? '#8ef0ff' : pr.id === 'altar_cumbres' ? '#a8d8ff' : '#ffe9a0';
+   247→      ctx.fillStyle = '#6a6a7a';
+   248→      ctx.fillRect(sx(px - 7), sy(py - 2), 14 * ZOOM, 8 * ZOOM);
+   249→      ctx.fillStyle = '#8a8a9a';
+   250→      ctx.fillRect(sx(px - 5), sy(py - 5), 10 * ZOOM, 4 * ZOOM);
+   251→      if (!g.flags[ecoFlag]) {
+   252→        const bob = Math.sin(g.globalT * 2.6) * 3;
+   253→        const gl = g.flags[bossFlag] ? 0.7 : 0.25;
+   254→        ctx.globalAlpha = gl;
+   255→        ctx.fillStyle = ecoColor;
+   256→        ctx.beginPath();
+   257→        ctx.arc(sx(px), sy(py - 12 + bob), 12, 0, Math.PI * 2);
+   258→        ctx.fill();
+   259→        ctx.globalAlpha = 1;
+   260→        ctx.drawImage(getSpr('fragment')[Math.floor(g.globalT * 3) % 3], sx(px - 5), sy(py - 18 + bob), 10 * ZOOM, 10 * ZOOM);
+   261→      }
+   262→    } else if (pr.kind === 'sign') {
+   263→      ctx.fillStyle = '#6d4520';
+   264→      ctx.fillRect(sx(px - 1), sy(py - 6), 2 * ZOOM, 12 * ZOOM);
+   265→      ctx.fillStyle = '#8a5a2b';
+   266→      ctx.fillRect(sx(px - 7), sy(py - 13), 14 * ZOOM, 8 * ZOOM);
+   267→      ctx.fillStyle = '#5c3a1e';
+   268→      ctx.fillRect(sx(px - 6), sy(py - 11), 12 * ZOOM, 1.5 * ZOOM);
+   269→      ctx.fillRect(sx(px - 6), sy(py - 9), 9 * ZOOM, 1.5 * ZOOM);
+   270→    } else if (pr.kind === 'wreck' || pr.kind === 'faro' || pr.kind === 'lamp') {
+   271→      // Acto II: props de la expansión (nave naufragada, faro, faroles de Merrow)
+   272→      drawExpansionProp(ctx, pr.kind, sx(px), sy(py), ZOOM, g.globalT, !!g.flags[pr.id]);
+   273→    }
+   274→  }
+   275→}
+   276→
+   277→// ---------------- Entidades ----------------
+   278→
+   279→function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: number) => number) {
+   280→  const ctx = g.ctx;
+   281→  const spr = getSpr(e.sprite);
+   282→  const zoomW = spr[0].width, zoomH = spr[0].height;
+   283→
+   284→  // parpadeo suave del jugador durante i-frames (esquiva/daño reciente)
+   285→  let spriteAlpha = 1;
+   286→  if (e.kind === 'player') {
+   287→    const pp = g.player!;
+   288→    if (pp.iframes > 0 && pp.rollT <= 0) spriteAlpha = 0.55 + Math.abs(Math.sin(g.globalT * 24)) * 0.35;
+   289→  }
+   290→  // Acto II: fase intangible de enemigos (espectro/sirena sumergida)
+   291→  if (e.kind === 'enemy' && (e as Enemy).invulT !== undefined && (e as Enemy).invulT! > 0) {
+   292→    spriteAlpha = 0.3 + Math.abs(Math.sin(g.globalT * 14)) * 0.18;
+   293→  }
+   294→
+   295→  // sombra (estable)
+   296→  ctx.globalAlpha = 0.3;
+   297→  ctx.fillStyle = '#000';
+   298→  ctx.beginPath();
+   299→  ctx.ellipse(sx(e.x), sy(e.y + 4), (e.w / 2 + 3) * ZOOM, 3 * ZOOM, 0, 0, Math.PI * 2);
+   300→  ctx.fill();
+   301→
+   302→  const fi = entityFrame(spr, e.dir, e.moving, e.anim);
+   303→  const idx = Math.min(fi, spr.length - 1);
+   304→  const flip = e.dir === 'left';
+   305→  const dx = sx(e.x) - (zoomW * ZOOM) / 2;
+   306→  const dy = sy(e.y + 4) - zoomH * ZOOM;
+   307→
+   308→  ctx.globalAlpha = spriteAlpha;
+   309→  if (flip) {
+   310→    ctx.save();
+   311→    ctx.translate(dx + zoomW * ZOOM, 0);
+   312→    ctx.scale(-1, 1);
+   313→    ctx.drawImage(spr[idx], 0, dy, zoomW * ZOOM, zoomH * ZOOM);
+   314→    ctx.restore();
+   315→  } else {
+   316→    ctx.drawImage(spr[idx], dx, dy, zoomW * ZOOM, zoomH * ZOOM);
+   317→  }
+   318→  ctx.globalAlpha = 1;
+   319→
+   320→  // flash de daño
+   321→  const en = e as Enemy;
+   322→  if (en.hitFlash && en.hitFlash > 0) {
+   323→    ctx.globalAlpha = 0.5;
+   324→    ctx.fillStyle = '#fff';
+   325→    ctx.fillRect(dx + 4, dy + 4, zoomW * ZOOM - 8, zoomH * ZOOM - 8);
+   326→    ctx.globalAlpha = 1;
+   327→  }
+   328→
+   329→  // telegrafía de ataque
+   330→  if (en.kind === 'enemy' && en.ai === 'carga' && en.windup > 0) {
+   331→    textShadow(g, '!', sx(e.x), dy - 16, 14, '#ff5040', '#000', 'center', true);
+   332→  }
+   333→  if (en.kind === 'enemy' && en.ai === 'aturdido') {
+   334→    const t = g.globalT * 6;
+   335→    text(g, '✦', sx(e.x) + Math.sin(t) * 6, dy - 14, 10, '#ffe86a', 'center');
+   336→    if (en.maxSta > 0) text(g, 'QUEBRADO', sx(e.x), dy - 30, 8, '#ffe86a', 'center');
+   337→  }
+   338→
+   339→  // barras de vida de enemigos dañados
+   340→  if (en.kind === 'enemy' && en.hp < en.maxHp && !en.dead && en.etype !== 'guardian') {
+   341→    bar(g, sx(e.x) - 12, dy - 6, 24, 3, en.hp / en.maxHp, COL.hp, COL.hpBg);
+   342→  }
+   343→
+   344→  // iconos de estado con mini-barra de tiempo
+   345→  if (en.kind === 'enemy' && !en.dead) {
+   346→    drawStatusIcons(g, en, sx(e.x), dy - 12);
+   347→  }
+   348→
+   349→  // indicador del jugador
+   350→  if (e.kind === 'player') {
+   351→    const p = g.player!;
+   352→    // aura de época si puede cambiar
+   353→    if (p.hasEcho && g.map.epochDiffs.length > 0) {
+   354→      ctx.globalAlpha = 0.14 + Math.sin(g.globalT * 3) * 0.06;
+   355→      ctx.fillStyle = g.epoch === 'pasado' ? '#ffd88a' : '#8ab8d8';
+   356→      ctx.beginPath();
+   357→      ctx.arc(sx(p.x), sy(p.y - 5), 15, 0, Math.PI * 2);
+   358→      ctx.fill();
+   359→      ctx.globalAlpha = 1;
+   360→    }
+   361→    if (p.parryFx > 0) {
+   362→      ctx.globalAlpha = Math.min(1, p.parryFx * 3);
+   363→      ctx.strokeStyle = '#fff8c0';
+   364→      ctx.lineWidth = 2;
+   365→      ctx.beginPath();
+   366→      ctx.arc(sx(p.x), sy(p.y - 6), 14 + (0.32 - p.parryFx) * 30, 0, Math.PI * 2);
+   367→      ctx.stroke();
+   368→      ctx.globalAlpha = 1;
+   369→    }
+   370→    if (p.charging && p.chargeT > 0.35) {
+   371→      // indicador de carga: aro que crece + flecha
+   372→      const k = Math.min(1, p.chargeT / 0.8);
+   373→      ctx.globalAlpha = 0.5 + k * 0.4;
+   374→      ctx.strokeStyle = '#ffe86a';
+   375→      ctx.lineWidth = 1.5;
+   376→      ctx.beginPath();
+   377→      ctx.arc(sx(p.x), sy(p.y - 4), 12 + k * 10, 0, Math.PI * 2);
+   378→      ctx.stroke();
+   379→      ctx.globalAlpha = 1;
+   380→      text(g, '▲', sx(p.x), dy - 18, 10, '#ffe86a', 'center');
+   381→    }
+   382→    // arco de ataque (combo: blanco → amarillo → dorado; cargado: dorado con estela)
+   383→    if (p.attackT > 0) {
+   384→      const dur = p.chargedHit ? 0.4 : 0.26;
+   385→      const prog = Math.max(0, Math.min(1, 1 - p.attackT / dur));
+   386→      drawSlashArc(ctx, sx(p.x), sy(p.y - 4), p.dir, prog, p.combo, !!p.chargedHit, ZOOM);
+   387→    }
+   388→    // buff grito
+   389→    if ((p.buffT ?? 0) > 0) {
+   390→      text(g, '⚔', sx(p.x) + 10, sy(p.y) - 26, 10, '#f0a050', 'center');
+   391→    }
+   392→  }
+   393→
+   394→  // nombre de NPC
+   395→  if (e.kind === 'npc') {
+   396→    text(g, (e as unknown as { dispName: string }).dispName, sx(e.x), dy - 10, 10, '#c8e8f8', 'center');
+   397→  }
+   398→  if (e.kind === 'companion') {
+   399→    text(g, 'Ilwen', sx(e.x), dy - 10, 9, '#a8e8b0', 'center');
+   400→    bar(g, sx(e.x) - 10, dy - 4, 20, 2, e.hp / e.maxHp, COL.sta, COL.staBg);
+   401→  }
+   402→}
+   403→
+   404→// ---------------- Iconos de estado ----------------
+   405→
+   406→function drawStatusIcons(g: Game, en: Enemy, cx: number, y: number) {
+   407→  const ctx = g.ctx;
+   408→  const list = en.statuses.filter(s => s.t > 0).slice(-3);
+   409→  const marked = (en.marked ?? 0) > 0;
+   410→  const total = list.length + (marked ? 1 : 0);
+   411→  if (total === 0) return;
+   412→  let ix = cx - (total * 9) / 2 + 1;
+   413→  for (const s of list) {
+   414→    drawStatusIcon(g, s.kind, ix, y, s.t / (s.kind === 'quemado' ? 3 : 2.5));
+   415→    ix += 10;
+   416→  }
+   417→  if (marked) {
+   418→    drawMarkIcon(g, ix, y, Math.min(1, (en.marked ?? 0) / 5));
+   419→  }
+   420→}
+   421→
+   422→function drawStatusIcon(g: Game, kind: string, x: number, y: number, fill: number) {
+   423→  const ctx = g.ctx;
+   424→  const flick = Math.sin(g.globalT * 14 + x) * 0.5 + 0.5;
+   425→  if (kind === 'quemado') {
+   426→    // llama
+   427→    ctx.fillStyle = '#ff7830';
+   428→    ctx.fillRect(x + 1, y + 2 + (1 - flick) * 1.5, 4, 3);
+   429→    ctx.fillStyle = '#ffd24a';
+   430→    ctx.fillRect(x + 2, y + (1 - flick) * 2, 2, 3);
+   431→    ctx.fillStyle = '#fff3c0';
+   432→    ctx.fillRect(x + 2, y + 1 + (1 - flick) * 2, 1, 1);
+   433→  } else if (kind === 'congelado') {
+   434→    // cristal
+   435→    ctx.fillStyle = '#a0e8ff';
+   436→    ctx.fillRect(x + 2, y - 1, 2, 2);
+   437→    ctx.fillRect(x + 1, y + 1, 4, 2);
+   438→    ctx.fillRect(x + 2, y + 3, 2, 2);
+   439→    ctx.fillStyle = '#f0fbff';
+   440→    ctx.fillRect(x + 2, y + 1, 1, 1);
+   441→  }
+   442→  // mini-barra de tiempo restante
+   443→  ctx.fillStyle = 'rgba(8,8,16,0.75)';
+   444→  ctx.fillRect(x - 1, y + 6, 8, 2);
+   445→  ctx.fillStyle = kind === 'quemado' ? '#ff9040' : '#a0e8ff';
+   446→  ctx.fillRect(x - 1, y + 6, 8 * Math.max(0, Math.min(1, fill)), 2);
+   447→}
+   448→
+   449→function drawMarkIcon(g: Game, x: number, y: number, fill: number) {
+   450→  const ctx = g.ctx;
+   451→  const pulse = Math.sin(g.globalT * 6) * 0.5 + 0.5;
+   452→  // marca de onda / ojo del Eco
+   453→  ctx.strokeStyle = `rgba(224,138,208,${0.6 + pulse * 0.4})`;
+   454→  ctx.lineWidth = 1;
+   455→  ctx.beginPath();
+   456→  ctx.arc(x + 3, y + 2, 2.5 + pulse * 1.2, 0, Math.PI * 2);
+   457→  ctx.stroke();
+   458→  ctx.fillStyle = '#e08ad0';
+   459→  ctx.fillRect(x + 2, y + 1, 2, 2);
+   460→  ctx.fillStyle = 'rgba(8,8,16,0.75)';
+   461→  ctx.fillRect(x - 1, y + 6, 8, 2);
+   462→  ctx.fillStyle = '#e08ad0';
+   463→  ctx.fillRect(x - 1, y + 6, 8 * fill, 2);
+   464→}
+   465→
+   466→// ---------------- FX de combate ----------------
+   467→
+   468→function drawCombatFx(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
+   469→  const ctx = g.ctx;
+   470→  // telegrafías
+   471→  for (const t of g.telegraphs) {
+   472→    const a = 0.35 + Math.sin(g.globalT * 12) * 0.15;
+   473→    ctx.strokeStyle = `rgba(255,80,64,${a})`;
+   474→    ctx.lineWidth = 2;
+   475→    ctx.beginPath();
+   476→    ctx.arc(sx(t.x), sy(t.y), t.r * ZOOM, 0, Math.PI * 2);
+   477→    ctx.stroke();
+   478→    ctx.fillStyle = `rgba(255,80,64,${0.12 * (1 - t.t / t.maxT) + 0.08})`;
+   479→    ctx.beginPath();
+   480→    ctx.arc(sx(t.x), sy(t.y), t.r * ZOOM * (1 - t.t / t.maxT), 0, Math.PI * 2);
+   481→    ctx.fill();
+   482→  }
+   483→  // ondas
+   484→  for (const w of g.waves) {
+   485→    ctx.strokeStyle = `rgba(180,143,255,${1 - w.r / w.maxR})`;
+   486→    ctx.lineWidth = 4;
+   487→    ctx.beginPath();
+   488→    ctx.arc(sx(w.x), sy(w.y), w.r * ZOOM, 0, Math.PI * 2);
+   489→    ctx.stroke();
+   490→  }
+   491→  // proyectiles
+   492→  for (const pr of g.projectiles) {
+   493→    const x = sx(pr.x), y = sy(pr.y);
+   494→    if (pr.sprite === 'p_fire') {
+   495→      ctx.fillStyle = '#ff7830';
+   496→      ctx.fillRect(x - 3, y - 3, 6, 6);
+   497→      ctx.fillStyle = '#ffd24a';
+   498→      ctx.fillRect(x - 1, y - 1, 4, 4);
+   499→    } else if (pr.sprite === 'p_ice') {
+   500→      ctx.fillStyle = '#a0e8ff';
+   501→      ctx.fillRect(x - 3, y - 1, 6, 2);
+   502→      ctx.fillRect(x - 1, y - 3, 2, 6);
+   503→      ctx.fillStyle = '#f0fbff';
+   504→      ctx.fillRect(x - 1, y - 1, 2, 2);
+   505→    } else if (pr.sprite === 'p_arrow') {
+   506→      const ang = Math.atan2(pr.vy, pr.vx);
+   507→      ctx.save();
+   508→      ctx.translate(x, y);
+   509→      ctx.rotate(ang);
+   510→      ctx.fillStyle = '#d8c8a0';
+   511→      ctx.fillRect(-5, -1, 10, 2);
+   512→      ctx.fillStyle = '#e8e4d8';
+   513→      ctx.fillRect(3, -2, 3, 4);
+   514→      ctx.restore();
+   515→    } else if (pr.sprite === 'orb' || pr.sprite === 'shard' || pr.sprite === 'nota') {
+   516→      // Acto II: proyectiles de la expansión (marea, escarcha, canto)
+   517→      drawExpansionProjectile(ctx, pr.sprite, x, y, pr.radius, ZOOM, g.globalT);
+   518→    } else {
+   519→      ctx.fillStyle = '#e8d0ff';
+   520→      ctx.fillRect(x - 2, y - 2, 4, 4);
+   521→    }
+   522→  }
+   523→}
+   524→
+   525→// ---------------- Iluminación ----------------
+   526→
+   527→// Canvas offscreen para la capa de oscuridad: los agujeros de luz
+   528→// (destination-out) deben borrar SOLO la oscuridad. Si se hace sobre el
+   529→// canvas principal, se borra el mundo dibujado y los "huecos" dejan ver el
+   530→// fondo de la página (negro) → pantallas negras de noche y en la cripta.
+   531→let lightCv: HTMLCanvasElement | null = null;
+   532→let lightCtx: CanvasRenderingContext2D | null = null;
+   533→function getLightCanvas(): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
+   534→  if (!lightCv) {
+   535→    lightCv = document.createElement('canvas');
+   536→    lightCv.width = VIEW_W; lightCv.height = VIEW_H;
+   537→    lightCtx = lightCv.getContext('2d');
+   538→  }
+   539→  return { canvas: lightCv, ctx: lightCtx! };
+   540→}
+   541→
+   542→function drawLighting(g: Game) {
+   543→  const ctx = g.ctx;
+   544→  const p = g.player;
+   545→  if (!p) return;
+   546→  // oscuridad por noche (rampa suave)
+   547→  const dayLight = Math.max(0.1, Math.sin(g.dayT * Math.PI * 2) * 1.25 + 0.25);
+   548→  let darkness = (1 - Math.min(1, dayLight)) * 0.62;
+   549→  if (g.map.dark) {
+   550→    // la cripta parpadea como antorchas lejanas
+   551→    darkness = 0.8 + Math.sin(g.globalT * 11) * 0.02 + Math.sin(g.globalT * 23 + 1.7) * 0.015;
+   552→  }
+   553→  if (darkness > 0.02) {
+   554→    const lc = getLightCanvas();
+   555→    const lx = lc.ctx;
+   556→    // 1) capa de oscuridad con alpha real (0.62 noche / 0.8 cripta)
+   557→    lx.globalCompositeOperation = 'source-over';
+   558→    lx.clearRect(0, 0, VIEW_W, VIEW_H);
+   559→    lx.globalAlpha = Math.min(1, darkness);
+   560→    lx.fillStyle = g.map.dark ? '#060810' : '#0a1030';
+   561→    lx.fillRect(0, 0, VIEW_W, VIEW_H);
+   562→    lx.globalAlpha = 1;
+   563→    // 2) agujeros de luz sobre la capa (borran oscuridad, no mundo)
+   564→    lx.globalCompositeOperation = 'destination-out';
+   565→    const px = p.x * ZOOM - g.camX, py = (p.y - 6) * ZOOM - g.camY;
+   566→    const grad = lx.createRadialGradient(px, py, 10, px, py, g.map.dark ? 130 : 170);
+   567→    grad.addColorStop(0, 'rgba(0,0,0,0.95)');
+   568→    grad.addColorStop(1, 'rgba(0,0,0,0)');
+   569→    lx.fillStyle = grad;
+   570→    lx.fillRect(px - 200, py - 200, 400, 400);
+   571→    // santuarios iluminan (con pulso suave)
+   572→    for (const pr of g.map.props) {
+   573→      if (pr.kind !== 'sanctuary') continue;
+   574→      const sxp = pr.x * TILE * ZOOM + 8 - g.camX, syp = pr.y * TILE * ZOOM - g.camY;
+   575→      if (sxp < -100 || syp < -100 || sxp > VIEW_W + 100 || syp > VIEW_H + 100) continue;
+   576→      const rad = 80 + Math.sin(g.globalT * 2 + pr.x) * 5;
+   577→      const grad2 = lx.createRadialGradient(sxp, syp, 4, sxp, syp, rad);
+   578→      grad2.addColorStop(0, 'rgba(0,0,0,0.7)');
+   579→      grad2.addColorStop(1, 'rgba(0,0,0,0)');
+   580→      lx.fillStyle = grad2;
+   581→      lx.fillRect(sxp - 95, syp - 95, 190, 190);
+   582→    }
+   583→    lx.globalCompositeOperation = 'source-over';
+   584→    // 3) componer la capa sobre el mundo: los huecos revelan el escenario
+   585→    ctx.drawImage(lc.canvas, 0, 0);
+   586→    if (g.map.dark) {
+   587→      ctx.fillStyle = 'rgba(30,20,60,0.18)';
+   588→      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   589→    } else if (darkness > 0.25) {
+   590→      // noche exterior: tinte azul frío
+   591→      ctx.fillStyle = `rgba(16,22,52,${darkness * 0.22})`;
+   592→      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   593→    }
+   594→  }
+   595→
+   596→  // amanecer/atardecer: tinte cálido en las transiciones del ciclo
+   597→  if (!g.map.dark) {
+   598→    const warm = Math.exp(-Math.pow(g.dayT - 0.52, 2) / (2 * 0.075 * 0.075));
+   599→    if (warm > 0.05) {
+   600→      ctx.fillStyle = `rgba(255,148,74,${warm * 0.13})`;
+   601→      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   602→    }
+   603→  }
+   604→
+   605→  // niebla del presente (además de las bandas de fx.ts)
+   606→  if (g.epoch === 'presente' && g.map.epochDiffs.length > 0) {
+   607→    ctx.save();
+   608→    ctx.globalAlpha = 0.1;
+   609→    ctx.fillStyle = '#9ec4b4';
+   610→    for (let i = 0; i < 4; i++) {
+   611→      const fx = ((g.globalT * 12 + i * 260) % (VIEW_W + 300)) - 150;
+   612→      const fy = 80 + i * 110 + Math.sin(g.globalT * 0.8 + i) * 18;
+   613→      ctx.beginPath();
+   614→      ctx.ellipse(fx, fy, 130, 24, 0, 0, Math.PI * 2);
+   615→      ctx.fill();
+   616→    }
+   617→    ctx.restore();
+   618→  }
+   619→  // destello de daño
+   620→  const pl = g.player!;
+   621→  if (pl.lastHitT > 0) {
+   622→    ctx.fillStyle = `rgba(200,40,40,${pl.lastHitT * 0.7})`;
+   623→    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   624→  }
+   625→  // viñeta
+   626→  const vg = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.45, VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.85);
+   627→  vg.addColorStop(0, 'rgba(0,0,0,0)');
+   628→  vg.addColorStop(1, 'rgba(0,0,0,0.32)');
+   629→  ctx.fillStyle = vg;
+   630→  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   631→
+   632→  // viñeta roja pulsante con poca vida
+   633→  const hpPct = pl.hp / pl.maxHp;
+   634→  if (hpPct < 0.3 && pl.hp > 0) {
+   635→    const severity = 1 - hpPct / 0.3;               // 0 → 1
+   636→    const pulse = 0.5 + 0.5 * Math.sin(g.globalT * 5);
+   637→    const a = (0.10 + pulse * 0.10) * (0.4 + severity * 0.6);
+   638→    const rg = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.3, VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.78);
+   639→    rg.addColorStop(0, 'rgba(160,20,30,0)');
+   640→    rg.addColorStop(1, `rgba(180,20,30,${a})`);
+   641→    ctx.fillStyle = rg;
+   642→    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   643→  }
+   644→}
+   645→
+   646→// ---------------- Números de daño flotantes ----------------
+   647→
+   648→const FLOAT_SPECIAL = new Set(['QUEBRADO', '¡PARADA!', '¡REMATE!', '¡CRÍTICO!']);
+   649→
+   650→function drawFloats(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
+   651→  const ctx = g.ctx;
+   652→  for (const f of g.floats) {
+   653→    const alpha = Math.min(1, f.t * 2.2);
+   654→    if (alpha <= 0) continue;
+   655→    // pop: más grande los primeros ~0.15 s
+   656→    const pop = f.t > 0.74 ? 1.38 : 1;
+   657→    const special = FLOAT_SPECIAL.has(f.text);
+   658→    let size = f.size * 1.6 * pop;
+   659→    let color = f.color;
+   660→    if (special) { color = '#ffe86a'; size *= 1.3; }
+   661→    else if (f.color === '#ffd24a') size *= 1.15; // críticos dorados
+   662→    else if (f.color === '#ff7060') size *= 1.08; // daño propio
+   663→    const x = sx(f.x), y = sy(f.y);
+   664→    ctx.globalAlpha = alpha;
+   665→    ctx.font = fBody(size);
+   666→    ctx.textAlign = 'center';
+   667→    ctx.textBaseline = 'top';
+   668→    // contorno oscuro (4 direcciones + diagonal)
+   669→    ctx.fillStyle = 'rgba(14,10,20,0.9)';
+   670→    ctx.fillText(f.text, x + 1, y);
+   671→    ctx.fillText(f.text, x - 1, y);
+   672→    ctx.fillText(f.text, x, y + 1);
+   673→    ctx.fillText(f.text, x, y - 1);
+   674→    ctx.fillText(f.text, x + 1, y + 1);
+   675→    ctx.fillStyle = color;
+   676→    ctx.fillText(f.text, x, y);
+   677→    if (special) {
+   678→      // subrayado brillante para los remates
+   679→      ctx.fillStyle = 'rgba(255,232,106,0.8)';
+   680→      ctx.fillRect(x - size * f.text.length * 0.22, y + size * 1.05, size * f.text.length * 0.44, 1.5);
+   681→    }
+   682→  }
+   683→  ctx.globalAlpha = 1;
+   684→}
+   685→
+   686→function drawInteractPrompt(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
+   687→  if (g.state !== 'play') return;
+   688→  const it = g.nearestInteract();
+   689→  if (!it) return;
+   690→  const p = g.player!;
+   691→  const x = sx(p.x), y = sy(p.y - 26);
+   692→  const ctx = g.ctx;
+   693→  ctx.fillStyle = 'rgba(10,12,20,0.85)';
+   694→  ctx.fillRect(x - 8, y - 9, 16, 13);
+   695→  ctx.strokeStyle = COL.gold;
+   696→  ctx.strokeRect(x - 8, y - 9, 16, 13);
+   697→  text(g, 'E', x, y - 8, 10, COL.gold, 'center', true);
+   698→  text(g, it.label, x, y - 24, 13, '#e8e4d8', 'center');
+   699→}
+   700→
+   701→// ---------------- HUD ----------------
+   702→
+   703→function drawHud(g: Game) {
+   704→  const ctx = g.ctx;
+   705→  const p = g.player;
+   706→  if (!p) return;
+   707→
+   708→  // ---- panel del jugador (arriba-izquierda) ----
+   709→  panel(g, 8, 8, 224, 74);
+   710→  // retrato pixel del Portador (respira y parpadea)
+   711→  const blinkHud = (g.globalT % 3.9) < 0.13;
+   712→  const hudBob = Math.round(Math.sin(g.globalT * 2.1)) * 1;
+   713→  ctx.save();
+   714→  ctx.beginPath();
+   715→  ctx.rect(14, 14, 44, 44);
+   716→  ctx.clip();
+   717→  ctx.fillStyle = '#141020';
+   718→  ctx.fillRect(14, 14, 44, 44);
+   719→  drawPortrait(ctx, p.discipline === 'alba' ? 'hero_alba' : 'hero_tejedor', 14 + (44 - 28 * 1.06) / 2, 14 + (44 - 40 * 1.06) / 2 + hudBob, 1.06, blinkHud);
+   720→  ctx.restore();
+   721→  ctx.strokeStyle = '#5a4a30';
+   722→  ctx.strokeRect(14, 14, 44, 44);
+   723→  const bx = 66, bw = 158;
+   724→  text(g, `${p.name} · Nv ${p.level}`, bx, 12, 14, COL.goldSoft);
+   725→  bar(g, bx, 30, bw, 10, p.hp / p.maxHp, COL.hp, COL.hpBg);
+   726→  text(g, `${Math.ceil(p.hp)}/${p.maxHp}`, bx + bw / 2, 30, 13, '#fff', 'center');
+   727→  bar(g, bx, 44, bw, 7, p.sta / p.maxSta, COL.sta, COL.staBg);
+   728→  bar(g, bx, 55, bw, 7, p.res / p.maxRes, COL.res, COL.resBg);
+   729→  text(g, 'RES', bx + 2, 55, 12, '#0a2a30');
+   730→  // xp
+   731→  bar(g, 14, 64, 210, 5, p.xp / g.xpNext(p.level), COL.xp, '#241a30');
+   732→  text(g, `XP`, 224, 62, 12, COL.dim, 'right');
+   733→  // pociones y oro
+   734→  text(g, `${p.gold}`, 242, 10, 15, COL.gold);
+   735→  text(g, 'coronas', 242, 26, 12, COL.dim);
+   736→  text(g, `${p.potions}× poción (F)`, 242, 42, 13, p.potions > 0 ? '#f0a0b8' : COL.dim);
+   737→  if (p.weaponPlus > 0) text(g, `arma +${p.weaponPlus}`, 242, 58, 13, '#d8e0f0');
+   738→
+   739→  // ---- minimapa (arriba-derecha) ----
+   740→  if (g.miniCanvas) {
+   741→    const mw = 140;
+   742→    const mh = Math.round((g.map.h / g.map.w) * mw);
+   743→    const mx = VIEW_W - mw - 10, my = 10;
+   744→    panel(g, mx - 3, my - 3, mw + 6, mh + 6);
+   745→    ctx.drawImage(g.miniCanvas, mx, my, mw, mh);
+   746→    // puntos
+   747→    for (const n of g.npcs) {
+   748→      ctx.fillStyle = '#8ecae8';
+   749→      ctx.fillRect(mx + (n.x / (g.map.w * TILE)) * mw - 1, my + (n.y / (g.map.h * TILE)) * mh - 1, 3, 3);
+   750→    }
+   751→    for (const e of g.enemies) {
+   752→      if (e.dead || e.etype === 'guardian') continue;
+   753→      if (!e.aggro) continue;
+   754→      ctx.fillStyle = '#ff7060';
+   755→      ctx.fillRect(mx + (e.x / (g.map.w * TILE)) * mw - 1, my + (e.y / (g.map.h * TILE)) * mh - 1, 3, 3);
+   756→    }
+   757→    // santuarios con ping pulsante
+   758→    for (const pr of g.map.props) {
+   759→      if (pr.kind !== 'sanctuary') continue;
+   760→      const px2 = mx + (pr.x / g.map.w) * mw;
+   761→      const py2 = my + (pr.y / g.map.h) * mh;
+   762→      const pingT = (g.globalT % 1.4) / 1.4;
+   763→      ctx.globalAlpha = 0.8 * (1 - pingT);
+   764→      ctx.strokeStyle = '#8ef0ff';
+   765→      ctx.lineWidth = 1;
+   766→      ctx.beginPath();
+   767→      ctx.arc(px2, py2, 2 + pingT * 8, 0, Math.PI * 2);
+   768→      ctx.stroke();
+   769→      ctx.globalAlpha = 1;
+   770→      ctx.fillStyle = '#8ef0ff';
+   771→      ctx.fillRect(px2 - 2, py2 - 2, 4, 4);
+   772→    }
+   773→    const px = mx + (p.x / (g.map.w * TILE)) * mw;
+   774→    const py = my + (p.y / (g.map.h * TILE)) * mh;
+   775→    ctx.fillStyle = '#fff';
+   776→    ctx.fillRect(px - 2, py - 2, 4, 4);
+   777→    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+   778→    ctx.strokeRect(px - 4, py - 4, 8, 8);
+   779→    // icono día/noche
+   780→    const night = g.dayT > 0.7 || g.dayT < 0.08;
+   781→    text(g, night ? '☾' : '☀', mx + mw - 12, my + mh + 8, 14, night ? '#a8b8e8' : '#ffe86a');
+   782→    text(g, g.map.name, mx, my + mh + 8, 13, COL.dim);
+   783→  }
+   784→
+   785→  // ---- habilidades (abajo-centro) ----
+   786→  const skills = SKILLS[p.discipline];
+   787→  const sw = 52, sh = 46, gap = 8;
+   788→  const total = skills.length * sw + (skills.length - 1) * gap;
+   789→  const sx0 = (VIEW_W - total) / 2, sy0 = VIEW_H - sh - 12;
+   790→  for (let i = 0; i < skills.length; i++) {
+   791→    const sk = skills[i];
+   792→    const x = sx0 + i * (sw + gap);
+   793→    const y = sy0;
+   794→    panel(g, x, y, sw, sh, p.cds[i] > 0 ? '#3a3448' : COL.panelBorder);
+   795→    text(g, sk.icon, x + sw / 2, y + 5, 16, p.res >= sk.cost ? COL.goldSoft : '#666', 'center');
+   796→    text(g, sk.name.split(' ')[0], x + sw / 2, y + 25, 11, p.res >= sk.cost ? COL.text : COL.dim, 'center');
+   797→    if (p.cds[i] > 0) {
+   798→      ctx.fillStyle = 'rgba(10,10,20,0.7)';
+   799→      ctx.fillRect(x, y, sw, sh * Math.min(1, p.cds[i] / sk.cd));
+   800→      text(g, `${p.cds[i].toFixed(1)}`, x + sw / 2, y + 14, 12, '#fff', 'center');
+   801→    } else if (p.res < sk.cost) {
+   802→      text(g, `${sk.cost}`, x + sw / 2, y + 12, 12, COL.danger, 'center');
+   803→    }
+   804→    text(g, `${i + 1}`, x + 3, y + 2, 10, COL.gold, 'left', true);
+   805→  }
+   806→
+   807→  // ---- misión (abajo-derecha) ----
+   808→  const q = QUESTS[g.questIdx];
+   809→  if (q) {
+   810→    const lines = wrapText(g.questProgressText() ?? q.steps[g.questStep], 30);
+   811→    const qw = 216;
+   812→    const qh = 34 + lines.length * 14;
+   813→    panel(g, VIEW_W - qw - 10, VIEW_H - qh - 10, qw, qh);
+   814→    text(g, '◆ ' + q.name, VIEW_W - qw, VIEW_H - qh + 2, 13, COL.quest);
+   815→    lines.forEach((l, i) => text(g, l, VIEW_W - qw, VIEW_H - qh + 20 + i * 14, 14, COL.text));
+   816→  }
+   817→
+   818→  // ---- barra del jefe (generalizada Acto II: Guardián / Sirena / Gólem) ----
+   819→  if (g.bossActive && g.bossRef && !g.bossRef.dead) {
+   820→    const boss = g.bossRef;
+   821→    const bw2 = 420, bx2 = (VIEW_W - bw2) / 2, by2 = 16;
+   822→    const maxPhase = boss.etype === 'golem' ? 2 : 3;
+   823→    textShadow(g, ENEMY_DEFS[boss.etype].name, VIEW_W / 2, by2 - 14, 12, COL.boss, '#000', 'center', true);
+   824→    bar(g, bx2, by2, bw2, 12, boss.hp / boss.maxHp, '#8a4ad0', COL.bossBg);
+   825→    if (boss.maxSta > 0) {
+   826→      bar(g, bx2, by2 + 14, bw2, 5, boss.sta / boss.maxSta, '#7ee8ff', '#12303a');
+   827→      text(g, 'QUIEBRE', bx2 + bw2 + 6, by2 + 9, 11, '#7ee8ff');
+   828→    }
+   829→    text(g, `FASE ${boss.phase}/${maxPhase}`, bx2 - 6, by2 + 2, 12, COL.boss, 'right');
+   830→  }
+   831→
+   832→  // ---- toasts (entrada deslizante desde la derecha + fade) ----
+   833→  let ty = VIEW_H - 96;
+   834→  for (let i = g.toasts.length - 1; i >= 0; i--) {
+   835→    const t = g.toasts[i];
+   836→    const enter = Math.max(0, Math.min(1, (3.4 - t.t) / 0.28));
+   837→    const ease = 1 - Math.pow(1 - enter, 3);
+   838→    const offX = (1 - ease) * 300;
+   839→    ctx.globalAlpha = Math.min(1, t.t * 2) * (0.35 + 0.65 * ease);
+   840→    const lines = wrapText(t.text, 52);
+   841→    const th = lines.length * 15 + 10;
+   842→    const tw = Math.min(430, Math.max(...lines.map(l => l.length)) * 6.4 + 20);
+   843→    const tx = 12 + offX;
+   844→    panel(g, tx, ty - th + 14, tw, th, 'rgba(90,74,48,0.6)');
+   845→    lines.forEach((l, j) => text(g, l, tx + 10, ty - th + 20 + j * 15, 14, t.color ?? COL.text));
+   846→    ctx.globalAlpha = 1;
+   847→    ty -= th + 6;
+   848→  }
+   849→
+   850→  // ---- pista contextual ----
+   851→  if (g.state === 'play') {
+   852→    let hint: string | null = null;
+   853→    if (p.hasEcho && !g.flags.usedEpoch && g.map.epochDiffs.length > 0) hint = 'Pulsa Q para alternar entre el presente y el pasado';
+   854→    else if (g.questIdx === 0 && !g.flags.hintMove) hint = 'WASD para moverte · clic izq: atacar · Espacio: esquivar · clic der: parar · E: interactuar';
+   855→    if (hint) {
+   856→      const lines = wrapText(hint, 60);
+   857→      ctx.fillStyle = 'rgba(8,10,18,0.7)';
+   858→      ctx.fillRect(0, VIEW_H - 24 - lines.length * 14, VIEW_W, lines.length * 14 + 10);
+   859→      lines.forEach((l, i) => text(g, l, VIEW_W / 2, VIEW_H - 20 - (lines.length - 1 - i) * 14, 14, '#c8d0e0', 'center'));
+   860→    }
+   861→  }
+   862→}
+   863→
+   864→// ---------------- Overlays a pantalla completa ----------------
+   865→
+   866→function drawOverlays(g: Game) {
+   867→  const ctx = g.ctx;
+   868→  const p = g.player;
+   869→
+   870→  // 1) destello de pantalla (impactos en 'lighter', blancos normales)
+   871→  if (g.flashT > 0) {
+   872→    const a = Math.min(0.85, (g.flashT / 0.18) * 0.75);
+   873→    const isWhite = g.flashColor.toLowerCase() === '#ffffff';
+   874→    ctx.save();
+   875→    if (isWhite) {
+   876→      ctx.globalCompositeOperation = 'source-over';
+   877→      ctx.globalAlpha = a;
+   878→      ctx.fillStyle = '#ffffff';
+   879→    } else {
+   880→      ctx.globalCompositeOperation = 'lighter';
+   881→      ctx.globalAlpha = a;
+   882→      ctx.fillStyle = g.flashColor;
+   883→    }
+   884→    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   885→    ctx.restore();
+   886→  }
+   887→
+   888→  // 2) overlay de memoria (vitral-eco): no bloquea el input
+   889→  if (g.memoryReveal) drawMemoryOverlay(g);
+   890→
+   891→  // 3) banner dramático de jefe
+   892→  if (g.bossBannerT > 0) drawBossBanner(g);
+   893→
+   894→  void p;
+   895→}
+   896→
+   897→// ---- vitral-eco de memoria ----
+   898→function drawMemoryOverlay(g: Game) {
+   899→  const ctx = g.ctx;
+   900→  const mem = g.memoryReveal!;
+   901→  const a = memoryAlpha(g);
+   902→  if (a <= 0.01) return;
+   903→  const lines = wrapText(mem.text, 44);
+   904→  const w = 580;
+   905→  const h = 96 + lines.length * 18 + 34;
+   906→  const x = (VIEW_W - w) / 2;
+   907→  const y = (VIEW_H - h) / 2;
+   908→  const pulse = 0.5 + 0.5 * Math.sin(g.globalT * 2.2);
+   909→
+   910→  ctx.save();
+   911→  ctx.globalAlpha = a;
+   912→
+   913→  // resplandor trasero
+   914→  ctx.globalCompositeOperation = 'lighter';
+   915→  const glow = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, 40, VIEW_W / 2, VIEW_H / 2, 340);
+   916→  glow.addColorStop(0, `rgba(240,200,120,${0.10 + pulse * 0.05})`);
+   917→  glow.addColorStop(1, 'rgba(240,200,120,0)');
+   918→  ctx.fillStyle = glow;
+   919→  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   920→  ctx.globalCompositeOperation = 'source-over';
+   921→
+   922→  // panel vitral
+   923→  ctx.fillStyle = 'rgba(14,12,32,0.94)';
+   924→  ctx.fillRect(x, y, w, h);
+   925→  ctx.fillStyle = 'rgba(30,24,56,0.5)';
+   926→  ctx.fillRect(x, y, w, 10);
+   927→  ctx.fillRect(x, y + h - 10, w, 10);
+   928→
+   929→  // marco ondulado (vitral) — segmentos con seno
+   930→  const wave = (x0: number, y0: number, x1: number, y1: number, color: string, lw: number, amp: number, freq: number, ph: number) => {
+   931→    ctx.strokeStyle = color;
+   932→    ctx.lineWidth = lw;
+   933→    ctx.beginPath();
+   934→    const steps = 24;
+   935→    for (let i = 0; i <= steps; i++) {
+   936→      const tt = i / steps;
+   937→      const wx = x0 + (x1 - x0) * tt;
+   938→      const wy = y0 + (y1 - y0) * tt + Math.sin(tt * freq + ph) * amp;
+   939→      if (i === 0) ctx.moveTo(wx, wy); else ctx.lineTo(wx, wy);
+   940→    }
+   941→    ctx.stroke();
+   942→  };
+   943→  const g1 = `rgba(255,233,160,${0.75 + pulse * 0.2})`;
+   944→  wave(x + 3, y + 5, x + w - 3, y + 5, g1, 2, 2.2, 9, 0);
+   945→  wave(x + 3, y + h - 5, x + w - 3, y + h - 5, g1, 2, 2.2, 9, 2);
+   946→  wave(x + 5, y + 3, x + 5, y + h - 3, 'rgba(200,180,255,0.5)', 1.5, 2, 8, 1);
+   947→  wave(x + w - 5, y + 3, x + w - 5, y + h - 3, 'rgba(200,180,255,0.5)', 1.5, 2, 8, 3);
+   948→  // esquinas doradas
+   949→  ctx.fillStyle = COL.gold;
+   950→  for (const [cxx, cyy] of [[x + 6, y + 8], [x + w - 6, y + 8], [x + 6, y + h - 8], [x + w - 6, y + h - 8]]) {
+   951→    ctx.fillRect(cxx - 2, cyy - 2, 4, 4);
+   952→  }
+   953→
+   954→  // motivo de onda sobre el título (la marca del Eco)
+   955→  ctx.strokeStyle = `rgba(142,240,255,${0.5 + pulse * 0.3})`;
+   956→  ctx.lineWidth = 1.5;
+   957→  ctx.beginPath();
+   958→  for (let i = 0; i <= 40; i++) {
+   959→    const wx = VIEW_W / 2 - 60 + i * 3;
+   960→    const wy = y + 26 + Math.sin(i * 0.5 + g.globalT * 2.4) * 3;
+   961→    if (i === 0) ctx.moveTo(wx, wy); else ctx.lineTo(wx, wy);
+   962→  }
+   963→  ctx.stroke();
+   964→
+   965→  // título y texto
+   966→  textShadow(g, mem.title, VIEW_W / 2, y + 36, 15, COL.goldSoft, '#000', 'center', true);
+   967→  lines.forEach((l, i) => text(g, l, VIEW_W / 2, y + 62 + i * 18, 16, COL.text, 'center'));
+   968→
+   969→  // marca de onda inferior
+   970→  ctx.fillStyle = `rgba(255,233,160,${0.4 + pulse * 0.3})`;
+   971→  for (let i = 0; i < 5; i++) {
+   972→    const wob = Math.sin(g.globalT * 3 + i) * 2;
+   973→    ctx.fillRect(VIEW_W / 2 - 24 + i * 12, y + h - 24 + wob, 3, 3);
+   974→  }
+   975→  ctx.restore();
+   976→}
+   977→
+   978→// ---- banner de jefe ----
+   979→function drawBossBanner(g: Game) {
+   980→  const ctx = g.ctx;
+   981→  const { slide, out, elapsed } = bannerInfo(g);
+   982→  if (out <= 0.01) return;
+   983→  const ease = 1 - Math.pow(1 - slide, 3);
+   984→  const offsetY = -100 + ease * 104;
+   985→  const tremble = Math.sin(elapsed * 42) * 1.1 * (1 - slide);
+   986→  const bandH = 82;
+   987→
+   988→  ctx.save();
+   989→  ctx.globalAlpha = out;
+   990→
+   991→  // banda superior
+   992→  const grad = ctx.createLinearGradient(0, offsetY, 0, offsetY + bandH);
+   993→  grad.addColorStop(0, 'rgba(10,6,20,0.95)');
+   994→  grad.addColorStop(1, 'rgba(26,12,40,0.88)');
+   995→  ctx.fillStyle = grad;
+   996→  ctx.fillRect(0, offsetY, VIEW_W, bandH);
+   997→  // líneas decorativas
+   998→  ctx.fillStyle = 'rgba(176,143,255,0.85)';
+   999→  ctx.fillRect(0, offsetY + bandH - 3, VIEW_W, 2);
+  1000→  ctx.fillStyle = 'rgba(255,233,160,0.5)';
+  1001→  ctx.fillRect(0, offsetY + bandH, VIEW_W, 1);
+  1002→  ctx.fillStyle = 'rgba(176,143,255,0.4)';
+  1003→  ctx.fillRect(0, offsetY + 2, VIEW_W, 1);
+  1004→
+  1005→  // rombos laterales
+  1006→  const diamond = (dx: number, dy: number, s: number, col: string) => {
+  1007→    ctx.fillStyle = col;
+  1008→    ctx.beginPath();
+  1009→    ctx.moveTo(dx, dy - s); ctx.lineTo(dx + s, dy); ctx.lineTo(dx, dy + s); ctx.lineTo(dx - s, dy);
+  1010→    ctx.closePath();
+  1011→    ctx.fill();
+  1012→  };
+  1013→  const midY = offsetY + bandH / 2 + 4;
+  1014→  const pulse = 0.5 + 0.5 * Math.sin(elapsed * 5);
+  1015→  diamond(90, midY, 5 + pulse * 1.5, `rgba(176,143,255,${0.6 + pulse * 0.4})`);
+  1016→  diamond(VIEW_W - 90, midY, 5 + pulse * 1.5, `rgba(176,143,255,${0.6 + pulse * 0.4})`);
+  1017→  ctx.strokeStyle = 'rgba(176,143,255,0.35)';
+  1018→  ctx.lineWidth = 1;
+  1019→  ctx.beginPath();
+  1020→  ctx.moveTo(110, midY); ctx.lineTo(240, midY);
+  1021→  ctx.moveTo(VIEW_W - 110, midY); ctx.lineTo(VIEW_W - 240, midY);
+  1022→  ctx.stroke();
+  1023→
+  1024→  // textos con temblor sutil
+  1025→  textShadow(g, g.bossBannerText, VIEW_W / 2 + tremble, offsetY + 16, 21, COL.boss, '#000', 'center', true);
+  1026→  text(g, g.bossBannerSub, VIEW_W / 2 - tremble, offsetY + 52, 14, 'rgba(200,190,230,0.9)', 'center');
+  1027→  ctx.restore();
+  1028→}
+  1029→

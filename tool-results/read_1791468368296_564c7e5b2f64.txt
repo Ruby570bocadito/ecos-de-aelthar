@@ -1,0 +1,555 @@
+     1→// ============================================================
+     2→// ECOS DE AELTHAR — Datos: misiones, diálogos, enemigos, skills
+     3→// Todo el contenido vive en datos (arquitectura del GDD)
+     4→// ============================================================
+     5→
+     6→import type { QuestDef, DialogueNode, DialogueOption, EnemyType, Element, ToneKind } from './types';
+     7→
+     8→// ---------------- Misiones (cadena principal de la demo) ----------------
+     9→
+    10→export const QUESTS: QuestDef[] = [
+    11→  { id: 'q1', name: 'El Despertar', steps: ['Habla con la Anciana Brisa en la plaza de Lunaris'] },
+    12→  { id: 'q2', name: 'Lobos en la Niebla', steps: ['Caza 3 Lobos de Niebla en el sur del valle (0/3)', 'Vuelve con la Anciana Brisa'] },
+    13→  { id: 'q3', name: 'El Susurro del Bosque', steps: ['Viaja al Bosque Susurrante por el norte', 'Encuentra la Ruina Antigua y toca el Fragmento de Eco'] },
+    14→  { id: 'q4', name: 'La Cripta del Primer Canto', steps: ['Cruza el puente roto cambiando al pasado (Q)', 'Derrota al Guardián Hueco', 'Recupera el Eco de la Voz en el altar'] },
+    15→  { id: 'q5', name: 'Ecos de Esperanza', steps: ['Regresa con la Anciana Brisa a Lunaris'] },
+    16→  // ------- ACTO II · Las Notas Perdidas (expansión) -------
+    17→  { id: 'q6', name: 'El Rumor del Mar', steps: ['Viaja al sur de Lunaris: la Costa de Bruma', 'Habla con Mara, la farera'] },
+    18→  { id: 'q7', name: 'La Sirena sin Canto', steps: ['Encuentra la nave naufragada al este de la costa', 'Derrota a la Sirena Abisal', 'Recupera el Eco de las Mareas en su altar'] },
+    19→  { id: 'q8', name: 'La Aldea que Olvidó su Nombre', steps: ['Viaja a la Aldea de Merrow, al este de la costa', 'Enciende los 3 Faroles del Recuerdo (cambia al pasado con Q)', 'Habla con la Espectro de Merrow'] },
+    20→  { id: 'q9', name: 'La Cumbre del Segundo Canto', steps: ['Cruza el paso del noreste del Bosque: Cumbres Heladas', 'Derrota al Gólem de Escarcha', 'Recupera el Eco de las Cumbres en su altar'] },
+    21→  { id: 'q10', name: 'Dos Voces más Fuertes', steps: ['Regresa con la Anciana Brisa a Lunaris'] },
+    22→];
+    23→
+    24→// ---------------- Diálogos ----------------
+    25→
+    26→export interface DialogueCtx { questIdx: number; questStep: number; flags: Record<string, number | boolean>; companion: boolean }
+    27→
+    28→// ---------------- Memorias del Portador (biblia: cada Eco devuelve un recuerdo) ----------------
+    29→// Contrato: screens.ts (pestaña Diario) y hooks.ts (overlay memoryReveal) leen esta tabla.
+    30→
+    31→export interface MemoryDef { id: string; title: string; text: string }
+    32→
+    33→export const MEMORIES: Record<string, MemoryDef> = {
+    34→  mem_nana: {
+    35→    id: 'mem_nana',
+    36→    title: 'Memoria I · La nana',
+    37→    text: 'Una voz aflora en tu mente: alguien te arrulla junto al río y tararea la melodía que llevas silbando desde que despertaste. No ves su rostro, solo el vaivén de su chal. La melodía frena la Niebla... como si la conociera de memoria.',
+    38→  },
+    39→  mem_casa: {
+    40→    id: 'mem_casa',
+    41→    title: 'Memoria II · La casa junto al río',
+    42→    text: 'Una casa de piedra bajo un sauce llorón. Huele a pan y a tinta. En el umbral, dos tazas: una siempre llena. La Niebla se detiene en la valla, como si algo la mantuviera a raya con una canción. Esta casa estaba en Lunaris... antes.',
+    43→  },
+    44→  mem_madre: {
+    45→    id: 'mem_madre',
+    46→    title: 'Memoria III · La madre sin rostro',
+    47→    text: 'Manos que cosen una marca de onda en tu pañoleta. «Cuando no recuerdes quién eres —dice una voz que ya casi no oye su propio canto—, acuérdate de lo que has hecho.» Intentas girarte. El recuerdo se quiebra en silencio, y por un latido, jurarías que ella tampoco puede verte la cara.',
+    48→  },
+    49→  mem_faro: {
+    50→    id: 'mem_faro',
+    51→    title: 'Memoria IV · El farero que contaba barcos',
+    52→    text: 'Un faro pequeño y un hombre delgado que encendía la lámpara con una cerilla y una canción. «Cada barco que pasa —decía— es una nota que el mar se lleva. Yo solo pongo la luz para que la orquesta no se pierda.» Bajas la cerilla. La luz no era tuya, pero la melodía, sí.',
+    53→  },
+    54→  mem_invierno: {
+    55→    id: 'mem_invierno',
+    56→    title: 'Memoria V · El invierno del silencio',
+    57→    text: 'Nieve hasta las rodillas y una hoguera de pastores cantando por turnos para no dormirse. «Si el canto se apaga, el frío entra», decía el mayor. Una noche el viento se llevó las voces, y las montañas aprendieron a guardarlas bajo el hielo... esperando que alguien volviera a pedirlas.',
+    58→  },
+    59→};
+    60→
+    61→// Opciones principales de Toln (compartidas por la variante de tono dominante)
+    62→const TOLN_MAIN: DialogueOption[] = [
+    63→  { text: 'Mejorar arma', next: 'toln_forge' },
+    64→  { text: 'Comprar poción (15 coronas)', next: 'toln_potion', action: 'buy_potion' },
+    65→  { text: '¿Qué sabes de la Noche del Silencio?', next: 'toln_lore' },
+    66→  { text: 'Hasta luego.', next: 'toln_bye' },
+    67→];
+    68→
+    69→const D: Record<string, DialogueNode> = {
+    70→  // ----- Brisa -----
+    71→  brisa_intro: {
+    72→    name: 'Anciana Brisa', portrait: 'brisa',
+    73→    text: 'Despierta, Portador. Tres noches dormiste junto al Santuario y tres noches soñaste con una voz que cantaba bajo la tierra. Esa voz tiene nombre: Aelthar.',
+    74→    next: 'brisa_intro2',
+    75→  },
+    76→  brisa_intro2: {
+    77→    name: 'Anciana Brisa', portrait: 'brisa',
+    78→    text: 'Hace 300 años, en la Noche del Silencio, el dios-tejedor fue asesinado. Su canto se partió en siete Ecos y desde entonces la Niebla Muda borra aldeas, recuerdos y nombres. Como la de Merrow, al sur.',
+    79→    next: 'brisa_intro3',
+    80→  },
+    81→  brisa_intro3: {
+    82→    name: 'Anciana Brisa', portrait: 'brisa',
+    83→    text: 'Tú puedes OÍR los Ecos. El primer fragmento duerme en la Cripta del Primer Canto, al otro lado del Bosque. Pero antes... necesito saber si puedes sostener un arma.',
+    84→    options: [
+    85→      { text: 'Cuéntame qué se perdió aquella noche. Quiero entenderlo, no solo oírlo.', next: 'brisa_lore', tone: 'empatico' },
+    86→      { text: 'Sé usar un arma. Dime qué hay que hacer y lo haré.', next: 'brisa_quest2', tone: 'pragmatico' },
+    87→      { text: 'Vaya: elegido por un dios muerto... y sin propina de por medio.', next: 'brisa_reac_sarc', tone: 'sarcastico' },
+    88→      { text: 'Apártate, vieja. Si ese Eco existe, será mío.', next: 'brisa_reac_amenaz', tone: 'amenazante' },
+    89→    ],
+    90→  },
+    91→  brisa_reac_sarc: {
+    92→    name: 'Anciana Brisa', portrait: 'brisa',
+    93→    text: 'Je... trescientos años esperando un héroe y la Niebla me manda uno con lengua. Está bien, muchacho: ríete mientras el acero aguante. Toma, para empezar: unos lobos con hambre de tu Eco.',
+    94→    next: 'brisa_quest2',
+    95→  },
+    96→  brisa_reac_amenaz: {
+    97→    name: 'Anciana Brisa', portrait: 'brisa',
+    98→    text: 'Esos ojos ya los he visto, Portador, en todos los que subieron a la Cripta con hambre de Eco. Ninguno volvió a cantar. Aquí no se toma lo que se escucha: aprende la diferencia... y ve a cazar esos lobos.',
+    99→    next: 'brisa_quest2',
+   100→  },
+   101→  brisa_lore: {
+   102→    name: 'Anciana Brisa', portrait: 'brisa',
+   103→    text: 'Un Eco es un recuerdo del dios hecho cristal. Quien lo toca revive el pasado de esa tierra: verás el mundo como era, y en algunos lugares podrás alternar entre ambas épocas. Los Guardianes del Canto llevamos 300 años buscándolos. Y tú llegaste justo a tiempo.',
+   104→    next: 'brisa_quest2',
+   105→  },
+   106→  brisa_quest2: {
+   107→    name: 'Anciana Brisa', portrait: 'brisa',
+   108→    text: 'La Niebla trae lobos del sur: han olido el Eco que duerme en ti. Caza a tres y el valle respirará. Habla con Toln si necesitas acero. Y... vuelve con vida, Portador.',
+   109→    onEnd: 'accept_q2',
+   110→  },
+   111→  brisa_wolves: {
+   112→    name: 'Anciana Brisa', portrait: 'brisa',
+   113→    text: 'Los lobos aúllan hacia el sur, entre la niebla del valle. Usa la esquiva cuando vayan a saltar y golpea cuando bajen la guardia.',
+   114→  },
+   115→  brisa_bosque: {
+   116→    name: 'Anciana Brisa', portrait: 'brisa',
+   117→    text: 'El Bosque Susurrante está al norte. Busca la Ruina Antigua, más allá del río: allí susurra el Fragmento de Eco. Lleva pociones, descansa en los Santuarios... y no confíes en la noche.',
+   118→  },
+   119→  brisa_reward: {
+   120→    name: 'Anciana Brisa', portrait: 'brisa',
+   121→    text: 'El valle ya respira. Toma esto: coronas del fondo del pozo y una poción de la vieja receta. Los Guardianes del Canto te recordarán, Portador.',
+   122→    onEnd: 'accept_q3',
+   123→    options: [
+   124→      { text: 'Gracias, Brisa. El valle huele a menos silencio gracias a ti.', next: 'brisa_rw_emp', tone: 'empatico' },
+   125→      { text: 'Anotado. ¿Qué sigue?', next: 'brisa_rw_prag', tone: 'pragmatico' },
+   126→      { text: '¿Coronas del fondo del pozo? Espero que nadie las hubiera deseado a algo peor.', next: 'brisa_rw_sarc', tone: 'sarcastico' },
+   127→    ],
+   128→  },
+   129→  brisa_rw_emp: {
+   130→    name: 'Anciana Brisa', portrait: 'brisa',
+   131→    text: '«Gracias a ti», alma. Hace treinta años que no oigo el valle respirar de noche. Ve al norte: el Bosque Susurrante guarda el primer susurro del Eco.',
+   132→  },
+   133→  brisa_rw_prag: {
+   134→    name: 'Anciana Brisa', portrait: 'brisa',
+   135→    text: 'Directo. Me gusta. Lo siguiente es el Bosque Susurrante, al norte: encuentra la Ruina Antigua y toca el Fragmento de Eco. Lleva pociones.',
+   136→  },
+   137→  brisa_rw_sarc: {
+   138→    name: 'Anciana Brisa', portrait: 'brisa',
+   139→    text: 'Deseadas fueron, y por eso están donde están: el pozo las guardaba de la Niebla. Habla así delante del agua y quizá te las devuelva... mojadas.',
+   140→  },
+   141→  brisa_fragment: {
+   142→    name: 'Anciana Brisa', portrait: 'brisa',
+   143→    text: '¿Lo sentiste? El Fragmento ha despertado tu resonancia: ahora puedes alternar entre el presente y el PASADO de estas tierras. Pulsa Q y mira el valle como era antes del Silencio.',
+   144→    next: 'brisa_fragment2',
+   145→  },
+   146→  brisa_fragment2: {
+   147→    name: 'Anciana Brisa', portrait: 'brisa',
+   148→    text: 'El puente del Bosque se rompió hace 300 años... pero en el pasado sigue en pie. Cruza, llega a la Cripta y recupera el Eco de la Voz. Que tu canto sea más fuerte que tu miedo.',
+   149→    onEnd: 'accept_q4',
+   150→  },
+   151→  brisa_crypt: {
+   152→    name: 'Anciana Brisa', portrait: 'brisa',
+   153→    text: 'El puente solo existe en el pasado, Portador. Pulsa Q junto a él. Y dentro de la Cripta... no confíes en lo que la voz te prometa.',
+   154→  },
+   155→  brisa_final: {
+   156→    name: 'Anciana Brisa', portrait: 'brisa',
+   157→    text: 'El Eco de la Voz... después de 300 años vuelve a sonar en Lunaris. Escucha: ahora la melodía tiene tu nombre entre sus notas. Los Guardianes ya cantan en la capilla. Esta era solo la primera nota, Portador: quedan seis Ecos... y la Niebla seguirá avanzando mientras no los reunas.',
+   158→    options: [
+   159→      { text: 'Iré tras los otros seis. (Terminar la demo)', action: 'end_demo' },
+   160→      { text: 'Aún tengo cosas que hacer por Velmora.', next: 'brisa_stay' },
+   161→    ],
+   162→  },
+   163→  brisa_stay: {
+   164→    name: 'Anciana Brisa', portrait: 'brisa',
+   165→    text: 'Entonces descansa en los Santuarios, mejora tu acero con Toln y busca los ecos menores que susurran entre las ruinas. Velmora te necesita despierto, no apresurado. Vuelve cuando quieras terminar la demo.',
+   166→  },
+   167→  brisa_end: {
+   168→    name: 'Anciana Brisa', portrait: 'brisa',
+   169→    text: 'Que el canto te acompañe. Nos vemos en la siguiente nota, Portador.',
+   170→    onEnd: 'end_demo',
+   171→  },
+   172→  brisa_idle: {
+   173→    name: 'Anciana Brisa', portrait: 'brisa',
+   174→    text: 'El valle celebra tu nombre. Cuando quieras, la demo esperará tu decisión final conmigo.',
+   175→  },
+   176→  // variantes por tono dominante (biblia: los PNJ tratan distinto al Portador)
+   177→  brisa_idle_emp: {
+   178→    name: 'Anciana Brisa', portrait: 'brisa',
+   179→    text: 'Ahí estás, alma. El valle celebra tu nombre, y yo celebro que preguntes por los demás antes que por ti. Cuando quieras, la demo esperará tu decisión final conmigo.',
+   180→  },
+   181→  brisa_idle_amenaz: {
+   182→    name: 'Anciana Brisa', portrait: 'brisa',
+   183→    text: '...El pueblo cruza de acera cuando pasas, Portador. Yo ya soy vieja y no tengo prisa, pero modera esa lengua con la Orden de Vesh: ellos toman los silencios por amenazas. La demo seguirá esperándote aquí.',
+   184→  },
+   185→
+   186→  // ----- Toln -----
+   187→  toln_intro: {
+   188→    name: 'Maestro Toln', portrait: 'toln',
+   189→    text: '¡Ja! El viejo Brisa dijo que oíste Ecos. Yo oigo otra cosa: tu arma pidiendo filo. La forja sigue caliente, Portador, y el metal no pregunta por dioses.',
+   190→    options: TOLN_MAIN,
+   191→  },
+   192→  // variante por tono dominante: a Toln le divierte el Portador sarcástico
+   193→  toln_intro_listillo: {
+   194→    name: 'Maestro Toln', portrait: 'toln',
+   195→    text: '¡Ja! Vuelve el Listillo. La forja no descuenta ironías, pero sí cambia filo por coronas. ¿Qué será hoy?',
+   196→    options: TOLN_MAIN,
+   197→  },
+   198→  toln_forge: {
+   199→    name: 'Maestro Toln', portrait: 'toln',
+   200→    text: '(Usa esta conversación para mejorar: cada nivel de forja añade daño a tu arma. Las runas de mejora llegan hasta +5 en esta demo.)',
+   201→    options: [
+   202→      { text: 'Forjar (+1)', next: 'toln_intro', action: 'forge' },
+   203→      { text: 'Dale caña al martillo, maestro. Mi oro es tuyo.', next: 'toln_intro', action: 'forge', tone: 'pragmatico' },
+   204→      { text: 'Casi me haces creer que el metal escucha. Casi.', next: 'toln_forge_sarc', tone: 'sarcastico' },
+   205→      { text: 'Volver', next: 'toln_intro' },
+   206→    ],
+   207→  },
+   208→  toln_forge_sarc: {
+   209→    name: 'Maestro Toln', portrait: 'toln',
+   210→    text: 'Escucha más que tu boca, Listillo. El acero bien templado canta cuando cae la Niebla... y estas últimas noches canta bajito, como rezando. Vuelve al yunque cuando tengas coronas de verdad.',
+   211→    next: 'toln_intro',
+   212→  },
+   213→  toln_potion: {
+   214→    name: 'Maestro Toln', portrait: 'toln',
+   215→    text: 'Para los caminos largos. Bebe con cabeza.',
+   216→    next: 'toln_intro',
+   217→  },
+   218→  toln_lore: {
+   219→    name: 'Maestro Toln', portrait: 'toln',
+   220→    text: 'Mi abuelo forjó el arma que mató al dios. No lo digo con orgullo: lo digo con vergüenza. Desde entonces, cada martillazo mío es una disculpa. Si algún día vas a la Ciudadela... crimson sobre acero, recuerda mi nombre.',
+   221→    next: 'toln_intro',
+   222→  },
+   223→  toln_bye: {
+   224→    name: 'Maestro Toln', portrait: 'toln',
+   225→    text: 'El acero espera. Y cuidado con la niebla al sur: desde ahí no vuelven ni los nombres.',
+   226→  },
+   227→
+   228→  // ----- Ilwen -----
+   229→  ilwen_intro: {
+   230→    name: 'Ilwen', portrait: 'ilwen',
+   231→    text: 'Un Portador, aquí... ¿también tú oyes la Niebla robando nombres? Yo busco a mi hermana Naia: la Niebla se la llevó hacia el norte. Sé moverme entre estos árboles y mi arco no falla.',
+   232→    options: [
+   233→      { text: 'Ven conmigo. Nadie debería tener que buscar sola.', next: 'ilwen_join', action: 'recruit_ilwen', tone: 'empatico' },
+   234→      { text: 'Necesito cobertura a distancia. Tú necesitas pistas. Trato justo.', next: 'ilwen_join', action: 'recruit_ilwen', tone: 'pragmatico' },
+   235→      { text: '¿Y si lo que quedó de tu hermana ya no responde a tu silbo?', next: 'ilwen_reac_amenaz', tone: 'amenazante' },
+   236→      { text: 'Sigo solo por ahora.', next: 'ilwen_wait' },
+   237→    ],
+   238→  },
+   239→  ilwen_reac_amenaz: {
+   240→    name: 'Ilwen', portrait: 'ilwen',
+   241→    text: '...(baja el arco un dedo) Cuida esa lengua, Portador. La Niebla borra nombres; tú pareces empeñado en borrar también las esperanzas. Cuando hables como alguien con quien caminar, aquí estaré.',
+   242→    next: 'ilwen_wait',
+   243→  },
+   244→  ilwen_join: {
+   245→    name: 'Ilwen', portrait: 'ilwen',
+   246→    text: 'Entonces vamos, Portador. Cubriré tu espalda desde la distancia. Que los árboles nos encubran.',
+   247→  },
+   248→  ilwen_wait: {
+   249→    name: 'Ilwen', portrait: 'ilwen',
+   250→    text: 'Te encontraré aquí si cambias de idea. El Bosque no perdona a los solitarios.',
+   251→  },
+   252→  ilwen_chat: {
+   253→    name: 'Ilwen', portrait: 'ilwen',
+   254→    text: 'Naia cantaba mejor que las nereidas. Si la Niebla no borró su nombre, la encontraré. Cuenta con mi arco, Portador.',
+   255→  },
+   256→  // variante por tono dominante: Ilwen respeta al Portador pragmático
+   257→  ilwen_chat_prag: {
+   258→    name: 'Ilwen', portrait: 'ilwen',
+   259→    text: 'Hablamos claro, los dos: me gusta cómo mandas. Sin promesas ni flores. Mi arco cubre a quien sabe lo que quiere. Naia cantaba mejor que las nereidas... la encontraré. Cuenta conmigo, Portador.',
+   260→  },
+   261→
+   262→  // ----- Voces -----
+   263→  voz_fragment: {
+   264→    name: '???', portrait: 'fragment',
+   265→    text: '...¿quiéeeeen... despierta... el canto...? Ah... otro Portador. Otro pedazo de mí, perdido en el tiempo. Toma mi resonancia: alterna entre lo que fui y lo que soy. (Has desbloqueado el CAMBIO DE ÉPOCA: pulsa Q)',
+   266→    onEnd: 'fragment_touched',
+   267→    options: [
+   268→      { text: 'Descansa. Te devolveré cada pedazo, aunque me lleve vidas.', next: 'voz_frag_emp', tone: 'empatico' },
+   269→      { text: 'Resonancia aceptada. Ahora: ¿dónde oigo el resto?', next: 'voz_frag_prag', tone: 'pragmatico' },
+   270→      { text: 'Un dios que se paga a plazos. Qué época tan práctica.', next: 'voz_frag_sarc', tone: 'sarcastico' },
+   271→    ],
+   272→  },
+   273→  voz_frag_emp: {
+   274→    name: '???', portrait: 'fragment',
+   275→    text: '...vides... sí... Yo también tardé vidas en aprender a callar. Ve... el valle recuerda por donde caminas... te canta por debajo... escúchalo de noche...',
+   276→  },
+   277→  voz_frag_prag: {
+   278→    name: '???', portrait: 'fragment',
+   279→    text: '...el primero duerme bajo la Cripta, custodiado por lo que quedó de mi primer coro. Lleva acero... y canto. El resto... ya lo oirás...',
+   280→  },
+   281→  voz_frag_sarc: {
+   282→    name: '???', portrait: 'fragment',
+   283→    text: '...mmm... bromea el pedacito... A los dioses nos matan por partes, ¿sabías? Primero la voz... luego el nombre... Tú verás qué te toca recoger...',
+   284→  },
+   285→  voz_vesh: {
+   286→    name: 'Gran Inquisidor Vesh', portrait: 'sombra',
+   287→    text: 'Puedo oírte, Portador. Cada paso que das hacia el Eco resuena en MI ciudadela. Sube. Reúne las migajas de tu dios... y yo recogeré lo que quede de ti.',
+   288→  },
+   289→  voz_guardian: {
+   290→    name: 'Guardián Hueco', portrait: 'guardian',
+   291→    text: 'CORO... ROTO. CANTO... VACÍO. TÚ... LLEVAS... RESONANCIA. LA... QUIERO.',
+   292→  },
+   293→  eco_voz: {
+   294→    name: 'Eco de la Voz', portrait: 'fragment',
+   295→    text: 'El primer canto vuelve a nacer entre tus manos. «Cuando el miedo te hable, canta más alto.» (Eco de la Voz recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
+   296→    onEnd: 'eco_taken_mem',
+   297→    options: [
+   298→      { text: 'Tu nana... era esta melodía, ¿verdad? La recordaba sin saber de quién.', next: 'eco_voz_emp', tone: 'empatico' },
+   299→      { text: 'Uno de siete. ¿Dónde oigo el siguiente?', next: 'eco_voz_prag', tone: 'pragmatico' },
+   300→      { text: '«Canta más alto», dice la voz. A ver si la Niebla es sorda también.', next: 'eco_voz_sarc', tone: 'sarcastico' },
+   301→    ],
+   302→  },
+   303→  eco_voz_emp: {
+   304→    name: 'Eco de la Voz', portrait: 'fragment',
+   305→    text: '...la cantaba junto al río, con el chal al hombro. No recuerdo su cara — a mí tampoco me deja verse, mira tú — pero la canción sí. Ya es tuya. Cuídala: es más vieja que tu nombre.',
+   306→  },
+   307→  eco_voz_prag: {
+   308→    name: 'Eco de la Voz', portrait: 'fragment',
+   309→    text: '...escucha el bosque: los Ecos llaman a los Ecos. Y ten cuidado con los que rezan a lo que no canta... la Ciudadela también oye tu melodía ahora.',
+   310→  },
+   311→  eco_voz_sarc: {
+   312→    name: 'Eco de la Voz', portrait: 'fragment',
+   313→    text: '...no es sorda. Es paciente. Peor cosa. Canta, Portador... y ya verás quién responde: los que aman el canto... y los que aprendieron a temerlo.',
+   314→  },
+   315→
+   316→  // ----- Doran (druida del Círculo Verde · biblia: aceptan la Niebla como naturaleza) -----
+   317→  doran_intro: {
+   318→    name: 'Doran', portrait: 'doran',
+   319→    text: 'Sin prisa, sin espinas... La Niebla te eriza la piel, ¿eh? A nosotros nos da lástima. El Círculo Verde no la combate: la escucha. No es maldad, Portador: es lo que había ANTES del canto, cuando el mundo era silencio y raíz.',
+   320→    options: [
+   321→      { text: 'Si la Niebla guarda algo, merece que alguien la escuche. Enséñame.', next: 'doran_verde', action: 'rep_circulo_5', tone: 'empatico' },
+   322→      { text: 'Teoría interesante. ¿Y qué gana el Círculo defendiéndola?', next: 'doran_verde', action: 'rep_circulo_5', tone: 'pragmatico' },
+   323→      { text: 'Qué bonito: apocalipsis con musgo. ¿Y los pueblos que se borra?', next: 'doran_sarc', tone: 'sarcastico' },
+   324→      { text: 'La Orden de Vesh la quemaría con lanza y sal bendita. Y no creo que erraran.', next: 'doran_orden', tone: 'amenazante' },
+   325→    ],
+   326→  },
+   327→  doran_verde: {
+   328→    name: 'Doran', portrait: 'doran',
+   329→    text: 'Lo oyes, ¿verdad? Debajo del bosque hay una melodía que no canta Aelthar... más vieja. No rendimos culto a la Niebla: le enseñamos dónde parar, como se educa un río con presas. Vuelve cuando lleves el primer Eco: entonces la Niebla te sonará distinto.',
+   330→  },
+   331→  doran_sarc: {
+   332→    name: 'Doran', portrait: 'doran',
+   333→    text: 'Los borra porque no les dejan sitio, como el agua cuando tapan el cauce. Podemos discutirlo sentados una noche de luna... o puedes seguir golpeando raíces con el acero y ver quién se cansa antes.',
+   334→  },
+   335→  doran_orden: {
+   336→    name: 'Doran', portrait: 'doran',
+   337→    text: '...Lanzas y sal bendita. Sí, esa es la letra de su canción: lo que arde no vuelve a cantar jamás. Así «curó» la Orden el valle de Merrow, ¿lo sabías? Dime, Portador: ¿vas a ser su lanza en este bosque?',
+   338→    options: [
+   339→      { text: 'No. Que la Orden de Vesh se quede con sus lanzas y su miedo.', next: 'doran_reject', action: 'rep_orden_-5' },
+   340→      { text: 'Si hay que elegir entre su fuego y tu musgo... ya veremos.', next: 'doran_bye' },
+   341→    ],
+   342→  },
+   343→  doran_reject: {
+   344→    name: 'Doran', portrait: 'doran',
+   345→    text: 'Que la Madre Espina te oiga. Los del Círculo no olvidamos a quien se planta frente a la Lanza. Pasa cuando quieras: el bosque ya conoce tu paso.',
+   346→  },
+   347→  doran_bye: {
+   348→    name: 'Doran', portrait: 'doran',
+   349→    text: 'Piénsalo caminando. La Niebla no corre: llega. Y cuando llegue, preferiré teneros a todos cantando del mismo lado.',
+   350→  },
+   351→
+   352→  // ----- Heraldo de Vesh (aparece tras el Eco de la Voz · biblia: Orden de Vesh) -----
+   353→  heraldo_intro: {
+   354→    name: 'Heraldo de Vesh', portrait: 'kael',
+   355→    text: 'Así que este es el recipiente. No te arrodilles: no sería sincero. El Gran Inquisidor sabía que la Niebla escondía el primero de los siete... y ahora dice: «la Lanza ya está preparada para la segunda vez». Yo solo repito las palabras. Al recipiente no le hace falta entenderlas: basta con que contenga.',
+   356→    options: [
+   357→      { text: 'Dile a tu Inquisidor que si quiere lo que llevo, que baje a buscarlo.', next: 'heraldo_amenaz', action: 'rep_orden_-5', tone: 'amenazante' },
+   358→      { text: 'No soy «recipiente» de nadie. Pero de momento hablaremos.', next: 'heraldo_prag', tone: 'pragmatico' },
+   359→      { text: '¿Qué es «la segunda vez»?', next: 'heraldo_emp', tone: 'empatico' },
+   360→    ],
+   361→  },
+   362→  heraldo_amenaz: {
+   363→    name: 'Heraldo de Vesh', portrait: 'kael',
+   364→    text: '...La guardaré para el informe, palabra por palabra. Sabes, recipiente: el acero de la Ciudadela canta muy bajo, y por eso corta tanto. El Gran Inquisidor os espera a ti y a tu melodía. Camina con cuidado.',
+   365→  },
+   366→  heraldo_prag: {
+   367→    name: 'Heraldo de Vesh', portrait: 'kael',
+   368→    text: 'La calma fingida también es una respuesta; el Inquisidor la acepta, envuelta en papel y sello. Cuando contengas los siete —si llegas—, la Orden vendrá a cobrarlos. Nos veremos, recipiente.',
+   369→  },
+   370→  heraldo_emp: {
+   371→    name: 'Heraldo de Vesh', portrait: 'kael',
+   372→    text: 'La primera vez, la Lanza de los Durn atravesó el costado del dios y su canto se hizo mil pedazos que llamáis Ecos. La segunda vez... eso no me corresponde contarlo. El Gran Inquisidor espera que seas tú quien lo cuente, cuando todo esté en su sitio.',
+   373→  },
+   374→
+   375→  // ----- Teo (niño rescatado de la Niebla · guiño a la biblia) -----
+   376→  teo_intro: {
+   377→    name: 'Teo', portrait: 'teo',
+   378→    text: '¿Eres tú? ¿El que sacó a la gente de la Niebla? Yo no recuerdo cómo salí... solo una nana que me cantaba mi madre: mmm-mm-mmm... La cantas igual que yo la sueño, ¿lo sabías? Cuando la tarareo, la niebla no me pega tanto miedo.',
+   379→    options: [
+   380→      { text: 'Cántala siempre, Teo. Las canciones cuidan a quien las lleva.', next: 'teo_emp', tone: 'empatico' },
+   381→      { text: 'Quédate cerca del Santuario y del pozo. Es lo más seguro.', next: 'teo_prag', tone: 'pragmatico' },
+   382→      { text: 'Vaya talento: la Niebla borra pueblos enteros y tú la despiertas a dúo.', next: 'teo_sarc', tone: 'sarcastico' },
+   383→    ],
+   384→  },
+   385→  teo_emp: {
+   386→    name: 'Teo', portrait: 'teo',
+   387→    text: '¡Prometido! La canto para merendar, para dormir y para que la luna no se pierda. Un día, si te pierdes, me la cantas al revés y me encuentras. Así funciona, ¿no?',
+   388→  },
+   389→  teo_prag: {
+   390→    name: 'Teo', portrait: 'teo',
+   391→    text: 'Vale... aunque de noche el pozo susurra y yo le susurro de vuelta. Nos entendemos. Si ves que no estoy, es que estoy aprendiendo nombres nuevos.',
+   392→  },
+   393→  teo_sarc: {
+   394→    name: 'Teo', portrait: 'teo',
+   395→    text: '(se ríe) ¡Mmm-mmm!, ¡aaaah! ¿Ves? La Niebla ni se mueve... Tú también puedes, solo que te da vergüenza cantar delante de la gente mayor.',
+   396→  },
+   397→};
+   398→
+   399→export function getDialogue(nid: string, ctx: DialogueCtx): string {
+   400→  const q = ctx.questIdx, s = ctx.questStep;
+   401→  const td = toneOf(ctx.flags);
+   402→  if (nid === 'brisa') {
+   403→    // variantes por tono dominante (biblia: los PNJ tratan distinto al Portador)
+   404→    const idle = td === 'empatico' ? 'brisa_idle_emp' : td === 'amenazante' ? 'brisa_idle_amenaz' : 'brisa_idle';
+   405→    if (ctx.flags.demoEnded) return idle;
+   406→    if (q === 0) return 'brisa_intro';
+   407→    if (q === 1) return s === 0 ? 'brisa_wolves' : 'brisa_reward';
+   408→    if (q === 2) return ctx.flags.fragmentTouched ? 'brisa_fragment' : 'brisa_bosque';
+   409→    if (q === 3) return ctx.flags.guardianDefeated ? 'brisa_final' : 'brisa_crypt';
+   410→    return 'brisa_final';
+   411→  }
+   412→  if (nid === 'toln') return td === 'sarcastico' ? 'toln_intro_listillo' : 'toln_intro';
+   413→  if (nid === 'ilwen') {
+   414→    if (ctx.companion) return td === 'pragmatico' ? 'ilwen_chat_prag' : 'ilwen_chat';
+   415→    return 'ilwen_intro';
+   416→  }
+   417→  if (nid === 'doran') return 'doran_intro';
+   418→  if (nid === 'heraldo') return 'heraldo_intro';
+   419→  if (nid === 'teo') return 'teo_intro';
+   420→  return 'brisa_idle';
+   421→}
+   422→
+   423→/** Lee el tono dominante de las flags (hooks lo guarda como string en runtime). */
+   424→function toneOf(flags: Record<string, number | boolean>): ToneKind | null {
+   425→  const v = flags.tonoDominante;
+   426→  return typeof v === 'string' ? (v as ToneKind) : null;
+   427→}
+   428→
+   429→export const DIALOGUES = D;
+   430→
+   431→// ---------------- Enemigos ----------------
+   432→
+   433→export interface EnemyDef {
+   434→  name: string;
+   435→  hp: number;
+   436→  dmg: number;
+   437→  speed: number;
+   438→  xp: number;
+   439→  gold: [number, number];
+   440→  sprite: string;
+   441→  aggroR: number;
+   442→  atkR: number;
+   443→  windup: number;      // s de telegrafía
+   444→  atkCd: number;
+   445→  element: Element;
+   446→  weakTo: Element;
+   447→  breakBar?: number;   // barra de quiebre (jefe)
+   448→  desc: string;
+   449→}
+   450→
+   451→export const ENEMY_DEFS: Record<EnemyType, EnemyDef> = {
+   452→  lobo: {
+   453→    name: 'Lobo de Niebla', hp: 30, dmg: 6, speed: 58, xp: 16, gold: [4, 8],
+   454→    sprite: 'lobo', aggroR: 95, atkR: 20, windup: 0.45, atkCd: 1.5,
+   455→    element: 'sombra', weakTo: 'fuego',
+   456→    desc: 'Perro guardián corrompido por la Niebla. Ataca en estampidas. Débil al fuego.',
+   457→  },
+   458→  esqueleto: {
+   459→    name: 'Esqueleto Cantor', hp: 46, dmg: 10, speed: 44, xp: 24, gold: [7, 12],
+   460→    sprite: 'esqueleto', aggroR: 90, atkR: 22, windup: 0.6, atkCd: 1.8,
+   461→    element: 'sombra', weakTo: 'sagrado',
+   462→    desc: 'Peregrino que cantó hasta vaciarse. Golpea con su fémula de tambor. Débil a la luz.',
+   463→  },
+   464→  sombra: {
+   465→    name: 'Sombra sin Rostro', hp: 30, dmg: 8, speed: 66, xp: 18, gold: [3, 6],
+   466→    sprite: 'sombra', aggroR: 110, atkR: 20, windup: 0.4, atkCd: 1.2,
+   467→    element: 'sombra', weakTo: 'sagrado',
+   468→    desc: 'Criatura de la Niebla. Devora nombres. Rápida y frágil.',
+   469→  },
+   470→  guardian: {
+   471→    name: 'Guardián Hueco', hp: 300, dmg: 13, speed: 40, xp: 220, gold: [120, 160],
+   472→    sprite: 'guardian', aggroR: 150, atkR: 40, windup: 0.8, atkCd: 2.2,
+   473→    element: 'sombra', weakTo: 'ninguno', breakBar: 70,
+   474→    desc: 'Primer coro de Aelthar, vaciado por su propio canto. Rompe su barra de quiebre con golpes continuos.',
+   475→  },
+   476→  // ------- ACTO II · nuevos enemigos de la expansión -------
+   477→  neumo: {
+   478→    name: 'Neumo de Marea', hp: 24, dmg: 7, speed: 42, xp: 20, gold: [5, 9],
+   479→    sprite: 'neumo', aggroR: 120, atkR: 135, windup: 0.7, atkCd: 2.0,
+   480→    element: 'ninguno', weakTo: 'rayo',
+   481→    desc: 'Burbuja de espuma que la Niebla enseñó a silbar. Escupe agua a distancia y retrocede si te acercas. Débil al rayo.',
+   482→  },
+   483→  espectro: {
+   484→    name: 'Espectro sin Nombre', hp: 34, dmg: 9, speed: 52, xp: 26, gold: [6, 10],
+   485→    sprite: 'espectro', aggroR: 130, atkR: 24, windup: 0.5, atkCd: 1.6,
+   486→    element: 'sombra', weakTo: 'sagrado',
+   487→    desc: 'Aldeano de Merrow que olvidó hasta su hambre. Flota, se desvanece bajo los golpes y arremete desde la bruma. Débil a la luz.',
+   488→  },
+   489→  arpi: {
+   490→    name: 'Arpía de Cumbre', hp: 28, dmg: 8, speed: 76, xp: 22, gold: [5, 9],
+   491→    sprite: 'arpi', aggroR: 125, atkR: 20, windup: 0.35, atkCd: 1.4,
+   492→    element: 'hielo', weakTo: 'fuego',
+   493→    desc: 'Ave de ventisca que antaño guió a los pastores. Picotea en picado y se aleja volando. Débil al fuego.',
+   494→  },
+   495→  sirena: {
+   496→    name: 'Sirena Abisal', hp: 340, dmg: 12, speed: 46, xp: 240, gold: [130, 170],
+   497→    sprite: 'sirena', aggroR: 165, atkR: 44, windup: 0.75, atkCd: 2.0,
+   498→    element: 'hielo', weakTo: 'rayo', breakBar: 80,
+   499→    desc: 'Reina del naufragio. Cantaba a los barcos; ahora canta a la Niebla. Tres fases, salvas de marea y coro de neumos.',
+   500→  },
+   501→  golem: {
+   502→    name: 'Gólem de Escarcha', hp: 420, dmg: 16, speed: 30, xp: 280, gold: [150, 200],
+   503→    sprite: 'golem', aggroR: 140, atkR: 38, windup: 0.9, atkCd: 2.4,
+   504→    element: 'hielo', weakTo: 'fuego', breakBar: 100,
+   505→    desc: 'Memoria de montaña tallada en hielo eterno. Guarda el paso al altar de las Cumbres. Lento, aplastante, incansable.',
+   506→  },
+   507→};
+   508→
+   509→// ---------------- Habilidades ----------------
+   510→
+   511→export interface SkillDef {
+   512→  id: string;
+   513→  name: string;
+   514→  desc: string;
+   515→  cost: number;   // resonancia
+   516→  cd: number;     // s
+   517→  icon: string;   // glifo de 2 caracteres
+   518→  element: Element;
+   519→}
+   520→
+   521→export const SKILLS: Record<'alba' | 'tejedor', SkillDef[]> = {
+   522→  alba: [
+   523→    { id: 'tajo', name: 'Tajo Lunar', desc: 'Embestida con el filo por delante.', cost: 25, cd: 3, icon: '◤', element: 'ninguno' },
+   524→    { id: 'grito', name: 'Grito de Guerra', desc: '+50% de daño durante 8 s.', cost: 40, cd: 14, icon: '║', element: 'ninguno' },
+   525→    { id: 'muro', name: 'Muro de Alba', desc: 'Onda de escudo que aturde a tu alrededor.', cost: 45, cd: 9, icon: '◈', element: 'sagrado' },
+   526→    { id: 'filo', name: 'Filo del Alba', desc: 'Definitiva: tres ondas giratorias de luz.', cost: 100, cd: 18, icon: '✹', element: 'sagrado' },
+   527→  ],
+   528→  tejedor: [
+   529→    { id: 'ascuas', name: 'Canto de Ascuas', desc: 'Nota de FUEGO: proyectil que quema.', cost: 20, cd: 1.2, icon: '▲', element: 'fuego' },
+   530→    { id: 'escarcha', name: 'Canto de Escarcha', desc: 'Nota de HIELO: congela y ralentiza.', cost: 25, cd: 2.2, icon: '▼', element: 'hielo' },
+   531→    { id: 'chispa', name: 'Canto de Chispa', desc: 'Nota de RAYO: rebota entre enemigos.', cost: 30, cd: 3, icon: '≫', element: 'rayo' },
+   532→    { id: 'cantomayor', name: 'Canto Mayor', desc: 'Hechizo mayor con tu última nota usada.', cost: 100, cd: 15, icon: '✺', element: 'ninguno' },
+   533→  ],
+   534→};
+   535→
+   536→// ---------------- Objetos clave ----------------
+   537→
+   538→export const KEY_ITEMS: Record<string, { name: string; desc: string }> = {
+   539→  fragment: { name: 'Fragmento de Eco', desc: 'Despierta tu resonancia: permite alternar entre presente y pasado (Q).' },
+   540→  ecoVoz: { name: 'Eco de la Voz', desc: 'Primer Eco de Aelthar. La melodía principal ahora lleva tu nombre.' },
+   541→  ecoMareas: { name: 'Eco de las Mareas', desc: 'Segundo Eco de Aelthar. El mar vuelve a tener a quién cantarle.' },
+   542→  ecoCumbres: { name: 'Eco de las Cumbres', desc: 'Tercer Eco de Aelthar. Las montañas recuerdan el invierno sin frío.' },
+   543→  ecoNombres: { name: 'Eco de los Nombres', desc: 'Un Eco menor nacido de los faroles de Merrow. Guarda los nombres que la Niebla se llevó.' },
+   544→};
+   545→
+   546→// ---------------- Atributos ----------------
+   547→
+   548→export const ATTR_INFO: { id: 'fue' | 'des' | 'int' | 'esp' | 'vig'; name: string; desc: string }[] = [
+   549→  { id: 'fue', name: 'Fuerza', desc: '+1,5 daño melé por punto' },
+   550→  { id: 'des', name: 'Destreza', desc: '+2% crítico y +2 resistencia máx.' },
+   551→  { id: 'int', name: 'Intelecto', desc: '+1,6 daño de Cantos por punto' },
+   552→  { id: 'esp', name: 'Espíritu', desc: '+10% ganancia de Resonancia' },
+   553→  { id: 'vig', name: 'Vigor', desc: '+7 vida máx. y +1% reducción' },
+   554→];
+   555→
