@@ -3,7 +3,8 @@
 // Casos: '~' agua · 'B' puente entero (pasado) · 'x' puente roto
 // Contrato:
 //  - paintWater la llama el despachador drawTile (prerrender, t=0):
-//    profundidad por vecinos, orilla de arena/lodo, olas estáticas,
+//    profundidad por vecinos (damero 2×2 entre niveles), orilla de
+//    arena/lodo con hierba húmeda de contacto, olas estáticas con "V",
 //    puente entero y puente roto. Todo con dithering/bandas de píxeles,
 //    SIN degradados de canvas. Su `at` es RELATIVO (convención drawTile:
 //    at(dx,dy) = char del vecino desplazado (dx,dy) desde el tile actual;
@@ -41,7 +42,7 @@ const DIRS: readonly (readonly [number, number])[] = [[0, -1], [0, 1], [-1, 0], 
  * drawTile: el propio tile es (0,0), su vecino N es (0,-1), etc.).
  */
 function countAround(at: At, ox: number, oy: number, pred: (ch: string) => boolean): number {
-  if (!at) return 6; // sin vecinos: asumir agua media (masa interior)
+  if (!at) return 5; // sin vecinos: asumir agua media (masa interior)
   let n = 0;
   for (let dy = -1; dy <= 1; dy++) {
     for (let dx = -1; dx <= 1; dx++) {
@@ -52,9 +53,12 @@ function countAround(at: At, ox: number, oy: number, pred: (ch: string) => boole
   return n;
 }
 
-/** Profundidad por vecinos agua: 8 = profunda · 5-7 = media · <5 = somera. */
+/**
+ * Profundidad por vecinos agua (8-dir): 6-8 = profunda (azul oscuro) ·
+ * 3-5 = media · 0-2 = somera (azul claro).
+ */
 function depthLevel(n: number): 0 | 1 | 2 {
-  return n >= 8 ? 2 : n >= 5 ? 1 : 0;
+  return n >= 6 ? 2 : n >= 3 ? 1 : 0;
 }
 
 /** Variante con `at` ABSOLUTO (la que usa waterOverlay). */
@@ -69,9 +73,13 @@ function countAroundAbs(at: (tx: number, ty: number) => string, tx: number, ty: 
   return n;
 }
 
-const DEPTH_BASE: readonly string[] = [PAL.waterHi, PAL.water, PAL.waterDeep];
-const DEPTH_DITHER: readonly string[] = [PAL.waterShallow, PAL.waterDeep, PAL.waterDeep2];
-const DEPTH_DENS: readonly number[] = [0.14, 0.12, 0.3];
+// Tonos base por profundidad: somera (azul claro) · media · profunda (oscuro)
+const DEPTH_BASE: readonly string[] = [PAL.waterShallow, PAL.water, PAL.waterDeep];
+// Moteado interior por profundidad (siempre un tono vecino, sin degradados)
+const DEPTH_DITHER: readonly string[] = [PAL.waterGlint, PAL.waterHi, PAL.waterDeep2];
+const DEPTH_DENS: readonly number[] = [0.1, 0.12, 0.3];
+// Tono de las olas estáticas: más claro que la base de SU profundidad
+const WAVE_TONE: readonly string[] = [PAL.waterGlint, PAL.waterGlint, PAL.waterWave];
 
 // ============================================================
 // PRERRENDER — paintWater (contrato intacto con drawTile)
@@ -94,17 +102,19 @@ function paintWaterTile(
   px0: number, py0: number, mapId: string, at: At,
 ): void {
   const depth = depthLevel(countAround(at, 0, 0, isWaterChar));
-  // 1) base por profundidad + dithering determinista (sin degradados)
+  // 1) base por profundidad + moteado determinista (sin degradados)
   px(x, px0, py0, T, T, DEPTH_BASE[depth]);
   ditherSpots(x, tx, ty, px0, py0, DEPTH_DITHER[depth], DEPTH_DENS[depth], 11 + depth * 61);
-  // 2) transición dentada hacia vecinos más profundos / más claros
+  if (depth === 1) ditherSpots(x, tx, ty, px0, py0, PAL.waterDeep, 0.07, 211);
+  // 2) banda DAMERO 2×2 en las fronteras entre profundidades: la paridad
+  //    es GLOBAL (coordenada de celda), así el damero de este tile enlaza
+  //    sin costuras con el que pinta el vecino al otro lado de la frontera.
   if (at) {
     for (let d = 0; d < 4; d++) {
       const [ox, oy] = DIRS[d];
       if (!isWaterChar(at(ox, oy))) continue;
       const nd = depthLevel(countAround(at, ox, oy, isWaterChar));
-      if (nd > depth) edgeDither(x, px0, py0, d, DEPTH_BASE[nd], 0.55);
-      else if (nd < depth) edgeDither(x, px0, py0, d, DEPTH_DITHER[nd], 0.4);
+      if (nd !== depth) edgeDamero(x, tx, ty, px0, py0, d, DEPTH_BASE[nd]);
     }
   }
   // 3) el río del bosque refleja la espesura (tinte plano, no degradado)
@@ -113,15 +123,15 @@ function paintWaterTile(
     px(x, px0, py0, T, T, PAL.forestTint);
     x.globalAlpha = 1;
   }
-  // 4) olas estáticas sutiles (2-3 líneas horizontales discontinuas)
-  staticWaves(x, tx, ty, px0, py0);
+  // 4) olas estáticas sutiles (2-3 líneas de 1 px + "V" de ola pequeña)
+  staticWaves(x, tx, ty, px0, py0, depth);
   // 5) bordes: orilla de arena/lodo contra tierra, sombra bajo puentes
   if (at) {
     for (let d = 0; d < 4; d++) {
       const c = at(DIRS[d][0], DIRS[d][1]);
       if (c === 'V' || isWaterChar(c)) continue; // borde de mapa o agua: nada
       if (isRiverish(c)) bridgeShadowBand(x, px0, py0, d);
-      else shoreBand(x, tx, ty, px0, py0, d);
+      else shoreBand(x, tx, ty, px0, py0, d, c, mapId);
     }
   }
 }
@@ -157,47 +167,66 @@ function edgeRect(
   return [px0 + T - inset - size, py0 + i, size, seg];                  // E ←
 }
 
-/** Banda dentada de 2 px en el borde `dir` (transición de profundidad). */
-function edgeDither(
-  x: CanvasRenderingContext2D, px0: number, py0: number, dir: number,
-  color: string, density: number,
+/**
+ * Banda DAMERO 2×2 en el borde `dir`: mezcla el tono del vecino en celdas
+ * alternas usando la PARIDAD GLOBAL de celda (tx·8+i / ty·8+j). Dos tiles
+ * que comparten frontera calculan esa paridad desfasada en 1 (dir N usa
+ * ty·8, dir S del vecino usa ty·8-1; igual en W/E), así que sus bandas de
+ * 1 celda se engarzan en un damero continuo de 2 celdas sin costuras.
+ */
+function edgeDamero(
+  x: CanvasRenderingContext2D, tx: number, ty: number,
+  px0: number, py0: number, dir: number, color: string,
 ): void {
   x.fillStyle = color;
   for (let i = 0; i < T; i += 2) {
-    if (hash2(i * 13 + dir * 251, dir * 97 + i * 7) >= density) continue;
+    const cx = dir === 2 ? tx * 8 : dir === 3 ? tx * 8 + 7 : tx * 8 + i / 2;
+    const cy = dir === 0 ? ty * 8 : dir === 1 ? ty * 8 + 7 : ty * 8 + i / 2;
+    if (((cx + cy) & 1) !== 0) continue; // damero 2×2 estricto
     const r = edgeRect(dir, px0, py0, i, 0, 2, 2);
     x.fillRect(r[0], r[1], r[2], r[3]);
   }
 }
 
 /**
- * Orilla: arena/lodo de 2-3 px con borde dentado + piedritas.
+ * Orilla: hierba oscura/húmeda de 1 px justo al contacto con hierba '.',
+ * franja de arena de 2-3 px con dientes de 1-2 px alternando con hash,
+ * línea de lodo mojado y piedritas dispersas.
  * Se pinta DENTRO del tile de agua (lado del agua de la frontera) para no
  * depender del orden de dibujado: los tiles de tierra a la derecha/abajo se
  * pintan después y taparían cualquier arena que les invadiéramos.
  */
 function shoreBand(
   x: CanvasRenderingContext2D, tx: number, ty: number,
-  px0: number, py0: number, dir: number,
+  px0: number, py0: number, dir: number, nch: string, mapId: string,
 ): void {
-  for (let i = 0; i < T; i++) {
+  const grassy = nch === '.' || nch === ','; // contacto directo con hierba
+  // 1) hierba oscura/húmeda de 1 px en el borde que toca la hierba
+  if (grassy) {
+    x.fillStyle = isForest(mapId) ? PAL.grassWetBosque : PAL.grassWet;
+    const g = edgeRect(dir, px0, py0, 0, 0, 1, T);
+    x.fillRect(g[0], g[1], g[2], g[3]);
+  }
+  // 2) arena dentada (2-3 px + dientes de 1-2 px) y lodo mojado
+  const base = grassy ? 1 : 0; // la arena empieza tras la hierba de contacto
+  for (let i = 0; i < T; i += 2) {
     const jag = hash2(tx * T + i + dir * 577, ty * T + i * 13 - dir * 131);
-    const d = 2 + (jag > 0.55 ? 1 : 0); // arena: 2-3 px, dentada por columna
-    const r = edgeRect(dir, px0, py0, i, 0, d, 1);
-    x.fillStyle = jag > 0.82 ? PAL.shoreSandHi : PAL.shoreSand;
+    const d = 2 + (jag > 0.86 ? 2 : jag > 0.5 ? 1 : 0); // diente de 1-2 px
+    const r = edgeRect(dir, px0, py0, i, base, d, 2);
+    x.fillStyle = jag > 0.8 ? PAL.shoreSandHi : PAL.shoreSand;
     x.fillRect(r[0], r[1], r[2], r[3]);
-    if (jag > 0.3) { // línea de lodo mojado dentada pegada al agua
-      const m = edgeRect(dir, px0, py0, i, d, 1, 1);
+    if (jag > 0.28) { // lodo mojado dentado pegado al agua
+      const m = edgeRect(dir, px0, py0, i, base + d, 1, 2);
       x.fillStyle = PAL.shoreMud;
       x.fillRect(m[0], m[1], m[2], m[3]);
     }
   }
-  // piedritas (hasta 2 por borde, dentro de la franja de arena)
+  // 3) piedritas (hasta 2 por borde, dentro de la franja de arena)
   for (let k = 0; k < 2; k++) {
     const rp = hash2(tx * 31 + k * 7 + dir * 17, ty * 37 - k * 11 + dir * 3);
     if (rp > 0.62) continue;
     const i = 1 + Math.floor(hash2(tx * 17 + k * 5, ty * 19 - k * 3) * (T - 2));
-    const row = Math.floor(hash2(tx * 23 + k, ty * 29 + k * 7) * 2);
+    const row = base + Math.floor(hash2(tx * 23 + k, ty * 29 + k * 7) * 2);
     const r = edgeRect(dir, px0, py0, i, row, 1, 1);
     x.fillStyle = rp < 0.22 ? PAL.pebbleDark : PAL.pebble;
     x.fillRect(r[0], r[1], r[2], r[3]);
@@ -208,11 +237,10 @@ function shoreBand(
 function bridgeShadowBand(
   x: CanvasRenderingContext2D, px0: number, py0: number, dir: number,
 ): void {
-  x.fillStyle = PAL.bridgeWater;
-  for (let i = 0; i < T; i++) { // banda oscura de 2 px pegada al puente
-    const r = edgeRect(dir, px0, py0, i, 0, 2, 1);
-    x.fillRect(r[0], r[1], r[2], r[3]);
-  }
+  // línea rgba oscura de 2 px pegada al puente (sombra del tablón)
+  x.fillStyle = 'rgba(10,22,42,0.45)';
+  const s = edgeRect(dir, px0, py0, 0, 0, 2, T);
+  x.fillRect(s[0], s[1], s[2], s[3]);
   x.fillStyle = PAL.waterDeep2;
   for (let i = 0; i < T; i += 4) { // ripple oscuro que se despega de la sombra
     if (hash2(i * 3 + dir * 41, dir * 13 + i) < 0.35) continue;
@@ -221,19 +249,34 @@ function bridgeShadowBand(
   }
 }
 
-/** Olas estáticas: 2-3 líneas horizontales de 1 px, discontinuas. */
+/**
+ * Olas estáticas: 2-3 líneas horizontales de 1 px (un tono más claro que la
+ * base de SU profundidad), discontinuas y con posición/fase por hash, más
+ * una "V" de ola pequeña (cresta de 3×2 px) en media de los tiles.
+ */
 function staticWaves(
-  x: CanvasRenderingContext2D, tx: number, ty: number, px0: number, py0: number,
+  x: CanvasRenderingContext2D, tx: number, ty: number,
+  px0: number, py0: number, depth: number,
 ): void {
+  const tone = WAVE_TONE[depth];
   const lines = 2 + (hash2(tx * 3 + 11, ty * 5 + 3) > 0.5 ? 1 : 0);
   for (let k = 0; k < lines; k++) {
     const ly = 2 + Math.floor(hash2(tx * 7 + k * 13 + 1, ty * 11 + k * 5 + 7) * 12);
     const lx = Math.floor(hash2(tx * 5 + k * 3 + 2, ty * 9 + k * 7 + 4) * 6);
     const len = Math.min(T - lx, 6 + Math.floor(hash2(tx + k * 17, ty * 2 + k * 23) * 7));
     const a = 2 + Math.floor(hash2(tx * 13 + k * 3, ty * 3 + k) * Math.max(1, len - 3));
-    x.fillStyle = PAL.waterWave;
+    x.fillStyle = tone;
     x.fillRect(px0 + lx, py0 + ly, a, 1);
     if (a + 1 < len) x.fillRect(px0 + lx + a + 1, py0 + ly, len - a - 1, 1); // guión
+  }
+  // "V" de ola pequeña: dos píxeles abajo y uno arriba (cresta de 3×2 px)
+  if (hash2(tx * 23 + 5, ty * 31 + 1) > 0.5) {
+    const vx = px0 + 2 + Math.floor(hash2(tx * 9 + 4, ty * 13 + 8) * 10);
+    const vy = py0 + 3 + Math.floor(hash2(tx * 15 + 2, ty * 17 + 6) * 10);
+    x.fillStyle = tone;
+    x.fillRect(vx, vy + 1, 1, 1);
+    x.fillRect(vx + 1, vy, 1, 1);
+    x.fillRect(vx + 2, vy + 1, 1, 1);
   }
 }
 
@@ -252,24 +295,42 @@ function paintBridge(
     x.globalAlpha = 1;
     ditherSpots(x, tx, ty, px0, py0, PAL.waterDeep2, 0.22, 43);
   }
+  // sombra del tablón sobre el agua: velo rgba que asoma en los márgenes
+  x.fillStyle = 'rgba(10,22,42,0.4)';
+  x.fillRect(px0, py0, T, T);
   if (broken) paintBridgeBroken(x, tx, ty, px0, py0, at);
   else paintBridgeWhole(x, tx, ty, px0, py0, at);
 }
 
-/** Poste de madera con cuerda atada (esquinas del puente). */
-function bridgePost(x: CanvasRenderingContext2D, X: number, Y: number): void {
+/**
+ * Poste de madera con cuerda atada y SOMBRA (esquinas del puente).
+ * La sombra va al pie si hay tablón debajo; si el poste cierra el tile por
+ * el sur, se dibuja lateral para no invadir el tile vecino del prerrender.
+ */
+function bridgePost(
+  x: CanvasRenderingContext2D, X: number, Y: number, py0: number, east: boolean,
+): void {
+  x.fillStyle = 'rgba(8,16,30,0.45)';
+  if (Y + 5 <= py0 + T) x.fillRect(east ? X - 1 : X + 1, Y + 4, 3, 1); // sombra al pie
+  else x.fillRect(east ? X - 1 : X + 3, Y, 1, 4);        // sombra lateral
   px(x, X, Y, 3, 4, PAL.woodDark);
   px(x, X, Y, 1, 4, PAL.woodMid);           // luz lateral
   px(x, X, Y, 3, 1, PAL.woodLight);         // canto superior
   px(x, X + 1, Y + 2, 2, 1, PAL.ropeLight); // cuerda atada
 }
 
-/** Cuerda vertical en el borde exterior del tablón, con nudos y sombra. */
+/**
+ * Cuerda lateral: riel de madera de 1 px en el borde del tablón y cuerda
+ * tensada dibujada a PUNTOS OSCUROS (1 px sí, 1 px no) con nudo claro cada
+ * 6 px. Todo dentro del tile, sin invadir vecinos del prerrender.
+ */
 function ropeEdge(x: CanvasRenderingContext2D, px0: number, py0: number, east: boolean): void {
   const rx = px0 + (east ? T - 1 : 0);
-  px(x, rx, py0 + 1, 1, T - 2, PAL.ropeDark);
-  px(x, rx + (east ? -1 : 1), py0 + 1, 1, T - 2, PAL.woodDark); // sombra en la madera
-  for (let ky = 2; ky < T - 1; ky += 4) px(x, rx, py0 + ky, 1, 2, PAL.ropeLight);
+  px(x, rx + (east ? -1 : 1), py0, 1, T, PAL.woodDark); // riel/sombra en la madera
+  for (let ky = 1; ky < T - 1; ky += 2) { // cuerda a puntos oscuros
+    x.fillStyle = (ky - 1) % 6 === 4 ? PAL.ropeLight : PAL.ropeDark;
+    x.fillRect(rx, py0 + ky, 1, 1);
+  }
 }
 
 /** 'B' puente del pasado: tablones con veta, cuerdas, sombra y postes. */
@@ -281,9 +342,8 @@ function paintBridgeWhole(
   const rightCol = !!at && at(1, 0) !== 'B';  // columna este
   const topEnd = !!at && at(0, -1) !== 'B';   // el puente empieza aquí
   const botEnd = !!at && at(0, 1) !== 'B';    // el puente termina aquí
-  // margen de agua con la sombra del tablón (1 px arriba y abajo)
-  px(x, px0, py0, T, 1, PAL.bridgeWater);
-  px(x, px0, py0 + T - 1, T, 1, PAL.bridgeWater);
+  // (la sombra rgba del tablón sobre el agua ya quedó en los márgenes:
+  //  paintBridge la aplica como velo ANTES de dibujar los tablones)
   // tablones horizontales (el puente cruza de norte a sur) con veta
   const off = Math.floor(hash2(ty * 13 + 7, 911) * 3); // junta desalineada por fila
   let y = 1 + off;
@@ -292,12 +352,17 @@ function paintBridgeWhole(
     px(x, px0, py0 + y, T, h, PAL.woodMid);
     px(x, px0, py0 + y, T, 1, PAL.woodLight); // canto iluminado de la tabla
     if (y + h < T - 1) px(x, px0, py0 + y + h, T, 1, PAL.woodDark); // junta
-    if (h >= 2) { // veta de la madera + nudo ocasional
-      const glen = 3 + Math.floor(hash2(tx * 7 + y * 3, ty * 11 + y) * 6);
-      const gx = px0 + Math.floor(hash2(tx * 17 + y, ty * 3 - y) * (T - glen));
-      px(x, gx, py0 + y + 1 + Math.floor(hash2(tx * 3 + y, ty * 5 - y) * (h - 1)), glen, 1, PAL.woodDark);
-      if (hash2(tx * 5 - y, ty * 7 + y * 3) > 0.78) {
-        px(x, px0 + ((glen + 4) % (T - 2)), py0 + y + 1, 2, 1, PAL.woodDark);
+    if (h >= 2) { // veta QUEBRADA: guiones de 2-4 px con huecos de 1-2 px
+      const gy2 = py0 + y + 1 + Math.floor(hash2(tx * 3 + y, ty * 5 - y) * (h - 1));
+      let gx = px0 + Math.floor(hash2(tx * 17 + y, ty * 3 - y) * 5);
+      x.fillStyle = PAL.woodDark;
+      while (gx < px0 + T - 1) {
+        const dash = 2 + Math.floor(hash2(gx * 3 + y, ty * 7 + y) * 3);
+        x.fillRect(gx, gy2, Math.min(dash, px0 + T - 1 - gx), 1);
+        gx += dash + 1 + Math.floor(hash2(gx + y, ty * 5) * 2);
+      }
+      if (hash2(tx * 5 - y, ty * 7 + y * 3) > 0.78) { // nudo de veta
+        px(x, px0 + 2 + Math.floor(hash2(tx + y, ty - y) * (T - 5)), gy2, 2, 1, PAL.woodDark);
       }
     }
     y += 4; // 3 de tabla + 1 de junta
@@ -305,14 +370,14 @@ function paintBridgeWhole(
   // cuerdas en los bordes exteriores (una por lado del puente de 2 tiles)
   if (leftCol) ropeEdge(x, px0, py0, false);
   if (rightCol) ropeEdge(x, px0, py0, true);
-  // postes en las esquinas, solo donde el puente empieza/termina
+  // postes en las esquinas (2 por extremo), con sombra propia
   if (topEnd) {
-    if (leftCol) bridgePost(x, px0, py0);
-    if (rightCol) bridgePost(x, px0 + T - 3, py0);
+    if (leftCol) bridgePost(x, px0, py0, py0, false);
+    if (rightCol) bridgePost(x, px0 + T - 3, py0, py0, true);
   }
   if (botEnd) {
-    if (leftCol) bridgePost(x, px0, py0 + T - 4);
-    if (rightCol) bridgePost(x, px0 + T - 3, py0 + T - 4);
+    if (leftCol) bridgePost(x, px0, py0 + T - 4, py0, false);
+    if (rightCol) bridgePost(x, px0 + T - 3, py0 + T - 4, py0, true);
   }
 }
 
@@ -357,27 +422,52 @@ function paintBridgeBroken(
     }
     y += 4;
   }
-  // astillas y ruinas flotando sobre el agua oscura
+  // hueco central: el cauce abierto donde el tablón cedió (agua muy oscura)
+  if (!topEnd && !botEnd) {
+    px(x, px0 + 5, py0 + 3, 6, 2, PAL.waterDeep2);
+    px(x, px0 + 4, py0 + 5, 8, 6, PAL.waterDeep2);
+    px(x, px0 + 5, py0 + 11, 6, 2, PAL.waterDeep2);
+    x.fillStyle = 'rgba(4,10,24,0.4)'; // fondo aún más profundo
+    x.fillRect(px0 + 5, py0 + 5, 6, 4);
+    x.fillStyle = PAL.foam;            // espuma estática mordiendo el borde
+    x.fillRect(px0 + 4, py0 + 6, 1, 1);
+    x.fillRect(px0 + 11, py0 + 8, 1, 1);
+    x.fillRect(px0 + 6, py0 + 3, 2, 1);
+  }
+  // astillas apuntando a direcciones distintas, flotando sobre el cauce
   for (let k = 0; k < 3; k++) {
     const sr = hash2(tx * 41 + k * 13, ty * 43 + k * 7 + 5);
-    if (sr < 0.35) continue;
-    const sx = px0 + 1 + Math.floor(hash2(tx * 13 + k * 3, ty * 17 + k) * (T - 4));
-    const sy = py0 + 1 + Math.floor(hash2(tx * 19 - k, ty * 7 + k * 5) * (T - 4));
-    if (sr > 0.72) px(x, sx, sy, 1, 2, PAL.woodDark);  // astilla clavada
-    else px(x, sx, sy, 2, 1, PAL.woodMid);             // astilla tumbada
+    if (sr < 0.3) continue;
+    const sx = px0 + 1 + Math.floor(hash2(tx * 13 + k * 3, ty * 17 + k) * (T - 6));
+    const sy = py0 + 1 + Math.floor(hash2(tx * 19 - k, ty * 7 + k * 5) * (T - 6));
+    if (k === 0) { // tumbada: horizontal 2×1 con punta oscura
+      px(x, sx, sy, 2, 1, PAL.woodMid);
+      px(x, sx + 1, sy, 1, 1, PAL.woodDark);
+    } else if (k === 1) { // clavada: vertical 1×2
+      px(x, sx, sy, 1, 2, PAL.woodDark);
+      px(x, sx, sy, 1, 1, PAL.woodMid);
+    } else { // diagonal: escalón de 2 px, orientación por hash
+      px(x, sx, sy, 1, 1, PAL.woodMid);
+      px(x, sx + 1, sy + 1, 1, 1, PAL.woodDark);
+      if (hash2(tx * 7 + k, ty * 9 - k) > 0.5) px(x, sx + 1, sy, 1, 1, PAL.woodDark);
+      else px(x, sx, sy + 1, 1, 1, PAL.woodDark);
+    }
   }
-  if (botEnd) { // tablón colgando que se curva y se hunde en el agua
-    px(x, px0 + 3, py0 + 8, 6, 2, PAL.woodMid);
-    px(x, px0 + 4, py0 + 10, 5, 2, PAL.woodDark);
-    px(x, px0 + 6, py0 + 12, 3, 2, PAL.plankWet);
-    px(x, px0 + 7, py0 + 14, 2, 1, PAL.plankWet);
-    px(x, px0 + 5, py0 + 14, 4, 1, PAL.bridgeWater); // sombra en el agua
-    px(x, px0 + 5, py0 + 13, 1, 1, PAL.foam);        // espuma estática
-    px(x, px0 + 10, py0 + 13, 1, 1, PAL.foam);
-    // poste caído flotando junto al borde sur
-    px(x, px0 + 11, py0 + 12, 4, 2, PAL.woodDark);
-    px(x, px0 + 11, py0 + 12, 4, 1, PAL.woodMid);
-    px(x, px0 + 10, py0 + 11, 1, 1, PAL.foam);
+  if (botEnd) { // tablón colgando EN DIAGONAL que se hunde hacia el SE
+    for (let k = 0; k < 6; k++) {
+      const kx = px0 + 3 + k, ky = py0 + 5 + k;
+      px(x, kx, ky, 2, 2, k >= 4 ? PAL.plankWet : PAL.woodMid); // punta mojada
+      px(x, kx, ky, 2, 1, PAL.woodLight);        // canto iluminado
+      px(x, kx + 1, ky + 1, 1, 1, PAL.woodDark); // vientre en sombra
+    }
+    x.fillStyle = 'rgba(8,16,30,0.35)'; // sombra del tablón sobre el cauce
+    x.fillRect(px0 + 9, py0 + 11, 3, 1);
+    px(x, px0 + 9, py0 + 10, 1, 1, PAL.foam); // espuma estática en la punta
+    px(x, px0 + 12, py0 + 12, 1, 1, PAL.foam);
+    // poste arrancado flotando junto al borde sur
+    px(x, px0 + 11, py0 + 13, 4, 2, PAL.woodDark);
+    px(x, px0 + 11, py0 + 13, 4, 1, PAL.woodMid);
+    px(x, px0 + 10, py0 + 12, 1, 1, PAL.foam);
     px(x, px0 + 15, py0 + 14, 1, 1, PAL.foam);
   }
   if (topEnd) { // postes quebrados en el extremo norte, con cuerda colgando

@@ -4,13 +4,17 @@
 //        'w' pozo · 'g' lápida · 'R' roca
 // Contrato: paintVillage llamada por el despachador drawTile.
 //
-// R1-A4 (terreno y atmósfera):
-//  · Tejado continuo entre tiles (sin costuras verticales), tejas
-//    escalonadas 4px con offset por fila, caballete iluminado, alero
-//    con sombra sobre la pared, chimeneas ocasionales y tejas musgo.
+// R1-A4b (reintento · terreno y atmósfera):
+//  · Tejado anti-gofre: cursos de 4 px alineados a coordenadas ABSOLUTAS
+//    (dos 'r' vecinos comparten rejilla → cero costuras), juntas verticales
+//    escalonadas cada 8 px con desfase alternado por curso y jitter 0-1 por
+//    hash, destellos y tejas musgo/rotas sueltas, caballete iluminado solo
+//    en la fila superior, alero con sombra sobre la pared (pintada por la
+//    'H' inferior) y chimeneas de piedra 4×6 ocasionales.
 //  · Paredes enlucidas con vigas en esquina, zócalo, ventanas con
 //    reflejo y sombra de alero. Puerta con arco, bisagras y farol.
-//  · Valla continua con postes rematados y travesaños con veta.
+//  · Valla continua con postes rematados, travesaños con veta y alguna
+//    tabla torcida que se rompe y cae (hash).
 //  · Pozo con brocal octogonal, polea y cubo; lápidas y rocas con
 //    3 variantes; sombras elípticas coherentes en todo objeto alto.
 //
@@ -19,7 +23,21 @@
 // (chimenea, horquilla del pozo) es seguro; nunca se desborda abajo.
 // ============================================================
 
-import { hash2, px, PAL, isForest, type NeighborFn } from './palette';
+import { px, PAL, PAL_ROOF, isForest, type NeighborFn } from './palette';
+
+/**
+ * Hash local con avalancha completa (splitmix32) para decisiones por
+ * posición. Motivo: el hash2 compartido SESGA en el rango de la aldea —
+ * medido en la rejilla 52×38, sus deciles 5-9 salen vacíos (P(<0.15)≈0.30
+ * y jamás supera 0.9), lo que disparaba chimeneas al 55% y anulaba tablas
+ * torcidas. vh reparte uniforme: P(<0.15)=0.15, P(>0.9)=0.10.
+ */
+function vh(x: number, y: number): number {
+  let h = (Math.imul(x, 0x27d4eb2d) ^ Math.imul(y, 0x165667b1)) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 1 | h) >>> 0;
+  h = (h ^ (h + Math.imul(h ^ (h >>> 7), 61 | h))) >>> 0;
+  return ((h ^ (h >>> 14)) >>> 0) / 4294967296;
+}
 
 /** Vecino seguro: sin función de vecinos devuelve '?' (trata como expuesto). */
 type At = (dx: number, dy: number) => string;
@@ -33,8 +51,9 @@ const isStoneCh = (c: string): boolean => c === ':' || c === '_' || c === '#' ||
 
 /** Elipse de contacto/sombra proyectada rgba(0,0,0,0.25), desplazada 1-2 px. */
 function dropShadow(x: CanvasRenderingContext2D, X: number, Y: number, W: number): void {
-  px(x, X, Y, W, 1, PAL.objShadow);
-  px(x, X + 1, Y + 1, W - 2, 1, PAL.objShadow);
+  px(x, X + 1, Y, W - 2, 1, PAL.objShadow);
+  px(x, X, Y + 1, W, 1, PAL.objShadow);
+  if (W >= 6) px(x, X + 2, Y + 2, W - 4, 1, 'rgba(0,0,0,0.12)');
 }
 
 /** Base de hierba que imita a paintGrass para fundirse con los '.' vecinos. */
@@ -43,11 +62,11 @@ function grassBase(x: CanvasRenderingContext2D, tx: number, ty: number, mapId: s
   const bosque = isForest(mapId);
   const g0 = bosque ? '#3f6d3a' : '#4f8a46';
   const g1 = bosque ? '#396334' : '#467c3e';
-  px(x, X, Y, 16, 16, hash2(tx, ty) < 0.5 ? g0 : g1);
+  px(x, X, Y, 16, 16, vh(tx, ty) < 0.5 ? g0 : g1);
   for (let i = 0; i < 3; i++) {
-    const hx = hash2(tx * 4 + i + 9, ty * 7 + i + 2);
+    const hx = vh(tx * 4 + i + 9, ty * 7 + i + 2);
     if (hx < 0.4) {
-      px(x, X + Math.floor(hx * 14), Y + 2 + Math.floor(hash2(tx + i * 3, ty * 5 + i) * 12),
+      px(x, X + Math.floor(hx * 14), Y + 2 + Math.floor(vh(tx + i * 3, ty * 5 + i) * 12),
         1, 2, bosque ? PAL.grassBladeBosque : PAL.grassBlade);
     }
   }
@@ -58,7 +77,7 @@ function stoneBase(x: CanvasRenderingContext2D, tx: number, ty: number): void {
   const X = tx * 16, Y = ty * 16;
   px(x, X, Y, 16, 16, PAL.stone);
   px(x, X, Y, 16, 1, PAL.stoneLight);
-  if (hash2(tx, ty) > 0.7) px(x, X + 3, Y + 9, 7, 1, PAL.stoneDark);
+  if (vh(tx, ty) > 0.7) px(x, X + 3, Y + 9, 7, 1, PAL.stoneDark);
   px(x, X, Y, 16, 1, PAL.stoneLine);
   px(x, X, Y, 1, 16, PAL.stoneLine);
 }
@@ -77,55 +96,82 @@ function groundBase(x: CanvasRenderingContext2D, tx: number, ty: number, mapId: 
 function paintRoof(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At): void {
   const X = tx * 16, Y = ty * 16;
   const contL = nb(-1, 0) === 'r', contR = nb(1, 0) === 'r';
-  // fondo = juntas oscuras entre tejas
-  px(x, X, Y, 16, 16, PAL.roofDark);
-  // faldones: 4 filas de 4 px; el offset solo depende de la fila para que el
-  // patrón sea continuo entre tiles (la variación va en el color por hash)
-  for (let j = 0; j < 4; j++) {
-    const ry = Y + j * 4;
-    const off = (j % 2) * 2;
-    for (let k = -1; k <= 4; k++) {
-      const bx = X + off + k * 4;
-      if (bx > X + 15 || bx + 3 < X) continue;
-      const c0 = Math.max(bx, X), c1 = Math.min(bx + 3, X + 15);
-      const v = hash2(tx * 4 + k + 31, ty * 4 + j + 7);
-      px(x, c0, ry, c1 - c0 + 1, 3, v < 0.28 ? PAL.roofMid : v < 0.78 ? PAL.roof : '#b0583f');
-      if (v > 0.86) px(x, c0, ry, 1, 1, PAL.roofLight); // destello en la teja
+  const contU = nb(0, -1) === 'r', contD = nb(0, 1) === 'r';
+  // — Faldón: base plana + CURSOS de 4 px alineados a la coordenada ABSOLUTA.
+  //   Nada depende de tx: dos 'r' vecinos comparten patrón → cero costuras y
+  //   sin bandas de tono alternado (eso era lo que leía como gofre) —
+  px(x, X, Y, 16, 16, PAL.roof);
+  for (let py = 3; py < 16; py += 4) {
+    px(x, X, Y + py, 16, 1, PAL.roofDark);         // sombra del solape (curso)
+  }
+  // — Tejas sueltas más oscuras (húmedas): 1-2 parches por curso, hash —
+  for (let py = 0; py < 16; py += 4) {
+    const ci = (Y + py) >> 2;
+    const nDark = vh(ci * 29 + 3, ty * 7 + 5) < 0.5 ? 1 : 2;
+    for (let d = 0; d < nDark; d++) {
+      const w = 3 + Math.floor(vh(ci * 13 + d * 7 + 1, ty * 5 + d) * 3); // 3..5
+      const dx = Math.floor(vh(ci * 17 + d * 3 + 2, ty * 11 + d + 1) * (16 - w));
+      px(x, X + dx, Y + py, w, 3, PAL.roofMid);
     }
   }
-  // teja con musgo o rota (hash de posición)
-  const mv = hash2(tx * 5 + 2, ty * 7 + 1);
+  // — Juntas verticales escalonadas: cada 8 px, desfase alternado por curso
+  //   con +2 para que NUNCA caigan en la columna de borde entre tiles (eso
+  //   pintaba un acento vertical en cada costura); jitter 0-1 por hash de la
+  //   posición ABSOLUTA → el patrón no se corta entre dos 'r' vecinos —
+  for (let py = 0; py < 16; py++) {
+    const gy = Y + py, ci = gy >> 2, ly = gy & 3;
+    if (ly === 3) continue;                        // no cruza la costura
+    const stag = (ci & 1) * 4 + 2;                 // offset alternado por fila
+    for (let m = -1; m <= 1; m++) {
+      let jx = X + stag + m * 8;
+      jx += vh(jx * 2 + ci, ci * 5 + 3) < 0.5 ? 0 : 1; // jitter por hash
+      if (jx < X || jx > X + 15) continue;
+      // junta rota (hash): solo queda la mitad baja de la teja
+      if (vh(jx * 3 + 1, ci * 7 + 2) < 0.2 && ly < 2) continue;
+      px(x, jx, gy, 1, 1, PAL_ROOF.roofJoint);
+    }
+  }
+  // — Vida del faldón: destello en el canto superior de alguna teja —
+  for (let py = 0; py < 16; py += 4) {
+    const ci = (Y + py) >> 2;
+    if (vh(ci * 13 + 5, ty * 7 + 9) < 0.55) {
+      const hx = X + 1 + Math.floor(vh(ci * 17 + 2, ty + 4) * 12);
+      px(x, hx, Y + py, 2, 1, PAL_ROOF.roofShine);
+    }
+  }
+  // teja con musgo o rota suelta (hash de posición)
+  const mv = vh(tx * 5 + 2, ty * 7 + 1);
   if (mv < 0.12) {
-    const mx = X + 2 + Math.floor(hash2(tx + 3, ty * 3) * 10);
-    const my = Y + 4 + Math.floor(hash2(tx * 3, ty + 5) * 8);
+    const mx = X + 2 + Math.floor(vh(tx + 3, ty * 3) * 10);
+    const my = Y + 5 + Math.floor(vh(tx * 3, ty + 5) * 8);
     px(x, mx, my, 3, 2, PAL.mossTile);
     px(x, mx + 1, my - 1, 2, 1, PAL.mossTile);
   } else if (mv < 0.2) {
-    const mx = X + 3 + Math.floor(hash2(tx + 3, ty * 3) * 9);
-    const my = Y + 5 + Math.floor(hash2(tx * 3, ty + 5) * 7);
+    const mx = X + 3 + Math.floor(vh(tx + 3, ty * 3) * 9);
+    const my = Y + 5 + Math.floor(vh(tx * 3, ty + 5) * 7);
     px(x, mx, my, 3, 2, PAL.brokenTile);
     px(x, mx + 2, my + 2, 1, 1, PAL.brokenTile);
   }
-  // caballete iluminado (solo en la fila superior del tejado)
-  if (nb(0, -1) !== 'r') {
+  // caballete iluminado SOLO en la fila superior del tejado
+  if (!contU) {
     px(x, X, Y, 16, 1, PAL.ridgeHi);
     px(x, X, Y + 1, 16, 1, PAL.ridge);
   }
-  // laterales del faldón (agua/limatesa) solo si el vecino no es tejado
+  // limatesas laterales solo contra vecino que no es tejado ('r'-'r' limpio)
   if (!contL) { px(x, X, Y, 1, 16, PAL.brokenTile); px(x, X + 1, Y, 1, 16, PAL.roofDark); }
   if (!contR) { px(x, X + 15, Y, 1, 16, PAL.brokenTile); px(x, X + 14, Y, 1, 16, PAL.roofDark); }
-  // línea de alero (vuelo del tejado sobre la pared)
-  px(x, X, Y + 15, 16, 1, PAL.brokenTile);
+  // canto del alero (bajo él, la 'H' pinta su propia sombra de 2-3 px)
+  if (!contD) px(x, X, Y + 15, 16, 1, PAL.brokenTile);
   // chimenea ocasional: hash < 0.15 y vecino de arriba libre
   const up = nb(0, -1);
   const upFree = up === '.' || up === ',' || up === '=' || up === 'c' || up === 'm';
-  if (hash2(tx * 13 + 5, ty * 17 + 3) < 0.15 && upFree) {
-    const cx = X + 4 + Math.floor(hash2(tx * 7 + 1, ty * 3 + 2) * 7);
-    px(x, cx - 1, Y - 6, 7, 1, PAL.chimneyHi);            // tapa
-    px(x, cx, Y - 5, 5, 6, PAL.chimney);                   // cuerpo (sube 6 px)
-    px(x, cx, Y - 5, 1, 6, PAL.chimneyHi);                 // luz lateral
-    px(x, cx + 4, Y - 5, 1, 6, PAL.chimneyDark);           // sombra lateral
-    px(x, cx + 1, Y - 5, 3, 2, PAL.chimneyMouth);          // boca oscura
+  if (vh(tx * 13 + 5, ty * 17 + 3) < 0.15 && upFree) {
+    const cx = X + 4 + Math.floor(vh(tx * 7 + 1, ty * 3 + 2) * 8); // cuerpo de 4 px
+    px(x, cx - 1, Y - 7, 6, 1, PAL.chimneyHi);     // tapa con vuelo
+    px(x, cx, Y - 6, 4, 6, PAL.chimney);           // cuerpo de piedra 4×6
+    px(x, cx, Y - 6, 1, 6, PAL.chimneyHi);         // luz en la cara oeste
+    px(x, cx + 3, Y - 6, 1, 6, PAL.chimneyDark);   // sombra en la cara este
+    px(x, cx + 1, Y - 6, 2, 2, PAL.chimneyMouth);  // boca oscura
   }
 }
 
@@ -138,8 +184,8 @@ function wallBase(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At): 
   // enlucido crema con motas sutiles
   px(x, X, Y, 16, 16, PAL.wall);
   for (let i = 0; i < 6; i++) {
-    const hx = hash2(tx * 6 + i * 3 + 1, ty * 8 + i + 4);
-    const hy = hash2(tx * 9 + i + 2, ty * 5 + i * 3 + 6);
+    const hx = vh(tx * 6 + i * 3 + 1, ty * 8 + i + 4);
+    const hy = vh(tx * 9 + i + 2, ty * 5 + i * 3 + 6);
     px(x, X + 1 + Math.floor(hx * 14), Y + 2 + Math.floor(hy * 10), 1, 1,
       hx < 0.5 ? PAL.wallDirt : PAL.wallHi);
   }
@@ -152,8 +198,8 @@ function wallBase(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At): 
   px(x, X, Y + 13, 16, 3, PAL.plinth);
   px(x, X, Y + 13, 16, 1, PAL.plinthHi);
   px(x, X, Y + 15, 16, 1, PAL.plinthDark);
-  px(x, X + 2 + Math.floor(hash2(tx * 3 + 5, ty + 9) * 11), Y + 14, 1, 2, PAL.plinthDark);
-  px(x, X + 2 + Math.floor(hash2(tx * 7 + 3, ty + 4) * 11), Y + 14, 1, 2, PAL.plinthDark);
+  px(x, X + 2 + Math.floor(vh(tx * 3 + 5, ty + 9) * 11), Y + 14, 1, 2, PAL.plinthDark);
+  px(x, X + 2 + Math.floor(vh(tx * 7 + 3, ty + 4) * 11), Y + 14, 1, 2, PAL.plinthDark);
   // vigas verticales SOLO en esquinas (el vecino horizontal no es pared)
   if (!isWallCh(nb(-1, 0))) {
     px(x, X, Y, 3, 16, PAL.beam);
@@ -172,7 +218,7 @@ function wallBase(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At): 
  */
 function paintWindowIfAny(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At): void {
   const chOf = (ax: number) => nb(ax - tx, 0); // vecino por coordenada absoluta
-  const q = (ax: number) => hash2(ax * 9 + 1, ty * 13 + 7) < 0.34;
+  const q = (ax: number) => vh(ax * 9 + 1, ty * 13 + 7) < 0.34;
   let lx = tx, rx = tx;
   while (chOf(lx - 1) === 'H') lx--;
   while (chOf(rx + 1) === 'H') rx++;
@@ -201,10 +247,11 @@ function paintWindowIfAny(x: CanvasRenderingContext2D, tx: number, ty: number, n
 function paintDoor(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At): void {
   const X = tx * 16, Y = ty * 16;
   wallBase(x, tx, ty, nb); // misma pared de fondo (los vecinos son 'H': sin vigas)
-  // arco de piedra con dovela iluminada
-  px(x, X + 2, Y + 2, 12, 2, PAL.step);
-  px(x, X + 2, Y + 2, 12, 1, PAL.plinthHi);
-  px(x, X + 2, Y + 4, 12, 1, PAL.stepDark);
+  // arco de piedra con dovela (clave) iluminada, marcado sobre la sombra
+  px(x, X + 2, Y + 2, 12, 3, PAL.step);        // dintel de piedra
+  px(x, X + 2, Y + 2, 12, 1, PAL.plinthHi);    // canto superior iluminado
+  px(x, X + 2, Y + 4, 12, 1, PAL.stepDark);    // sombra del dintel
+  px(x, X + 7, Y + 1, 2, 1, PAL.plinthHi);     // dovela central saliente
   // jambas
   px(x, X + 2, Y + 5, 1, 8, PAL.stepDark);
   px(x, X + 13, Y + 5, 1, 8, PAL.stepDark);
@@ -229,7 +276,7 @@ function paintDoor(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At):
   px(x, X + 2, Y + 13, 12, 1, PAL.plinthHi);
   px(x, X + 2, Y + 15, 12, 1, PAL.stepDark);
   // farolillo colgante apagado (por hash) junto a la puerta
-  if (hash2(tx * 19 + 2, ty * 23 + 4) < 0.45) {
+  if (vh(tx * 19 + 2, ty * 23 + 4) < 0.45) {
     px(x, X + 1, Y + 4, 2, 1, PAL.iron);        // brazo
     px(x, X + 1, Y + 5, 2, 1, PAL.iron);        // gancho
     px(x, X + 1, Y + 6, 2, 3, PAL.lanternOff);  // cuerpo
@@ -247,7 +294,7 @@ function paintFence(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At,
   grassBase(x, tx, ty, mapId);
   const hL = nb(-1, 0) === 'F', hR = nb(1, 0) === 'F';
   const vU = nb(0, -1) === 'F', vD = nb(0, 1) === 'F';
-  const q = hash2(tx * 3 + 7, ty * 5 + 11);
+  const q = vh(tx * 3 + 7, ty * 5 + 11);
   // tablas verticales de los tramos en columna (cruzan el borde si hay vecino)
   if (vU || vD) {
     const pT = vU ? Y : Y + 2;
@@ -264,12 +311,15 @@ function paintFence(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At,
     for (const ry of [4, 10]) {
       px(x, x0, Y + ry, x1 - x0, 2, PAL.wood);
       px(x, x0, Y + ry + 2, x1 - x0, 1, PAL.woodDark); // sombra del travesaño
-      px(x, x0 + Math.floor(hash2(tx + ry, ty * 3) * 6), Y + ry, 3, 1, PAL.woodLight); // veta
+      px(x, x0 + Math.floor(vh(tx + ry, ty * 3) * 6), Y + ry, 3, 1, PAL.woodLight); // veta
     }
-    // tabla quebrada (hash): hueco de 3 px en el travesaño alto
+    // tabla torcida (hash): el travesaño alto se rompe y la punta cae
     if (q > 0.9) {
-      const gx = X + 4 + Math.floor(hash2(tx * 5, ty + 2) * 6);
-      px(x, gx, Y + 4, 3, 3, hash2(tx, ty) < 0.5 ? '#4f8a46' : '#467c3e');
+      const gC = vh(tx, ty) < 0.5 ? '#4f8a46' : '#467c3e';
+      const bx = X + 4 + Math.floor(vh(tx * 5, ty + 2) * 7); // 4..10
+      px(x, bx, Y + 4, 4, 2, gC);                  // rotura: se ve el fondo
+      px(x, bx + 4, Y + 5, 2, 1, PAL.woodMid);     // astilla despegada
+      px(x, bx + 5, Y + 6, 2, 1, PAL.woodDark);    // punta que cae torcida
     }
   }
   // poste con remate (uno por tile); torcido y más corto si está dañado
@@ -345,7 +395,7 @@ function paintGrave(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At,
   const X = tx * 16, Y = ty * 16;
   groundBase(x, tx, ty, mapId, nb);
   dropShadow(x, X + 4, Y + 13, 10);
-  const v = hash2(tx * 11 + 1, ty * 7 + 9);
+  const v = vh(tx * 11 + 1, ty * 7 + 9);
   if (v < 0.34) {
     // variante redondeada
     px(x, X + 6, Y + 5, 4, 1, PAL.stoneHi);
@@ -399,7 +449,7 @@ function paintRock(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, 
   const L = eL ? 0 : 3, R = eR ? 15 : 13;
   const T = eU ? 0 : 5, B = eD ? 15 : 14;
   const w = R - L + 1;
-  const v = hash2(tx * 17 + 3, ty * 13 + 1);
+  const v = vh(tx * 17 + 3, ty * 13 + 1);
   if (v < 0.34) {
     // roca grande facetada
     px(x, X + L, Y + T, w, B - T + 1, PAL.stoneLight);

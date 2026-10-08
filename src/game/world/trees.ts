@@ -17,6 +17,8 @@
 //  · Sombra elíptica en la suelo (14×5, abajo-izquierda) y franjas
 //    translúcidas de copa sobre caminos adyacentes ('=').
 //  · Vida: frutos/flores, nido con huevos, pájaro, hojas colgando.
+//  · Fila 0 (ty=0): el prerrender no tiene margen superior, así que el
+//    árbol se dibuja desplazado 2px hacia abajo para no perder copa.
 // ============================================================
 
 import { hash2, px, PAL, isForest, pick, type NeighborFn } from './palette';
@@ -160,7 +162,8 @@ function pineCone(
 // ---------------- árbol coposo ('t') ----------------
 
 function paintCoposo(x: Ctx, tx: number, ty: number, mapId: string, nb: NeighborFn): void {
-  const px0 = tx * 16, py0 = ty * 16;
+  // ty=0: sin margen superior en el canvas de suelo → árbol 2px más abajo
+  const px0 = tx * 16, py0 = ty * 16 + (ty === 0 ? 2 : 0);
   const forest = isForest(mapId);
   const s = tx * 3 + 1, s2 = ty * 5 + 7;                 // semillas (hash original)
 
@@ -174,12 +177,12 @@ function paintCoposo(x: Ctx, tx: number, ty: number, mapId: string, nb: Neighbor
   if (nDown === '=') leanY = -1;
   else if (nUp === '=') leanY = 1;
 
-  // altura: 24-30px sobre la fila; más alto en masa, más bajo aislado
+  // altura: 20-28px sobre la fila; más alto en masa, más bajo aislado
   let reach = 24 + Math.floor(hash2(s * 9 + 2, s2 * 13 + 3) * 4);
   if (tUp) reach += 3;                                   // crece junto a otros árboles
   if (isTree(nb(-1, -1)) || isTree(nb(1, -1))) reach += 1;
   if (!tUp && !tDown && !tL && !tR) reach -= 2;          // ejemplar aislado
-  reach = Math.min(30, Math.max(20, reach));
+  reach = Math.min(28, Math.max(20, reach));
   if (nUp === 'p') reach = Math.min(reach, 20);          // no rebanar la copa del pino de arriba
 
   const variant = pick(hash2(s * 41 + 3, s2 * 37 + 9), 3); // 0 redondo · 1 doble copa · 2 llorón
@@ -198,7 +201,7 @@ function paintCoposo(x: Ctx, tx: number, ty: number, mapId: string, nb: Neighbor
   const padL = tL ? 2 : 0, padR = tR ? 2 : 0;
   const qL = Math.max(0, padL - 1), qR = Math.max(0, padR - 1);
 
-  groundShadow(x, px0 + 7, py0 + 13);
+  groundShadow(x, px0 + 7, py0 + 14); // en la base, desplazada abajo-izq
   // sombra sobre camino ANTES de la copa: el follaje la tapa donde cuelga
   pathShade(x, px0, py0, nb, hash2(s * 53 + 7, s2 * 43 + 11));
   trunkCoposo(
@@ -215,10 +218,10 @@ function paintCoposo(x: Ctx, tx: number, ty: number, mapId: string, nb: Neighbor
     lobe(x, cx + 5, cy - 3, 7, rh - 6, cMid, s + 3, 0.08, qL, padR);
     lobe(x, cx, cy - 6, rh - 5, rh - 6, cMid, s + 4, 0.1, padL, padR);
     lobe(x, cx - 4, cy - 6, 5, Math.max(3, rh - 8), cLight, s + 5);
-    // islotes separados de la silueta
-    px(x, cx - crownRx - 1, cy - 2, 1, 1, cMid);
-    px(x, cx + crownRx, cy + 1, 1, 1, cMid);
-    px(x, cx + 2, crownTop - 1, 1, 1, cMid);
+    // islotes separados de la silueta (1px despegados del borde real)
+    px(x, cx - crownRx + 1, cy - 2, 1, 1, cMid);
+    px(x, cx + crownRx - 3, cy + 1, 1, 1, cMid);
+    px(x, cx + 3, cy - rh, 1, 1, cMid);
   } else if (variant === 1) {
     // doble copa: dos masas con nudo mordido entre ellas
     lobe(x, cx - 1, cy + 6, rh - 4, rh - 5, cDark, s + 1, 0.04, qL, qR);
@@ -227,8 +230,8 @@ function paintCoposo(x: Ctx, tx: number, ty: number, mapId: string, nb: Neighbor
     lobe(x, cx + 1, cy - 1, 4, 4, cMid, s + 6, 0.22, qL, qR);
     lobe(x, cx + 2, cy - 7, 4, Math.max(2, rh - 9), cLight, s + 5);
     lobe(x, cx - 7, cy - 3, 3, 3, cLight, s + 7);
-    px(x, cx + crownRx - 1, cy - rh + 4, 1, 1, cMid);
-    px(x, cx - crownRx - 1, cy + 3, 1, 1, cMid);
+    px(x, cx + crownRx - 4, cy - rh + 4, 1, 1, cMid);
+    px(x, cx - crownRx + 2, cy + 3, 1, 1, cMid);
   } else {
     // llorón: copa alta y compacta + ramas caídas con punta clara
     lobe(x, cx, cy - 6, rh - 4, rh - 7, cDark, s + 1, 0.05, qL, qR);
@@ -250,11 +253,18 @@ function paintCoposo(x: Ctx, tx: number, ty: number, mapId: string, nb: Neighbor
     }
   }
 
-  // brillos sueltos en la mitad superior-izquierda de la copa
-  for (let i = 0; i < 3; i++) {
-    const lx = cx - crownRx + Math.floor(hash2(s * 13 + i * 3, s2 * 19 + i) * crownRx);
-    const ly = crownTop + 2 + Math.floor(hash2(s * 23 + i, s2 * 41 + i * 3) * Math.max(2, rh - 1));
-    px(x, lx, ly, 1, 1, cLight);
+  // brillos sueltos anclados al lóbulo claro de cada variante (radio 0.7-1.3:
+  // caen sobre el anillo medio que lo rodea, nunca lejos de la copa)
+  {
+    const lx0 = variant === 1 ? cx + 2 : variant === 2 ? cx - 3 : cx - 4;
+    const ly0 = variant === 1 ? cy - 7 : variant === 2 ? cy - 8 : cy - 6;
+    const rxL = variant === 2 ? 4 : 5;
+    const ryL = variant === 1 ? Math.max(2, rh - 9) : variant === 2 ? Math.max(2, rh - 10) : Math.max(3, rh - 8);
+    for (let i = 0; i < 3; i++) {
+      const a = hash2(s * 13 + i * 3, s2 * 19 + i) * Math.PI * 2;
+      const rr = 0.7 + 0.6 * Math.sqrt(hash2(s * 23 + i, s2 * 41 + i * 3));
+      px(x, Math.round(lx0 + Math.cos(a) * rxL * rr), Math.round(ly0 + Math.sin(a) * ryL * rr), 1, 1, cLight);
+    }
   }
 
   // ---- detalles vivos ----
@@ -301,24 +311,26 @@ function paintCoposo(x: Ctx, tx: number, ty: number, mapId: string, nb: Neighbor
   }
 
   if (rBird < 0.02) {
-    // pájaro diminuto 2×2 con pico de 1px, posado en el borde superior
-    const bx = cx + crownRx - 2;
-    const by = crownTop + 1;
+    // pájaro diminuto 2×2 con pico, posado SOBRE la punta de la copa
+    // (offset por variante: la punta real de follaje cambia de altura)
+    const bx = cx - 1 + (variant === 1 ? 3 : 0);
+    const by = crownTop + (variant === 0 ? 0 : variant === 1 ? 2 : -2);
     px(x, bx, by, 2, 2, PAL.birdBody);
-    px(x, leanX < 0 ? bx - 1 : bx + 2, by + (rBird < 0.01 ? 0 : 1), 1, 1, PAL.birdBeak);
+    px(x, bx - 1, by + (rBird < 0.015 ? 0 : 1), 1, 1, PAL.birdBeak);
   }
 
   if (rLeaf < 0.65) {
     // hojas colgando: 1px verde claro separado de la copa
     px(x, cx - 3 + Math.floor(rLeaf * 8), crownBot + 2, 1, 1, PAL.leafHang);
-    if (rLeaf > 0.3) px(x, cx - crownRx - 2, cy + 1, 1, 1, PAL.leafHang);
+    if (rLeaf > 0.5) px(x, cx - crownRx - 2, cy + 1, 1, 1, PAL.leafHang);
   }
 }
 
 // ---------------- pino ('p') ----------------
 
 function paintPine(x: Ctx, tx: number, ty: number, _mapId: string, nb: NeighborFn): void {
-  const px0 = tx * 16, py0 = ty * 16;
+  // ty=0: sin margen superior en el canvas de suelo → árbol 2px más abajo
+  const px0 = tx * 16, py0 = ty * 16 + (ty === 0 ? 2 : 0);
   const s = tx * 3 + 1, s2 = ty * 5 + 7;
 
   const nUp = nb(0, -1), nDown = nb(0, 1), nL = nb(-1, 0), nR = nb(1, 0);
@@ -334,10 +346,10 @@ function paintPine(x: Ctx, tx: number, ty: number, _mapId: string, nb: NeighborF
   if (isTree(nb(-1, -1)) || isTree(nb(1, -1))) reach += 1;
   if (!tUp && !tDown && !tL && !tR) reach -= 2;
   const variant = pick(hash2(s * 41 + 3, s2 * 37 + 9), 3); // 0 esbelto · 1 doble punta · 2 abeto ancho
-  if (variant === 0) reach += 2;
+  if (variant === 0) reach += 1;
   if (variant === 1) reach = Math.min(reach, 26);        // deja sitio a la segunda punta
   if (variant === 2) reach = Math.min(reach, 28);
-  reach = Math.min(30, Math.max(20, reach));
+  reach = Math.min(28, Math.max(20, reach));
   if (nUp === 't') reach = Math.min(reach, 18);          // bajo un coposo: pino de sotobosque
 
   const maxHw = variant === 0 ? 6 : variant === 2 ? 9 : 7;
@@ -347,7 +359,7 @@ function paintPine(x: Ctx, tx: number, ty: number, _mapId: string, nb: NeighborF
   // copas fundidas sin seams: extensión hacia vecinos pino
   const padL = tL ? 2 : 0, padR = tR ? 2 : 0;
 
-  groundShadow(x, px0 + 7, py0 + 13);
+  groundShadow(x, px0 + 7, py0 + 14); // en la base, desplazada abajo-izq
   // sombra sobre camino antes de la copa (el follaje la recorta donde cuelga)
   pathShade(x, px0, py0, nb, hash2(s * 53 + 7, s2 * 43 + 11));
   // si el vecino de arriba también es árbol, el tronco continúa hacia su base
@@ -374,16 +386,16 @@ function paintPine(x: Ctx, tx: number, ty: number, _mapId: string, nb: NeighborF
   const rLeaf = hash2(s * 23 + 6, s2 * 13 + 5);
 
   if (rBird < 0.02) {
-    // pájaro en la punta alta
-    const bx = variant === 1 ? cx - 3 : cx + 2;
-    const by = topY + 3;
+    // pájaro posado sobre la punta del pino (cuerpo pegado a la aguja)
+    const bx = cx - 1;
+    const by = topY - 2;
     px(x, bx, by, 2, 2, PAL.birdBody);
-    px(x, leanX < 0 ? bx - 1 : bx + 2, by + (rBird < 0.01 ? 0 : 1), 1, 1, PAL.birdBeak);
+    px(x, bx - 1, by + (rBird < 0.015 ? 0 : 1), 1, 1, PAL.birdBeak);
   }
 
   if (rLeaf < 0.5) {
     // aguja colgando despegada del borde de un piso
-    px(x, cx - maxHw - 2, py0 - Math.round(reach * 0.45), 1, 1, PAL.pineLight);
+    px(x, cx - maxHw - 1, py0 - Math.round(reach * 0.45), 1, 1, PAL.pineLight);
   }
 }
 

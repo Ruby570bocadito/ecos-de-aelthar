@@ -1,16 +1,18 @@
 // ============================================================
-// ECOS DE AELTHAR — Tiles de piedra y cripta (módulo world)
+// ECOS DE AELTHAR — Tiles de piedra y cripta (módulo world) · v3
 // Casos: ':' suelo piedra · '_' madera · '#' muro · 'P' pilar
 //        'A' altar · 'V' vacío
 // Contrato: paintStone llamada por el despachador drawTile.
 //
-// CLAVE ANTI-REJILLA: la geometría de losas (juntas, tonos, musgo,
-// grietas) se calcula con hash en coordenadas GLOBALES de píxel,
-// de modo que el patrón cruza los bordes de tile sin costuras y
-// las juntas sólo aparecen ENTRE losas. Mezcla de losas grandes
-// (16×16 / 24 / 32 / 48), losas partidas de 8 con juntas
-// desplazadas por hash e hiladas dobles fusionadas (32 px de
-// alto). Nada de bordes 1px en los 4 lados de cada tile.
+// CLAVE ANTI-REJILLA (v3): las hiladas del suelo ya NO miden todas
+// 16 px. Se construye UNA VEZ una tabla de hiladas por Y global con
+// alturas acumuladas variables (8/12/16/20/24/32), de modo que las
+// juntas horizontales caen en Y arbitrarias y casi nunca coinciden
+// con el borde de tile. Los anchos de losa también se mezclan por
+// hilada (8/12/16/24/32/48) con offset por hash y las juntas se
+// pintan "desgastadas" (rotas, dos tonos) para que ninguna línea
+// recorra el suelo de lado a lado. Los muros usan su propia tabla
+// de hiladas de 3-5 px con desplazamiento real por fila.
 // Prerrender: drawTile se llama con t=0 → todo determinista.
 // ============================================================
 
@@ -35,6 +37,31 @@ function dither(
   }
 }
 
+/**
+ * Hash int32 determinista (Math.imul, sin pérdida de precisión) para
+ * decisiones ESTRUCTURALES: hiladas, tonos por losa, desgaste de
+ * juntas. hash2 (el estándar del juego) pierde los bits bajos con
+ * coordenadas grandes (flotantes > 2^53) y agrupa valores; h32 no.
+ */
+function h32(x: number, y: number): number {
+  let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) | 0;
+  h = (h ^ (h >>> 13)) | 0;
+  h = Math.imul(h, 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+/** Ruido de valor bilineal suavizado (celdas de L px) para manchas. */
+function vnoise(vx: number, vy: number, L: number, seed: number): number {
+  const x0 = Math.floor(vx / L), y0 = Math.floor(vy / L);
+  const fx = vx / L - x0, fy = vy / L - y0;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const a = h32(x0 + seed, y0 + seed * 7);
+  const b = h32(x0 + 1 + seed, y0 + seed * 7);
+  const c = h32(x0 + seed, y0 + 1 + seed * 7);
+  const d = h32(x0 + 1 + seed, y0 + 1 + seed * 7);
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+}
+
 // ---------------- paleta local de piedra ----------------
 
 type Tono = { b: string; d: string; l: string };
@@ -57,6 +84,7 @@ const FLOOR_TONES: Tono[][] = [
   ],
 ];
 const FLOOR_MORTAR = ['#50505c', '#3a3a48'];
+const FLOOR_JOINT2 = ['#5c5c68', '#464654'];  // junta desgastada (más clara)
 const FLOOR_CRACK = ['#4a4a56', '#333344'];
 const FLOOR_SEAM = ['#4c4c58', '#40404e'];
 const FLOOR_SHADOW = ['#3e3e4a', '#33333f'];
@@ -104,101 +132,174 @@ const PILLAR = {
 };
 
 // ============================================================
+// TABLAS DE HILADAS (por Y global, construidas una sola vez)
+// El patrón de losas/muros vive en coordenadas GLOBALES y cruza
+// los bordes de tile sin costuras; las alturas acumuladas hacen
+// que las juntas NO caigan sistemáticamente en el borde de tile.
+// ============================================================
+
+const LOOKUP_MAX = 1024; // cubre el mapa más alto (bosque 56 → 896 px)
+
+// suelo: y0 de hilada, alto, ancho de losa, offset e id de hilada
+let fY0: Int32Array | null = null;
+let fH = new Int32Array(0), fW = new Int32Array(0), fOff = new Int32Array(0);
+let fBand = new Int32Array(0), fMid = new Uint8Array(0);
+
+function ensureFloorRows(): void {
+  if (fY0) return;
+  fY0 = new Int32Array(LOOKUP_MAX);
+  fH = new Int32Array(LOOKUP_MAX);
+  fW = new Int32Array(LOOKUP_MAX);
+  fOff = new Int32Array(LOOKUP_MAX);
+  fBand = new Int32Array(LOOKUP_MAX);
+  fMid = new Uint8Array(LOOKUP_MAX);
+  let y = 0, band = 0;
+  while (y < LOOKUP_MAX) {
+    const r = h32(band * 7 + 3, 911);
+    // altura de hilada variable: la mezcla evita el ritmo de 16 px
+    const h = r < 0.12 ? 8 : r < 0.26 ? 12 : r < 0.56 ? 16 : r < 0.66 ? 20 : r < 0.86 ? 24 : 32;
+    const off = Math.floor(h32(band * 11 + 5, 913) * 48);
+    const rw = h32(band * 13 + 9, 917);
+    const rk = h32(band * 17 + 2, 919);
+    // tipo de hilada: losa grande, partida en 2×8 con junta desplazada,
+    // o losa pequeña con borde irregular (chips)
+    let w: number, split = false, off2 = off;
+    if (h >= 20) {
+      w = rw < 0.30 ? 24 : rw < 0.70 ? 32 : 48;        // losa grande pulida
+    } else if (h === 16 && rk < 0.38) {
+      w = 8; split = true;                             // partida 2×8×8
+      off2 = off + 3 + pick(h32(band * 19 + 4, 717), 4); // junta media desplazada
+    } else if (h === 16) {
+      w = rw < 0.35 ? 16 : rw < 0.75 ? 24 : 32;
+    } else {
+      w = h === 12 ? (rw < 0.6 ? 12 : 16) : 8;         // pequeña irregular
+    }
+    for (let j = 0; j < h && y + j < LOOKUP_MAX; j++) {
+      fY0[y + j] = y;
+      fH[y + j] = h;
+      fW[y + j] = w;
+      fOff[y + j] = split && j >= h / 2 ? off2 : off;  // mitad baja desplazada
+      fBand[y + j] = band;
+      fMid[y + j] = split && j === h / 2 ? 1 : 0;      // junta media de la partida
+    }
+    y += h; band++;
+  }
+}
+
+// muro: hiladas de 3-5 px con desplazamiento real por fila
+let wY0: Int32Array | null = null;
+let wH = new Int32Array(0), wW = new Int32Array(0), wOff = new Int32Array(0), wBand = new Int32Array(0);
+
+function ensureWallRows(): void {
+  if (wY0) return;
+  wY0 = new Int32Array(LOOKUP_MAX);
+  wH = new Int32Array(LOOKUP_MAX);
+  wW = new Int32Array(LOOKUP_MAX);
+  wOff = new Int32Array(LOOKUP_MAX);
+  wBand = new Int32Array(LOOKUP_MAX);
+  let y = 0, band = 0;
+  while (y < LOOKUP_MAX) {
+    const r = h32(band * 5 + 7, 931);
+    const h = r < 0.22 ? 3 : r < 0.76 ? 4 : 5;         // hilada 3-5 px
+    const off = Math.floor(h32(band * 9 + 3, 937) * 16);
+    const w = 5 + pick(h32(band * 15 + 1, 941), 5);    // piedra 5-9 px
+    for (let j = 0; j < h && y + j < LOOKUP_MAX; j++) {
+      wY0[y + j] = y;
+      wH[y + j] = h;
+      wW[y + j] = w;
+      wOff[y + j] = off;
+      wBand[y + j] = band;
+    }
+    y += h; band++;
+  }
+}
+
+// ============================================================
 // SUELO DE PIEDRA (':' y base de 'P'/'A')
 // ============================================================
 
 /**
  * Campo de losas continuo entre tiles: para cada píxel global decide
- * si es junta y qué tono de losa le corresponde. Tipos de hilada:
- *  - fusionada (hash por macrofila de 32): losa grande de 32 px de alto
- *  - partida (hash por hilada): losas de 8 con junta media desplazada
- *  - normal: losas de 16 de alto y 16/24/32 de ancho con offset por hash
+ * si es junta y qué tono de losa le corresponde. Tipos de losa:
+ *  - grande (24-48 × 20-32) pulida, con brillo de pulido
+ *  - partida (hilada de 16 en 2×8×8 con junta media desplazada)
+ *  - pequeña (8×8 / 12×12 / 12×16) con borde irregular (muescas)
+ * Juntas desgastadas: rotas y con dos tonos, NUNCA un borde 1px en
+ * los 4 lados de cada tile.
  */
 function floorBase(
   x: CanvasRenderingContext2D, tx: number, ty: number, mapId: string,
 ): void {
+  ensureFloorRows();
   const crypt = isCrypt(mapId);
-  const tones = FLOOR_TONES[crypt ? 1 : 0];
-  const mortar = FLOOR_MORTAR[crypt ? 1 : 0];
+  const ci = crypt ? 1 : 0;
+  const tones = FLOOR_TONES[ci];
+  const mortar = FLOOR_MORTAR[ci];
+  const joint2 = FLOOR_JOINT2[ci];
   const px0 = tx * 16, py0 = ty * 16;
   const mossC = crypt ? PAL.stoneMossCrypt : PAL.stoneMoss;
   const mossD = crypt ? '#33503f' : PAL.stoneMossDark;
   // musgo: más denso en bosque y cripta que en la plaza del valle
-  const mossDensity = mapId === 'bosque' ? 0.2 : crypt ? 0.16 : 0.1;
+  // (umbral calibrado con la distribución del ruido: ~10/21/26% de área)
+  const mossThr = mapId === 'bosque' ? 0.595 : crypt ? 0.625 : 0.70;
 
   for (let ly = 0; ly < 16; ly++) {
     const gy = py0 + ly;
-    const ry = Math.floor(gy / 16);   // hilada de 16 px
-    const k = Math.floor(gy / 32);    // macrofila de 32 px
-    const merged = hash2(k, 313) > 0.72;
-    const splitRow = !merged && hash2(ry, 211) > 0.62;
-    let off: number, w: number, rowId: number, jointH: boolean;
-    let nearTop: boolean, nearBot: boolean;
-    if (merged) {
-      off = Math.floor(hash2(k, 517) * 40);
-      w = 24 + 12 * pick(hash2(k, 519), 3);        // 24 / 36 / 48
-      rowId = 1000 + k;
-      jointH = gy % 32 === 0;
-      nearTop = gy % 32 === 1; nearBot = gy % 32 === 31;
-    } else if (splitRow) {
-      const half = (gy & 8) !== 0 ? 1 : 0;
-      const mj = hash2(ry, 223) > 0.5;             // ¿partida en 8×8?
-      off = Math.floor(hash2(ry * 2 + half, 217) * 8);
-      w = 8;
-      rowId = ry * 2 + half;
-      jointH = (gy & 15) === 0 || (mj && (gy & 15) === 8);
-      nearTop = mj ? (gy & 7) === 1 : (gy & 15) === 1;
-      nearBot = mj ? (gy & 7) === 7 : (gy & 15) === 15;
-    } else {
-      off = Math.floor(hash2(ry, 71) * 24);
-      w = 16 + 8 * pick(hash2(ry, 137), 3);        // 16 / 24 / 32
-      rowId = ry;
-      jointH = gy % 16 === 0;
-      nearTop = gy % 16 === 1; nearBot = gy % 16 === 15;
-    }
+    const b = fBand[gy], y0 = fY0![gy], h = fH![gy];
+    const w = fW[gy], off = fOff[gy];
+    const ry = gy - y0;                       // fila dentro de la hilada
+    const jointH = ry === 0 || fMid[gy] === 1; // junta horizontal entre losas
+    const big = w >= 24 && h >= 20;
     for (let lx = 0; lx < 16; lx++) {
       const gx = px0 + lx;
       const u = gx + off;
-      const si = Math.floor(u / w);                // losa horizontal
-      const us = u - si * w;                       // 0..w-1 dentro de la losa
+      const si = Math.floor(u / w);            // losa horizontal
+      const us = u - si * w;
+      const slabHash = h32(si * 7 + b * 131, b * 17 + si * 3);
+      const tone = tones[pick(slabHash, 5)];
+      // muescas de borde sólo en losas pequeñas (borde irregular)
+      const chipV = w <= 12 && us === 1 && h32(gx * 3 + b, gy + 41) > 0.72;
+      const chipH = w <= 12 && ry === 1 && h32(gx + 17, gy * 3 + b) > 0.78;
       let c: string;
-      if (jointH || us === 0) {
-        c = mortar;                                // junta SÓLO entre losas
+      if (jointH || us === 0 || chipV || chipH) {
+        // junta desgastada: mayormente mortero, a veces clara, a veces rota
+        const jn = h32(gx * 5 + b, gy * 5 + 3);
+        c = jn > 0.30 ? mortar : jn > 0.14 ? joint2 : tone.b;
       } else {
-        const slab = tones[pick(hash2(si * 7 + rowId * 131, rowId * 17 + si * 3), 5)];
         const n = hash2(gx, gy);
-        // esquina redondeada simulada en algunas losas
-        const rounded = hash2(si * 5 + rowId * 9, rowId * 3 + si * 7) > 0.55;
-        if (rounded && (us === 1 || us === w - 1) && (nearTop || nearBot)) {
-          c = mortar;
-        } else if (n > 0.94) {
-          c = slab.l;                              // desgaste pulido
-        } else if (n < 0.06) {
-          c = slab.d;                              // grano oscuro
-        } else if ((us === 1 || nearTop) && hash2(gx + 31, gy + 17) > 0.5) {
-          c = slab.l;                              // labio desgastado junto a junta
+        // pulido: las losas grandes brillan más que las demás
+        const polished = big && h32(si * 3 + 7, b * 5 + 55) > 0.45;
+        const inside = us > 1 && us < w - 1 && ry > 1 && ry < h - 1;
+        if (n > (polished ? 0.86 : 0.95) && inside) {
+          c = tone.l;                          // brillo de pulido suelto
+        } else if (n < 0.05 && inside) {
+          c = tone.d;                          // grano oscuro
+        } else if (us === 1 && h32(gx + 31, gy + 17) > 0.55) {
+          c = tone.l;                          // labio desgastado junto a junta
+        } else if (ry === 1 && h32(gx + 13, gy + 7) > 0.55) {
+          c = tone.l;
         } else {
-          c = slab.b;
+          c = tone.b;
         }
       }
       p1(x, gx, gy, c);
     }
   }
 
-  // --- manchas de musgo (campo de manchas en celdas de 5 px) ---
+  // --- manchas de musgo (ruido de valor 2 octavas → blobs orgánicos) ---
   for (let ly = 0; ly < 16; ly++) {
     for (let lx = 0; lx < 16; lx++) {
       const gx = px0 + lx, gy = py0 + ly;
-      const cell = hash2(Math.floor(gx / 5) + 977, Math.floor(gy / 5) + 331);
-      if (cell < mossDensity && hash2(gx + 55, gy + 66) > 0.42) {
-        p1(x, gx, gy, hash2(gx + 7, gy + 3) > 0.8 ? mossD : mossC);
+      const m = vnoise(gx, gy, 10, 301) * 0.62 + vnoise(gx, gy, 4, 309) * 0.38;
+      if (m > mossThr) {
+        p1(x, gx, gy, h32(gx + 7, gy + 3) > 0.8 ? mossD : mossC);
       }
     }
   }
 
   // --- grietas ramificadas (1 px con codo y rama, sólo a veces) ---
   if (hash2(tx * 3 + 11, ty * 5 + 7) > 0.62) {
-    const crackC = FLOOR_CRACK[crypt ? 1 : 0];
+    const crackC = FLOOR_CRACK[ci];
     const startX = px0 + 2 + Math.floor(hash2(tx + 21, ty + 3) * 11);
     const startY = py0 + 2 + Math.floor(hash2(tx + 5, ty + 22) * 11);
     const horizFirst = hash2(tx + 9, ty + 23) > 0.5;
@@ -245,11 +346,12 @@ function floorSeams(
 ): void {
   if (!at) return;
   const crypt = isCrypt(mapId);
+  const ci = crypt ? 1 : 0;
   const px0 = tx * 16, py0 = ty * 16;
-  const shadow = FLOOR_SHADOW[crypt ? 1 : 0];
-  const seam = FLOOR_SEAM[crypt ? 1 : 0];
-  const canto = FLOOR_CANTO[crypt ? 1 : 0];
-  const corner = FLOOR_CORNER[crypt ? 1 : 0];
+  const shadow = FLOOR_SHADOW[ci];
+  const seam = FLOOR_SEAM[ci];
+  const canto = FLOOR_CANTO[ci];
+  const corner = FLOOR_CORNER[ci];
   const up = at(0, -1), dn = at(0, 1), lf = at(-1, 0), rt = at(1, 0);
   if (up !== ':') {
     if (up === '#' || up === 'P') {
@@ -261,9 +363,15 @@ function floorSeams(
       px(x, px0, py0, 16, 1, seam);              // costura con otro terreno
     }
   }
-  if (lf !== ':') px(x, px0, py0, 1, 16, seam);
-  if (rt !== ':') px(x, px0 + 15, py0, 1, 16, seam);
-  if (dn !== ':') px(x, px0, py0 + 15, 16, 1, seam);
+  if (lf === '#' || lf === 'P') {
+    px(x, px0, py0, 1, 16, shadow);              // sombra lateral del muro
+    dither(x, px0 + 1, py0, 1, 16, shadow);
+  } else if (lf !== ':') px(x, px0, py0, 1, 16, seam);
+  if (rt === '#' || rt === 'P') {
+    dither(x, px0 + 14, py0, 1, 16, shadow);
+    px(x, px0 + 15, py0, 1, 16, shadow);
+  } else if (rt !== ':') px(x, px0 + 15, py0, 1, 16, seam);
+  if (dn !== ':' && dn !== '#' && dn !== 'P') px(x, px0, py0 + 15, 16, 1, seam);
   // esquinas rematadas
   if (up !== ':' && lf !== ':') p1(x, px0, py0, corner);
   if (up !== ':' && rt !== ':') p1(x, px0 + 15, py0, corner);
@@ -278,42 +386,42 @@ function floorSeams(
 function paintWall(
   x: CanvasRenderingContext2D, tx: number, ty: number, mapId: string, at?: NeighborFn,
 ): void {
+  ensureWallRows();
   const crypt = isCrypt(mapId);
-  const tones = WALL_TONES[crypt ? 1 : 0];
-  const mortar = WALL_MORTAR[crypt ? 1 : 0];
+  const ci = crypt ? 1 : 0;
+  const tones = WALL_TONES[ci];
+  const mortar = WALL_MORTAR[ci];
   const px0 = tx * 16, py0 = ty * 16;
 
   for (let ly = 0; ly < 16; ly++) {
     const gy = py0 + ly;
-    const rowG = Math.floor(gy / 4);   // hilada GLOBAL de 4 px (cruza tiles)
-    const ry4 = gy & 3;
-    // desplazamiento y ancho de piedra POR HILADA (hash real por fila)
-    const off = Math.floor(hash2(rowG, 41) * 12);
-    const w = 6 + pick(hash2(rowG, 23), 3);          // 6 / 7 / 8
+    const b = wBand[gy], y0 = wY0![gy], h = wH![gy];
+    const w = wW[gy], off = wOff[gy];
+    const ry = gy - y0;                // fila dentro de la hilada
     for (let lx = 0; lx < 16; lx++) {
       const gx = px0 + lx;
       const u = gx + off;
-      const si = Math.floor(u / w);                  // piedra de la hilada
+      const si = Math.floor(u / w);    // piedra de la hilada
       const us = u - si * w;
-      const sh = hash2(si * 13 + rowG * 57, rowG * 29 + si * 3);
+      const sh = h32(si * 13 + b * 57, b * 29 + si * 3);
       let c: string;
       if (sh < 0.08) {
         // piedra faltante: hueco oscuro con dither
         c = ((gx + gy) & 1) === 0 ? '#32323e' : '#2a2a34';
-      } else if (ry4 === 3 || us === 0) {
-        c = mortar;                                  // juntas de mortero
+      } else if (ry === h - 1 || us === 0) {
+        c = mortar;                    // juntas de mortero (horiz. y vertical)
       } else {
-        const tone = tones[pick(hash2(si * 17 + rowG * 3, rowG * 5 + si * 11), 5)];
-        if (ry4 === 0 || us === 1) {
-          c = tone.l;                                // cara iluminada arriba-izq
-        } else if (us === w - 1) {
-          c = tone.d;                                // sombra abajo-der
+        const tone = tones[pick(h32(si * 17 + b * 3, b * 5 + si * 11), 5)];
+        if (ry === 0 || us === 1) {
+          c = tone.l;                  // cara iluminada arriba-izq
+        } else if (us === w - 1 || (h >= 5 && ry === h - 2)) {
+          c = tone.d;                  // sombra abajo-der
         } else {
           const n = hash2(gx, gy);
           c = n > 0.93 ? tone.l : n < 0.07 ? tone.d : tone.b;
         }
-        // liquen ocasional en la hilada baja de alguna piedra
-        if (sh > 0.3 && sh < 0.38 && ry4 >= 2 && hash2(gx + 77, gy + 13) > 0.6) {
+        // liquen ocasional en la parte baja de la piedra
+        if (sh > 0.3 && sh < 0.38 && ry >= h - 3 && h32(gx + 77, gy + 13) > 0.6) {
           c = '#5a6a50';
         }
       }

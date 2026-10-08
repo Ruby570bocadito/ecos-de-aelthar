@@ -151,3 +151,11 @@ export const PAL_PROP = {
   // puerta / barrotes
   bar: '#3a3a48', barDeep: '#2a2a34', barHi: '#6a6a7a',
 } as const;
+
+// ---------------- Paleta de tejado v2 (R1-A4b · aditivo) ----------------
+// Solo lectura para world/village.ts; no altera PAL/LIGHT_PAL/PAL_PROP.
+
+export const PAL_ROOF = {
+  roofJoint: '#6e2f21', // junta vertical entre tejas (entre roofDark y brokenTile)
+  roofShine: '#b0583f', // teja iluminada suelta (tercer tono del faldón)
+} as const;
