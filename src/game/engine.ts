@@ -21,6 +21,11 @@ import { updateGame } from './update';
 import { spawnDeathDissolve, resetBossFx } from './actors/bossfx';
 import { resetBossIntro } from './actors/bossintro';
 import { dreadStinger } from './actors/dread';
+// Ronda 3 · Combate y Juice: chispas, remate/kill feedback y HUD vivo
+import { spawnHitSparks } from './fx';
+import { comboPitch } from './fxcore';
+import { onKill, onFinisher, resetKillFx } from './actors/killfx';
+import { notifyLevelUp, notifyStatPoint } from './actors/hudfx';
 import { drawGame } from './render';
 import { buildMinimapV2 } from './world/minimap';
 import { handleCustomAction, recordDialogueTone } from './hooks';
@@ -227,6 +232,7 @@ export class Game {
     // terror v2 (Ronda 2): estado interno de intro del jefe y FX de fases, limpio
     resetBossIntro();
     resetBossFx();
+    resetKillFx(); // Ronda 3: FX de muerte en curso, fuera
     this.openedChests = new Set();
     this.takenEchoes = new Set();
     this.deadGolds = [];
@@ -1214,12 +1220,18 @@ export class Game {
     this.floatAt(e.x + (Math.random() - 0.5) * 8, e.y - 14, `${final}`, crit ? '#ffd24a' : '#fff');
     if (crit) this.floatAt(e.x, e.y - 22, '¡CRÍTICO!', '#ffd24a', 6);
     this.burst(e.x, e.y - 4, crit ? '#ffd24a' : '#f0e8e0', crit ? 10 : 5);
-    audio.sfx(crit ? 'crit' : 'hit');
+    // Ronda 3: chispas direccionales del impacto + pitch que sube con el combo
+    spawnHitSparks(this, e.x, e.y - 4, Math.atan2(kby, kbx) || Math.sign(e.y - p.y) * (Math.PI / 2), crit ? '#ffd24a' : '#fff0d8', crit ? 8 : 5);
+    audio.sfx(crit ? 'crit' : 'hit', Math.min(1, 0.45 + comboPitch(this) * 0.55));
     this.hitStop = crit ? 0.09 : 0.04;
     // resonancia
     const espMult = 1 + p.attrs.esp * 0.1;
     p.res = Math.min(p.maxRes, p.res + 6 * espMult);
-    if (e.hp <= 0) this.killEnemy(e);
+    if (e.hp <= 0) {
+      // Ronda 3: remate sobre enemigo quebrado — luz + slowmo antes de morir
+      if (e.ai === 'aturdido') { onFinisher(this, e); audio.sfx('finisher'); }
+      this.killEnemy(e);
+    }
   }
 
   killEnemy(e: Enemy) {
@@ -1236,6 +1248,9 @@ export class Game {
     this.burst(e.x, e.y - 4, e.etype === 'guardian' ? '#7ee8ff' : '#9ec4b4', e.etype === 'guardian' ? 40 : 14, e.etype === 'guardian' ? 120 : 60);
     // terror v2 (Ronda 2): el enemigo no explota alegre — se DESHACE en cenizas
     spawnDeathDissolve(this, e);
+    // Ronda 3: sello de muerte (motas de oro + anillo) y sonido propio
+    onKill(this, e);
+    audio.sfx('kill');
     audio.sfx('enemyDie');
     // cuenta de lobos para la misión
     if (e.etype === 'lobo' && this.questIdx === 1 && this.questStep === 0) {
@@ -1267,6 +1282,8 @@ export class Game {
       p.maxHp += 7;
       p.hp = p.maxHp;
       p.points += 3;
+      notifyLevelUp(this); // Ronda 3: destello dorado + anillos en el HUD
+      notifyStatPoint(this);
       audio.sfx('levelup');
       this.toast(`¡Nivel ${p.level}! +3 puntos de atributo (menú > Estado)`, '#ffe86a');
       this.burst(p.x, p.y - 8, '#ffe86a', 20, 70);

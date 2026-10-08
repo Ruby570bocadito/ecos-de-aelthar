@@ -14,6 +14,9 @@ import { updateHorror } from './actors/horror';
 import { updateDread, dreadInit, dreadStinger } from './actors/dread';
 import { startBossIntro, updateBossIntro } from './actors/bossintro';
 import { updateBossFx } from './actors/bossfx';
+// Ronda 3 · Combate y Juice: HUD vivo, FX de Ilwen y audio de latido
+import { updateHudFx, hudHeartbeatPulse } from './actors/hudfx';
+import { companionShotFx, setBondActive, setArrowIndex } from './actors/companfx';
 
 const DIRS: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
 
@@ -35,6 +38,9 @@ const wasAturdido = new WeakMap<Enemy, boolean>();
 /** Detección de golpe recién liberado (empuje cargado y remate). */
 const lastAttackT = new WeakMap<Player, number>();
 
+/** Pulso previo del latido de vida baja (Ronda 3): dispara sfx en el cruce ascendente. */
+let prevHeartbeat = 0;
+
 function dist(ax: number, ay: number, bx: number, by: number): number {
   return Math.hypot(bx - ax, by - ay);
 }
@@ -51,12 +57,18 @@ export function updateGame(g: Game, dt: number) {
   g.floats = g.floats.filter(f => f.t > 0);
   for (const p of g.particles) { p.t -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.grav * dt; }
   g.particles = g.particles.filter(p => p.t > 0);
-  // terror v2 (Ronda 2): nivel de pavor, audio procedural, intro del jefe y FX de
-  // fases corren en TODOS los estados (decaen solos fuera de juego / sin jefe)
+  // terror v2 (Ronda 2) + HUD vivo (Ronda 3): corren en TODOS los estados
   updateHorror(g, dt);
   updateDread(g, dt);
   updateBossIntro(g, dt);
   updateBossFx(g, dt);
+  updateHudFx(g, dt);
+  // latido de vida baja (Ronda 3): suena en el cruce ascendente del pulso
+  const hbNow = hudHeartbeatPulse();
+  if (g.player && g.state === 'play' && g.player.hp / g.player.maxHp < 0.3 && prevHeartbeat < 0.92 && hbNow >= 0.92) {
+    audio.sfx('heartbeat');
+  }
+  prevHeartbeat = hbNow;
   if (g.state !== 'play') { g.updateCamera(); return; }
 
   const p = g.player;
@@ -407,6 +419,7 @@ function updateCompanion(g: Game, dt: number) {
         x: c.x, y: c.y - 6, vx: (dx / l) * 190, vy: (dy / l) * 190, t: 1.2,
         dmg, element: el, from: 'companion', sprite: 'p_arrow', radius: 3, pierce: 0,
       });
+      companionShotFx(g, c.x, c.y - 6, el); // Ronda 3: destello de arco + motas
       audio.sfx('companionShot');
     }
   }
@@ -465,6 +478,9 @@ function updateCompanion(g: Game, dt: number) {
   }
   if (c.hp < c.maxHp) c.hp = Math.min(c.maxHp, c.hp + 2 * dt);
   if (c.hp <= 0) { c.downT = 8; g.toast('Ilwen cae... se repondrá en unos segundos', '#e8a0a0'); }
+  // Ronda 3: sincroniza el estado del vínculo y la flecha cargada con la capa FX
+  setBondActive(mem.bondT > 0);
+  setArrowIndex(mem.arrowIdx);
 }
 
 // ---------------- Enemigos ----------------
@@ -653,6 +669,7 @@ function guardianBrain(g: Game, e: Enemy, dt: number, d: number) {
   if (newPhase !== e.phase) {
     e.phase = newPhase;
     audio.sfx('roar');
+    audio.sfx('phase'); // Ronda 3: riser + impacto de cambio de fase
     g.toast(`El Guardián cambia de fase (${e.phase}/3)`, '#7ee8ff');
     addShake(g, 5);
     addFlash(g, e.phase === 3 ? '#e8a0ff' : '#7ee8ff', 0.2);

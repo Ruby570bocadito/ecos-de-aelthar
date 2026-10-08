@@ -102,7 +102,8 @@ function drawTitle(g: Game) {
     const wx = (VIEW_W / 6) * i + Math.sin(t + i * 2) * 40 + 60;
     const wy = 330 + Math.cos(t * 0.8 + i * 1.7) * 30;
     ctx.globalAlpha = 0.5;
-    ctx.drawImage(getSprWisp(t, i), wx, wy, 20, 20);
+    const ws = getSprWisp(t, i);
+    if (ws) ctx.drawImage(ws, wx, wy, 20, 20);
     ctx.globalAlpha = 1;
   }
 
@@ -161,7 +162,9 @@ function hashT(i: number, k: number): number {
 }
 function getSprWisp(t: number, i: number): HTMLCanvasElement {
   const frames = getSpr('wisp');
-  return frames[Math.floor(t * 3 + i) % frames.length];
+  const n = frames?.length ?? 0;
+  if (!n) return undefined as unknown as HTMLCanvasElement; // el llamador lo filtra (HMR/arranque)
+  return frames[((Math.floor(t * 3 + i) % n) + n) % n];
 }
 
 // esquinas doradas al pasar el ratón (hover más vivo)

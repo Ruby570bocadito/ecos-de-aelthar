@@ -125,6 +125,11 @@ export class AudioEngine {
   private cur: TrackName | null = null;
   private combatOn = false;
   private drumGain = 0;
+  // R3-A4: rate-limit por clave (clave → última t de disparo). Evita el
+  // ametrallado cuando varios eventos idénticos ocurren el mismo frame
+  // (p.ej. varios enemigos mueren a la vez). Mapa de tamaño fijo (1 entrada
+  // por clave usada, nunca acumula nodos ni voces).
+  private lastSfx = new Map<string, number>();
 
   musicVol = 0.7;
   sfxVol = 0.8;
@@ -266,6 +271,54 @@ export class AudioEngine {
 
   // ---------------- SFX ----------------
 
+  // R3-A4 · combate v2: intensidad opcional 0..1 para hit/crit.
+  // 1 (o ausente) = volumen pleno; 0 = golpe flojo (más flojo, más agudo).
+  private iGain(i?: number): number {
+    if (typeof i !== 'number' || !isFinite(i)) return 1;
+    return 0.5 + 0.5 * Math.min(1, Math.max(0, i));
+  }
+
+  private iPitch(i?: number): number {
+    if (typeof i !== 'number' || !isFinite(i)) return 1;
+    return 1.12 - 0.28 * Math.min(1, Math.max(0, i));
+  }
+
+  // Ping metálico real: par de osciladores detuned (batido) + parcial
+  // inarmónico, envolvente rápida y reverb fake con DelayNode corto.
+  private sPing(f0: number, dur: number, gain: number, delay = 0) {
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime + delay;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + 0.002);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    for (const det of [0, 14]) {
+      const o = this.ctx.createOscillator();
+      o.type = 'square';
+      o.frequency.setValueAtTime(f0 + det, t);
+      o.frequency.exponentialRampToValueAtTime(Math.max(20, f0 * 0.97), t + dur);
+      o.connect(g);
+      o.start(t); o.stop(t + dur + 0.05);
+    }
+    const p = this.ctx.createOscillator();
+    p.type = 'sine';
+    p.frequency.setValueAtTime(f0 * 2.756, t);
+    p.connect(g);
+    p.start(t); p.stop(t + dur + 0.05);
+    g.connect(this.sfxGain);
+    // reverb fake: tap con delay corto + realimentación suave
+    if (typeof this.ctx.createDelay === 'function') {
+      const dl = this.ctx.createDelay(0.4);
+      if (dl.delayTime) dl.delayTime.value = 0.085;
+      const fb = this.ctx.createGain();
+      fb.gain.value = 0.3;
+      const wet = this.ctx.createGain();
+      wet.gain.value = 0.32;
+      g.connect(dl); dl.connect(fb); fb.connect(dl);
+      dl.connect(wet); wet.connect(this.sfxGain);
+    }
+  }
+
   private sTone(f0: number, f1: number, dur: number, type: OscType, gain: number, delay = 0) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime + delay;
@@ -301,19 +354,69 @@ export class AudioEngine {
     src.start(t); src.stop(t + dur + 0.02);
   }
 
-  sfx(name: string) {
+  sfx(name: string, intensity?: number) {
     this.init();
     if (!this.ctx) return;
+    // R3-A4 · rate-limit por clave: ninguna clave suena más de 1×/60 ms
+    // ('heartbeat' tiene umbral propio de 400 ms). Si el reloj del contexto
+    // va hacia atrás (recreación), se permite el disparo.
+    const now = this.ctx.currentTime;
+    const minGap = name === 'heartbeat' ? 0.4 : 0.06;
+    const last = this.lastSfx.get(name);
+    if (last !== undefined && now >= last && now - last < minGap) return;
+    this.lastSfx.set(name, now);
     switch (name) {
       case 'swing': this.sNoise(0.09, 2600, 0.16, 'bandpass', 0, 900); break;
       case 'swing2': this.sNoise(0.11, 2100, 0.18, 'bandpass', 0, 700); break;
-      case 'hit': this.sTone(300, 90, 0.1, 'square', 0.2); this.sNoise(0.06, 1200, 0.14); break;
-      case 'crit': this.sTone(520, 110, 0.16, 'square', 0.24); this.sNoise(0.1, 2400, 0.18); break;
-      case 'parry': this.sTone(1250, 1900, 0.09, 'square', 0.2); this.sTone(2500, 3100, 0.14, 'sine', 0.16, 0.02); break;
+      // ----- combate v2 (R3-A4): golpe con cuerpo + pitch aleatorio leve; -----
+      // ----- hit/crit aceptan intensidad opcional 0..1 (sfx('hit', 0.8))  -----
+      case 'hit': {
+        const gk = this.iGain(intensity), pk = this.iPitch(intensity);
+        const pr = (0.92 + Math.random() * 0.16) * pk;
+        this.sNoise(0.02, 3200 * pr, 0.09 * gk, 'highpass');       // click
+        this.sTone(300 * pr, 88 * pr, 0.11, 'square', 0.17 * gk);  // thump
+        this.sTone(150 * pr, 58 * pr, 0.12, 'sine', 0.13 * gk);    // sub del golpe
+        this.sNoise(0.06, 1100 * pr, 0.1 * gk);                    // roce
+        break;
+      }
+      case 'crit': {
+        const gk = this.iGain(intensity), pk = this.iPitch(intensity);
+        const pr = (0.94 + Math.random() * 0.12) * pk;
+        this.sTone(330 * pr, 72 * pr, 0.17, 'square', 0.22 * gk);  // impacto
+        this.sTone(165 * pr, 52 * pr, 0.15, 'sine', 0.16 * gk);    // cuerpo
+        this.sNoise(0.09, 2600 * pr, 0.18 * gk);                   // chasquido
+        this.sTone(2450, 2380, 0.09, 'square', 0.05 * gk, 0.03);   // shimmer metálico
+        this.sTone(3670, 3560, 0.11, 'sine', 0.045 * gk, 0.045);
+        this.sNoise(0.07, 6200, 0.04 * gk, 'highpass', 0.03);
+        break;
+      }
+      case 'parry':
+        // ping metálico real: par detuned + parcial + envolvente rápida + reverb fake
+        this.sPing(1250, 0.18, 0.15);
+        this.sPing(1875, 0.12, 0.06, 0.015);
+        this.sNoise(0.05, 5200, 0.06, 'highpass', 0.01);
+        break;
       case 'parryFail': this.sTone(500, 380, 0.08, 'square', 0.1); break;
-      case 'dodge': this.sNoise(0.14, 900, 0.1, 'bandpass', 0, 3200); break;
-      case 'hurt': this.sTone(280, 120, 0.14, 'sawtooth', 0.18); break;
-      case 'enemyDie': this.sTone(340, 60, 0.3, 'sawtooth', 0.16); this.sNoise(0.2, 700, 0.12, 'lowpass'); break;
+      case 'dodge':
+        // whoosh más suave: ruido filtrado con barrido, arranque apagado
+        this.sNoise(0.15, 480, 0.05, 'lowpass', 0, 1400);
+        this.sNoise(0.19, 800, 0.055, 'bandpass', 0.02, 2600);
+        break;
+      case 'hurt':
+        // golpe sordo + aire que escapa
+        this.sTone(140, 65, 0.13, 'sine', 0.16);
+        this.sTone(210, 85, 0.12, 'sawtooth', 0.09);
+        this.sNoise(0.07, 420, 0.12, 'lowpass');
+        this.sNoise(0.22, 1500, 0.045, 'bandpass', 0.02, 3400);
+        break;
+      case 'enemyDie': {
+        // impacto + deseclipse descendente (la criatura se deshace al grave)
+        this.sNoise(0.06, 900, 0.11, 'lowpass');
+        this.sTone(340, 55, 0.34, 'sawtooth', 0.13);
+        this.sTone(227, 40, 0.38, 'triangle', 0.07, 0.04);
+        this.sNoise(0.28, 640, 0.09, 'lowpass', 0.06, 110);
+        break;
+      }
       case 'coin': this.sTone(1150, 1150, 0.06, 'square', 0.1); this.sTone(1720, 1720, 0.1, 'square', 0.1, 0.06); break;
       case 'potion': this.sTone(420, 780, 0.12, 'sine', 0.14); this.sTone(640, 990, 0.12, 'sine', 0.12, 0.09); break;
       case 'chest': this.sTone(240, 240, 0.08, 'square', 0.1); this.sTone(480, 480, 0.1, 'square', 0.12, 0.09); this.sTone(720, 720, 0.16, 'square', 0.12, 0.19); break;
@@ -368,6 +471,41 @@ export class AudioEngine {
       case 'whoosh':
         // susurro de esquiva
         this.sNoise(0.16, 1400, 0.09, 'bandpass', 0, 3800);
+        break;
+      // ----- SFX de combate v2 nuevos (R3-A4, los llamará el integrador) -----
+      case 'kill':
+        // sello de muerte: thud + sub-drop 120→60 Hz + chispa aguda
+        this.sNoise(0.09, 360, 0.2, 'lowpass');
+        this.sTone(120, 60, 0.34, 'sine', 0.28);
+        this.sTone(240, 120, 0.12, 'triangle', 0.1);   // octava: audible en portátiles
+        this.sNoise(0.05, 5400, 0.07, 'highpass', 0.05);
+        this.sTone(3400, 2700, 0.08, 'square', 0.045, 0.05);
+        break;
+      case 'phase':
+        // cambio de fase del jefe: riser de 0.4 s + impacto
+        this.sNoise(0.4, 260, 0.1, 'bandpass', 0, 3400);
+        this.sTone(110, 440, 0.4, 'sawtooth', 0.08);
+        this.sTone(55, 220, 0.4, 'triangle', 0.07);
+        this.sTone(90, 30, 0.32, 'sine', 0.3, 0.4);
+        this.sNoise(0.2, 520, 0.2, 'lowpass', 0.4, 90);
+        this.sTone(1250, 860, 0.14, 'square', 0.07, 0.4);
+        break;
+      case 'heartbeat':
+        // latido aislado lub-dub grave (sin nodos persistentes; el rate-limit
+        // propio de 400 ms permite llamarlo cada ~1.2 s sin acumular voces)
+        this.sTone(76, 46, 0.14, 'sine', 0.22);        // lub
+        this.sTone(152, 92, 0.1, 'sine', 0.05);        // armónico audible
+        this.sTone(66, 42, 0.12, 'sine', 0.16, 0.2);   // dub
+        this.sTone(132, 84, 0.09, 'sine', 0.04, 0.2);
+        break;
+      case 'finisher':
+        // remate: beat de silencio + caída guillotina
+        this.sTone(1300, 1240, 0.04, 'square', 0.06);  // tic antes del silencio
+        this.sTone(1500, 36, 0.28, 'sawtooth', 0.2, 0.14);  // guillotine drop
+        this.sTone(300, 24, 0.36, 'sine', 0.26, 0.14);
+        this.sNoise(0.12, 4200, 0.12, 'highpass', 0.14, 700);  // filo
+        this.sNoise(0.16, 320, 0.22, 'lowpass', 0.3);  // impacto final
+        this.sTone(85, 26, 0.26, 'sine', 0.26, 0.3);
         break;
       default:
         // SFX desconocido: no-op seguro (no rompe el juego)

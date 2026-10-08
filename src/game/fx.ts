@@ -4,12 +4,20 @@
 // masivas), polvo de pasos, estelas de esquiva y temporizadores
 // de feedback (banner de jefe / overlay de memoria).
 // Todo determinista donde puede (hash2) y sincronizado con globalT.
+//
+// R3-A1 (Ronda 3 · combate y juice) — añadidos al final del archivo:
+//   - drawFloatV2: números de daño V2 (arco + rebote, CRÍTICO con
+//     doble pasada, contorno 1 px, fade-out por escala).
+//   - spawnHitSparks / drawSparks: chispas de impacto como trazos
+//     alargados + destello blanco (convención size >= SPARK_MIN_SIZE).
 // ============================================================
 
 import type { Game } from './engine';
 import { VIEW_W, VIEW_H, ZOOM } from './engine';
-import { hash2 } from './sprites';
+import { hash2 } from './world/palette'; // hash determinista, devuelve [0,0.5) → normalizar ×2
 import { isNight } from './update'; // solo lectura (propiedad del agente 3-b)
+import { fBody } from './ui'; // misma fuente de cuerpo que usa render.ts (ui no importa nada en runtime)
+import type { FloatText } from './types';
 
 // ---------------- Tipos internos ----------------
 
@@ -381,7 +389,19 @@ function drawSky(g: Game, ctx: CanvasRenderingContext2D): void {
 
 // ---------------- Consultas para render.ts ----------------
 
-/** Estelas de esquiva vivas (para dibujar afterimages). */
+/**
+ * Estelas de esquiva vivas (para dibujar afterimages).
+ *
+ * NOTA R3-A1: la estela se PINTA en render.ts (drawRollTrail) con el código
+ * inline actual (alpha = life/TRAIL_LIFE * 0.35), así que este módulo NO la
+ * toca: getRollTrail mantiene su firma y comportamiento exactos. Mejora V2
+ * sugerida para el integrador (requiere editar render.ts, fuera de mi scope):
+ *   1) desvanecer con ESCALADO: dibujar cada afterimage con alpha actual y
+ *      tamaño 1 → 0.85 según life/TRAIL_LIFE (drawImage con w/h escalados);
+ *   2) doble ghost desplazado: para life > 0.5, pintar un segundo eco del
+ *      frame desplazado (-3,-2) px de pantalla con alpha*0.4 (sensación de
+ *      velocidad residual tras el rodar).
+ */
 export function getRollTrail(): TrailPt[] {
   return rollTrail;
 }
@@ -399,4 +419,263 @@ export function bannerInfo(g: Game): { slide: number; out: number; elapsed: numb
 export function memoryAlpha(g: Game): number {
   if (!g.memoryReveal) return 0;
   return Math.max(0, Math.min(1, memElapsed / 0.5, g.memoryReveal.t / 0.6));
+}
+
+// ============================================================
+// R3-A1 · NÚMEROS DE DAÑO V2 (juice)
+// ============================================================
+
+const FLOAT_LIFE = 0.9; // vida que asigna Game.floatAt (f.t cuenta ATRÁS desde aquí)
+
+/** Textos "especiales" con subrayado, igual que el inline actual de render.ts. */
+const FLOAT_SPECIAL = new Set(['QUEBRADO', '¡PARADA!', '¡REMATE!', '¡CRÍTICO!']);
+
+/** Núcleo claro por color base para la doble pasada de CRÍTICO. */
+const CRIT_CORE: Record<string, string> = {
+  '#ffd24a': '#fff0b0', // número de daño crítico (dorado)
+  '#ffe86a': '#fff6c8', // etiqueta '¡CRÍTICO!' (pasa por FLOAT_SPECIAL)
+};
+
+/**
+ * Número de daño V2 — reemplaza el dibujo inline de drawFloats.
+ *
+ * CONTRATO DE INTEGRACIÓN (render.ts · drawFloats, líneas ~568-602):
+ * el integrador debe sustituir el bloque inline por:
+ *
+ *   for (const f of g.floats) {
+ *     drawFloatV2(g.ctx, f, sx, sy, g.globalT);
+ *   }
+ *
+ * donde sx/sy son LAS MISMAS funciones mundo→pantalla que drawFloats ya
+ * recibe ((n) => n * ZOOM - cam). Los floats que NO pasen por esta función
+ * siguen viéndose con el código inline actual (mismo formato, sin cambios).
+ *
+ * Añadidos V2 (reinterpreta f.vy/f.t SIN tocar types.ts):
+ *  (a) TRAYECTORIA EN ARCO: la subida lineal de update.ts (f.y += vy*dt) se
+ *      corrige en el DRAW con una parábola de lanzamiento (sube rápido,
+ *      flota y cae hasta la altura de origen); fase/altura por hash2(f.x)
+ *      (x nunca cambia: el update solo mueve y). Al caer, REBOTE de 1 px
+ *      de mundo (2 px de pantalla) antes de morir.
+ *  (b) CRÍTICO: texto que contiene 'CRÍTICO' o color '#ffd24a' → se dibuja
+ *      1 px más grande con DOBLE PASADA (sombra dura desplazada + núcleo
+ *      claro sobre el color base).
+ *  (c) CONTORNO OSCURO de 1 px en los 4 cardinales para TODOS los floats
+ *      (legibilidad sobre nieve/niebla del Bosque).
+ *  (d) FADE-OUT POR ESCALA en el último 20 % de vida (la fuente encoge
+ *      hacia 0.55 mientras el alpha ya baja).
+ * Determinista: cero Math.random; todo por hash2 ×2 y Math.sin(globalT).
+ * Restaura el estado del ctx (save/restore): no contamina otros draws.
+ */
+export function drawFloatV2(
+  ctx: CanvasRenderingContext2D,
+  f: FloatText,
+  sx: (n: number) => number,
+  sy: (n: number) => number,
+  globalT: number,
+): void {
+  const alpha = Math.max(0, Math.min(1, f.t * 2.2)); // misma curva que el inline actual
+  if (alpha <= 0) return;
+
+  // --- edad normalizada 0→1 (f.t va hacia atrás desde FLOAT_LIFE) ---
+  const age = Math.max(0, Math.min(FLOAT_LIFE, FLOAT_LIFE - f.t));
+  const u = age / FLOAT_LIFE;
+
+  // --- fase determinista por hash de x (×2: hash2 vive en [0,0.5)) ---
+  const hx = Math.floor(f.x) * 3 + 7;
+  const ph1 = hash2(hx, 91) * 2;   // altura del arco
+  const ph2 = hash2(hx, 57) * 2;   // ápice del arco
+  const ph3 = hash2(hx, 23) * 2;   // deriva horizontal
+
+  // --- (a) arco: target(u) es la altura visual REAL respecto al origen ---
+  const apex = 0.36 + ph2 * 0.08;          // momento del punto muerto (0.36-0.44)
+  const H = 4.5 + ph1 * 3.5;               // altura del arco en px de mundo
+  let target: number;                       // negativo = arriba (px de mundo)
+  if (u <= apex * 2) {
+    const k = (u - apex) / apex;            // -1 → 1
+    target = -H * (1 - k * k);              // parábola: 0 → -H → 0
+  } else {
+    const ub = (u - apex * 2) / (1 - apex * 2); // fase de caída/rebote 0→1
+    target = -Math.abs(Math.sin(ub * Math.PI)); // rebote de 1 px de mundo al caer
+  }
+  // corrección sobre la subida lineal que update.ts YA aplicó a f.y
+  const oy = target - f.vy * FLOAT_LIFE * u;                       // px de mundo
+  const ox = (ph3 - 0.5) * 6 * u + Math.sin(globalT * 6.5 + ph1 * 6.28) * 0.35;
+  const x = Math.round(sx(f.x) + ox * ZOOM);
+  const y = Math.round(sy(f.y) + oy * ZOOM);
+
+  // --- (d) fade-out por escala en el último 20 % de vida ---
+  const tw = FLOAT_LIFE * 0.2;
+  const scale = f.t < tw ? 0.55 + 0.45 * (f.t / tw) : 1;
+
+  // --- tamaño/color: mismas reglas que el inline actual + crítico ---
+  const special = FLOAT_SPECIAL.has(f.text);
+  const crit = f.text.indexOf('CRÍTICO') >= 0 || f.color === '#ffd24a';
+  let size = f.size * 1.6 * (f.t > 0.74 ? 1.38 : 1); // pop inicial igual al actual
+  let color = f.color;
+  if (special) { color = '#ffe86a'; size *= 1.3; }
+  else if (f.color === '#ffd24a') size *= 1.15;      // críticos dorados
+  else if (f.color === '#ff7060') size *= 1.08;      // daño propio
+  if (crit) size += 1;                               // (b) CRÍTICO: 1 px más grande
+  size *= scale;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = fBody(Math.max(4, Math.round(size)));
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+
+  // --- (c) contorno oscuro de 1 px (4 cardinales) para TODOS los floats ---
+  ctx.fillStyle = 'rgba(14,10,20,0.9)';
+  ctx.fillText(f.text, x + 1, y);
+  ctx.fillText(f.text, x - 1, y);
+  ctx.fillText(f.text, x, y + 1);
+  ctx.fillText(f.text, x, y - 1);
+
+  if (crit) {
+    // (b) doble pasada CRÍTICO: sombra dura + núcleo claro
+    ctx.fillStyle = 'rgba(32,20,4,0.95)';
+    ctx.fillText(f.text, x + 2, y + 2);
+    ctx.fillStyle = CRIT_CORE[color] ?? '#fff0b0';
+  } else {
+    ctx.fillStyle = color;
+  }
+  ctx.fillText(f.text, x, y);
+
+  if (special) {
+    // subrayado brillante de los remates (entero, como el inline actual)
+    const uw = Math.max(4, Math.round(size * f.text.length * 0.44));
+    ctx.fillStyle = 'rgba(255,232,106,0.8)';
+    ctx.fillRect(x - (uw >> 1), y + Math.round(size * 1.05), uw, 1);
+  }
+  ctx.restore();
+}
+
+// ============================================================
+// R3-A1 · CHISPAS DE IMPACTO (juice de golpe)
+// ============================================================
+
+/**
+ * CONVENCIÓN de size para partículas (no rompe Particle de types.ts):
+ *   size <  SPARK_MIN_SIZE (3) → partícula NORMAL (cuadrado del bucle estándar)
+ *   size >= 3 y < 5            → CHISPA: la pinta drawSparks como TRAZO alargado
+ *   size >= 5                  → DESTELLO: cruz blanca creciente muy breve
+ *
+ * CONTRATO DE INTEGRACIÓN (render.ts · drawWorld, bucle de partículas ~154):
+ *
+ *   // 1) trazos de chispas ANTES del bucle normal:
+ *   drawSparks(ctx, g, sx, sy);
+ *
+ *   // 2) el bucle normal omite las chispas con un filtro por size:
+ *   for (const p of g.particles) {
+ *     if (p.size >= SPARK_MIN_SIZE) continue; // las gestiona drawSparks
+ *     ...
+ *   }
+ *
+ * Auditado: NINGUNA partícula previa del motor usa size >= 3 (engine.burst
+ * < 3, update.ts ≤ 2, bossfx ≤ 2.5, fx.ts ≤ 2), así que el filtro no altera
+ * ningún efecto existente. Mientras el integrador no aplique los 2 pasos,
+ * las chispas se verían como cuadrados grandes en el bucle normal (inofensivo).
+ */
+export const SPARK_MIN_SIZE = 3;
+
+/** Semilla secuencial determinista para las chispas (cero Math.random). */
+let sparkSeed = 1;
+
+/**
+ * Chispas de impacto: añade a g.particles 4-8 chispas alargadas (size 3-4,
+ * velocidad radial sesgada en la dirección del golpe, grav leve) + 1
+ * destello blanco muy breve (size 5.5).
+ *
+ * @param x, y   punto de impacto en px de MUNDO (como g.burst)
+ * @param dir    ángulo del golpe en radianes (convención atan2: 0 = derecha,
+ *               PI/2 = abajo). Atajos documentados: -1 = izquierda, 1 =
+ *               derecha, 0 = golpe SIN dirección (abanico hacia arriba).
+ *               Ejemplo con knockback: Math.atan2(kby, kbx).
+ * @param color  color de las chispas (el destello siempre es blanco)
+ * @param n      chispas solicitadas; se recorta al rango [4, 8] (default 6)
+ *
+ * Determinista (hash2 ×2 con semilla secuencial) → replays estables.
+ */
+export function spawnHitSparks(g: Game, x: number, y: number, dir: number, color: string, n?: number): void {
+  const count = Math.max(4, Math.min(8, n ?? 6)) || 6; // `|| 6`: n inválido (NaN) → default
+  let base: number;
+  if (dir === -1) base = Math.PI;        // atajo: golpe hacia la izquierda
+  else if (dir === 1) base = 0;          // atajo: golpe hacia la derecha
+  else if (dir === 0) base = -Math.PI / 2; // sin dirección: abanico hacia arriba
+  else base = dir;                       // ángulo completo en radianes
+
+  for (let i = 0; i < count; i++) {
+    const h1 = hash2(sparkSeed * 7919 + i * 131, 11) * 2;
+    const h2 = hash2(sparkSeed * 7919 + i * 131, 23) * 2;
+    const h3 = hash2(sparkSeed * 7919 + i * 131, 37) * 2;
+    const h4 = hash2(sparkSeed * 7919 + i * 131, 53) * 2;
+    const a = base + (h1 - 0.5) * 1.7;   // abanico de ±0.85 rad
+    const spd = 55 + h2 * 85;            // 55-140 px/s de mundo
+    const maxT = 0.22 + h3 * 0.16;       // 0.22-0.38 s
+    g.particles.push({
+      x, y,
+      vx: Math.cos(a) * spd,
+      vy: Math.sin(a) * spd - 18,        // leve patada hacia arriba
+      t: maxT, maxT,
+      color,
+      size: 3 + (h4 > 0.72 ? 1 : 0),     // 3-4 = CHISPA (trazo en drawSparks)
+      grav: 85 + h4 * 40,                // grav leve: caen arqueándose
+    });
+  }
+  // destello blanco: 1 partícula grande y muy breve (size >= 5 = DESTELLO)
+  g.particles.push({
+    x, y: y - 2, vx: 0, vy: 0, t: 0.09, maxT: 0.09,
+    color: '#ffffff', size: 5.5, grav: 0,
+  });
+  sparkSeed = (sparkSeed + 1) % 100003;  // avanza la secuencia determinista
+}
+
+/**
+ * Dibuja las chispas/destellos (size >= SPARK_MIN_SIZE) de g.particles.
+ *
+ * CONTRATO: el integrador debe llamarla ANTES del bucle de partículas normal
+ * de drawWorld (ver el bloque de documentación de SPARK_MIN_SIZE) y añadir
+ * ahí el filtro `if (p.size >= SPARK_MIN_SIZE) continue;`.
+ *
+ * - CHISPA (3 ≤ size < 5): trazo de 2-3 rects de 1 px en la dirección de
+ *   (vx, vy) — cabeza caliente clara + cola del color de la chispa.
+ * - DESTELLO (size ≥ 5): cruz blanca 2×2 + brazos que crecen al apagarse.
+ * Todo con fillRect ENTEROS en pantalla y alpha clampeado a [0,1].
+ * Restaura globalAlpha; ignora partículas normales (size < 3) y muertas.
+ */
+export function drawSparks(
+  ctx: CanvasRenderingContext2D,
+  g: Game,
+  sx: (n: number) => number,
+  sy: (n: number) => number,
+): void {
+  for (const p of g.particles) {
+    if (p.size < SPARK_MIN_SIZE || p.t <= 0) continue;
+    const lifeK = Math.max(0, Math.min(1, p.t / p.maxT)); // 1 → 0
+    const x = Math.round(sx(p.x));
+    const y = Math.round(sy(p.y));
+    if (p.size >= 5) {
+      // --- destello: cruz blanca creciente que se apaga ---
+      const arm = 1 + Math.round((1 - lifeK) * 3);
+      ctx.globalAlpha = lifeK;
+      ctx.fillStyle = p.color;
+      ctx.fillRect(x - 1, y - 1, 2, 2);
+      ctx.globalAlpha = Math.max(0, Math.min(1, lifeK * 0.7));
+      ctx.fillRect(x - arm, y, arm * 2 + 1, 1);  // brazo horizontal
+      ctx.fillRect(x, y - arm, 1, arm * 2 + 1);  // brazo vertical
+    } else {
+      // --- chispa: trazo alargado según (vx, vy), cola hacia atrás ---
+      const len = Math.hypot(p.vx, p.vy) || 1;
+      const dx = p.vx / len;
+      const dy = p.vy / len;
+      const steps = 3;
+      const headA = [1, 0.65, 0.35];
+      for (let k = 0; k < steps; k++) {
+        ctx.globalAlpha = Math.max(0, Math.min(1, headA[k] * lifeK));
+        ctx.fillStyle = k === 0 ? '#fff8e0' : p.color; // cabeza caliente
+        ctx.fillRect(x - Math.round(dx * k), y - Math.round(dy * k), 1, 1);
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
 }

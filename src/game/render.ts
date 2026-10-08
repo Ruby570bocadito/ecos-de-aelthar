@@ -12,6 +12,9 @@ import { ENEMY_DEFS } from './data';
 import { COL, text, textShadow, panel, bar, clearHits, wrapText, fBody } from './ui';
 import { drawScreens } from './screens';
 import { drawSlashArc, entityFrame, drawPortrait } from './sprites';
+import { drawFloatV2, drawSparks, SPARK_MIN_SIZE } from './fx';
+import { takeShakeDir } from './fxcore';
+import { skillIcon, bossBarV2 } from './ui';
 import {
   fxFrame, updateAmbient, drawAmbient, getRollTrail,
   bannerInfo, memoryAlpha, TRAIL_LIFE,
@@ -28,6 +31,13 @@ import { drawBossIntro } from './actors/bossintro';
 import { drawBossFx } from './actors/bossfx';
 import { wolfFrameAI, guardianFrame } from './actors/enemies';
 import type { GuardianState } from './actors/enemies';
+// Ronda 3 · Combate y Juice
+import { drawProjectileV2 } from './actors/spells';
+import { drawTelegraphV2, drawWaveCue, drawWindupCue } from './actors/telegraph';
+import { drawKillFx } from './actors/killfx';
+import { drawCompanionFx, drawMarkFx } from './actors/companfx';
+import { drawToastsV2, drawMapBannerV2 } from './actors/toasts';
+import { drawHudFx } from './actors/hudfx';
 
 const WORLD_FILTER: Record<string, string> = {
   presente: 'saturate(0.74) contrast(0.98)',
@@ -62,10 +72,11 @@ export function drawGame(g: Game) {
 function drawWorld(g: Game) {
   const ctx = g.ctx;
   // sacudida de cámara (g.shake decae en update y, por seguridad, en fxFrame)
-  // + micro-temblor del terror (Ronda 2): solo activo con el jefe en fase final
+  // + micro-temblor del terror (Ronda 2) + sacudida direccional (Ronda 3)
+  const shd = takeShakeDir(g);
   const hs = getHorrorShake();
-  const shx = (g.shake > 0.2 ? (Math.random() - 0.5) * g.shake * 2 : 0) + hs;
-  const shy = (g.shake > 0.2 ? (Math.random() - 0.5) * g.shake * 2 : 0) + hs * 0.7;
+  const shx = (g.shake > 0.2 ? (Math.random() - 0.5) * g.shake * 2 : 0) + hs + shd.x;
+  const shy = (g.shake > 0.2 ? (Math.random() - 0.5) * g.shake * 2 : 0) + hs * 0.7 + shd.y;
   ctx.save();
   ctx.translate(shx, shy);
   const camX = Math.round(g.camX), camY = Math.round(g.camY);
@@ -135,7 +146,15 @@ function drawWorld(g: Game) {
   ents.sort((a, b) => a.y - b.y);
 
   for (const { e } of ents) {
+    // marca de Ilwen (Ronda 3): anillo de suelo bajo el enemigo marcado
+    const enM = e as Enemy;
+    if (e.kind === 'enemy' && (enM.marked ?? 0) > 0) {
+      drawMarkFx(ctx, sx(e.x), sy(e.y + 4), g.globalT);
+    }
     drawEntity(g, e, sx, sy);
+    if (e.kind === 'companion') {
+      drawCompanionFx(ctx, g, sx, sy);
+    }
   }
 
   ctx.restore();
@@ -150,8 +169,11 @@ function drawWorld(g: Game) {
 
   drawCombatFx(g, sx, sy);
 
-  // partículas
+  // chispas de impacto v2 (Ronda 3): trazos alargados ANTES del bucle normal
+  drawSparks(ctx, g, sx, sy);
+  // partículas (las chispas size>=SPARK_MIN_SIZE ya se pintaron arriba)
   for (const p of g.particles) {
+    if (p.size >= SPARK_MIN_SIZE) continue;
     ctx.globalAlpha = Math.max(0, p.t / p.maxT);
     ctx.fillStyle = p.color;
     ctx.fillRect(sx(p.x) - p.size, sy(p.y) - p.size, p.size * 2 * ZOOM * 0.6, p.size * 2 * ZOOM * 0.6);
@@ -190,13 +212,9 @@ function drawWorld(g: Game) {
   // prompt de interacción
   drawInteractPrompt(g, sx, sy);
 
-  // banner del mapa
+  // banner del mapa v2 (Ronda 3): banda ornamental que se despliega
   if (g.mapTitleT > 0) {
-    const a = Math.min(1, g.mapTitleT);
-    ctx.globalAlpha = Math.min(1, a * 1.5);
-    textShadow(g, g.map.name, VIEW_W / 2, 90, 18, COL.goldSoft, '#000', 'center', true);
-    text(g, g.map.subtitle, VIEW_W / 2, 120, 16, COL.dim, 'center');
-    ctx.globalAlpha = 1;
+    drawMapBannerV2(ctx, g);
   }
 
   // aviso de época
@@ -323,9 +341,13 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
     ctx.globalAlpha = 1;
   }
 
-  // telegrafía de ataque
+  // telegrafía de ataque v2 (Ronda 3): chevron que acelera + arco de suelo
   if (en.kind === 'enemy' && en.ai === 'carga' && en.windup > 0) {
-    textShadow(g, '!', sx(e.x), dy - 16, 14, '#ff5040', '#000', 'center', true);
+    const wmax = en.etype === 'guardian'
+      ? (en.telegraphKind === 'onda' ? 0.9 : (ENEMY_DEFS.guardian.windup ?? 0.55) * (en.phase >= 3 ? 0.7 : 1))
+      : (ENEMY_DEFS[en.etype]?.windup ?? 0.6);
+    const wfrac = wmax > 0 ? Math.max(0, Math.min(1, 1 - en.windup / wmax)) : 0;
+    drawWindupCue(ctx, en.etype, wfrac, sx(e.x), sy(e.y), g.globalT);
   }
   if (en.kind === 'enemy' && en.ai === 'aturdido') {
     const t = g.globalT * 6;
@@ -464,56 +486,20 @@ function drawMarkIcon(g: Game, x: number, y: number, fill: number) {
 
 function drawCombatFx(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
   const ctx = g.ctx;
-  // telegrafías
+  // telegrafías v2 (Ronda 3): slam con runas que se cierran / aro doble
   for (const t of g.telegraphs) {
-    const a = 0.35 + Math.sin(g.globalT * 12) * 0.15;
-    ctx.strokeStyle = `rgba(255,80,64,${a})`;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(sx(t.x), sy(t.y), t.r * ZOOM, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillStyle = `rgba(255,80,64,${0.12 * (1 - t.t / t.maxT) + 0.08})`;
-    ctx.beginPath();
-    ctx.arc(sx(t.x), sy(t.y), t.r * ZOOM * (1 - t.t / t.maxT), 0, Math.PI * 2);
-    ctx.fill();
+    drawTelegraphV2(ctx, t, sx(t.x), sy(t.y), g.globalT);
   }
-  // ondas
+  // ondas v2 (Ronda 3): frente con polvo; dmg 0 = espectral tenue
   for (const w of g.waves) {
-    ctx.strokeStyle = `rgba(180,143,255,${1 - w.r / w.maxR})`;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(sx(w.x), sy(w.y), w.r * ZOOM, 0, Math.PI * 2);
-    ctx.stroke();
+    drawWaveCue(ctx, w, sx(w.x), sy(w.y), g.globalT);
   }
-  // proyectiles
+  // proyectiles v2 (Ronda 3): fuego/hielo/rayo/flecha/orbe con estelas
   for (const pr of g.projectiles) {
-    const x = sx(pr.x), y = sy(pr.y);
-    if (pr.sprite === 'p_fire') {
-      ctx.fillStyle = '#ff7830';
-      ctx.fillRect(x - 3, y - 3, 6, 6);
-      ctx.fillStyle = '#ffd24a';
-      ctx.fillRect(x - 1, y - 1, 4, 4);
-    } else if (pr.sprite === 'p_ice') {
-      ctx.fillStyle = '#a0e8ff';
-      ctx.fillRect(x - 3, y - 1, 6, 2);
-      ctx.fillRect(x - 1, y - 3, 2, 6);
-      ctx.fillStyle = '#f0fbff';
-      ctx.fillRect(x - 1, y - 1, 2, 2);
-    } else if (pr.sprite === 'p_arrow') {
-      const ang = Math.atan2(pr.vy, pr.vx);
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(ang);
-      ctx.fillStyle = '#d8c8a0';
-      ctx.fillRect(-5, -1, 10, 2);
-      ctx.fillStyle = '#e8e4d8';
-      ctx.fillRect(3, -2, 3, 4);
-      ctx.restore();
-    } else {
-      ctx.fillStyle = '#e8d0ff';
-      ctx.fillRect(x - 2, y - 2, 4, 4);
-    }
+    drawProjectileV2(ctx, pr, sx(pr.x), sy(pr.y), g.globalT);
   }
+  // anillos/cruces/columnas de muerte (Ronda 3)
+  drawKillFx(ctx, g, sx, sy);
 }
 
 // ---------------- Iluminación ----------------
@@ -563,40 +549,11 @@ function drawLightingExtras(g: Game) {
 
 // ---------------- Números de daño flotantes ----------------
 
-const FLOAT_SPECIAL = new Set(['QUEBRADO', '¡PARADA!', '¡REMATE!', '¡CRÍTICO!']);
-
 function drawFloats(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
   const ctx = g.ctx;
+  // números de daño v2 (Ronda 3): arco con rebote, crítico dorado, contorno
   for (const f of g.floats) {
-    const alpha = Math.min(1, f.t * 2.2);
-    if (alpha <= 0) continue;
-    // pop: más grande los primeros ~0.15 s
-    const pop = f.t > 0.74 ? 1.38 : 1;
-    const special = FLOAT_SPECIAL.has(f.text);
-    let size = f.size * 1.6 * pop;
-    let color = f.color;
-    if (special) { color = '#ffe86a'; size *= 1.3; }
-    else if (f.color === '#ffd24a') size *= 1.15; // críticos dorados
-    else if (f.color === '#ff7060') size *= 1.08; // daño propio
-    const x = sx(f.x), y = sy(f.y);
-    ctx.globalAlpha = alpha;
-    ctx.font = fBody(size);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    // contorno oscuro (4 direcciones + diagonal)
-    ctx.fillStyle = 'rgba(14,10,20,0.9)';
-    ctx.fillText(f.text, x + 1, y);
-    ctx.fillText(f.text, x - 1, y);
-    ctx.fillText(f.text, x, y + 1);
-    ctx.fillText(f.text, x, y - 1);
-    ctx.fillText(f.text, x + 1, y + 1);
-    ctx.fillStyle = color;
-    ctx.fillText(f.text, x, y);
-    if (special) {
-      // subrayado brillante para los remates
-      ctx.fillStyle = 'rgba(255,232,106,0.8)';
-      ctx.fillRect(x - size * f.text.length * 0.22, y + size * 1.05, size * f.text.length * 0.44, 1.5);
-    }
+    drawFloatV2(ctx, f, sx, sy, g.globalT);
   }
   ctx.globalAlpha = 1;
 }
@@ -661,7 +618,7 @@ function drawHud(g: Game) {
     drawMinimapOverlay(ctx, mini, g);
   }
 
-  // ---- habilidades (abajo-centro) ----
+  // ---- habilidades v2 (Ronda 3): icono con barrido de cooldown y marco recortado ----
   const skills = SKILLS[p.discipline];
   const sw = 52, sh = 46, gap = 8;
   const total = skills.length * sw + (skills.length - 1) * gap;
@@ -670,17 +627,12 @@ function drawHud(g: Game) {
     const sk = skills[i];
     const x = sx0 + i * (sw + gap);
     const y = sy0;
-    panel(g, x, y, sw, sh, p.cds[i] > 0 ? '#3a3448' : COL.panelBorder);
-    text(g, sk.icon, x + sw / 2, y + 5, 16, p.res >= sk.cost ? COL.goldSoft : '#666', 'center');
-    text(g, sk.name.split(' ')[0], x + sw / 2, y + 25, 11, p.res >= sk.cost ? COL.text : COL.dim, 'center');
+    skillIcon(g, x, y, sw, sk.icon, p.cds[i] > 0 ? Math.min(1, p.cds[i] / sk.cd) : 0, `${i + 1}`, p.cds[i] <= 0 && p.res >= sk.cost);
     if (p.cds[i] > 0) {
-      ctx.fillStyle = 'rgba(10,10,20,0.7)';
-      ctx.fillRect(x, y, sw, sh * Math.min(1, p.cds[i] / sk.cd));
-      text(g, `${p.cds[i].toFixed(1)}`, x + sw / 2, y + 14, 12, '#fff', 'center');
+      text(g, `${p.cds[i].toFixed(1)}`, x + sw / 2, y + sh - 16, 12, '#fff', 'center');
     } else if (p.res < sk.cost) {
       text(g, `${sk.cost}`, x + sw / 2, y + 12, 12, COL.danger, 'center');
     }
-    text(g, `${i + 1}`, x + 3, y + 2, 10, COL.gold, 'left', true);
   }
 
   // ---- misión (abajo-derecha) ----
@@ -694,36 +646,14 @@ function drawHud(g: Game) {
     lines.forEach((l, i) => text(g, l, VIEW_W - qw, VIEW_H - qh + 20 + i * 14, 14, COL.text));
   }
 
-  // ---- barra del jefe ----
+  // ---- barra del jefe v2 (Ronda 3): color por fase, marcas y quiebre con glow ----
   if (g.bossActive && g.bossRef && !g.bossRef.dead) {
     const boss = g.bossRef;
-    const bw2 = 420, bx2 = (VIEW_W - bw2) / 2, by2 = 16;
-    textShadow(g, ENEMY_DEFS.guardian.name, VIEW_W / 2, by2 - 14, 12, COL.boss, '#000', 'center', true);
-    bar(g, bx2, by2, bw2, 12, boss.hp / boss.maxHp, '#8a4ad0', COL.bossBg);
-    if (boss.maxSta > 0) {
-      bar(g, bx2, by2 + 14, bw2, 5, boss.sta / boss.maxSta, '#7ee8ff', '#12303a');
-      text(g, 'QUIEBRE', bx2 + bw2 + 6, by2 + 9, 11, '#7ee8ff');
-    }
-    text(g, `FASE ${boss.phase}/3`, bx2 - 6, by2 + 2, 12, COL.boss, 'right');
+    bossBarV2(g, ENEMY_DEFS.guardian.name, boss.hp / boss.maxHp, boss.maxSta > 0 ? boss.sta / boss.maxSta : 1, boss.phase);
   }
 
-  // ---- toasts (entrada deslizante desde la derecha + fade) ----
-  let ty = VIEW_H - 96;
-  for (let i = g.toasts.length - 1; i >= 0; i--) {
-    const t = g.toasts[i];
-    const enter = Math.max(0, Math.min(1, (3.4 - t.t) / 0.28));
-    const ease = 1 - Math.pow(1 - enter, 3);
-    const offX = (1 - ease) * 300;
-    ctx.globalAlpha = Math.min(1, t.t * 2) * (0.35 + 0.65 * ease);
-    const lines = wrapText(t.text, 52);
-    const th = lines.length * 15 + 10;
-    const tw = Math.min(430, Math.max(...lines.map(l => l.length)) * 6.4 + 20);
-    const tx = 12 + offX;
-    panel(g, tx, ty - th + 14, tw, th, 'rgba(90,74,48,0.6)');
-    lines.forEach((l, j) => text(g, l, tx + 10, ty - th + 20 + j * 15, 14, t.color ?? COL.text));
-    ctx.globalAlpha = 1;
-    ty -= th + 6;
-  }
+  // ---- toasts v2 (Ronda 3): glifo por tipo, entrada lateral y apilado limpio ----
+  drawToastsV2(ctx, g);
 
   // ---- pista contextual ----
   if (g.state === 'play') {
@@ -737,6 +667,9 @@ function drawHud(g: Game) {
       lines.forEach((l, i) => text(g, l, VIEW_W / 2, VIEW_H - 20 - (lines.length - 1 - i) * 14, 14, '#c8d0e0', 'center'));
     }
   }
+
+  // ---- HUD vivo (Ronda 3): latido de vida baja, subida de nivel, puntos ----
+  drawHudFx(ctx, g);
 }
 
 // ---------------- Overlays a pantalla completa ----------------
