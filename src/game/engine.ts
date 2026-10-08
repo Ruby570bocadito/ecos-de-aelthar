@@ -529,7 +529,10 @@ export class Game {
         for (let tx = 0; tx < w; tx++) {
           const ch = tileAt(this.map, this.rows, tx, ty, ep);
           // Acto II: arena/nieve/hielo y suelos por bioma los dibuja la expansión; fallback genérico
-          if (!drawExpansionTile(x, ch, tx, ty, this.mapId)) drawTile(x, ch, tx, ty, this.mapId, 0);
+          // (el fallback usa el drawTile v2 con hook de vecinos para autotiling — merge mejora-visual)
+          if (!drawExpansionTile(x, ch, tx, ty, this.mapId))
+            drawTile(x, ch, tx, ty, this.mapId, 0, (dx: number, dy: number) =>
+              tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
         }
       }
       // objetos altos por orden de fila
@@ -537,7 +540,9 @@ export class Game {
         for (let tx = 0; tx < w; tx++) {
           const ch = tileAt(this.map, this.rows, tx, ty, ep);
           if (SOLID_CHARS.has(ch) && (ch === 't' || ch === 'p')) {
-            if (!drawExpansionTallTile(x, ch, tx, ty, this.mapId)) drawTallTile(x, ch, tx, ty, this.mapId);
+            if (!drawExpansionTallTile(x, ch, tx, ty, this.mapId))
+              drawTallTile(x, ch, tx, ty, this.mapId, (dx: number, dy: number) =>
+                tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
           }
         }
       }
