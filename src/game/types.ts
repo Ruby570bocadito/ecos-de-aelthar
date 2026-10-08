@@ -1,0 +1,224 @@
+// ============================================================
+// ECOS DE AELTHAR — Demo (vertical slice)
+// Tipos compartidos del motor
+// ============================================================
+
+export type Dir = 'down' | 'up' | 'left' | 'right';
+export interface Vec { x: number; y: number }
+
+export type MapId = 'lunaris' | 'bosque' | 'cripta';
+export type Epoch = 'presente' | 'pasado';
+export type TrackName = 'village' | 'forest' | 'crypt' | 'boss' | 'title';
+
+export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian';
+export type Element = 'fuego' | 'hielo' | 'rayo' | 'sombra' | 'sagrado' | 'ninguno';
+export type StatusKind = 'quemado' | 'congelado' | 'aturdido' | 'marcado';
+
+export interface StatusFx {
+  kind: StatusKind;
+  t: number;      // tiempo restante
+  power: number;  // dps o intensidad
+}
+
+export interface EpochDiff { x: number; y: number; char: string }
+
+export interface SpawnDef {
+  type: EnemyType;
+  x: number; y: number;      // en tiles
+  patrol?: number;           // radio de patrulla en tiles
+  zone?: string;             // 'valle' | 'bosque' | 'cripta' | 'boss'
+}
+
+export interface NpcDef {
+  id: string;                 // 'brisa' | 'toln' | 'ilwen' | 'vesh_voz'
+  x: number; y: number;
+  sprite: string;
+  name: string;
+  hideFlag?: string;          // no aparece si la bandera está activa
+  showFlag?: string;          // solo aparece si la bandera está activa
+}
+
+export interface ChestDef {
+  id: string; x: number; y: number;
+  gold?: number; potions?: number; item?: string;   // item: id de objeto clave
+  needPast?: boolean;         // el cofre solo existe en el pasado
+}
+
+export interface EchoDef {
+  id: string; x: number; y: number;
+  title: string; text: string;
+}
+
+export interface ExitDef {
+  x: number; y: number; w: number; h: number;   // en tiles
+  to: MapId; tx: number; ty: number;
+  needPast?: boolean;          // solo transitable en el pasado
+  label?: string;
+}
+
+export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'altarEcho' | 'sign' | 'gate';
+
+export interface PropDef {
+  id: string; kind: PropKind; x: number; y: number;
+  label?: string;
+  needPast?: boolean;          // solo existe en el pasado
+  needPresent?: boolean;       // solo existe en el presente
+}
+
+export interface MapDef {
+  id: MapId;
+  name: string;
+  subtitle: string;
+  w: number; h: number;
+  rows: string[];
+  epochDiffs: EpochDiff[];
+  dark?: boolean;
+  music: TrackName;
+  npcs: NpcDef[];
+  chests: ChestDef[];
+  echoes: EchoDef[];
+  spawns: SpawnDef[];
+  exits: ExitDef[];
+  props: PropDef[];
+}
+
+// ---------- Combate ----------
+
+export type EnemyAIState = 'patrulla' | 'alerta' | 'persigue' | 'carga' | 'ataca' | 'recupera' | 'huye' | 'aturdido' | 'muerto';
+
+export interface Entity {
+  kind: 'player' | 'enemy' | 'npc' | 'companion';
+  x: number; y: number;         // px en mundo
+  w: number; h: number;         // hitbox (px, 16-base)
+  vx: number; vy: number;
+  dir: Dir;
+  hp: number; maxHp: number;
+  sprite: string;
+  anim: number;                 // fase de animación
+  moving: boolean;
+  dead?: boolean;
+}
+
+export interface Enemy extends Entity {
+  kind: 'enemy';
+  etype: EnemyType;
+  ai: EnemyAIState;
+  aiT: number;                  // timer de estado
+  homeX: number; homeY: number;
+  patrolAngle: number;
+  aggro: boolean;
+  windup: number;               // >0 telegrafiando
+  atkCd: number;
+  sta: number;                  // barra de quiebre (jefe/élites)
+  maxSta: number;
+  statuses: StatusFx[];
+  slowT: number;
+  phase: number;
+  sumT: number;
+  hitFlash: number;
+  telegraphKind?: 'slam' | 'onda' | 'aro';
+  spawnGuard?: number;          // no aggro al inicio
+}
+
+export interface Companion extends Entity {
+  kind: 'companion';
+  cname: string;
+  atkCd: number;
+  downT: number;
+  affinity: number;
+}
+
+export interface Npc extends Entity {
+  kind: 'npc';
+  nid: string;
+  dispName: string;
+}
+
+export interface Player extends Entity {
+  kind: 'player';
+  name: string;
+  discipline: 'alba' | 'tejedor';
+  level: number; xp: number;
+  sta: number; maxSta: number;
+  res: number; maxRes: number;
+  attrs: { fue: number; des: number; int: number; esp: number; vig: number };
+  points: number;
+  gold: number;
+  weaponPlus: number;
+  potions: number;
+  cds: number[];                // cooldowns de habilidades
+  iframes: number;
+  parryT: number;               // ventana de parada activa
+  parryFx: number;
+  attackT: number;              // >0 en ataque (combo)
+  combo: number;
+  chargeT: number;              // carga de ataque
+  charging: boolean;
+  chargedHit?: boolean;
+  buffT?: number;               // Grito de Guerra activo
+  rollT: number;
+  lastHitT: number;
+  hasEcho: boolean;             // cambio de época desbloqueado
+  kills: number;
+  deaths: number;
+  repGuardianes: number;
+  playTime: number;
+}
+
+// ---------- Misiones / diálogo ----------
+
+export interface QuestDef {
+  id: string; name: string; steps: string[];
+}
+
+export interface DialogueOption {
+  text: string;
+  next?: string;
+  action?: string;   // 'accept_q2' | 'forge' | 'recruit_ilwen' | ...
+}
+
+export interface DialogueNode {
+  name: string;
+  portrait: string;
+  text: string;
+  options?: DialogueOption[];
+  next?: string;
+  action?: string;
+  onEnd?: string;    // acción al cerrar
+}
+
+// ---------- Guardado ----------
+
+export interface SaveData {
+  v: number;
+  player: {
+    name: string; discipline: 'alba' | 'tejedor';
+    level: number; xp: number;
+    hp: number; maxHp: number; sta: number; maxSta: number; res: number;
+    attrs: Player['attrs']; points: number;
+    gold: number; weaponPlus: number; potions: number;
+    hasEcho: boolean; kills: number; deaths: number; repGuardianes: number; playTime: number;
+  };
+  map: MapId;
+  x: number; y: number;
+  epoch: Epoch;
+  flags: Record<string, number | boolean>;
+  questIdx: number; questStep: number;
+  openedChests: string[];
+  takenEchoes: string[];
+  deadGolds: { map: MapId; x: number; y: number; amount: number }[];
+  companion: boolean;
+  saveTime: number;
+}
+
+export interface Toast { text: string; t: number; color?: string }
+export interface FloatText { x: number; y: number; text: string; t: number; color: string; vy: number; size: number }
+export interface Particle { x: number; y: number; vx: number; vy: number; t: number; maxT: number; color: string; size: number; grav: number }
+export interface Projectile {
+  x: number; y: number; vx: number; vy: number;
+  t: number; dmg: number; element: Element;
+  from: 'player' | 'enemy' | 'companion';
+  sprite: string; radius: number; pierce: number;
+}
+export interface Shockwave { x: number; y: number; r: number; maxR: number; speed: number; dmg: number; hit: boolean }
+export interface TeleGraph { x: number; y: number; r: number; t: number; maxT: number; dmg: number; kind: 'slam' | 'aro' }
