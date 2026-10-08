@@ -373,14 +373,16 @@ export class Game {
       for (let ty = 0; ty < h; ty++) {
         for (let tx = 0; tx < w; tx++) {
           const ch = tileAt(this.map, this.rows, tx, ty, ep);
-          drawTile(x, ch, tx, ty, this.mapId, 0);
+          drawTile(x, ch, tx, ty, this.mapId, 0, (dx: number, dy: number) =>
+            tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
         }
       }
       // objetos altos por orden de fila
       for (let ty = 0; ty < h; ty++) {
         for (let tx = 0; tx < w; tx++) {
           const ch = tileAt(this.map, this.rows, tx, ty, ep);
-          if (SOLID_CHARS.has(ch) && (ch === 't' || ch === 'p')) drawTallTile(x, ch, tx, ty, this.mapId);
+          if (SOLID_CHARS.has(ch) && (ch === 't' || ch === 'p')) drawTallTile(x, ch, tx, ty, this.mapId, (dx: number, dy: number) =>
+            tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
         }
       }
       return c;
