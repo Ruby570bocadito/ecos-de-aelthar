@@ -18,6 +18,8 @@ import { handleCustomAction, recordDialogueTone } from './hooks';
 import { challengeTick, onChallengeDeath, type ChallengeRun } from './challenge';
 import { skillTick } from './skilltree';
 import { balanceTick, enemyStatMult } from './balance';
+import { worldTick } from './worldlife';
+import { timeTick, beginEpochShift } from './timeskip';
 
 // Vista DINÁMICA (fix barra negra): el buffer se ajusta al aspecto real de la
 // ventana (sin letterbox en 16:10/3:2/4:3/21:9). `let` + live bindings: todos
@@ -52,7 +54,7 @@ export const BOSS_DEFEAT_FLAG: Record<string, string> = {
 
 export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end' | 'skills';
 
-export interface UiHit { x: number; y: number; w: number; h: number; cb: () => void; hover?: boolean }
+export interface UiHit { x: number; y: number; w: number; h: number; cb: () => void; hover?: boolean; state?: GState }
 
 export class Game {
   canvas: HTMLCanvasElement;
@@ -64,6 +66,10 @@ export class Game {
   sfxVolUi = 0.8;
 
   requestCreate() {
+    // blindaje anti clic-fantasma (2ª capa): la creación SOLO existe desde el
+    // título. Si algún uiHit residual de otra instancia/estado disparara esto,
+    // el guard lo ignora y el overlay DOM nunca se abre en plena partida.
+    if (this.state !== 'title') return;
     audio.sfx('confirm');
     this.onRequestCreate?.();
   }
@@ -201,6 +207,8 @@ export class Game {
     challengeTick(this, dt); // modo desafío (arena)
     skillTick(this, dt);     // pasivas del árbol de habilidades
     balanceTick(this, dt);   // monitor de dificultad dinámica
+    worldTick(this, dt);     // fauna, rumores y eventos del mundo (13-b)
+    timeTick(this, dt);      // inmersión del viaje temporal (13-c)
   }
 
   /**
@@ -622,6 +630,8 @@ export class Game {
       this.toast('La Cripta existe fuera del tiempo.', '#9aa0b8');
       return;
     }
+    // inmersión temporal (13-c): transición y posible veto (momento hostil)
+    if (!beginEpochShift(this)) return;
     this.epoch = this.epoch === 'presente' ? 'pasado' : 'presente';
     this.epochFx = 0.8;
     audio.sfx('epoch');
@@ -1206,8 +1216,11 @@ export class Game {
     audio.resume();
     const p = this.canvasPos(e);
     this.mouse.x = p.x; this.mouse.y = p.y;
-    // UI hits primero
+    // UI hits primero — solo del estado ACTUAL (stamp anti-fantasma: los hits
+    // se registran con el estado del frame en que se dibujaron; un clic que
+    // aterrice en la misma frame de una transición título→juego no reabre menús)
     for (const h of this.uiHit) {
+      if (h.state !== this.state) continue;
       if (p.x >= h.x && p.x <= h.x + h.w && p.y >= h.y && p.y <= h.y + h.h) {
         audio.sfx('select');
         h.cb();
