@@ -15,6 +15,9 @@ import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue } from './data';
 import { updateGame } from './update';
 import { drawGame } from './render';
 import { handleCustomAction, recordDialogueTone } from './hooks';
+import { challengeTick, onChallengeDeath, type ChallengeRun } from './challenge';
+import { skillTick } from './skilltree';
+import { balanceTick, enemyStatMult } from './balance';
 
 // Vista DINÁMICA (fix barra negra): el buffer se ajusta al aspecto real de la
 // ventana (sin letterbox en 16:10/3:2/4:3/21:9). `let` + live bindings: todos
@@ -47,7 +50,7 @@ export const BOSS_DEFEAT_FLAG: Record<string, string> = {
   golem: 'golemDefeated',
 };
 
-export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end';
+export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end' | 'skills';
 
 export interface UiHit { x: number; y: number; w: number; h: number; cb: () => void; hover?: boolean }
 
@@ -140,6 +143,9 @@ export class Game {
   bossRef: Enemy | null = null;
   bossActive = false;
 
+  // modo desafío (arena): sesión volátil — no se serializa en save()
+  challengeRun: ChallengeRun | null = null;
+
   // bucle
   private raf = 0;
   private lastTs = 0;
@@ -191,6 +197,10 @@ export class Game {
       this.toast('La Sirena te ha visto...', '#8ef0ff');
     }
     this.catchUpActo2();
+    // módulos de juego (no-ops de costo O(1) si no aplican)
+    challengeTick(this, dt); // modo desafío (arena)
+    skillTick(this, dt);     // pasivas del árbol de habilidades
+    balanceTick(this, dt);   // monitor de dificultad dinámica
   }
 
   /**
@@ -508,11 +518,14 @@ export class Game {
 
   makeEnemy(type: Enemy['etype'], x: number, y: number, patrol: number, zone?: string): Enemy {
     const d = ENEMY_DEFS[type];
+    // balanceador de dificultad (12-c): multiplica hp del spawn (neutro en desafío)
+    const bm = enemyStatMult(this);
+    const hp = Math.max(1, Math.round(d.hp * bm.hp));
     return {
       kind: 'enemy', etype: type, x, y,
       w: type === 'guardian' || type === 'sirena' || type === 'golem' ? 22 : 12,
       h: type === 'guardian' || type === 'sirena' || type === 'golem' ? 16 : 10,
-      vx: 0, vy: 0, dir: 'down', hp: d.hp, maxHp: d.hp, sprite: d.sprite, anim: Math.random() * 9, moving: false,
+      vx: 0, vy: 0, dir: 'down', hp, maxHp: hp, sprite: d.sprite, anim: Math.random() * 9, moving: false,
       ai: 'patrulla', aiT: Math.random() * 2, homeX: x, homeY: y, patrolAngle: Math.random() * Math.PI * 2,
       aggro: false, windup: 0, atkCd: Math.random(), sta: d.breakBar ?? 0, maxSta: d.breakBar ?? 0,
       statuses: [], slowT: 0, phase: 1, sumT: 0, hitFlash: 0, spawnGuard: zone === 'boss' ? 0.5 : 0,
@@ -1054,6 +1067,9 @@ export class Game {
   }
 
   respawn() {
+    // en desafío la muerte NO respawnea al santuario de campaña: el módulo
+    // challenge muestra resultados y vuelve al título
+    if (this.challengeRun) { onChallengeDeath(this); return; }
     const p = this.player!;
     const [sx, sy] = this.sanctuaryPos(this.mapId);
     this.epoch = 'presente';
@@ -1155,8 +1171,11 @@ export class Game {
         audio.sfx('save');
       }
       else if (['1', '2', '3', '4'].includes(k)) this.useSkill(parseInt(k, 10) - 1);
+      else if (k === 'k') { this.setState('skills'); audio.sfx('uiOpen'); }
     } else if (this.state === 'pause') {
       if (k === 'escape' || k === 'm') this.setState('play');
+    } else if (this.state === 'skills') {
+      if (k === 'escape' || k === 'k' || k === 'm') { this.setState('play'); audio.sfx('uiOpen'); }
     } else if (this.state === 'dead') {
       if (k === 'e' || k === 'enter') this.respawn();
     } else if (this.state === 'end') {
@@ -1497,7 +1516,7 @@ export class Game {
     p.kills++;
     const espMult = 1 + p.attrs.esp * 0.1;
     p.res = Math.min(p.maxRes, p.res + 10 * espMult);
-    this.gainXp(def.xp);
+    this.gainXp(Math.max(1, Math.round(def.xp * enemyStatMult(this).xp)));
     const gold = Math.round(def.gold[0] + Math.random() * (def.gold[1] - def.gold[0]));
     p.gold += gold;
     this.floatAt(e.x, e.y - 20, `+${gold} coronas`, '#f0c84a');
@@ -1574,6 +1593,8 @@ export class Game {
 
   damagePlayer(dmg: number, fromX: number, fromY: number) {
     const p = this.player!;
+    // balanceador (12-c): embudo único de todo el daño enemigo (neutro en desafío)
+    dmg = Math.max(1, Math.round(dmg * enemyStatMult(this).dmg));
     if (p.iframes > 0 || p.rollT > 0 || this.state !== 'play') return;
     if (p.parryT > 0) {
       // ¡parada perfecta!

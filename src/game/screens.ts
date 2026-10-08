@@ -10,9 +10,11 @@ import type { Game } from './engine';
 import { VIEW_W, VIEW_H, QUESTS, getSpr, playerMeleeDmg } from './engine';
 import { ATTR_INFO, KEY_ITEMS, MEMORIES } from './data';
 import { dominantTone, TONE_LABEL } from './hooks';
+import { drawBalancePanel } from './balance'; // 12-c: dificultad (pestaña SISTEMA)
 import { drawPortrait } from './sprites';
 import { audio } from './audio';
 import { COL, text, textShadow, panel, bar, button, wrapText, addHit } from './ui';
+import { openChallengeMenu, drawChallengeTitleUi, drawChallengeOverlay } from './challenge'; // 12-a (modo desafío)
 
 const INTRO_SLIDES = [
   {
@@ -62,13 +64,22 @@ const NUM_ES = ['cero', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete'
 export function drawScreens(g: Game) {
   if (g.state !== 'end') endArmed = false; // rearma la escalonada del final
   switch (g.state) {
-    case 'title': drawTitle(g); break;
+    case 'title':
+      drawTitle(g);
+      // 12-a: sub-menú de selección del Desafío / panel de resultados (dibujados
+      // por challenge.ts sobre el título; limpian los uiHit del título de fondo)
+      drawChallengeTitleUi(g);
+      break;
     case 'controls': drawControls(g); break;
     case 'intro': drawIntro(g); break;
     case 'pause': drawPause(g); break;
     case 'dialogue': drawDialogue(g); break;
     case 'dead': drawDead(g); break;
     case 'end': drawEnd(g); break;
+    case 'play':
+      // 12-a: HUD del modo desafío (oleada/enemigos/puntos, cuenta atrás y banner)
+      if (g.challengeRun) drawChallengeOverlay(g);
+      break;
     default: break;
   }
 }
@@ -182,9 +193,13 @@ function drawTitle(g: Game) {
     hoverCorners(g, bx, 290, bw, 44);
     button(g, 'CONTROLES', bx, 344, bw, 40, () => { g.setState('controls'); }, 12);
     hoverCorners(g, bx, 344, bw, 40);
+    button(g, 'DESAFÍO', bx, 394, bw, 40, () => openChallengeMenu(), 12);
+    hoverCorners(g, bx, 394, bw, 40);
   } else {
     button(g, 'CONTROLES', bx, 290, bw, 44, () => { g.setState('controls'); }, 13);
     hoverCorners(g, bx, 290, bw, 44);
+    button(g, 'DESAFÍO', bx, 344, bw, 40, () => openChallengeMenu(), 12);
+    hoverCorners(g, bx, 344, bw, 40);
   }
 
   text(g, 'Basado en el Documento de Diseño de @papito · 8 oct 2026', VIEW_W / 2, VIEW_H - 40, 15, 'rgba(154,160,184,0.8)', 'center');
@@ -477,6 +492,8 @@ function drawPause(g: Game) {
     drawSlider(g, cx, cy + 102, 300, v => { audioSetSfx(g, v); }, g.sfxVolUi);
     text(g, '«La música adaptativa añade una capa de combate cuando', cx, cy + 150, 15, COL.dim);
     text(g, 'los enemigos te ven, y cada región tiene su melodía.»', cx, cy + 168, 15, COL.dim);
+    // dificultad dinámica del mundo (12-c): AUTO por defecto, editable aquí
+    drawBalancePanel(g, cx, cy + 196, pw - 56);
     button(g, 'GUARDAR Y SALIR AL TÍTULO', cx, py + ph - 96, 280, 40, () => {
       g.save();
       g.setState('title');

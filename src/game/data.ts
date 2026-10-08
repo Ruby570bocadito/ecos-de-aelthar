@@ -859,3 +859,121 @@ export const ATTR_INFO: { id: 'fue' | 'des' | 'int' | 'esp' | 'vig'; name: strin
   { id: 'esp', name: 'Espíritu', desc: '+10% ganancia de Resonancia' },
   { id: 'vig', name: 'Vigor', desc: '+7 vida máx. y +1% reducción' },
 ];
+
+// ============================================================
+// ═══════ 12-b (agente árbol-habilidades) — BLOQUE AÑADIDO ═══════
+// Todo lo anterior queda INTACTO. Este bloque contiene: las magias
+// nuevas (mismo formato que SKILLS), los nodos del árbol, las
+// herramientas activas y la tabla de objetivos de la Brújula.
+// ============================================================
+
+import type { MapId } from './types';
+
+/**
+ * Magias/poderes nuevos por disciplina (agente 12-b).
+ * INTEGRACIÓN (contrato): el integrador puede fusionarlas con SKILLS vía
+ * spread, p. ej.:
+ *   const SKILLS_ALL = {
+ *     alba: [...SKILLS.alba, ...NEW_SKILLS.alba],
+ *     tejedor: [...SKILLS.tejedor, ...NEW_SKILLS.tejedor],
+ *   };
+ * Los EFECTOS de cada id viven en skilltree.ts → castNewSkill(g, id)
+ * (el switch de castSkill no los conoce). Mientras el integrador no las
+ * fusione, skilltree.ts ya las equipa en huecos de SKILLS en runtime.
+ */
+export const NEW_SKILLS: Record<'alba' | 'tejedor', SkillDef[]> = {
+  alba: [
+    { id: 'onda', name: 'Onda Sísmica', desc: 'Onda de choque que empuja y daña a tu alrededor.', cost: 30, cd: 8, icon: '◤', element: 'sagrado' },
+    { id: 'lanza', name: 'Lanza del Alba', desc: 'Lanza de luz que atraviesa hasta 4 enemigos.', cost: 35, cd: 6, icon: '▲', element: 'sagrado' },
+    { id: 'bendi', name: 'Bendición del Camino', desc: 'Escudo que absorbe daño (25% de tu vida, 10 s).', cost: 40, cd: 16, icon: '✚', element: 'sagrado' },
+  ],
+  tejedor: [
+    { id: 'nova', name: 'Nova de Escarcha', desc: 'Explosión de hielo: congela y ralentiza en área.', cost: 35, cd: 9, icon: '▼', element: 'hielo' },
+    { id: 'rayos', name: 'Tormenta Encadenada', desc: 'Cinco rayos saltan entre tus enemigos.', cost: 45, cd: 12, icon: '✦', element: 'rayo' },
+    { id: 'aurea', name: 'Aureola de Ceniza', desc: 'Anillo de ascuas que quema durante 6 s.', cost: 35, cd: 14, icon: '✺', element: 'fuego' },
+  ],
+};
+
+/** Nodo del árbol de habilidades (12-b). Los prerequisitos son siempre
+ *  de la misma rama; disc filtra por disciplina (undefined = ambas). */
+export interface TreeNodeDef {
+  id: string;
+  branch: 'filo' | 'eco' | 'camino';
+  name: string;
+  desc: string;
+  cost: number;              // puntos de habilidad (se ganan al subir de nivel)
+  parent?: string;           // id del nodo padre (prerequisito)
+  kind: 'pasiva' | 'activa' | 'herramienta';
+  grants?: string;           // id de NEW_SKILLS (activa) o de TOOL_INFO (herramienta)
+  disc?: 'alba' | 'tejedor'; // gating por disciplina
+  icon: string;              // glifo de 1 carácter
+}
+
+/**
+ * ÁRBOL DE HABILIDADES — 3 ramas: Vía del Filo (combate), Vía del Eco
+ * (arcano) y Vía del Camino (travesía/utilidades). Coste total 31 ◆;
+ * el árbol otorga 13 ◆ al llegar a Nv 12 (1/nivel +1 en Nv 5 y 10):
+ * aprenderlo TODO es imposible — las ramas exigen elegir.
+ */
+export const SKILL_TREE: TreeNodeDef[] = [
+  // ---------- VÍA DEL FILO (combate) ----------
+  { id: 'c_fuerte', branch: 'filo', name: 'Filo Templado', desc: 'Tus golpes melé hacen +10% de daño.', cost: 1, kind: 'pasiva', icon: '║' },
+  { id: 'c_vida', branch: 'filo', name: 'Corazón de Roble', desc: '+20 de vida máxima.', cost: 1, kind: 'pasiva', icon: '✚' },
+  { id: 'c_eco', branch: 'filo', name: 'Eco del Filo', desc: 'Cada golpe melé libera un eco retardado: 35% de tu daño en un área pequeña.', cost: 1, parent: 'c_fuerte', kind: 'pasiva', icon: '◈' },
+  { id: 'c_cd', branch: 'filo', name: 'Refrán Veloz', desc: '−20% de enfriamiento en todas tus habilidades.', cost: 2, parent: 'c_fuerte', kind: 'pasiva', icon: '≫' },
+  { id: 'c_onda', branch: 'filo', name: 'Onda Sísmica', desc: 'Desbloquea ONDA SÍSMICA: empuja y daña en área (tecla del hueco donde la equipes).', cost: 2, parent: 'c_eco', kind: 'activa', grants: 'onda', disc: 'alba', icon: '◤' },
+  { id: 'c_lanza', branch: 'filo', name: 'Lanza del Alba', desc: 'Desbloquea LANZA DEL ALBA: proyectil de luz que perfora a los enemigos.', cost: 2, parent: 'c_onda', kind: 'activa', grants: 'lanza', disc: 'alba', icon: '▲' },
+  { id: 'c_colera', branch: 'filo', name: 'Cólera del Alba', desc: 'Tus golpes melé hacen +15% de daño adicional.', cost: 3, parent: 'c_lanza', kind: 'pasiva', icon: '✹' },
+  // ---------- VÍA DEL ECO (arcano) ----------
+  { id: 'a_res', branch: 'eco', name: 'Afinación', desc: 'Recuperas +1,5 de Resonancia por segundo.', cost: 1, kind: 'pasiva', icon: '●' },
+  { id: 'a_sta', branch: 'eco', name: 'Aliento Cálido', desc: '+40% de regeneración de Aguante.', cost: 1, kind: 'pasiva', icon: '◆' },
+  { id: 'a_cd', branch: 'eco', name: 'Cadencia Arcana', desc: '−20% de enfriamiento en todas tus habilidades.', cost: 2, parent: 'a_res', kind: 'pasiva', icon: '≫' },
+  { id: 'a_nova', branch: 'eco', name: 'Nova de Escarcha', desc: 'Desbloquea NOVA DE ESCARCHA: congelación y daño en área a tu alrededor.', cost: 2, parent: 'a_res', kind: 'activa', grants: 'nova', disc: 'tejedor', icon: '▼' },
+  { id: 'a_rayos', branch: 'eco', name: 'Tormenta Encadenada', desc: 'Desbloquea TORMENTA ENCADENADA: 5 rayos saltan entre enemigos.', cost: 2, parent: 'a_nova', kind: 'activa', grants: 'rayos', disc: 'tejedor', icon: '✦' },
+  { id: 'a_aura', branch: 'eco', name: 'Aureola de Ceniza', desc: 'Desbloquea AUREOLA DE CENIZA: anillo de ascuas que quema 6 s.', cost: 2, parent: 'a_nova', kind: 'activa', grants: 'aurea', disc: 'tejedor', icon: '✺' },
+  { id: 'a_mente', branch: 'eco', name: 'Mente de Cristal', desc: 'Tus hechizos hacen +20% de daño.', cost: 3, parent: 'a_rayos', kind: 'pasiva', icon: '✹' },
+  // ---------- VÍA DEL CAMINO (travesía) ----------
+  { id: 't_speed', branch: 'camino', name: 'Paso de Brisa', desc: '+12% de velocidad de movimiento.', cost: 1, kind: 'pasiva', icon: '☾' },
+  { id: 't_gold', branch: 'camino', name: 'Ojo del Mercader', desc: '+20% de coronas al conseguir oro.', cost: 1, kind: 'pasiva', icon: '★' },
+  { id: 't_bendi', branch: 'camino', name: 'Bendición del Camino', desc: 'Desbloquea BENDICIÓN: escudo que absorbe daño (25% de tu vida, 10 s).', cost: 2, parent: 't_speed', kind: 'activa', grants: 'bendi', icon: '✚' },
+  { id: 't_campana', branch: 'camino', name: 'Campana del Retorno', desc: 'Herramienta (tecla 5): resuena y te devuelve al Santuario del mapa (120 s de recarga).', cost: 1, parent: 't_gold', kind: 'herramienta', grants: 'campana', icon: '◉' },
+  { id: 't_brujula', branch: 'camino', name: 'Brújula de Ecos', desc: 'Herramienta (tecla 6): un rastro de ecos señala tu misión durante 20 s (45 s de recarga).', cost: 1, parent: 't_campana', kind: 'herramienta', grants: 'brujula', icon: '◈' },
+  { id: 't_amuleto', branch: 'camino', name: 'Amuleto de Aelthar', desc: 'Herramienta (tecla 7): absorbe 1 golpe no letal. Recarga al empezar cada combate.', cost: 2, parent: 't_bendi', kind: 'herramienta', grants: 'amuleto', icon: '☾' },
+];
+
+/** Colores de rama (los consume drawSkillTree en skilltree.ts). */
+export const TREE_BRANCHES: Record<'filo' | 'eco' | 'camino', { name: string; sub: string; color: string }> = {
+  filo: { name: 'VÍA DEL FILO', sub: 'cuerpo y acero', color: '#f0a050' },
+  eco: { name: 'VÍA DEL ECO', sub: 'arcano elemental', color: '#5ad0e8' },
+  camino: { name: 'VÍA DEL CAMINO', sub: 'travesía y astucia', color: '#8ef0b0' },
+};
+
+/** Herramientas activas (12-b): se usan con teclas 5/6/7 o desde el árbol.
+ *  Contrato: skilltree.ts → activateTool(g, toolId). */
+export const TOOL_INFO: Record<string, { name: string; desc: string; key: string; cd: number }> = {
+  campana: { name: 'Campana del Retorno', desc: 'Te devuelve al Santuario del mapa actual.', key: '5', cd: 120 },
+  brujula: { name: 'Brújula de Ecos', desc: 'Señala el objetivo de tu misión (20 s).', key: '6', cd: 45 },
+  amuleto: { name: 'Amuleto de Aelthar', desc: 'Absorbe 1 golpe no letal; recarga al iniciar un combate.', key: '7', cd: 0 },
+};
+
+/**
+ * Brújula de Ecos: objetivo de cada misión/paso. Referencias: npc (id de
+ * NpcDef), etype (enemigo vivo), prop (id de PropDef), lamp (farol sin
+ * encender más cercano) y map (viaje → señala la salida correcta).
+ * La resolución (posición viva, BFS de mapas) vive en skilltree.ts.
+ */
+export interface CompassTarget { npc?: string; etype?: string; prop?: string; lamp?: boolean; map?: MapId }
+export const QUEST_COMPASS: Record<number, CompassTarget[]> = {
+  0: [{ npc: 'brisa' }],
+  1: [{ etype: 'lobo', map: 'lunaris' }, { npc: 'brisa' }],
+  2: [{ map: 'bosque' }, { prop: 'fragment' }],
+  3: [{ map: 'cripta' }, { etype: 'guardian', map: 'cripta' }, { prop: 'altar_c' }],
+  4: [{ npc: 'brisa' }],
+  5: [{ map: 'costa' }, { npc: 'mara' }],
+  6: [{ prop: 'wreck_co' }, { etype: 'sirena', map: 'costa' }, { prop: 'altar_mareas' }],
+  7: [{ map: 'aldea' }, { lamp: true }, { npc: 'mera' }],
+  8: [{ map: 'cumbres' }, { etype: 'golem', map: 'cumbres' }, { prop: 'altar_cumbres' }],
+  9: [{ npc: 'brisa' }],
+};
+
+// ═══════ FIN DEL BLOQUE 12-b ═══════
