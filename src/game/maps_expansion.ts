@@ -9,7 +9,7 @@
 // 'S' (nieve), 'i' (hielo) — los dibuja otro agente.
 // ============================================================
 
-import type { MapDef, EpochDiff } from './types';
+import type { MapDef, MapId, EpochDiff } from './types';
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -281,9 +281,49 @@ const cumbresDiffs: EpochDiff[] = [
   { x: 7, y: 32, char: ',' }, { x: 11, y: 36, char: ',' },
 ];
 
-// ---------------- Definición completa del Acto II ----------------
+// ---------------- Definición completa del Acto II + Arena del Desafío ----------------
 
-export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> = {
+// ---------------- ARENA DEL ECO (44×34) — MODO DESAFÍO (12-a) ----------------
+// Recinto cerrado de piedra para el modo desafío (challenge.ts). Sin NPCs,
+// cofres, ecos ni spawns propios: TODOS los enemigos los instancia
+// challenge.ts alrededor del Portador. Época única ('presente', epochDiffs
+// vacío) y música de jefe. Tiles: '#' muralla, ':' empedrado, '=' anillo de
+// combate, 'P' pilares de cobertura, 'R' rocas sueltas (todos existentes en
+// sprites.ts, así el mapa se dibuja sin tocar render).
+//
+// ÚNICA SALIDA (puerta sur): válvula de seguridad, no una ruta de progresión.
+// Salir de la arena con el reto a medio hacer dispara el aborto limpio de
+// challenge.ts (restaura el estado de campaña) y evita el atrapamiento si el
+// jugador guarda y sale al título desde la pausa estando dentro (el guardado
+// serializaría mapId 'arena': al continuar, la puerta lo devuelve al valle).
+
+function buildArena(): string[] {
+  const W = 44, H = 34;
+  const g = grid(W, H, ':');          // suelo de piedra del recinto
+  borderForest(g, 2, '#');            // muralla perimetral (arena cerrada)
+  // anillo de camino: el círculo de combate marca el ritmo
+  rectOutline(g, 3, 3, W - 6, H - 6, '=');
+  // cuatro clusters de pilares 2×2 (cobertura simétrica contra proyectiles)
+  rect(g, 9, 7, 2, 2, 'P'); rect(g, 32, 7, 2, 2, 'P');
+  rect(g, 9, 23, 2, 2, 'P'); rect(g, 32, 23, 2, 2, 'P');
+  // rocas sueltas de cobertura (nunca sobre el centro ni la puerta)
+  set(g, 14, 15, 'R'); set(g, 29, 15, 'R'); set(g, 21, 11, 'R'); set(g, 22, 21, 'R');
+  // puerta de emergencia al sur: corredor transitable a través del anillo y
+  // la muralla (x20..23, y29..33); la zona de salida está en los 2 últimos
+  // tramos para exigir intención (no se sale por rozarla)
+  rect(g, 20, 29, 4, 5, ':');
+  return toRows(g);
+}
+
+/**
+ * Id del mapa arena. types.ts está CONGELADO en la ronda 12 (MapId aún no
+ * lista 'arena'): el cast documentado amplía la unión por impacto. El
+ * integrador puede añadir 'arena' a MapId y borrar el cast sin más cambios
+ * (el mapa ya viaja dentro de EXPANSION_MAPS y maps.ts lo difunde a MAPS).
+ */
+export const ARENA_MAP_ID = 'arena' as unknown as MapId;
+
+export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { arena: MapDef } = {
   costa: {
     id: 'costa',
     name: 'Costa de Bruma',
@@ -425,6 +465,31 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> = {
       { id: 'altar_cumbres', kind: 'altarEcho', x: 24, y: 3 },
       { id: 'sign_cu1', kind: 'sign', x: 27, y: 39, label: '«Paso de las Cumbres. Más arriba el aire corta los nombres por la mitad. Llévalos cerca del pecho.»' },
       { id: 'sign_cu2', kind: 'sign', x: 7, y: 34, label: '«Hoguera de los pastores. Cantaban por turnos para no velar su voz en soledad. Nadie canta ya la última estrofa.»' },
+    ],
+  },
+
+  // MODO DESAFÍO (12-a): la arena NO participa de la campaña — sin jefes con
+  // flags, sin botín, sin autoguardado. challenge.ts la llena de enemigos.
+  arena: {
+    id: ARENA_MAP_ID,
+    name: 'Arena del Eco',
+    subtitle: 'Modo Desafío · sobrevive o cae',
+    w: 44, h: 34,
+    rows: buildArena(),
+    epochDiffs: [],                 // época única: el desafío ocurre fuera del tiempo
+    music: 'boss',
+    npcs: [],
+    chests: [],
+    echoes: [],
+    spawns: [],                     // sin spawns de mapa: challenge.ts instancia oleadas y jefes
+    exits: [
+      // puerta de emergencia: aterriza en el Santuario de Lunaris (mismo punto
+      // que usa respawn en campaña); challenge.ts detecta la salida y restaura
+      // el estado de campaña sin penalización
+      { x: 20, y: 32, w: 4, h: 2, to: 'lunaris', tx: 25, ty: 19, label: 'Valle de Lunaris' },
+    ],
+    props: [
+      { id: 'sign_arena', kind: 'sign', x: 18, y: 28, label: '«Arena del Eco. Los caídos no juzgan: cuentan. La puerta del sur devuelve al valle con lo que trajiste.»' },
     ],
   },
 };

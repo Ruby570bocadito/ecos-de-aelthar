@@ -400,6 +400,13 @@ export function initExpansionSprites(): void {
   registerSpr('orb', buildOrb());
   registerSpr('shard', buildShard());
   registerSpr('nota', buildNota());
+  // 14-a (jefes-enemigos): 2 jefes nuevos + 2 enemigos de mapa
+  registerSpr('vult', buildVult());
+  registerSpr('coro1', buildCoro(1));
+  registerSpr('coro2', buildCoro(2));
+  registerSpr('coro3', buildCoro(3));
+  registerSpr('ecodesg', buildEcodesg());
+  registerSpr('satiro', buildSatiro());
 }
 
 // ============================================================
@@ -864,4 +871,237 @@ export function drawExpansionProjectile(
     default:
       return false; // no gestionado: fallback del motor
   }
+}
+
+// ============================================================
+// 14-a (AGENTE JEFES-ENEMIGOS) — sprites de los 2 jefes nuevos
+// (Vult, El Coro Roto) y los 2 enemigos de mapa (Eco Desgarrado,
+// Sátiro de la Niebla). APPEND puro: lo de arriba queda intacto y
+// el registro vive en initExpansionSprites (al final del bloque de
+// registro, marcado con 14-a).
+// ============================================================
+
+// ---------------- Vult, el Cazador de Ecos (32×32 · 3 frames · JEFE) ----
+// Humanoide veloz: gabardina de cazador verde-niebla, pañuelo al viento,
+// dos dagas de eco (filos pálidos). Silueta inclinada hacia delante
+// (siempre en carrerilla). El frame alterna el ondear de la capa.
+
+function buildVult(): Frames {
+  const frames: Frames = [];
+  for (let f = 0; f < 3; f++) {
+    const { c, x } = cv(32, 32);
+    const CAP = '#26483c', CAP2 = '#31604e', CAPD = '#1a332a',
+      SKIN = '#d4dcc8', SKINS = '#aeb8a2', SCARF = '#8ef0c0',
+      DGA = '#dfeee6', DGAD = '#9cbcb0', BOOT = '#20302a', EYE = '#b8ffd8',
+      BK = '#14241e';
+    const sway = f === 0 ? 0 : f === 1 ? 1 : -1; // capa y pañuelo
+    // ---- capa trasera (ondea opuesta al avance) ----
+    x.globalAlpha = 0.95;
+    rc(x, 7 - sway, 8, 7, 14, CAPD);
+    rc(x, 5 - sway, 10, 3, 10, CAPD);
+    x.globalAlpha = 0.55;
+    rc(x, 4 - sway, 14 + sway, 3, 6, CAP);           // ala baja de la capa
+    x.globalAlpha = 1;
+    // ---- pañuelo de eco (se mecen con el frame) ----
+    rc(x, 16 + sway, 7, 6, 2, SCARF);
+    rc(x, 21 + sway * 2, 6, 4, 2, SCARF);
+    x.globalAlpha = 0.6;
+    rc(x, 24 + sway * 2, 5, 3, 2, SCARF);            // punta que se disuelve
+    x.globalAlpha = 1;
+    // ---- torso y gabardina ----
+    rc(x, 12, 10, 9, 10, CAP);
+    rc(x, 12, 10, 9, 1, CAP2);
+    rc(x, 13, 12, 1, 7, CAP2);                       // solapa
+    rc(x, 19, 11, 1, 8, CAPD);
+    rc(x, 12, 19, 10, 4, CAPD);                      // faldón
+    rc(x, 13, 23, 4, 3, BOOT);
+    rc(x, 18, 23, 4, 3, BOOT);
+    // ---- cabeza con capucha ----
+    rc(x, 13, 3, 8, 7, CAP);
+    rc(x, 12, 4, 1, 5, CAPD);
+    rc(x, 21, 4, 1, 5, CAPD);
+    rc(x, 14, 5, 6, 4, BK);                          // hueco de la capucha
+    rc(x, 15, 6, 1, 1, EYE);                         // ojos de eco
+    rc(x, 18, 6, 1, 1, EYE);
+    // ---- brazos + dagas de eco ----
+    rc(x, 9, 11, 3, 3, CAP); rc(x, 8, 13, 2, 3, SKIN);   // brazo trasero
+    rc(x, 21, 11, 3, 3, CAP); rc(x, 23, 13, 2, 3, SKIN); // brazo delantero
+    // daga 1 (alzada, atrás)
+    rc(x, 6, 6, 2, 8, DGA);
+    rc(x, 6, 6, 1, 8, DGAD);
+    rc(x, 5, 13, 4, 2, DGAD);                        // guarda
+    // daga 2 (invertida, adelante — agarre de cazarreco)
+    rc(x, 24, 16, 2, 7, DGA);
+    rc(x, 25, 16, 1, 7, DGAD);
+    rc(x, 23, 22, 4, 2, DGAD);
+    // brillo de los filos (parpadea por frame)
+    if (f !== 1) { x.globalAlpha = 0.8; rc(x, 6, 7, 1, 3, '#ffffff'); rc(x, 25, 17, 1, 2, '#ffffff'); x.globalAlpha = 1; }
+    // contorno sutil
+    x.globalAlpha = 0.5;
+    rc(x, 13, 3, 8, 1, BK);
+    rc(x, 12, 19, 10, 1, BK);
+    x.globalAlpha = 1;
+    frames.push(c);
+  }
+  return frames;
+}
+
+// ---------------- El Coro Roto (30×30 · 2 frames × 3 máscaras · JEFE) ----
+// MASA de tres máscaras flotantes unidas por hilos de bruma: una central
+// grande cantando al revés (boca vertical) y dos menores a los flancos.
+// buildCoro(fase) devuelve la variante de la fase:
+//   1 · MÁSCARA DEL PULSO    — hueso claro, glow aguamarina, intacta.
+//   2 · MÁSCARA DEL VERA     — hueso frío, glow violeta, grietas finas.
+//   3 · MÁSCARA DEL SILENCIO — hueso apagado, glow dorado, cuarteadas.
+
+function buildCoro(fase: 1 | 2 | 3): Frames {
+  const pal = fase === 1
+    ? { HUESO: '#d8d4c4', HUESO2: '#bdb8a6', GLOW: '#7ee8ff', HUECO: '#1a2030', FILO: '#eef2e8' }
+    : fase === 2
+      ? { HUESO: '#c8c2b2', HUESO2: '#aaa494', GLOW: '#b48fff', HUECO: '#1c1830', FILO: '#e4e2da' }
+      : { HUESO: '#c4bcae', HUESO2: '#9c9486', GLOW: '#ffd88a', HUECO: '#241f28', FILO: '#dcd8cc' };
+  const frames: Frames = [];
+  for (let f = 0; f < 2; f++) {
+    const { c, x } = cv(30, 30);
+    const bob = f === 0 ? 0 : 1;
+    const { HUESO, HUESO2, GLOW, HUECO, FILO } = pal;
+    // ---- hilos de bruma que unen la masa ----
+    x.globalAlpha = 0.4;
+    rc(x, 8, 14 + bob, 4, 1, GLOW);
+    rc(x, 18, 14 - bob, 4, 1, GLOW);
+    x.globalAlpha = 0.22;
+    disc(x, 15, 13 + bob, 11, GLOW);                 // aura compartida
+    x.globalAlpha = 1;
+    // ---- máscara central (boca vertical = canto al revés) ----
+    rc(x, 10, 5 + bob, 10, 13, HUESO);
+    rc(x, 9, 6 + bob, 12, 11, HUESO);
+    rc(x, 10, 17 + bob, 10, 2, HUESO2);              // mentón
+    rc(x, 9, 6 + bob, 1, 9, HUESO2);
+    rc(x, 20, 6 + bob, 1, 9, HUESO2);
+    // ojos huecos (el central mayor según la fase: se apaga el coro)
+    const eyeH = fase === 1 ? 2 : fase === 2 ? 3 : 4;
+    rc(x, 11, 8 + bob, 2, eyeH, HUECO);
+    rc(x, 17, 8 + bob, 2, eyeH, HUECO);
+    rc(x, 11, 8 + bob, 2, 1, FILO);
+    rc(x, 17, 8 + bob, 2, 1, FILO);
+    // boca vertical (la nota al revés) + glow interior
+    rc(x, 14, 11 + bob, 2, 5, HUECO);
+    x.globalAlpha = 0.85;
+    rc(x, 14, 11 + bob, 1, 4, GLOW);
+    x.globalAlpha = 1;
+    // grietas: finas en F2, cuarteadas en F3
+    if (fase >= 2) {
+      rc(x, 12, 5 + bob, 1, 3, HUESO2);
+      rc(x, 18, 13 + bob, 1, 4, HUESO2);
+    }
+    if (fase === 3) {
+      rc(x, 10, 12 + bob, 3, 1, HUECO);
+      rc(x, 16, 5 + bob, 1, 4, HUECO);
+      rc(x, 13, 18 + bob, 4, 1, HUECO);
+      rc(x, 19, 9 + bob, 1, 3, HUESO2);
+    }
+    // ---- máscara izquierda (perfil, cuelga más baja) ----
+    rc(x, 3, 12 + bob, 6, 8, HUESO2);
+    rc(x, 2, 13 + bob, 1, 6, HUESO2);
+    rc(x, 4, 15 + bob, 2, 2, HUECO);                 // ojo ladeado
+    rc(x, 5, 20 + bob, 1, 2, HUECO);                 // boca pequeña
+    // ---- máscara derecha (perfil, más alta) ----
+    rc(x, 21, 9 + bob, 6, 8, HUESO2);
+    rc(x, 27, 10 + bob, 1, 6, HUESO2);
+    rc(x, 23, 12 + bob, 2, 2, HUECO);
+    rc(x, 24, 17 + bob, 1, 2, HUECO);
+    // destello del glow (parpadeo por frame)
+    if (f === 1) {
+      x.globalAlpha = 0.7;
+      rc(x, 14, 15 + bob, 1, 1, FILO);
+      rc(x, 6, 11 + bob, 1, 1, GLOW);
+      rc(x, 23, 8 + bob, 1, 1, GLOW);
+      x.globalAlpha = 1;
+    }
+    frames.push(c);
+  }
+  return frames;
+}
+
+// ---------------- Eco Desgarrado (16×16 · 2 frames) ----------------------
+// Espectro PARTIDO en dos mitades con un hueco de bruma entre ellas:
+// el hueco late (cambia de ancho por frame). Paleta pálida azulada.
+
+function buildEcodesg(): Frames {
+  const frames: Frames = [];
+  for (let f = 0; f < 2; f++) {
+    const { c, x } = cv(16, 16);
+    const O = '#39465e', B = '#cdd8ea', S = '#a4b2ca', EYE = '#222c44', GAP = f === 0 ? 1 : 2;
+    x.globalAlpha = 0.85;
+    // mitad izquierda (jag de desgarro)
+    rc(x, 4, 4, 3, 7, B);
+    rc(x, 3, 6, 1, 4, B);
+    rc(x, 7 - GAP, 5, 1, 2, B);
+    rc(x, 6 - GAP, 8, 1, 2, S);
+    // mitad derecha (simétrica rota)
+    rc(x, 9 + GAP, 4, 3, 7, B);
+    rc(x, 12 + GAP, 6, 1, 4, B);
+    rc(x, 8 + GAP, 5, 1, 2, S);
+    rc(x, 9 + GAP, 8, 1, 2, S);
+    // cola desgarrada (3 jirones)
+    x.globalAlpha = 0.6;
+    rc(x, 4, 11, 2, 2 + f, B);
+    rc(x, 7, 11 + GAP, 2, 1 + f, S);
+    rc(x, 10 + GAP, 11, 2, 2, B);
+    x.globalAlpha = 1;
+    // ojos desalineados (el eco no se reconoce)
+    rc(x, 4, 6, 1, 2, EYE);
+    rc(x, 11 + GAP, 6, 1, 2, EYE);
+    // borde superior del desgarro
+    rc(x, 4, 3, 8, 1, O);
+    x.globalAlpha = 0.5;
+    rc(x, 7, 3 + GAP, 2, 1, O);                      // labio del hueco
+    x.globalAlpha = 1;
+    frames.push(c);
+  }
+  return frames;
+}
+
+// ---------------- Sátiro de la Niebla (16×16 · 2 frames) -----------------
+// Cabrío pequeño y encorvado con zampoña: pelaje gris-verde, cuernos
+// claros, ojos dorados. El frame alterna el brinco (patas) y la flauta.
+
+function buildSatiro(): Frames {
+  const frames: Frames = [];
+  for (let f = 0; f < 2; f++) {
+    const { c, x } = cv(16, 16);
+    const FUR = '#4a5648', FUR2 = '#5e6c58', HORN = '#c8b890', EYE = '#ffd88a',
+      HOOF = '#2c342a', NIEBLA = '#aebcc8', BK = '#262e26';
+    const hop = f === 0 ? 0 : -1; // brinco
+    // niebla en los cascos
+    x.globalAlpha = 0.35;
+    rc(x, 2, 14, 5, 1, NIEBLA);
+    rc(x, 9, 14, 5, 1, NIEBLA);
+    x.globalAlpha = 1;
+    // cuernos curvos
+    rc(x, 4, 1 + hop, 1, 3, HORN); rc(x, 3, 1 + hop, 1, 2, HORN);
+    rc(x, 9, 1 + hop, 1, 3, HORN); rc(x, 10, 1 + hop, 1, 2, HORN);
+    // cabeza cabruna (perfil)
+    rc(x, 4, 3 + hop, 6, 4, FUR);
+    rc(x, 9, 4 + hop, 2, 2, FUR);                    // hocico
+    rc(x, 5, 4 + hop, 1, 1, EYE);
+    // barba de chivo
+    rc(x, 8, 7 + hop, 1, 2, FUR2);
+    // torso encorvado
+    rc(x, 3, 7 + hop, 8, 4, FUR);
+    rc(x, 4, 11 + hop, 6, 1, FUR2);
+    rc(x, 3, 7 + hop, 8, 1, BK);
+    // patas traseras y delanteras (el brinco alterna)
+    rc(x, 4, 11 + hop, 1, 3 - f, FUR2); rc(x, 4, 13 + hop - f, 1, 1, HOOF);
+    rc(x, 9, 11 + hop, 1, 3 - (1 - f), FUR2); rc(x, 9, 13 + hop - (1 - f), 1, 1, HOOF);
+    rc(x, 3, 11 + hop, 1, 2, FUR2);
+    // zampoña (tubos) junto al hocico — silba la balada curva
+    rc(x, 10, 6 + hop, 1, 4, '#8a6a4a');
+    rc(x, 11, 6 + hop, 1, 3, '#6a4e36');
+    if (f === 1) { x.globalAlpha = 0.7; rc(x, 12, 5 + hop, 1, 1, NIEBLA); x.globalAlpha = 1; } // nota de niebla
+    // cola corta
+    rc(x, 2, 8 + hop, 1, 2, FUR2);
+    frames.push(c);
+  }
+  return frames;
 }

@@ -127,7 +127,10 @@ export function clearHits(g: Game) {
 
 export function addHit(g: Game, x: number, y: number, w: number, h: number, cb: () => void) {
   const hover = g.mouse.x >= x && g.mouse.x <= x + w && g.mouse.y >= y && g.mouse.y <= y + h;
-  g.uiHit.push({ x, y, w, h, cb, hover });
+  // stamp anti-fantasma: el hit recuerda el estado en que se dibujó; el motor
+  // solo lo honra si el estado NO ha cambiado (evita reabrir menús en la frame
+  // de una transición o con uiHit residual de otra instancia muerta)
+  g.uiHit.push({ x, y, w, h, cb, hover, state: g.state });
   return hover;
 }
 

@@ -1,0 +1,250 @@
+     1→- bun build --target=browser de screens.ts (0.38 MB) y ui.ts (3.48 KB) → el grafo resuelve y counterDots aparece en los exports del bundle.
+     2→- Simulación aritmética de peores casos de layout (questIdx 0/5/7/9, 0 y 5 objetos clave, 0 y 5 memorias): ninguna línea supera el panel de pausa (505) ni pisa las stats del pie (453/473). No navegador (protocolo).
+     3→
+     4→Notas para el equipo:
+     5→- counterDots está lista para el integrador del HUD: p.ej. counterDots(g, x, y, 3, (flags.lamp1?1:0)+(flags.lamp2?1:0)+(flags.lamp3?1:0), COL.quest) junto al paso de q8, o counterDots(..., 7, ecos, COL.goldSoft) en ESTADO.
+     6→- KEY_ITEM_FLAGS y ZONE_TEASERS son las únicas tablas de presentación nuevas: un objeto clave/zona del Acto III se añade añadiendo su entrada allí (las listas de render ya son dinámicas sobre flags/QUESTS/MEMORIES).
+     7→
+     8→Stage Summary:
+     9→- Las pantallas respiran el Acto II: el Diario separa los dos actos con sus misiones y susurra los rumores de Costa de Bruma, Merrow y Cumbres Heladas; las 5 memorias entran en columna sin desbordar el panel (bug de apilamiento con 5 corregido); el Equipo lista dinámicamente los 5 objetos clave incluidos los 3 Ecos nuevos; el final canta 'TRES NOTAS COMPLETAS' con 'Ecos recuperados: X de 7' y los Ecos que aún faltan; el título es v0.3.0 con 'Acto II incluido'. ui.ts estrena counterDots para futuros trackers. tsc 0, lint 0, solo screens.ts + ui.ts tocados.
+    10→
+    11→---
+    12→Task ID: 10-c
+    13→Agent: general-purpose (audio-fx)
+    14→Task: R4-c — Audio adaptativo y pulido de FX. SOLO src/game/audio.ts y src/game/fx.ts.
+    15→
+    16→Work Log:
+    17→- Leído worklog (7-c pistas/SFX/partículas, 7-int wiring, 8-c FX combate, 9-a jefes/hielo) y los 2 archivos completos antes de editar.
+    18→
+    19→A) audio.ts (495→575 líneas):
+    20→- AUDITORÍA SFX (script bun sobre update.ts/engine.ts/enemies_expansion.ts/hooks.ts/screens.ts): 40 nombres usados, 40 cases definidos → 0 faltan ('splash/song/gust/lamp/wraith' de 7-c TODOS existían), 0 cases muertos. Nota: engine.ts:1242 interpola por elemento y solo emite 'fire'/'ice'/'bolt' (los literales 'fuego'/'hielo' ahí son Element, no SFX). Lista completa usada/definida DOCUMENTADA en comentario sobre el switch; switch sigue SIN default (no-op seguro por diseño).
+    21→- TAMBOR DE TENSIÓN (combate más vivo sin romper lo existente): en scheduleStep, si combatOn && cur!=='boss' (y la pista tiene drums — title queda fuera por no tener canal), en PASOS PARES fuerza un kick suave con tensionKick(t, 0.15·tensionGain) — sine 150→48 Hz, decay 0.1 s (~30% del volumen del kick principal). NUNCA dobla: se salta los pasos donde la batería del patrón ya tiene 'k'. Reversible: fundido propio tensionGain (lerp 0.03/paso) → 0 al salir de combate; playTrack lo resetea. Pulso resultante: 0.31–0.52 s según bpm (aldea 0.517 s ≈ el 0.5 s pedido); verificado con sim bun (boss=0 hits, title sin drums → sin tensión ni transpose).
+    22→- MICRO-VARIACIÓN DE PISTA: playTrack YA tenía guard (this.cur===name → return, no reinicia; verificado y documentado en comentario). Añadido: loopNo = floor(step/32) en el scheduler; en tracks de MAPA (no boss/title), cuando loopNo%4===2 la MELODÍA (lead) sube +1 semitono (SEMI_UP=2^(1/12)) durante ESE loop y revierte sola al siguiente — sin estado que restaurar, bajo/pad anclados (color armónico nuevo sin romper el tema). Coste: 1 comparación + 1 multiplicación por nota. Implementado con riesgo bajo: el secuenciador ya computa el loop absoluto.
+    23→
+    24→B) fx.ts (599→695 líneas):
+    25→- POLVO DE PASOS por bioma (B2): el tile ahora se muestrea bajo los PIES (y+h/2, convención 9-a; antes centro — al empujar contra muro por arriba leía tile equivocado). 's' arena costa → soplo DORADO pálido #f0e0b0, partículas mayores (size 2.3, vida 0.36 s); 'S' nieve → soplo blanco intacto (7-c); 'i' hielo cumbres → RASPA chispas azul-blanco #dff0fa horizontales cortas (vx ±34-74 dominante, vy ±3, grav 0, vida 0.2 s, dir aleatoria); resto → polvo marrón clásico.
+    26→- BRUMA DEL FARO (B4): el faro está encendido cuando su flag de prop está activa — ASÍ lo lee render.ts:282 (drawExpansionProp(..., !!g.flags[pr.id])). Id real greppado: 'faro_co' (x:6,y:18, maps_expansion.ts). Implementación genérica: en updateAmbient (costa), for-of sobre g.map.props buscando kind==='faro' && g.flags[pr.id] (lookup sin allocations, ~12 props). Si la LINTERNA (centro del prop a -34 px, como la dibuja sprites_expansion) está en encuadre ±48: 3 motas/s (faroAcc) al pool como FAROBEAM(11) — vx/vy=0, posición orbital f(t,seed) al DIBUJAR: radio 9→59 px sobre vida 1.5-2.6 s, ángulo = globalT·0.35 + fase (misma velocidad angular que el haz cónico del sprite), trazo alargado orientado a la TANGENTE del giro (#fff3c8, alpha ≤0.34, +25% de noche vía isNight). Cull barato: al salir la linterna de encuadre, el check de posición del pool las desactiva.
+    27→- RENDIMIENTO (B5): pool AMB_CAP 110→120 (máximo autorizado por 7-c; headroom para ~6-8 motas del faro; costa estimada ~71 activas). Cero allocations por frame nuevas (lookup find devuelve slot existente; si pool lleno, faroAcc se clampa a 1 — sin ráfaga diferida). Los 4 spawns de polvo son pushes al pool g.particles igual que antes.
+    28→- SKIPs DOCUMENTADOS (en cabecera del archivo): B1 mortandad de memoras al encender farol y B3 impacto de proyectil en agua — requieren hooks en engine.ts/update.ts (CONGELADOS ronda 4); no existe punto de enganche limpio desde fx.ts.
+    29→
+    30→Reglas respetadas: sin cambios en firmas exportadas (audio.sfx/setCombat/playTrack; combatSparks/dodgeRing/critGlint/bannerInfo/memoryAlpha/fxFrame/updateAmbient/drawAmbient/getRollTrail/TRAIL_LIFE); sin llamadas nuevas desde módulos congelados; imports nuevos solo de types.ts (PropDef, sin ciclo).
+    31→
+    32→Verificación:
+    33→- bunx tsc --noEmit 2>&1 | grep -E "audio|fx\.ts" → vacío (0 errores en todo el proyecto).
+    34→- bun run lint → 0 errores, 0 warnings.
+    35→- bun build browser de fx.ts y audio.ts → grafos resuelven (0.38 MB / 21.6 KB).
+    36→- Sim bun de la lógica del secuenciador: transpose solo en loop%4===2 de tracks de mapa; tensión 0 en boss/title, pulsos 0.31-0.52 s en los 6 tracks de mapa con drums (aldea ≈0.5 s). Auditoría SFX cruzada por script (40/40).
+    37→- NO navegador (protocolo).
+    38→
+    39→Notas para el equipo:
+    40→- El tambor de tensión es aditivo y autónomo: si un futuro agente cambia setCombat o las pistas, no hay estado que sincronizar (todo se deriva de combatOn/cur/loopNo en scheduleStep).
+    41→- Si el integrador quiere FX al encender un farol (mortandad de memoras) o al caer proyectiles en '~', el hook debe exponerse desde engine/update (congelados hoy): sugerencia — llamar una export de fx.ts junto al sfx 'lamp' ya existente y en el loop de proyectiles.
+    42→- AMB_CAP llegó a su tope autorizado (120): si un bioma futuro necesita más densidad, hay que renegociar el techo, no pasarse.
+    43→
+    44→Stage Summary:
+    45→- Auditoría SFX 40/40 documentada en el propio switch; el combate ahora late con un tambor de tensión que entra y sale con fundido (nunca en boss); las pistas de mapa respiran con un loop de cada 4 subido +1 semitono; la arena de la costa levanta polvo dorado, el hielo de las Cumbres raspa chispas horizontales, y el faro de Mara —una vez encendido— barre la bruma con motas de luz orbitando su linterna. tsc y lint en verde; solo audio.ts y fx.ts tocados.
+    46→
+    47→---
+    48→Task ID: 10-b
+    49→Agent: general-purpose (balance)
+    50→Task: R4-b — Balance y economía del Acto II: curva de dificultad de los 5 enemigos + 2 jefes, oro, botines de jefe, recompensas de misiones q6-q10 y densidad de spawns para que Lunaris→Costa→Merrow→Cumbres se sienta como progresión (rampa ~Nv 1-12). SOLO data.ts, engine.ts y maps_expansion.ts.
+    51→
+    52→Work Log:
+    53→- Leído worklog (Task 1 balance original, 7-int integración, 8-b cableado de misiones, 9-int mecánicas) y hooks.ts/enemies_expansion.ts en SOLO LECTURA para no romper flujos.
+    54→- A) data.ts ENEMY_DEFS (Acto II únicamente, Acto I intacto):
+    55→  - neumo 24/7→30/8, oro [5,9]→[6,10] — ranged molesto, no letal (windup 0.7 y atkCd 2.0 sin tocar).
+    56→  - espectro 34/9→40/10, oro [6,10]→[7,12] — su invulT ya lo hace táctico.
+    57→  - arpi 28/8→32/9 pero atkCd 1.4→1.6, oro [5,9]→[6,10] — los picados sincronizados en pandilla (9-a) pegan más por golpe; se compensa espaciando la cadencia.
+    58→  - sirena (jefa) 340/12→380/13, breakBar 80→90 — pelea más larga, quiebre más recompensado.
+    59→  - golem (jefe) 420/16→460/17, breakBar 100→110 — paredón final.
+    60→  - XP sin cambios (20-26 regulares, 240/280 jefes); el enunciado ya la daba por buena. Todas las stats se leen en runtime de ENEMY_DEFS (makeEnemy, render barra jefe, telegrafías con def.dmg), cero hardcodes afectados.
+    61→- B) engine.ts killEnemy — botín garantizado de jefes (2 líneas por rama, ramas sirena/golem intactas en todo lo demás: flags, música, toasts, questAdvance):
+    62→  - sirena: p.potions += 1 + floatAt 'Botín del jefe: +1 poción' (#7ef0a0).
+    63→  - golem: p.gold += 30 + floatAt 'Botín del jefe: +30 coronas' (#f0c84a).
+    64→- C) engine.ts economía de misiones: questAdvance ahora llama this.grantQuestLoot(prev) SOLO en la rama de CAMBIO de misión (los avances de paso no pagan; los toasts 'Nueva misión: X' existentes siguen idénticos). Map pequeño index-completada→botín: q6 +20 coronas · q7 +40 y 1 poción · q8 +35 · q9 +50 y 1 poción · q10 +60. floatText sobre el jugador ('Recompensa: +N coronas[ y 1 poción]') + sfx 'coin' + toast de respaldo (las recompensas suelen dispararse con diálogo abierto, donde el float puede quedar bajo el panel).
+    65→  - Puntos reales de pago verificados contra el cableado existente: q6 vía hooks.mara_met→questAdvance (5→6), q7 vía eco_mareas_taken (6→7), q8 vía hooks.mera_eco (7→8), q9 vía eco_cumbres_taken (8→9).
+    66→  - CASO q10 (documentado): q10 es la última misión y NO pasa por questAdvance (el clamp deja questIdx===prev y el cierre real vive en hooks.acto2_report, archivo CONGELADO). Solución mínima en engine.talkTo: si nid==='brisa' && questIdx===9 && !flags.acto2Done → grantQuestLoot(9) (el nodo brisa_final2 de data.ts es exactamente el que sirve getDialogue ahí). Anti-doble pago con flag q10Paid (boolean, se serializa sola en save()); la entrada 9 también está en el mapa por si el motor algún día avanza desde q10, protegida por la misma flag.
+    67→- D) maps_expansion.ts spawns (jefes, NPCs, props y cofres INTOCADOS):
+    68→  - Costa: verificado el requisito de la entrada norte (26,2) — el spawn más cercano está a 24 tiles (espectro 24,26); no hay nada que realojar (comentario dejado en el código).
+    69→  - Cumbres: la premisa 'ya tiene 1-2 spawns más que costa' era INCORRECTA (6 vs 6). Corregido añadiendo 2 spawns sobre tiles '=' del camino (la dispersión de pinos nunca pisa '=' — garantía estructural de tile pisable, sin tocar clearKey): arpi (30,20) en el cruce este del paso (a ≥8 tiles de las otras arpías, la pandilla solo sincroniza si ambas están en rango) y espectro (40,26) guardando el tesoro opcional del este (cofre cu2). Resultado: costa 6 → aldea 6 (4 espectros needPresent) → cumbres 8 (+Gólem): rampa de densidad y de mezcla (lobos/espectros de la zona 1 se mezclan ya solo en cumbres).
+    70→  - Progresión resultante: costa (enemigos 30-40 hp/8-10 dmg + Sirena 380) < cumbres (32-40 hp/9-10 dmg, 4 arpías veloces + Gólem 460).
+    71→- E) Economía auditada (sin cambios de costes, ya correctos): forja +1=30, +2=55, +3=80, +4=105, +5=130 (30+25·lvl) y poción 15 (cura 40% de vida) intactas. Ingresos de un Acto II completo ≈ 1100 coronas (regulares ~190, jefes ~355 con botín nuevo, misiones 205, cofres 375) + ~7-9 pociones (cofres, mara_gift, botín de sirena, q7/q9): paga ~2 forjas (+3 y +4 = 185) con margen para pociones y algo de grindeo de repuesto. Acto I deja ~200-250 coronas según lo muerto en el camino.
+    72→- CONGELADOS respetados: update.ts, enemies_expansion.ts, render.ts, screens.ts, hooks.ts, types.ts, maps.ts — cero toques. En engine.ts no se tocó accept_q*, lightLamp, tryTakeEco, findSafeTile, exitCd, save/load, gainXp/xpNext, ni la estructura de killEnemy (solo las 2 líneas por rama de jefe).
+    73→
+    74→Verificación:
+    75→- bunx tsc --noEmit → 0 errores en todo el proyecto (grep por data|engine|maps_expansion vacío).
+    76→- bun run lint → 0 errores, 0 warnings.
+    77→- No se ejecutó navegador (protocolo).
+    78→
+    79→Stage Summary:
+    80→- El Acto II escala de verdad: enemigos +12-25% de hp/dmg escalonados por zona, arpías nerfeadas en cadencia para que la pandilla siga siendo justa, jefes más largos con quiebre más jugoso y botín garantizado, 205 coronas + 2 pociones de recompensas de misión, y densidad 6→6→8 spawns con cumbres como zona final dura. Economía validada para ~2 forjas + pociones por acto. tsc 0, lint 0. Ronda 4 lista para integración (10-int).
+    81→
+    82→---
+    83→Task ID: 11-a
+    84→Agent: general-purpose (integrador)
+    85→Task: R5 — Revisión de integración completa de las 4 rondas de expansión (Acto II) y reparación de problemas. Revisión A→F del checklist de integración; edits mínimos y quirúrgicos.
+    86→
+    87→Work Log:
+    88→- Leído worklog completo (Tasks 7/7-int, 8/8-int, 9/9-int, 10) y verificado el estado real de todos los contratos documentados.
+    89→
+    90→A) COMPILACIÓN: `bunx tsc --noEmit` → 0 errores en TODO el proyecto (no solo src/game). `bun run lint` → 0 errores, 0 warnings. Nada que reparar en este punto.
+    91→
+    92→B) IMPORTS Y CICLOS: grafo verificado módulo a módulo (imports de valor vs type-only). Ciclos reales: fx↔update (isNight/combatSparks), update↔enemies_expansion (expansionTick/getPortadorVel), engine↔render↔screens (preexistente), maps→maps_expansion (lineal, sin vuelta). VERIFICACIÓN DE INIT-ORDER: greppado todo el código a nivel de módulo de los ciclos — solo declaraciones de literales/WeakMap/WeakSet/const (ninguna llamada a funciones del módulo del otro lado del ciclo, ninguna lectura de constantes exportadas al cargar). sprites.ts NO importa sprites_expansion (el ciclo reportado en 7-b no existe: engine llama initExpansionSprites() tras initSprites()). bun build --target=browser de engine.ts → 15 módulos, 0.38 MB, resuelve completo (los 4 ciclos incluidos).
+    93→
+    94→C) CONTRATOS CRUZADOS (todos re-verificados con grep + lectura):
+    95→1. Poses: sprites.ts:608/619 exportan getAttackFrames/getCastFrames; render.ts los consume con optional-call pasando pl.sprite; engine asigna 'hero_alba'/'hero_tejedor' según disciplina (líneas 225/279) — coincide EXACTO con las claves de WEAPONS (592-594) y de poses (1050+). ✓
+    96→2. expansionTick/expansionDeathFx/getPortadorVel: expansionDeathFx se llama en update.ts:387 para e.dead de sirena/golem ANTES del filter g.enemies (línea 393) — corre una única vez y en el frame correcto. ✓
+    97→3. BOSS_DEFEAT_FLAG definido en engine:23 y usado en update.ts:399 (activación genérica) y engine:369/448. tryTakeEco usa DIALOGUES['eco_mareas'/'eco_cumbres'] que 8-a añadió en data.ts:625/647 con onEnd contractual 'eco_*_taken' (engine:823/831) — el dynNode de respaldo del motor queda como fallback inactivo, como estaba diseñado. ✓
+    98→4. Acciones de data.ts (regex amplia con camelCase): TODAS resueltas — accept_q2..q10/eco_*_taken/eco_taken/forge/buy_potion/recruit_ilwen/fragment_touched/end_demo en engine.applyAction; mara_met/mara_gift/mera_eco/acto2_report/eco_taken_mem/flag_metIvo|metMera|metVult/rep_* en hooks.handleCustomAction (fallback del default de applyAction). 108 nodos de diálogo con next/onEnd/action íntegros (script). ✓
+    99→5. SFX: re-auditoría con grep propio: 34 nombres literales + 3 interpolados (swing/swing2, fire/ice/bolt, crit/hit en engine:1174/1280/1401) — 0 faltantes, 0 cases muertos ('crit' y 'hit' sí se usan vía interpolación). ✓
+   100→6. Faroles: lightLamp usa ['lamp1','lamp2','lamp3'] (engine:639) = ids EXACTOS de maps_expansion.ts:375-377, los 3 con needPast:true. ✓
+   101→7. save(): `flags: { ...this.flags, ... }` — spread sin filtro; las 20 flags del Acto II (q6-q10, sirenaSeen, q10Paid, visited_*, lamp1..3, ecoMareas/ecoCumbres/ecoNombres, sirenaDefeated/golemDefeated, bossHp_costa/cumbres) se serializan solas (verificado además con save() real sobre localStorage stub: 20/20). ✓
+   102→
+   103→D) LÓGICA SOSPECHOSA — 2 PROBLEMAS REALES ENCONTRADOS Y ARREGLADOS:
+   104→- FIX 1 (hooks.ts): toasts de 'Nueva misión' DUPLICADOS. El toast genérico de questAdvance (8-b: `Nueva misión: ${QUESTS[idx].name}`) emite el mismo texto que los toasts explícitos de hooks.mara_met ('La Sirena sin Canto') y hooks.mera_eco ('La Cumbre del Segundo Canto') — el jugador veía cada aviso DOS veces apiladas (toasts máx 4, se ven ambos). Eliminados los 2 toasts redundantes (questAdvance siempre cambia de misión en esas ramas, así que no hay caso sin aviso).
+   105→- FIX 2 (engine.ts): SOFTLOCKS de la cadena del Acto II por JUEGO FUERA DE ORDEN. Los pasos de q7-q9 se completaban solo por EVENTO (watcher de aggro, killEnemy, lightLamp, eco_*_taken); si el objetivo se completa ANTES de aceptar la misión —matar a la Sirena durante q6, matar al Gólem durante q8, encender los 3 faroles antes de q8 (los props needPast son accesibles en pasado desde q3, con fragmentTouched) o tomar un Eco por adelantado— el evento ya no puede repetirse (jefe muerto no re-spawnea vía BOSS_DEFEAT_FLAG, altar vacío, farol ya encendido) y la cadena quedaba bloqueada para siempre. Nuevo método privado catchUpActo2() llamado desde Game.update() (junto al watcher de 8-b): avance IDEMPOTENTE POR ESTADO, mismo principio del fix de visitas de 8-int — cada paso se completa si su condición final ya es cierta (sirenaDefeated/golemDefeated/ecoMareas/ecoNombres/ecoCumbres/lamp1..3≥3), en cualquier orden, O(1) con early-out fuera de questIdx 5-9. No toca el caso normal (caso D del smoke: sin condiciones no avanza nada).
+   106→- Verificados SIN problemas: (1) killEnemy sirena/golem — botines de 10-b dentro de las ramas correctas, UN questAdvance por rama (idx 6/step 1 e idx 8/step 1), sin duplicación; (2) grantQuestLoot — solo en la rama de CAMBIO de misión de questAdvance (los avances de paso no pagan), q10Paid anti-doble-pago verificado E2E (talkTo repetido no paga 2ª vez), pago q10 desde talkTo correcto; (3) toasts de questAdvance no duplican a los de grantQuestLoot (textos distintos; tras FIX 1 no hay más duplicados); (4) lightLamp es orden-independiente (cuenta flags, no secuencia) ✓; (5) loadMap idempotente de 8-int — no rompe el caso normal (condición por estado de misión, no por primera visita); (6) REMATE con jefes aturdidas: el check de 'aturdido' en update.ts:700 está DESPUÉS del dispatch, pero NO es problema — el remate es lógica del JUGADOR (bloque attackStarted ~línea 295, lee g.enemies directamente) y el bookkeeping wasAturdido/finisherUsed está AL INICIO de updateEnemy (648-651, ANTES del dispatch); commonTick de enemies_expansion maneja el aturdimiento (countdown, recupera sta, partículas) y devuelve true sin interferir; (7) drawBiomeTint en render:140 — tras partículas ambientales y ANTES de drawLighting; HUD/floats/cielo se pintan después → no tapa nada; (8) poses: dur = chargedHit?0.4:0.26 coincide EXACTO con engine.releaseCharge (línea 1169); attackT>dur/2 = primera mitad (anticipación) con attackT decayendo en update.ts:182; tejedor usa getCastFrames para su ataque de bastón (los skills NO ponen attackT — castSkill no lo toca — así que no hay poses de skill que coordinar); (9) fx.ts: pool AMB_CAP=120, ambos emisores (spawnAmbient y el haz del faro) usan pool.find(a=>!a.active) con clamp — el faro no acumula ráfaga diferida al estar lleno; anti-doble-conteo de chispas de combate vía fxOwnFx (ventana de 2 frames) intacto en updateCombatFx; rollTrail separada.
+   107→
+   108→E) SMOKE BUN (sin navegador) — 2 scripts nuevos reutilizables:
+   109→- scripts/smoke_acto2.ts (stub DOM + importa data/maps/sprites reales): 10 misiones q1-q10 ✓ · ENEMY_DEFS completos para los 9 tipos con todos los campos requeridos (breakBar en los 3 jefes) ✓ · 6 mapas con rows normalizadas a w×h ✓ · 108 nodos de diálogo sin next/onEnd/action rotos ✓ · 5 MEMORIES + 3 KEY_ITEMS + 4 SKILLS/disciplina ✓ · AUDITORÍA ANTI-SOFTLOCK COMPLETA: las 10 salidas del MUNDO COMPLETO (lunaris↔bosque↔cripta + lunaris↔costa↔aldea + bosque↔cumbres) con destino existente, aterrizaje (tx,ty) dentro de bounds, NO sólido en NINGUNA de las 2 épocas (SOLID_CHARS + tileAt con epochDiffs) y NO dentro de otra zona de salida → 0 aterrizajes problemáticos, nada que corregir ✓ · spawns/NPCs/cofres/props de los 3 mapas de expansión sobre tiles pisables en su época, ids únicos ✓ · lamp1..3 exactos con needPast ✓.
+   110→- scripts/smoke_motor_acto2.ts (stub window/document/localStorage/Audio + Game REAL): arranca el motor, newGame, y juega la cadena q5→q10 completa con métodos públicos (talkTo/accept_q6/loadMap/mara_met/watcher/killEnemy/eco_mareas_taken/lightLamp en desorden/mera_eco/golem/eco_cumbres_taken/talkTo q10/acto2_report) ✓ · botines de jefes y grantQuestLoot pagan lo documentado (q7 +40 y 1 poción, q10 +60 una vez) ✓ · los 4 casos fuera-de-orden del FIX 2 pasan (y el caso D prueba que no hay avances espúreos) ✓ · save() serializa 20/20 flags del Acto II ✓.
+   111→
+   112→F) VERIFICACIÓN FINAL: tsc --noEmit → 0 en todo el proyecto · bun run lint → 0/0 · bun build --target=browser src/game/engine.ts → 15 módulos, 0.38 MB (grafo completo con los 4 ciclos). No se ejecutó dev server ni navegador (protocolo).
+   113→
+   114→Archivos tocados: src/game/hooks.ts (-6 líneas: 2 toasts duplicados), src/game/engine.ts (+30 líneas: catchUpActo2 + llamada en update + comentario). Nuevos: scripts/smoke_acto2.ts, scripts/smoke_motor_acto2.ts (fuera de src/, tsconfig los excluye; solo para CI/dev manual con bun).
+   115→
+   116→Stage Summary:
+   117→- Las 4 rondas del Acto II están integradas y sanas: 0 errores de compilación, contratos cruzados 100% verificados (sprites, expansión, ecos, acciones, SFX 34+3/37, faroles, serialización), ciclos seguros a nivel init, anti-softlock de mapas completo en verde, y el motor arranca y termina el Acto II en bun sin navegador. 2 reparaciones: toasts de misión duplicados en mara_met/mera_eco (hooks) y red de seguridad catchUpActo2 contra el bloqueo permanente de la cadena si se juega fuera de orden (jefes/ecos/faroles completados antes de aceptar la misión). Smoke reutilizables en scripts/ para la próxima ronda.
+   118→
+   119→---
+   120→Task ID: 10-int
+   121→Agent: Super Z (agente principal)
+   122→Task: Integración y verificación E2E de la Ronda 4.
+   123→
+   124→Work Log:
+   125→- 10-a (pantallas): Diario con secciones ACTO I/ACTO II + teasers de las 3 zonas, memorias dinámicas (5), KEY_ITEMS dinámicos (5), final 'Ecos recuperados: X de 7', título v0.3.0 con 6 zonas y 'Acto II incluido', helper counterDots.
+   126→- 10-b (balance): curva Acto II (neumo 30/8, espectro 40/10, arpi 32/9 con atkCd 1.6, sirena 380/13/quiebre 90, golem 460/17/quiebre 110), botín de jefes (sirena +1 poción, golem +30 coronas), grantQuestLoot por misión completada (q6..q10), q10Paid anti-doble-pago, spawns cumbres 6→8 (rampa 6→6→8).
+   127→- 10-c (audio/fx): auditoría SFX 40/40 (0 faltantes, 0 muertos), tambor de tensión en combate para pistas de mapa, micro-variación transposición +1 semitono 1/4 loops, polvo por bioma (arena dorada, hielo azul), bruma del faro rotatoria (FAROBEAM), AMB_CAP 120.
+   128→- E2E: título v0.3.0 verificado; tsc 0, lint 0.
+   129→
+   130→---
+   131→Task ID: 11-int
+   132→Agent: Super Z (agente principal)
+   133→Task: Ronda 5 — integrador (11-a) + verificación E2E final del juego completo.
+   134→
+   135→Work Log:
+   136→- 11-a (integrador): tsc/lint/bundle 0.38MB verdes; 7 contratos cruzados verificados (poses, expansionDeathFx antes del filtro, BOSS_DEFEAT_FLAG, DIALOGUES eco_*, 34 SFX literales + 3 interpolados, ids lamp1..3 exactos, 20/20 flags serializadas); 2 bugs de integración arreglados: (1) toasts duplicados en mara_met/mera_eco tras generalizar questAdvance, (2) softlocks por juego fuera de orden (Sirena/Gólem muertos antes de aceptar q7/q9, faroles antes de q8, Ecos adelantados) → nuevo catchUpActo2() idempotente O(1) en Game.update; smoke bun: 10 misiones, 9/9 enemigos, 6 mapas, 108 nodos de diálogo, anti-softlock de las 10 salidas del mundo (aterrizajes no sólidos en ambas épocas y fuera de zonas de salida).
+   137→- E2E final (agent-browser): partida tejedor; tour de los 6 mapas en juego sin errores; combate con poses de ataque + arcos + estelas + orbes de neumo (captura shot_r5_pose2.png); hielo resbaladizo re-verificado (deriva 5.9px); muerte y respawn limpios; Diario con Acto II y 5 memorias verificado visualmente (shot_r5_diario2.png); loopError=null sostenido; los errores 'drawImage' históricos de la consola dev eran residuos del hot-reload de HMR mientras los agentes editaban (0 nuevos tras reload en combate/muerte/tour/épocas, con instrumentación de CanvasRenderingContext2D.drawImage y hook de console.error).
+   138→
+   139→Stage Summary:
+   140→- ECOS DE AELTHAR v0.3.0: Acto II completo — 6 zonas, 3 jefes (Guardián/Sirena/Gólem), 5 enemigos nuevos, 10 misiones, 5 memorias, 8 pistas chiptune, poses de combate, hielo resbaladizo, tintes por bioma, economía y balance de Acto II. Listo para push.
+   141→
+   142→---
+   143→Task ID: 12
+   144→Agent: Super Z (agente principal)
+   145→Task: Fixes reportados por el usuario: (1) botones del menú invisibles que seguían activos durante la partida (clic fantasma → creación de personaje), (2) barra negra permanente abajo (letterbox), (3) glue para las próximas rondas de agentes (modo desafío, árbol de habilidades, balanceador).
+   146→
+   147→Work Log:
+   148→- BUG 1 (clics fantasma) — Causa raíz: dispose() NO desvinculaba los listeners de mouse del canvas. Con el doble montaje de React StrictMode (dev), la 1ª instancia quedaba muerta pero ESCUCHANDO: su uiHit conservaba el último frame del título (NUEVA PARTIDA y=236, CONTINUAR 290, CONTROLES 344) y al clicar ahí durante la partida disparaba g1.requestCreate() → overlay DOM de creación (el setState de React sigue vivo). FIX doble: (a) dispose() removeEventListener de mousemove/mousedown/mouseup del canvas; (b) onMouseMove/onMouseDown/onMouseUp ignoran input si !this.running (doble red de seguridad).
+   149→- BUG 2 (barra negra) — Causa: letterbox 16:9 fijo en viewport 16:10 (canvas 960×540 con CSS min(100vw,177.78vh) → 45px de barras a 1440×900; verificado con getBoundingClientRect y captura). FIX: vista dinámica — export let VIEW_W/VIEW_H + fitViewToWindow(w,h) (vw=540·aspect clamp [840..1600], vh clamp [460..800]; a 16:9 exacto queda 960×540 como siempre); Game.fitCanvas() redimensiona el bitmap y re-snappea cámara; listener 'resize' en bindInput/dispose; canvas de luz offscreen se re-crea si cambian las dims; canvas CSS 100vw/100vh. Sin capturas a nivel de módulo (verificado por grep). E2E 1440×900: buffer 864×540, rect (0,0,1440,900), HUD/minimapa/quest intactos, resize en vivo estable, clic fantasma testado en juego → overlay NO abierto, uiHit=0, loopError=null.
+   150→- EXTRA: error transitorio 'drawImage' del arranque (Next dev overlay "1 Issue") localizado con el stack del overlay: screens.ts:140 getSprWisp tras HMR (módulo de sprites vacío un frame). Guard en drawTitle (skip wisp si no hay frame) + diagnóstico __wispMiss (cap 3). Tras reload limpio: 0 misses.
+   151→- GLUE de rondas de agentes (para que no pisen engine.ts): nuevo GState 'skills' (tecla K entra, esc sale), Game.challengeRun, update() llama challengeTick/skillTick/balanceTick, respawn() delega en onChallengeDeath si hay desafío, render.ts despacha 'skills' → drawSkillTree. Esqueletos no-op creados: src/game/challenge.ts, skilltree.ts, balance.ts (build verde en todo momento).
+   152→- Token de push PROPORCIONADO POR EL USUARIO INVÁLIDO (ghp_…5YOl: "Invalid username or token" — probablemente revocado por secret-scanning de GitHub al filtrarse en el chat). Commit local 348a911 hecho; push pendiente de token nuevo.
+   153→
+   154→Verificación:
+   155→- bunx tsc --noEmit → 0 errores en src/. bun run lint → 0/0.
+   156→- E2E agent-browser 1440×900: título y partida sin barras, clics fantasma muertos, resize en vivo OK, loopError=null.
+   157→
+   158→Stage Summary:
+   159→- Los 2 bugs del usuario arreglados y verificados E2E + infraestructura de modos lista para las rondas de agentes (12-a desafío, 12-b árbol, 12-c balanceador). Push bloqueado por token revocado — avisar al usuario.
+   160→
+   161→---
+   162→Task ID: 12-c
+   163→Agent: general-purpose (balanceador)
+   164→Task: R6-c — Balanceador de dificultad dinámico: monitor de rendimiento del Portador con histéresis (nivel -2..+2), multiplicadores hp/dmg/xp de enemigos, persistencia localStorage 'ecos-balance' (AUTO/MANUAL), panel para la pestaña ESTADO y toasts anti-abuso. SOLO src/game/balance.ts (+ scripts/smoke_balance.ts).
+   165→
+   166→Work Log:
+   167→- Leído worklog (Task 11/12: arquitectura, contratos, GState, glue de módulos) y grepeado el motor antes de editar: fuentes de daño al jugador (ÚNICA: Game.damagePlayer, engine.ts:1591 — verificado que pociones/santuarios solo SUBEN hp), spawns (Game.makeEnemy engine.ts:519 recibe TODOS los spawns + minions de jefe update.ts:831 y enemies_expansion.ts:631), XP (Game.killEnemy engine.ts:1516 → gainXp(def.xp)), definición de combate (update.ts:395: enemigo con !dead && aggro && ai!=='muerto'), playTime += dt (update.ts:118), rampa de niveles por zona de 10-b (~Nv 1-12).
+   168→- SEÑALES (todas medibles por tick sin hooks nuevos): muertes = delta p.deaths; daño recibido = hp previo vs actual por frame (patrón hp-previo, atribuido a combate si hay aggro); combates flawless = tramo continuo de aggro ≥ 4 s que termina sin daño; pociones = delta negativo de p.potions (comprar recalibra); nivel vs zona = p.level contra ZONA_NIVEL_REF {lunaris 2, bosque 4, cripta 5, costa 8, aldea 9, cumbres 11}.
+   169→- HISTÉRESIS: cada ventana de 10 s cierra un voto -3..+3 (+2 por muerte en memoria móvil de 120 s, +1 más con ≥2 muertes; +1 por ≥2 pociones en 60 s; ±1 por daño en combate ≥40% / ≤10% de la vida con ≥3 s de combate; -1 por flawless en 120 s, cap -2; ±1 por nivel vs zona). El nivel se mueve ±1 SOLO con 2 ventanas consecutivas (HISTERESIS) en el mismo sentido: subir exige voto ≤ -2, bajar voto ≥ +3 (asimétrico: 1 muerte avisa pero no nerfea; 2 muertes en 2 min sí — la memoria móvil sostiene el voto pese a las ventanas tranquilas del respawn). Enfriamiento 30 s entre cambios, gracia 60 s al inicio, consumo de votos tras cada cambio, el nivel NUNCA deriva solo hacia 0. Verificado por simulación: 1 muerte → 0 cambios; 2 muertes → -1 en ~20-30 s; 4 toasts exactos al arrasar de -2 a +2; caps ±2 sin toasts extra.
+   170→- TABLA (sobre ENEMY_DEFS, curva suave y asimétrica: bajar protege más de lo que castiga, subir paga XP por debajo del riesgo): nivel -2 Muy fácil {hp 0.75, dmg 0.80, xp 0.85} · -1 Fácil {0.88, 0.90, 0.93} · 0 Normal {1, 1, 1} · +1 Difícil {1.15, 1.10, 1.08} · +2 Muy difícil {1.30, 1.20, 1.15}. Los enemigos ya spawneados conservan stats (el mult se lee al construir el enemigo). La barra de quiebre NO se escala (decisión documentada).
+   171→- PERSISTENCIA: localStorage 'ecos-balance' {"v":1,"level","auto"}; carga perezosa SSR-safe en el primer uso (JSON corrupto → Normal/AUTO sin lanzar), guardado con debounce 1.5 s (máx 1 escritura/ventana) vía scheduleSave; API MANUAL: setBalanceAuto/nudgeBalanceLevel (±1 relativo, otro valor = absoluto)/resetBalance (escritura inmediata + limpia votos). Estado vivo en variable de módulo (1 Game por página, documentado; re-sincroniza si cambia el objeto Player: nueva partida/carga).
+   172→- MODO DESAFÍO: balanceTick early-out y enemyStatMult neutro si g.challengeRun existe (12-a escala por su cuenta) — verificado por simulación (muertes en arena no mueven el nivel).
+   173→- ANTI-ABUSO: 1 toast por cambio automático y nunca con p.playTime < 300: bajar → 'El mundo cede un paso atrás...' (#8ef0b0), subir → 'El mundo se torna más fiero...' (#e0a060). Cambios manuales nunca avisan.
+   174→- UI drawBalancePanel(g, x?, y?, w=664, {readOnly?}): bloque compacto 664×70 (62 solo lectura) con cabecera '◆ DIFICULTAD DEL MUNDO ◆', indicador MODO AUTO/MANUAL, galga de 5 celdas con nombres en español (Muy fácil→Muy difícil), efectos actuales 'Vida/Daño/XP ±N%', y 4 botones FUNCIONALES (Modo AUTO/MANUAL, −, +, Restablecer) vía addHit/uiHit global de ui.ts (los hits se despachan en onMouseDown en cualquier estado; clearHits corre al inicio de drawGame → funcionan dentro de drawPause sin tocar screens.ts). readOnly dibuja hint en su lugar. Anclaje por defecto recalculado de g.canvas (bitmap SIEMPRE = VIEW_W×VIEW_H por fitCanvas → no hace falta importar el valor del motor). Devuelve la altura para apilar.
+   175→- Smoke bun nuevo scripts/smoke_balance.ts (3 procesos: simulación de 30 checks con localStorage stub en /tmp + round-trip de persistencia entre procesos + JSON corrupto): TODO OK (muertes/histeresis/caps/toasts/MANUAL/tabla/desafío/panel; advance de playTime simulando update.ts:118 y muertes acumulativas como en juego real).
+   176→
+   177→CONTRATO DE INTEGRACIÓN EXACTO (el integrador cablea; NADA de esto toca archivos ajenos):
+   178→1) HP — Game.makeEnemy (engine.ts:519, donde `const d = ENEMY_DEFS[type]`):
+   179→     const bm = enemyStatMult(this);
+   180→     ... hp: Math.round(d.hp * bm.hp), maxHp: Math.round(d.hp * bm.hp), ...
+   181→   (cubre spawnEnemies de los 6 mapas y minions de jefe; sta/maxSta sin tocar)
+   182→2) DAÑO — Game.damagePlayer (engine.ts:1591), PRIMERA línea:
+   183→     dmg = Math.max(1, Math.round(dmg * enemyStatMult(this).dmg));
+   184→   (embudo único de TODO el daño enemigo: melé update.ts:770/781, contacto enemies_expansion.ts:248, proyectiles update.ts:455 + enemies_expansion.ts:342, ondas update.ts:496, telegrafías update.ts:514 + enemies_expansion.ts:749/756/843/924/970; la IA telegrafía con def.dmg base pero el impacto final pasa siempre por damagePlayer; no existe autodaño)
+   185→3) XP — Game.killEnemy (engine.ts:1516): this.gainXp(Math.round(def.xp * enemyStatMult(this).xp));
+   186→4) PANEL — screens.ts · drawPause · pestaña ESTADO (1 línea):
+   187→     drawBalancePanel(g, px + 28, py + 398, pw - 56); // 12-c dificultad
+   188→   El bloque mide (pw-56)×70 y en ESTADO quedan ~37 px libres al pie (py+433..py+470, tras las filas de reputación de VELMORA que terminan en py+433): el integrador libera ~30 px como prefiera (p.ej. vy0 = y+36 y filas de rep a paso 18) o lo coloca en otra pestaña — la función acepta x/y/w y devuelve su altura; con { readOnly: true } mide 62. Alternativa sin panel: setters exportados listos para tecla (sugerida: 'B' cicla MANUAL -2..+2 en juego).
+   189→   balanceTick YA está llamado en Game.update (engine.ts:203, play/dialogue) — no requiere wiring.
+   190→
+   191→Verificación:
+   192→- bunx tsc --noEmit 2>&1 | grep -E "src/(game|components)" → VACÍO (0 errores en todo el proyecto).
+   193→- bun run lint → 0 errores, 0 warnings.
+   194→- bun scripts/smoke_balance.ts (+ load-valid + load-corrupt) → 30 + 2 + 2 checks, TODO OK.
+   195→- bun build --target=browser src/game/engine.ts → 18 módulos, 0.43 MB (grafo resuelve; balance→ui sin ciclo: ui importa engine solo en type).
+   196→- NO navegador (protocolo).
+   197→
+   198→Archivos tocados: src/game/balance.ts (esqueleto → implementación completa; exportaciones del esqueleto intactas: loadBalance/saveBalance/balanceTick/enemyStatMult/drawBalancePanel/resetBalance + nuevas: BALANCE_NAMES, balanceLevelName, setBalanceAuto, nudgeBalanceLevel). Nuevo: scripts/smoke_balance.ts (excluido de tsconfig, solo dev/CI con bun).
+   199→
+   200→Stage Summary:
+   201→- El mundo de Aelthar respira con el Portador: muere mucho y 'El mundo cede un paso atrás...', arrasa y 'El mundo se torna más fiero...' — con histéresis de 2 ventanas de 10 s, memoria móvil de 120 s, enfriamiento de 30 s y silencio durante los primeros 5 minutos. Nivel -2..+2 persistente (AUTO por defecto, MANUAL opcional con panel y botones funcionales listos para la pestaña ESTADO), neutro en modo desafío, y contrato de 4 puntos documentado para que el integrador cablee hp/dmg/xp + panel sin ambigüedad. tsc 0, lint 0, smoke 34/34.
+   202→
+   203→---
+   204→
+   205→---
+   206→Task ID: 12-a
+   207→Agent: general-purpose (modo-desafio) — sesión agotó contexto ANTES de registrar worklog; entrada reconstruida por el integrador tras verificar el código.
+   208→Task: Modo Desafío completo (arena + oleadas sin fin + duelos 1v1 contra los 3 jefes) accesible desde el título.
+   209→
+   210→Work Log (verificado por el integrador, archivos inspeccionados + smokes + E2E):
+   211→- src/game/challenge.ts (718 líneas): ChallengeRun extendido (phase, spawnQueue goteada 0.2s+0.5s, spawnedTotal, wavesCleared, bannerT, endBeat, snap de campaña, playerRef); startChallenge fotografiar la campaña (oro, pociones, flags, misión, memorias, facciones) y la RESTAURA al terminar (XP/nivel se conservan a propósito); Portador temporal "Portador de Arena" Nv8 arma+2 si no hay campaña (se retira al volver al título); duelos con 1 vida y 0 pociones, bossBanner reutilizado, hp de ENEMY_DEFS sin tocar y flags de campaña deshechas tras la victoria (logro por jefe con +1 poción solo con Portador de campaña, localStorage ecos-desafio-logros); récord de oleadas en ecos-desafio-best (solo modo oleadas); abortos: salida de mapa (puerta sur) y jugador reemplazado; reparación del guardado escrito dentro de la arena (resave rewrite/remove).
+   212→- maps_expansion.ts: mapa 'arena' (ARENA_MAP_ID) con muralla perimetral, puerta sur con zona de salida y SIN spawns propios (todo lo instancia challenge.ts).
+   213→- screens.ts: botón DESAFÍO en el título + openChallengeMenu/drawChallengeTitleUi/drawChallengeOverlay integrados.
+   214→- El integrador añadió después: quest-tracker de campaña oculto durante el desafío (render.ts, HUD).
+   215→- FIXES del integrador sobre el smoke: timing del goteo (3 lobos entran en ~1.2s, el test mata a los 0.3s), aislamiento del récord entre bloques y comparación Map.get undefined vs null (el juego NUNCA escribió el récord en el duelo — falso positivo del test).
+   216→
+   217→Stage Summary:
+   218→- MODO DESAFÍO jugable E2E: título → DESAFÍO → OLEADAS/DUELO x3 → arena con banner OLEADA 1, HUD (Enemigos/Puntos/Récord), Portador de Arena Nv8, spawns en anillo 8-14 tiles. smoke_desafio TODO OK (7 bloques), tsc 0, lint 0.
+   219→
+   220→---
+   221→Task ID: 12-b
+   222→Agent: general-purpose (arbol-habilidades) — sesión agotó contexto ANTES de registrar worklog; entrada reconstruida por el integrador tras verificar el código.
+   223→Task: Árbol de habilidades (3 ramas, 20 nodos) + 6 magias nuevas + 3 herramientas activas, con pantalla propia (tecla K).
+   224→
+   225→Work Log (verificado por el integrador):
+   226→- src/game/skilltree.ts (1107 líneas): ramas Vía del Filo (cuerpo y acero), Vía del Eco (arcano elemental), Vía del Camino (travesía y astucia); 20 nodos con coste 1-3, padres y grants consistentes; puntos = 1/nivel + hito cada 5 (skillPointsEarned); estado del árbol FUERA del Player (types.ts congelado): localStorage 'ecos-arbol' clave `nombre|disciplina` + cache Map + WeakMap<Player,RT> para lo transitorio; applySkillStats ABSOLUTO e idempotente (base + (nv-1)*7 + 20 por Corazón de Roble).
+   227→- Magias nuevas (data.ts, bloque 12-b delimitado): Onda Sísmica, Lanza del Alba, Cólera del Alba (alba); Nova de Escarcha, Tormenta Encadenada, Aureola de Ceniza (tejedor) + Mente de Cristal; equipaje en huecos 1-4 (sustituye a la base, que duerme y vuelve al restaurar).
+   228→- Herramientas: Campana del Retorno (5), Brújula de Ecos (6, marca objetivo de misión), Amuleto de Aelthar (7, absorbe 1 golpe con recarga por oleada de combate).
+   229→- PUENTE castSkill: envuelve Game.prototype.castSkill (lazy, idempotente, apagable con __ecos_no_skill_bridge) — las magias nuevas funcionan HOY sin tocar engine.ts; skillTick aplica pasivas (oro +20% Ojo del Mercader, regens, decaimiento extra de cds, Paso de Brisa +12% velocidad).
+   230→- FIX del integrador: (1) renombrado useTool → activateTool (ESLint lo tomaba como React Hook); (2) BUG REAL de carga: ensureTreeForPlayer solo aplicaba el loadout en cache-miss — otro perfil podía dejar SKILLS mutado y al continuar partida el equipaje se perdía → applyLoadout se re-aplica SIEMPRE al inicializar un jugador; (3) el smoke sección 9 probaba con el Portador equivocado (Amparo sin c_vida/c_cd/onda con expectativas de Albaran) → corregido a ga.save() (Albaran).
+   231→
+   232→Stage Summary:
+   233→- Árbol completo E2E (K): 3 ramas visibles, puntos, nodos clicable; smokes smoke_arbol COMPLETO EN VERDE (10 secciones: persistencia, pasivas, equipaje, magias por puente, herramientas con cds, absorción reactiva, guardado/carga del motor, pantalla sin excepciones, integridad de 20 nodos). NOTA para el agente visual: ligeros solapes de etiquetas de nodos en la fila media de Vía del Eco/Camino (posicionamiento de texto, no funcional).
+   234→
+   235→---
+   236→Task ID: 12-int
+   237→Agent: Super Z (agente principal — integrador Ronda A)
+   238→Task: Integrar y verificar la Ronda A (12-a desafío, 12-b árbol, 12-c balanceador) + completar los contratos de 12-c en el motor.
+   239→
+   240→Work Log:
+   241→- Contrato 12-c aplicado en engine.ts: (1) makeEnemy — hp/maxHp × enemyStatMult(this).hp (cubre TODOS los spawns incluidos minions de jefe); (2) damagePlayer — PRIMERA línea dmg = max(1, round(dmg × enemyStatMult(this).dmg)) — embudo único de todo el daño enemigo; (3) killEnemy — gainXp(round(def.xp × enemyStatMult(this).xp)); neutro en desafío (guard en balance.ts).
+   242→- Panel 12-c en screens.ts pestaña SISTEMA (drawBalancePanel(g, cx, cy+196, pw-56)) — con botones AUTO/MANUAL/±/Restablecer funcionales vía uiHit; sin solapes (SISTEMA tenía ~180px libres).
+   243→- Glue del motor (hecho en Task 12): GState 'skills', challengeRun, challengeTick/skillTick/balanceTick en update(), respawn→onChallengeDeath, render despacha 'skills'→drawSkillTree, tecla K.
+   244→- Verificación: tsc 0 en src/, lint 0, bun build 18 módulos; smokes: balance 34/34, arbol VERDE, desafío TODO OK, acto2 0 fallos (actualizado el conteo de mapas 6→7 por la arena), motor_acto2 0 fallos.
+   245→- E2E agent-browser (1440×900): título con DESAFÍO sin barras; menú Modo Desafío completo (récord, OLEADAS, 3 duelos, reglas); arena jugable (OLEADA 1, 3 lobos en anillo, HUD desafío, Portador de Arena Nv8); árbol K con 3 ramas y 20 nodos; pausa→SISTEMA con panel de dificultad AUTO y botones; quest-tracker oculto en arena.
+   246→- INCIDENCIA no reproducible: 1 vez el reto se cerró solo tras pulsar K (state title, run null, player null) — no reproducible en 2 sesiones controladas (3s de polling estable con K mantenida); monitorizar en la Ronda B.
+   247→- Renombrado useTool→activateTool (lint React Hooks) y actualizado smoke_acto2 (7 mapas).
+   248→
+   249→Stage Summary:
+   250→- Ronda A integrada y verde: Modo Desafío (oleadas + 3 duelos), Árbol de habilidades con 6 magias y 3 herramientas, Balanceador dinámico con panel en SISTEMA y multiplicadores cableados en el motor. tsc/lint/smokes/E2E en verde.

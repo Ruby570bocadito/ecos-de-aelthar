@@ -10,9 +10,12 @@ import type { Game } from './engine';
 import { VIEW_W, VIEW_H, QUESTS, getSpr, playerMeleeDmg } from './engine';
 import { ATTR_INFO, KEY_ITEMS, MEMORIES } from './data';
 import { dominantTone, TONE_LABEL } from './hooks';
+import { drawBalancePanel } from './balance'; // 12-c: dificultad (pestaña SISTEMA)
+import { drawArmorRow } from './armor'; // 14-b: armadura activa (pestaña ESTADO)
 import { drawPortrait } from './sprites';
 import { audio } from './audio';
 import { COL, text, textShadow, panel, bar, button, wrapText, addHit } from './ui';
+import { openChallengeMenu, drawChallengeTitleUi, drawChallengeOverlay } from './challenge'; // 12-a (modo desafío)
 
 const INTRO_SLIDES = [
   {
@@ -62,13 +65,22 @@ const NUM_ES = ['cero', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete'
 export function drawScreens(g: Game) {
   if (g.state !== 'end') endArmed = false; // rearma la escalonada del final
   switch (g.state) {
-    case 'title': drawTitle(g); break;
+    case 'title':
+      drawTitle(g);
+      // 12-a: sub-menú de selección del Desafío / panel de resultados (dibujados
+      // por challenge.ts sobre el título; limpian los uiHit del título de fondo)
+      drawChallengeTitleUi(g);
+      break;
     case 'controls': drawControls(g); break;
     case 'intro': drawIntro(g); break;
     case 'pause': drawPause(g); break;
     case 'dialogue': drawDialogue(g); break;
     case 'dead': drawDead(g); break;
     case 'end': drawEnd(g); break;
+    case 'play':
+      // 12-a: HUD del modo desafío (oleada/enemigos/puntos, cuenta atrás y banner)
+      if (g.challengeRun) drawChallengeOverlay(g);
+      break;
     default: break;
   }
 }
@@ -132,12 +144,15 @@ function drawTitle(g: Game) {
   fogLayer(0.08, 16, VIEW_H - 90, 170, 34, '#9ec4b4', 0);
   fogLayer(0.11, 26, VIEW_H - 48, 150, 26, '#b8d4c4', 120);
 
-  // wisps flotantes
+  // wisps flotantes (guard: durante HMR el módulo de sprites puede estar
+  // vacío un frame — antes drawImage(undefined) lanzaba y mataba el frame)
   for (let i = 0; i < 5; i++) {
     const wx = (VIEW_W / 6) * i + Math.sin(t + i * 2) * 40 + 60;
     const wy = 330 + Math.cos(t * 0.8 + i * 1.7) * 30;
+    const wisp = getSprWisp(t, i);
+    if (!wisp) continue;
     ctx.globalAlpha = 0.5;
-    ctx.drawImage(getSprWisp(t, i), wx, wy, 20, 20);
+    ctx.drawImage(wisp, wx, wy, 20, 20);
     ctx.globalAlpha = 1;
   }
 
@@ -179,9 +194,13 @@ function drawTitle(g: Game) {
     hoverCorners(g, bx, 290, bw, 44);
     button(g, 'CONTROLES', bx, 344, bw, 40, () => { g.setState('controls'); }, 12);
     hoverCorners(g, bx, 344, bw, 40);
+    button(g, 'DESAFÍO', bx, 394, bw, 40, () => openChallengeMenu(), 12);
+    hoverCorners(g, bx, 394, bw, 40);
   } else {
     button(g, 'CONTROLES', bx, 290, bw, 44, () => { g.setState('controls'); }, 13);
     hoverCorners(g, bx, 290, bw, 44);
+    button(g, 'DESAFÍO', bx, 344, bw, 40, () => openChallengeMenu(), 12);
+    hoverCorners(g, bx, 344, bw, 40);
   }
 
   text(g, 'Basado en el Documento de Diseño de @papito · 8 oct 2026', VIEW_W / 2, VIEW_H - 40, 15, 'rgba(154,160,184,0.8)', 'center');
@@ -196,7 +215,20 @@ function hashT(i: number, k: number): number {
 }
 function getSprWisp(t: number, i: number): HTMLCanvasElement {
   const frames = getSpr('wisp');
-  return frames[Math.floor(t * 3 + i) % frames.length];
+  const f = frames?.length ? frames[Math.floor(t * 3 + i) % frames.length] : (undefined as unknown as HTMLCanvasElement);
+  if (!f) {
+    const w = window as unknown as { __wispMiss?: unknown[] };
+    if (!w.__wispMiss) w.__wispMiss = [];
+    if (w.__wispMiss.length < 3) {
+      w.__wispMiss.push({
+        t: Math.round(performance.now()), i,
+        hasFrames: !!frames, len: frames?.length ?? -1,
+        hasG: !!(window as unknown as { __g?: unknown }).__g,
+        heroAlba: !!getSpr('hero_alba'),
+      });
+    }
+  }
+  return f;
 }
 
 // esquinas doradas al pasar el ratón (hover más vivo)
@@ -366,6 +398,8 @@ function drawPause(g: Game) {
       const vc = v > 0 ? '#8ef0b0' : v < 0 ? '#ff7060' : COL.dim;
       text(g, `${v > 0 ? '+' : ''}${v}`, fx + 300, fy, 15, vc, 'right');
     });
+    // 14-b: armadura activa (fila compacta, contrato armor.ts)
+    drawArmorRow(g, cx, py + 440, pw - 56);
   } else if (g.pauseTab === 1) {
     // EQUIPO
     text(g, 'ARMA', cx, cy, 16, COL.gold);
@@ -461,6 +495,8 @@ function drawPause(g: Game) {
     drawSlider(g, cx, cy + 102, 300, v => { audioSetSfx(g, v); }, g.sfxVolUi);
     text(g, '«La música adaptativa añade una capa de combate cuando', cx, cy + 150, 15, COL.dim);
     text(g, 'los enemigos te ven, y cada región tiene su melodía.»', cx, cy + 168, 15, COL.dim);
+    // dificultad dinámica del mundo (12-c): AUTO por defecto, editable aquí
+    drawBalancePanel(g, cx, cy + 196, pw - 56);
     button(g, 'GUARDAR Y SALIR AL TÍTULO', cx, py + ph - 96, 280, 40, () => {
       g.save();
       g.setState('title');

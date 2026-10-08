@@ -8,6 +8,7 @@
 import type { Game } from './engine';
 import type { DialogueOption, Player, ToneKind } from './types';
 import { MEMORIES } from './data';
+import { ACTO3_ELITE } from './data';
 import { audio } from './audio';
 
 const TONES: ToneKind[] = ['empatico', 'pragmatico', 'sarcastico', 'amenazante'];
@@ -153,6 +154,189 @@ export function handleCustomAction(g: Game, action: string): boolean {
     return true;
   }
 
+  // ----- Acto III · El Canto al Revés (agente 13-a: historia y diálogos) -----
+  // Watcher idempotente (patrón catchUpActo2, pero viviendo en hooks): O(1)
+  // fuera del rango q11-q13; completa por ESTADO los pasos que pudieron
+  // cumplirse antes de aceptar la misión o cuyo evento del motor (killEnemy
+  // del Guardián recordado) no dispara questAdvance para índices nuevos.
+  acto3CatchUp(g);
+
+  // accept_q11: Brisa ofrece el Acto III («el Canto sonó al revés»); acepta q11.
+  // Con questIdx<10 auto-repara aceptaciones anticipadas o saves antiguos
+  // (mismo principio de accept_q6).
+  if (action === 'accept_q11') {
+    if (g.questIdx < 10) { g.questIdx = 10; g.questStep = 0; }
+    if (!g.flags.q11) {
+      g.flags.q11 = true;
+      audio.sfx('quest');
+      g.toast('Nueva misión: El Canto al Revés', '#8ef0b0');
+    }
+    return true;
+  }
+
+  // acto3_toln: la conversación con Toln completa el objetivo de q11 (paso 0→1)
+  if (action === 'acto3_toln') {
+    if (g.questIdx === 10 && g.questStep === 0) {
+      g.questAdvance();
+      g.toast('Toln marca los tres lugares: el pozo de Teo, la Ruina Antigua, la orilla de Mara', '#8ef0b0');
+    }
+    return true;
+  }
+
+  // acto3_eco1/2/3: los 3 Ecos Invertidos (patrón eco_*_taken del Acto II):
+  // flag idempotente por eco, en cualquier orden; el 3º cierra el paso 1 de q11.
+  if (action === 'acto3_eco1' || action === 'acto3_eco2' || action === 'acto3_eco3') {
+    g.flags[action === 'acto3_eco1' ? 'ecoInvTeo' : action === 'acto3_eco2' ? 'ecoInvDoran' : 'ecoInvMara'] = true;
+    audio.sfx('echo');
+    if (g.player) g.burst(g.player.x, g.player.y - 8, '#ffe9a0', 18, 70);
+    const n = (['ecoInvTeo', 'ecoInvDoran', 'ecoInvMara'] as const).filter(k => g.flags[k]).length;
+    if (g.questIdx === 10 && g.questStep === 1 && n >= 3) {
+      g.questAdvance();
+      g.toast('Los tres ecos enderezados: vuelve con la Anciana Brisa', '#8ef0b0');
+    } else {
+      g.toast(`Eco invertido enderezado (${n}/3)`, '#ffe9a0');
+    }
+    return true;
+  }
+
+  // accept_q12: el cierre de q11 abre q12. El toast de 'Nueva misión' ya lo
+  // emite questAdvance al cerrar q11 (no se duplica, convención de 11-a);
+  // aquí solo se activa la bandera de aceptación con auto-reparación.
+  if (action === 'accept_q12') {
+    if (g.questIdx < 11) { g.questIdx = 11; g.questStep = g.flags.visited_aldea ? 1 : 0; }
+    g.flags.q12 = true;
+    return true;
+  }
+
+  // acto3_mera_ayer: el informe de Mera completa el paso 0 de q12 y cuenta como
+  // recuerdo; con 3 recuerdos de 4 posibles (cualquier orden) cierra el paso 1.
+  if (action === 'acto3_mera_ayer') {
+    g.flags.recMera = true;
+    audio.sfx('echo');
+    if (g.questIdx === 11 && g.questStep === 0) g.questAdvance();
+    const recs = (['recMera', 'recMara', 'recIvo', 'recVult'] as const).filter(k => g.flags[k]).length;
+    if (g.questIdx === 11 && g.questStep === 1 && recs >= 3) {
+      g.questAdvance();
+      g.toast('Tres recuerdos devueltos: vuelve con la Anciana Brisa', '#8ef0b0');
+    } else {
+      g.toast(`Recuerdo devuelto (${Math.min(recs, 3)}/3)`, '#ffe9a0');
+    }
+    return true;
+  }
+
+  // acto3_rec_mara/_ivo/_vult: recuerdos de los aldeanos (flags idempotentes,
+  // cualquier orden); el 3º cierra el paso 1 de q12.
+  if (action === 'acto3_rec_mara' || action === 'acto3_rec_ivo' || action === 'acto3_rec_vult') {
+    g.flags[action === 'acto3_rec_mara' ? 'recMara' : action === 'acto3_rec_ivo' ? 'recIvo' : 'recVult'] = true;
+    audio.sfx('echo');
+    const recs = (['recMera', 'recMara', 'recIvo', 'recVult'] as const).filter(k => g.flags[k]).length;
+    if (g.questIdx === 11 && g.questStep === 1 && recs >= 3) {
+      g.questAdvance();
+      g.toast('Tres recuerdos devueltos: vuelve con la Anciana Brisa', '#8ef0b0');
+    } else {
+      g.toast(`Recuerdo devuelto (${Math.min(recs, 3)}/3)`, '#ffe9a0');
+    }
+    return true;
+  }
+
+  // accept_q13: aceptación formal de q13 (el avance real lo hace questAdvance
+  // al cerrar q12; aquí solo bandera + auto-reparación, sin toast duplicado).
+  if (action === 'accept_q13') {
+    if (g.questIdx < 12) { g.questIdx = 12; g.questStep = 0; }
+    g.flags.q13 = true;
+    return true;
+  }
+
+  // acto3_verdad / acto3_silencio: LA decisión de reputación del Acto III
+  // (Guardianes vs Orden). Una sola vez por partida (anti-farm):
+  //   verdad   → rep. Orden +10 (mató por misericordia) / Guardianes -5
+  //   silencio → rep. Guardianes +10 (se conserva su causa) / Orden -5
+  if (action === 'acto3_verdad' || action === 'acto3_silencio') {
+    if (!g.flags.acto3RepDecision) {
+      g.flags.acto3RepDecision = true;
+      if (action === 'acto3_verdad') {
+        g.applyAction('rep_orden_10');
+        g.applyAction('rep_guardianes_-5');
+        g.toast('Contaste la verdad: la Orden de Vesh pronuncia tu nombre con respeto', '#e8a0a0');
+      } else {
+        g.applyAction('rep_guardianes_10');
+        g.applyAction('rep_orden_-5');
+        g.toast('Callaste: los Guardianes del Canto conservan su verdad intacta', '#8ef0b0');
+      }
+    }
+    return true;
+  }
+
+  // acto3_velmora_fn: la revelación de Velmora completa el paso 0 de q13
+  if (action === 'acto3_velmora_fn') {
+    if (g.questIdx === 12 && g.questStep === 0) {
+      g.questAdvance();
+      g.toast('La Cripta te espera: fuera del tiempo, canta la nota al revés', '#c8b0e8');
+    }
+    return true;
+  }
+
+  // acto3_subir: clímax de q13 — viaje instantáneo a la Cripta (el mismo método
+  // público que usan respawn/travel_) + instancia del JEFE ÉLITE reutilizado
+  // ('Guardián recordado', etype 'guardian' vía makeEnemy: el mecanismo que ya
+  // usan challenge.ts y los spawns zone:'boss' del Acto II; killEnemy lo trata
+  // por su rama de etype). La referencia vive en data.ACTO3_ELITE y acto3CatchUp
+  // detecta su .dead para avanzar q13 paso 1→2 (el killEnemy del motor no avanza
+  // índices nuevos). Idempotente: re-invocable desde velmora_puerta si el jugador
+  // salió de la Cripta sin rematar (loadMap reconstruye enemigos desde cero).
+  if (action === 'acto3_subir') {
+    g.closeDialogue();
+    g.loadMap('cripta', 19, 24); // aterrizaje del santuario (findSafeTile interno)
+    if (!g.flags.guardianRecordadoDerrotado) {
+      const altar = g.map.props.find(pr => pr.id === 'altar_c');
+      const ax = (altar ? altar.x : 19) * 16 + 8; // TILE=16, constante del proyecto
+      const ay = (altar ? altar.y + 5 : 9) * 16 + 8;
+      const elite = g.makeEnemy('guardian', ax, ay, 0, 'boss');
+      g.enemies.push(elite);
+      ACTO3_ELITE.ref = elite;
+      g.bossRef = elite;      // barra de jefe del HUD + limpieza de update (bossRef.dead → null)
+      g.bossActive = true;
+      audio.playTrack('boss');
+      g.shake = 8;
+      g.toast('El Guardián recordado despierta: ROMPE SU BARRA DE QUIEBRE', '#7ee8ff');
+    }
+    return true;
+  }
+
+  // acto3_report: cierre del Acto III — paga UNA VEZ por misión (flags
+  // acto3Paid11/12/13 anti-doble-pago, mismo patrón que q10Paid). q11 +60 y
+  // 1 poción · q12 +80 y 1 poción · q13 +100 y 1 poción + memoria nueva +
+  // flag acto3Done (sin questAdvance: el Acto III es el final de la demo,
+  // igual que acto2_report no avanza desde q10).
+  if (action === 'acto3_report') {
+    if (g.questIdx === 10 && g.questStep === 2 && !g.flags.acto3Paid11) {
+      g.flags.acto3Paid11 = true;
+      p.gold += 60; p.potions += 1;
+      audio.sfx('coin');
+      g.floatAt(p.x, p.y - 26, 'Recompensa: +60 coronas y 1 poción', '#f0c84a', 7);
+      g.toast('Misión completada: El Canto al Revés (+60 coronas, +1 poción)', '#8ef0b0');
+      g.questAdvance(); // cierre genérico: q11 → q12 (el toast de misión lo emite questAdvance)
+    }
+    if (g.questIdx === 11 && g.questStep === 2 && !g.flags.acto3Paid12) {
+      g.flags.acto3Paid12 = true;
+      p.gold += 80; p.potions += 1;
+      audio.sfx('coin');
+      g.floatAt(p.x, p.y - 26, 'Recompensa: +80 coronas y 1 poción', '#f0c84a', 7);
+      g.toast('Misión completada: La Aldea sin Ayer (+80 coronas, +1 poción)', '#8ef0b0');
+      g.questAdvance(); // q12 → q13
+    }
+    if (g.questIdx === 12 && g.questStep === 2 && !g.flags.acto3Paid13) {
+      g.flags.acto3Paid13 = true;
+      p.gold += 100; p.potions += 1;
+      audio.sfx('quest');
+      g.floatAt(p.x, p.y - 26, 'Recompensa: +100 coronas y 1 poción', '#f0c84a', 7);
+      g.toast('Misión completada: La Primera Portadora (+100 coronas, +1 poción)', '#8ef0b0');
+      grantMemory(g, p, 'mem_cantoalreves');
+      g.flags.acto3Done = true;
+    }
+    return true;
+  }
+
   return false;
 }
 
@@ -215,4 +399,41 @@ export function dominantTone(p: Player): ToneKind | null {
   }
   if (!best || total < 3) return null; // se necesita cierta consistencia
   return best;
+}
+
+/**
+ * 13-a — Watcher idempotente del Acto III (anti-bloqueo, referencia conceptual:
+ * catchUpActo2 del motor, que vive en engine.ts y NO se toca). Aquí no hay tick
+ * propio: el motor llama handleCustomAction en cada acción de diálogo, así que
+ * este corre al inicio de MI sección de handleCustomAction (las acciones
+ * previas del Acto I/II hacen return antes; es O(1) y no les afecta).
+ * Completa por ESTADO (mismo principio de las visitas de 8-int):
+ *  · guardián recordado derrotado → flag + avance q13 paso 1→2 (killEnemy del
+ *    motor no tiene rama para los índices nuevos; se detecta por ACTO3_ELITE).
+ *  · q11 paso 1: los 3 ecos enderezados en cualquier orden.
+ *  · q12 paso 1: 3 recuerdos de 4 posibles, en cualquier orden.
+ *  · reparación de saves a medio aceptar (flag q11 con questIdx aún 9).
+ */
+function acto3CatchUp(g: Game): void {
+  const f = g.flags;
+  if (!g.player) return;
+  if (g.questIdx === 9 && f.acto2Done && f.q11) { g.questIdx = 10; g.questStep = 0; }
+  if (g.questIdx < 10 || g.questIdx > 12) return;
+  if (ACTO3_ELITE.ref?.dead && !f.guardianRecordadoDerrotado) {
+    f.guardianRecordadoDerrotado = true;
+    g.toast('El Guardián recordado se aquietó: vuelve con la Anciana Brisa', '#a8d8ff');
+  }
+  if (g.questIdx === 10 && g.questStep === 1 &&
+      f.ecoInvTeo && f.ecoInvDoran && f.ecoInvMara) {
+    g.questAdvance();
+    g.toast('Los tres ecos enderezados: vuelve con la Anciana Brisa', '#8ef0b0');
+  }
+  if (g.questIdx === 11 && g.questStep === 1 &&
+      (['recMera', 'recMara', 'recIvo', 'recVult'] as const).filter(k => f[k]).length >= 3) {
+    g.questAdvance();
+    g.toast('Tres recuerdos devueltos: vuelve con la Anciana Brisa', '#8ef0b0');
+  }
+  if (g.questIdx === 12 && g.questStep === 1 && f.guardianRecordadoDerrotado) {
+    g.questAdvance();
+  }
 }

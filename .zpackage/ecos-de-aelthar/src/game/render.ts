@@ -13,6 +13,8 @@ import { drawScreens } from './screens';
 import { drawSlashArc, entityFrame, drawPortrait, hash2 } from './sprites';
 import * as SPRITES from './sprites'; // poses de combate (contrato 9-b, llamada opcional)
 import { drawExpansionProp, drawExpansionProjectile } from './sprites_expansion';
+import { drawSkillTree } from './skilltree';
+import { drawWorldLife } from './worldlife';
 import { tileAt } from './maps';
 import {
   fxFrame, updateAmbient, drawAmbient, getRollTrail,
@@ -33,6 +35,12 @@ export function drawGame(g: Game) {
 
   if (g.state === 'title' || g.state === 'controls') {
     drawScreens(g);
+    return;
+  }
+
+  // árbol de habilidades: pantalla propia a pantalla completa (agente 12-b)
+  if (g.state === 'skills') {
+    drawSkillTree(g);
     return;
   }
 
@@ -121,6 +129,9 @@ function drawWorld(g: Game) {
     const sprC = getSpr(opened ? 'chest_open' : 'chest')[0];
     ctx.drawImage(sprC, sx(ch.x * TILE), sy(ch.y * TILE - 2), 16 * ZOOM, 14 * ZOOM);
   }
+
+  // fauna y viajante del mundo vivo (13-b) — capa ambiente bajo las entidades
+  drawWorldLife(g, sx, sy);
 
   drawCombatFx(g, sx, sy);
 
@@ -676,7 +687,8 @@ function drawWaterGlints(g: Game, sx: (n: number) => number, sy: (n: number) => 
 let lightCv: HTMLCanvasElement | null = null;
 let lightCtx: CanvasRenderingContext2D | null = null;
 function getLightCanvas(): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
-  if (!lightCv) {
+  // vista dinámica: si VIEW_W/VIEW_H cambiaron (resize), re crear el offscreen
+  if (!lightCv || lightCv.width !== VIEW_W || lightCv.height !== VIEW_H) {
     lightCv = document.createElement('canvas');
     lightCv.width = VIEW_W; lightCv.height = VIEW_H;
     lightCtx = lightCv.getContext('2d');
@@ -948,8 +960,8 @@ function drawHud(g: Game) {
     text(g, `${i + 1}`, x + 3, y + 2, 10, COL.gold, 'left', true);
   }
 
-  // ---- misión (abajo-derecha) ----
-  const q = QUESTS[g.questIdx];
+  // ---- misión (abajo-derecha) — oculta en el modo desafío: es contenido de campaña ----
+  const q = g.challengeRun ? null : QUESTS[g.questIdx];
   if (q) {
     const lines = wrapText(g.questProgressText() ?? q.steps[g.questStep], 30);
     const qw = 216;

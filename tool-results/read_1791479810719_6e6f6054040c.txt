@@ -1,0 +1,689 @@
+     1→// ============================================================
+     2→// ECOS DE AELTHAR — fx (AGENTE 3-a · visuales; biomas nuevos · agente 7-c;
+     3→// combate 8-c; pulido 10-c)
+     4→// Partículas ambientales por mapa (pool fijo, sin allocations
+     5→// masivas), polvo de pasos, estelas de esquiva y temporizadores
+     6→// de feedback (banner de jefe / overlay de memoria).
+     7→// FX de combate (8-c): chispas direccionales, soplo de esquiva y
+     8→// destello de crítico — todo entra al pool g.particles, cero draws nuevos.
+     9→// Task 10-c: polvo de pasos por bioma (arena dorada / hielo que raspa) y
+    10→// BRUMA DEL FARO (costa, faro encendido: motas alargadas orbitando la
+    11→// linterna con dirección rotando determinista).
+    12→// SKIPs 10-c (documentados): mortandad de memoras al encender farol y sal-
+    13→// picadura de proyectil en agua requieren hooks en engine.ts/update.ts
+    14→// (CONGELADOS esta ronda) — no hay punto de enganche limpio.
+    15→// Todo determinista donde puede (hash2) y sincronizado con globalT.
+    16→// ============================================================
+    17→
+    18→import type { Game } from './engine';
+    19→import type { PropDef } from './types';
+    20→import { VIEW_W, VIEW_H, ZOOM } from './engine';
+    21→import { hash2, TILE } from './sprites';
+    22→import { tileAt } from './maps'; // solo lectura (mapas propiedad de otro agente)
+    23→import { isNight } from './update'; // solo lectura (propiedad del agente 3-b)
+    24→
+    25→// ---------------- Tipos internos ----------------
+    26→
+    27→const MOTA = 0;        // Lunaris día: motas doradas cálidas
+    28→const FIREFLY = 1;     // Lunaris noche: luciérnagas verdosas
+    29→const LEAF = 2;        // Bosque: hojas cayendo con vaivén
+    30→const SPORE = 3;       // Bosque: esporas flotantes
+    31→const ASH = 4;         // Cripta: ceniza azulada ascendente
+    32→const CRYPTWISP = 5;   // Cripta: wisps tenues
+    33→const SEAMIST = 6;     // Costa: bruma salina que deriva hacia el oeste
+    34→const FOAM = 7;        // Costa: chispas de espuma que estallan en destellos
+    35→const MEMORA = 8;      // Aldea: motas doradas pálidas que suben (los nombres que flotan)
+    36→const SNOW = 9;        // Cumbres: ventisca — copos con vaivén de viento
+    37→const WISPFRIO = 10;   // Cumbres: wisps azul-hielo erráticos junto al suelo
+    38→const FAROBEAM = 11;   // Costa (10-c): motas alargadas del haz del faro encendido
+    39→
+    40→// 120 (antes 110): headroom para el haz del faro (~6-8 motas vivas); el
+    41→// máximo autorizado por 7-c era 120 — se alcanza exactamente.
+    42→const AMB_CAP = 120;
+    43→
+    44→interface Amb {
+    45→  active: boolean;
+    46→  kind: number;
+    47→  x: number; y: number;        // coordenadas de MUNDO (px)
+    48→  vx: number; vy: number;
+    49→  t: number;                   // edad
+    50→  maxT: number;                // vida útil
+    51→  seed: number;                // semilla determinista
+    52→  size: number;
+    53→}
+    54→
+    55→// Pool fijo: se reutilizan las ranuras muertas (cero GC por frame)
+    56→const pool: Amb[] = Array.from({ length: AMB_CAP }, () => ({
+    57→  active: false, kind: 0, x: 0, y: 0, vx: 0, vy: 0, t: 0, maxT: 1, seed: 0, size: 1,
+    58→}));
+    59→
+    60→let spawnAcc = 0;
+    61→let dustAcc = 0;
+    62→let faroAcc = 0; // acumulador del haz del faro (10-c): 3 motas/s cuando arde
+    63→
+    64→// temporizadores de feedback (calculados aquí, dibujados en render.ts)
+    65→let bannerElapsed = 0;
+    66→let prevBannerT = 0;
+    67→let memElapsed = 0;
+    68→let memId = '';
+    69→
+    70→// estelas de esquiva (afterimages del jugador)
+    71→export interface TrailPt { x: number; y: number; dir: string; anim: number; life: number }
+    72→const rollTrail: TrailPt[] = [];
+    73→
+    74→export const TRAIL_LIFE = 0.22;
+    75→
+    76→// ---------------- Frame común ----------------
+    77→
+    78→/**
+    79→ * Se llama al inicio de drawGame. Calcula el dt real de dibujado a
+    80→ * partir de globalT y aplica un decaimiento de seguridad del shake
+    81→ * en estados donde el bucle de update no corre (pause/dead/end).
+    82→ * Devuelve el dt calculado.
+    83→ */
+    84→export function fxFrame(g: Game): number {
+    85→  const dt = lastGT < 0 ? 1 / 60 : Math.max(0.0001, Math.min(0.05, g.globalT - lastGT));
+    86→  lastGT = g.globalT;
+    87→  if (g.state !== 'play' && g.state !== 'dialogue' && g.shake > 0) {
+    88→    // decaimiento exponencial seguro: nunca deja el temblor constante
+    89→    g.shake *= Math.pow(0.004, dt);
+    90→    if (g.shake < 0.05) g.shake = 0;
+    91→  }
+    92→  return dt;
+    93→}
+    94→let lastGT = -1;
+    95→
+    96→// ---------------- Spawning por mapa ----------------
+    97→
+    98→function spawnAmbient(g: Game): void {
+    99→  const slot = pool.find(a => !a.active);
+   100→  if (!slot) return;
+   101→  const margin = 24;
+   102→  const wx0 = g.camX / ZOOM - margin, wy0 = g.camY / ZOOM - margin;
+   103→  const wx1 = (g.camX + VIEW_W) / ZOOM + margin, wy1 = (g.camY + VIEW_H) / ZOOM + margin;
+   104→  const seed = Math.floor(g.globalT * 997) ^ (spawnAcc * 131 | 0);
+   105→  const r = hash2(seed, 7);
+   106→
+   107→  const init = (kind: number, x: number, y: number, vx: number, vy: number, maxT: number, size: number) => {
+   108→    slot.active = true; slot.kind = kind;
+   109→    slot.x = x; slot.y = y; slot.vx = vx; slot.vy = vy;
+   110→    slot.t = 0; slot.maxT = maxT; slot.seed = hash2(seed, 3); slot.size = size;
+   111→  };
+   112→
+   113→  if (g.mapId === 'lunaris') {
+   114→    if (isNight(g)) {
+   115→      // luciérnagas verdosas: deambulan cerca del suelo con parpadeo
+   116→      init(FIREFLY, wx0 + r * (wx1 - wx0), wy0 + (wy1 - wy0) * (0.35 + hash2(seed, 11) * 0.6),
+   117→        (r - 0.5) * 10, (hash2(seed, 13) - 0.5) * 8, 5 + hash2(seed, 17) * 3, 1.5);
+   118→    } else {
+   119→      // motas doradas cálidas: deriva lenta e irregular
+   120→      init(MOTA, wx0 + r * (wx1 - wx0), wy0 + hash2(seed, 11) * (wy1 - wy0),
+   121→        (r - 0.5) * 6, -2 - hash2(seed, 13) * 4, 6 + hash2(seed, 17) * 4, 1 + hash2(seed, 19) * 1.2);
+   122→    }
+   123→  } else if (g.mapId === 'bosque') {
+   124→    if (r < 0.62) {
+   125→      // hojas: caen con vaivén sinusoidal
+   126→      init(LEAF, wx0 + r * (wx1 - wx0), wy0 - 6, 0, 16 + hash2(seed, 13) * 12,
+   127→        9, 2);
+   128→    } else {
+   129→      // esporas: flotan casi inmóviles
+   130→      init(SPORE, wx0 + r * (wx1 - wx0), wy0 + hash2(seed, 11) * (wy1 - wy0),
+   131→        (r - 0.5) * 5, -1 - hash2(seed, 15) * 2, 5 + hash2(seed, 17) * 3, 1);
+   132→    }
+   133→  } else if (g.mapId === 'costa') {
+   134→    const night = isNight(g);
+   135→    // de noche: menos espuma, más bruma (el mar se cierra)
+   136→    const foamK = night ? 0.16 : 0.42;
+   137→    if (r < foamK) {
+   138→      // espuma: chispas blancas junto al suelo, vida corta, estallan en 2-3 destellos
+   139→      init(FOAM, wx0 + hash2(seed, 21) * (wx1 - wx0), wy0 + (wy1 - wy0) * (0.6 + hash2(seed, 11) * 0.32),
+   140→        5 + hash2(seed, 13) * 10, -5 - hash2(seed, 15) * 6, 0.5 + hash2(seed, 17) * 0.4, 1.2);
+   141→    } else {
+   142→      // bruma salina: motas grandes semitransparentes que derivan al oeste, vida larga
+   143→      init(SEAMIST, wx0 + hash2(seed, 21) * (wx1 - wx0), wy0 + hash2(seed, 11) * (wy1 - wy0),
+   144→        -9 - hash2(seed, 13) * 5, 0, 7 + hash2(seed, 17) * 3.5, 2.2 + hash2(seed, 19) * 1.8);
+   145→    }
+   146→  } else if (g.mapId === 'aldea') {
+   147→    if (r < 0.85) {
+   148→      // memoras: ceniza del recuerdo — suben MUY lento (los nombres que flotan)
+   149→      init(MEMORA, wx0 + hash2(seed, 21) * (wx1 - wx0), wy1 - hash2(seed, 11) * 24,
+   150→        (r - 0.5) * 4, -3.5 - hash2(seed, 13) * 3.5, 7 + hash2(seed, 17) * 4, 1 + hash2(seed, 19) * 0.8);
+   151→    } else {
+   152→      // ceniza (duelo de Merrow): unos pocos copos que ascienden más vivos
+   153→      init(ASH, wx0 + hash2(seed, 21) * (wx1 - wx0), wy1 - hash2(seed, 11) * 20, (r - 0.5) * 6, -7 - hash2(seed, 13) * 6,
+   154→        4 + hash2(seed, 17) * 2.5, 1 + hash2(seed, 19) * 0.6);
+   155→    }
+   156→  } else if (g.mapId === 'cumbres') {
+   157→    const night = isNight(g);
+   158→    if (r < (night ? 0.7 : 0.8)) {
+   159→      // ventisca: NÚMEROS ALTOS, caída lenta constante; el viento (vx) oscila en update
+   160→      init(SNOW, wx0 + hash2(seed, 21) * (wx1 - wx0), wy0 - 6,
+   161→        0, 13 + hash2(seed, 13) * 10, 5 + hash2(seed, 17) * 3, 0.9 + hash2(seed, 19) * 1.3);
+   162→    } else {
+   163→      // wisp frío: azul-hielo, errático y lento, cerca del suelo
+   164→      init(WISPFRIO, wx0 + hash2(seed, 21) * (wx1 - wx0), wy0 + (wy1 - wy0) * (0.45 + hash2(seed, 11) * 0.45),
+   165→        (r - 0.5) * 8, -1 - hash2(seed, 13) * 2, 4.5 + hash2(seed, 17) * 2, 1.4);
+   166→    }
+   167→  } else {
+   168→    // cripta
+   169→    if (r < 0.78) {
+   170→      // ceniza azulada ascendente
+   171→      init(ASH, wx0 + r * (wx1 - wx0), wy1 - hash2(seed, 11) * 20, (r - 0.5) * 8, -9 - hash2(seed, 13) * 8,
+   172→        4.5 + hash2(seed, 17) * 3, 1 + hash2(seed, 19));
+   173→    } else {
+   174→      // wisp tenue: deriva serpenteante
+   175→      init(CRYPTWISP, wx0 + r * (wx1 - wx0), wy0 + hash2(seed, 11) * (wy1 - wy0),
+   176→        (r - 0.5) * 8, -2, 5 + hash2(seed, 17) * 2, 1.5);
+   177→    }
+   178→  }
+   179→}
+   180→
+   181→// ---------------- Update (solo play/dialogue) ----------------
+   182→
+   183→export function updateAmbient(g: Game, dt: number): void {
+   184→  // ---- temporizadores de feedback ----
+   185→  if (g.bossBannerT > prevBannerT + 0.03) bannerElapsed = 0; // banner nuevo
+   186→  prevBannerT = g.bossBannerT;
+   187→  bannerElapsed += dt;
+   188→
+   189→  if (g.memoryReveal) {
+   190→    if (g.memoryReveal.id !== memId) { memId = g.memoryReveal.id; memElapsed = 0; }
+   191→    memElapsed += dt;
+   192→  } else {
+   193→    memId = '';
+   194→  }
+   195→
+   196→  // ---- polvo de pasos (throttle ~0.12 s) ----
+   197→  // Variación por bioma (Task 10-c): el tile se muestrea bajo los PIES
+   198→  // (y + h/2, centro de entidad — misma convención del hielo de 9-a; antes
+   199→  // se muestreaba el centro y al empujar contra un muro por arriba leía el
+   200→  // tile equivocado):
+   201→  //   's' arena (costa)  → soplo DORADO pálido #f0e0b0, partículas algo mayores
+   202→  //   'S' nieve (cumbres) → soplo blanco flotante (como 7-c)
+   203→  //   'i' hielo (cumbres) → RASPA chispas azul-blanco #dff0fa horizontales
+   204→  //                         cortas (grav 0, vida 0.2 s)
+   205→  //   resto              → polvo marrón clásico
+   206→  const p = g.player;
+   207→  dustAcc += dt;
+   208→  if (p && p.moving && p.rollT <= 0 && p.attackT <= 0 && dustAcc >= 0.12) {
+   209→    dustAcc = 0;
+   210→    const feetY = p.y + p.h * 0.5;
+   211→    const tch = tileAt(g.map, g.rows, Math.floor(p.x / TILE), Math.floor(feetY / TILE), g.epoch);
+   212→    if (tch === 'i') {
+   213→      // hielo: raspado horizontal — chispas azul-blanco sin gravedad
+   214→      const dir = Math.random() < 0.5 ? -1 : 1;
+   215→      g.particles.push({
+   216→        x: p.x + (Math.random() - 0.5) * 8, y: feetY - 1,
+   217→        vx: dir * (34 + Math.random() * 40), vy: (Math.random() - 0.5) * 6,
+   218→        t: 0.2, maxT: 0.2, color: '#dff0fa', size: 1.2, grav: 0,
+   219→      });
+   220→    } else if (tch === 's') {
+   221→      // arena de la Costa de Bruma: soplo dorado pálido, algo mayor
+   222→      g.particles.push({
+   223→        x: p.x + (Math.random() - 0.5) * 8, y: feetY - 1,
+   224→        vx: (Math.random() - 0.5) * 16, vy: -4 - Math.random() * 5,
+   225→        t: 0.36, maxT: 0.36, color: '#f0e0b0', size: 2.3, grav: 16,
+   226→      });
+   227→    } else if (tch === 'S') {
+   228→      g.particles.push({
+   229→        x: p.x + (Math.random() - 0.5) * 7, y: feetY - 1,
+   230→        vx: (Math.random() - 0.5) * 16, vy: -4 - Math.random() * 5,
+   231→        t: 0.34, maxT: 0.34, color: 'rgba(240,246,255,0.85)', size: 1.6, grav: 16,
+   232→      });
+   233→    } else {
+   234→      g.particles.push({
+   235→        x: p.x + (Math.random() - 0.5) * 6, y: feetY - 1,
+   236→        vx: (Math.random() - 0.5) * 10, vy: -6 - Math.random() * 6,
+   237→        t: 0.28, maxT: 0.28, color: 'rgba(196,188,164,0.8)', size: 1.4, grav: 42,
+   238→      });
+   239→    }
+   240→  }
+   241→
+   242→  // ---- BRUMA DEL FARO (Task 10-c): haz de luz rotatorio en la costa ----
+   243→  // El faro "está encendido" cuando su flag de prop está activa — así lo lee
+   244→  // render.ts: drawExpansionProp(..., !!g.flags[pr.id]). Id real del faro:
+   245→  // 'faro_co' (x:6, y:18 en maps_expansion.ts), pero buscamos el prop por
+   246→  // kind === 'faro' + flag (lookup genérico, sin allocations, ~12 props).
+   247→  // 3 motas alargadas/s derivan alrededor de la LINTERNA (centro del prop
+   248→  // a 34 px por encima, como la dibuja sprites_expansion) con dirección
+   249→  // rotando — determinista con globalT (misma velocidad angular 0.35 rad/s
+   250→  // que el haz cónico del sprite). El posicionamiento orbital se calcula al
+   251→  // DIBUJAR (f(t, seed)): la partícula del pool va con vx/vy = 0.
+   252→  if (g.mapId === 'costa') {
+   253→    let faro: PropDef | null = null;
+   254→    for (const pr of g.map.props) {
+   255→      if (pr.kind === 'faro' && g.flags[pr.id]) { faro = pr; break; }
+   256→    }
+   257→    if (faro) {
+   258→      const lx = faro.x * TILE + 8, ly = faro.y * TILE + 8 - 34; // linterna (mundo)
+   259→      // solo emitir si la linterna está (casi) en encuadre
+   260→      if (lx >= g.camX / ZOOM - 48 && lx <= (g.camX + VIEW_W) / ZOOM + 48 &&
+   261→          ly >= g.camY / ZOOM - 48 && ly <= (g.camY + VIEW_H) / ZOOM + 48) {
+   262→        faroAcc += dt * 3;
+   263→        while (faroAcc >= 1) {
+   264→          const slot = pool.find(a => !a.active);
+   265→          if (!slot) { faroAcc = 1; break; } // sin hueco: no acumular ráfaga
+   266→          faroAcc -= 1;
+   267→          const s = Math.floor(g.globalT * 997) ^ ((faroAcc * 511) | 0);
+   268→          slot.active = true; slot.kind = FAROBEAM;
+   269→          slot.x = lx; slot.y = ly; slot.vx = 0; slot.vy = 0;
+   270→          slot.t = 0; slot.maxT = 1.5 + hash2(s, 3) * 1.1;
+   271→          slot.seed = hash2(s, 5); slot.size = 1.1 + hash2(s, 7) * 0.8;
+   272→        }
+   273→      }
+   274→    }
+   275→  }
+   276→
+   277→  // ---- estelas de esquiva ----
+   278→  for (let i = rollTrail.length - 1; i >= 0; i--) {
+   279→    rollTrail[i].life -= dt;
+   280→    if (rollTrail[i].life <= 0) rollTrail.splice(i, 1);
+   281→  }
+   282→  if (p && p.rollT > 0) {
+   283→    const last = rollTrail[rollTrail.length - 1];
+   284→    if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 7) {
+   285→      rollTrail.push({ x: p.x, y: p.y, dir: p.dir, anim: p.anim, life: TRAIL_LIFE });
+   286→      if (rollTrail.length > 6) rollTrail.shift();
+   287→    }
+   288→  }
+   289→
+   290→  // ---- partículas ambientales ----
+   291→  // costa: bruma moderada · aldea: escasa (nostalgia quieta) · cumbres: ventisca densa
+   292→  const cfgRate = g.mapId === 'bosque' ? 16 : g.mapId === 'cripta' ? 15
+   293→    : g.mapId === 'costa' ? 13 : g.mapId === 'aldea' ? 8 : g.mapId === 'cumbres' ? 17 : 12;
+   294→  spawnAcc += dt * cfgRate;
+   295→  while (spawnAcc >= 1) {
+   296→    spawnAcc -= 1;
+   297→    spawnAmbient(g);
+   298→  }
+   299→
+   300→  for (const a of pool) {
+   301→    if (!a.active) continue;
+   302→    a.t += dt;
+   303→    if (a.t >= a.maxT) { a.active = false; continue; }
+   304→    switch (a.kind) {
+   305→      case FIREFLY: {
+   306→        // deambular suave con cambio de dirección determinista
+   307→        const w = Math.sin(g.globalT * 1.7 + a.seed * 9);
+   308→        a.vx += Math.cos(g.globalT * 1.3 + a.seed * 7) * 14 * dt;
+   309→        a.vy += w * 10 * dt;
+   310→        a.vx = Math.max(-14, Math.min(14, a.vx));
+   311→        a.vy = Math.max(-10, Math.min(10, a.vy));
+   312→        break;
+   313→      }
+   314→      case LEAF: {
+   315→        // vaivén: la posición x se calcula al dibujar con seno
+   316→        break;
+   317→      }
+   318→      case ASH: {
+   319→        a.vx += Math.sin(g.globalT * 2 + a.seed * 11) * 6 * dt;
+   320→        break;
+   321→      }
+   322→      case CRYPTWISP: {
+   323→        a.vx += Math.cos(g.globalT * 1.1 + a.seed * 5) * 10 * dt;
+   324→        a.vy += Math.sin(g.globalT * 0.9 + a.seed * 3) * 8 * dt;
+   325→        break;
+   326→      }
+   327→      case SEAMIST: {
+   328→        // deriva oeste constante (vx fijo); la ondulación en y se dibuja con seno
+   329→        break;
+   330→      }
+   331→      case FOAM: {
+   332→        // estallido: sube empujada y frena (gravedad suave)
+   333→        a.vy += 14 * dt;
+   334→        break;
+   335→      }
+   336→      case MEMORA: {
+   337→        // ascenso lento con balanceo de "nombre recordado"
+   338→        a.vx += Math.sin(g.globalT * 1.4 + a.seed * 9) * 5 * dt;
+   339→        break;
+   340→      }
+   341→      case SNOW: {
+   342→        // viento horizontal oscilante (ventisca): vx se fija cada frame (determinista)
+   343→        a.vx = Math.sin(g.globalT * 0.9 + a.seed * 14) * (7 + a.seed * 11);
+   344→        break;
+   345→      }
+   346→      case WISPFRIO: {
+   347→        a.vx += Math.cos(g.globalT * 0.9 + a.seed * 6) * 9 * dt;
+   348→        a.vy += Math.sin(g.globalT * 0.7 + a.seed * 4) * 7 * dt;
+   349→        break;
+   350→      }
+   351→      default: break;
+   352→    }
+   353→    a.x += a.vx * dt;
+   354→    a.y += a.vy * dt;
+   355→    // matar las que salen demasiado del encuadre
+   356→    if (a.x < g.camX / ZOOM - 60 || a.x > (g.camX + VIEW_W) / ZOOM + 60 ||
+   357→        a.y < g.camY / ZOOM - 60 || a.y > (g.camY + VIEW_H) / ZOOM + 60) {
+   358→      a.active = false;
+   359→    }
+   360→  }
+   361→}
+   362→
+   363→// ---------------- Dibujo ----------------
+   364→
+   365→/**
+   366→ * layer 'world': motas/hojas/ceniza/niebla en coordenadas de mundo
+   367→ * (se dibuja sobre el mundo, bajo la iluminación).
+   368→ * layer 'sky': estrellas titilantes + halo lunar + parpadeo de
+   369→ * antorchas (encima de la iluminación, bajo el HUD).
+   370→ */
+   371→export function drawAmbient(g: Game, layer: 'world' | 'sky'): void {
+   372→  const ctx = g.ctx;
+   373→  const camX = Math.round(g.camX), camY = Math.round(g.camY);
+   374→  const sx = (wx: number) => wx * ZOOM - camX;
+   375→  const sy = (wy: number) => wy * ZOOM - camY;
+   376→
+   377→  if (layer === 'sky') {
+   378→    drawSky(g, ctx);
+   379→    return;
+   380→  }
+   381→
+   382→  // ---- niebla del Bosque: bandas que derivan (según época) ----
+   383→  if (g.mapId === 'bosque' && g.map.epochDiffs.length > 0) {
+   384→    const density = g.epoch === 'pasado' ? 0.045 : 0.14;
+   385→    ctx.save();
+   386→    ctx.globalAlpha = density;
+   387→    ctx.fillStyle = '#9ec4b4';
+   388→    for (let i = 0; i < 4; i++) {
+   389→      const seed = i * 37 + 5;
+   390→      const fx = ((g.globalT * 9 + i * 300) % (VIEW_W + 360)) - 180;
+   391→      const fy = 70 + i * 110 + Math.sin(g.globalT * 0.6 + seed) * 16;
+   392→      ctx.beginPath();
+   393→      ctx.ellipse(fx, fy, 150, 24 + (i % 2) * 10, 0, 0, Math.PI * 2);
+   394→      ctx.fill();
+   395→    }
+   396→    ctx.restore();
+   397→  }
+   398→
+   399→  // ---- partículas del pool ----
+   400→  for (const a of pool) {
+   401→    if (!a.active) continue;
+   402→    const lifeK = 1 - a.t / a.maxT;              // 1 → 0
+   403→    const fade = Math.min(1, lifeK * 3, a.t * 4); // fundido en ambos extremos
+   404→    const x = sx(a.x), y = sy(a.y);
+   405→    switch (a.kind) {
+   406→      case MOTA: {
+   407→        ctx.globalAlpha = 0.5 * fade;
+   408→        ctx.fillStyle = '#ffe9a0';
+   409→        const wob = Math.sin(g.globalT * 2 + a.seed * 8) * 2;
+   410→        ctx.fillRect(x + wob, y, a.size * ZOOM, a.size * ZOOM);
+   411→        break;
+   412→      }
+   413→      case FIREFLY: {
+   414→        // parpadeo: brillo breve con halo aditivo
+   415→        const blink = Math.max(0, Math.sin(g.globalT * 2.4 + a.seed * 12));
+   416→        const al = blink * blink * fade;
+   417→        ctx.globalAlpha = 1;
+   418→        ctx.save();
+   419→        ctx.globalCompositeOperation = 'lighter';
+   420→        ctx.globalAlpha = 0.35 * al;
+   421→        ctx.fillStyle = '#8ef0a8';
+   422→        ctx.beginPath();
+   423→        ctx.arc(x, y, 5 * ZOOM * 0.6, 0, Math.PI * 2);
+   424→        ctx.fill();
+   425→        ctx.restore();
+   426→        ctx.globalAlpha = Math.min(1, 0.4 + al);
+   427→        ctx.fillStyle = '#d8ffd0';
+   428→        ctx.fillRect(x, y, 2, 2);
+   429→        break;
+   430→      }
+   431→      case LEAF: {
+   432→        // hoja 2×2 con vaivén y balanceo de "vuelta"
+   433→        const sway = Math.sin(a.t * 2.6 + a.seed * 9) * 14;
+   434→        const flip = Math.sin(a.t * 5 + a.seed * 4);
+   435→        ctx.globalAlpha = 0.85 * fade;
+   436→        ctx.fillStyle = a.seed > 0.5 ? '#c8a050' : '#8aa050';
+   437→        ctx.fillRect(x + sway, y, 2 * ZOOM * 0.7, Math.max(1, Math.abs(flip) * 2.2));
+   438→        ctx.fillStyle = a.seed > 0.5 ? '#e0b860' : '#a8bc60';
+   439→        ctx.fillRect(x + sway, y, ZOOM * 0.7, Math.max(1, Math.abs(flip) * 1.4));
+   440→        break;
+   441→      }
+   442→      case SPORE: {
+   443→        ctx.globalAlpha = 0.45 * fade * (0.6 + 0.4 * Math.sin(g.globalT * 3 + a.seed * 7));
+   444→        ctx.fillStyle = '#d8f0e0';
+   445→        ctx.fillRect(x, y, 1.5 * ZOOM, 1.5 * ZOOM);
+   446→        break;
+   447→      }
+   448→      case ASH: {
+   449→        ctx.globalAlpha = 0.5 * fade;
+   450→        ctx.fillStyle = a.seed > 0.6 ? '#b8c8e0' : '#8fa4c8';
+   451→        ctx.fillRect(x, y, a.size * ZOOM * 0.8, a.size * ZOOM * 0.8);
+   452→        break;
+   453→      }
+   454→      case CRYPTWISP: {
+   455→        const pulse = 0.5 + 0.5 * Math.sin(g.globalT * 2.2 + a.seed * 9);
+   456→        ctx.globalAlpha = 0.3 * fade * (0.4 + pulse * 0.6);
+   457→        ctx.fillStyle = '#9fe8d8';
+   458→        ctx.beginPath();
+   459→        ctx.arc(x, y, 3 * ZOOM * 0.7, 0, Math.PI * 2);
+   460→        ctx.fill();
+   461→        ctx.globalAlpha = 0.8 * fade * pulse;
+   462→        ctx.fillStyle = '#e8fff8';
+   463→        ctx.fillRect(x, y, 1.5 * ZOOM, 1.5 * ZOOM);
+   464→        break;
+   465→      }
+   466→      case SEAMIST: {
+   467→        // bruma salina: pompa grande blanco-azulada semitransparente que ondula en y
+   468→        const wob = Math.sin(g.globalT * 0.55 + a.seed * 9) * 7;
+   469→        ctx.globalAlpha = 0.14 * fade;
+   470→        ctx.fillStyle = '#cfe0f2';
+   471→        ctx.beginPath();
+   472→        ctx.arc(x, y + wob, a.size * ZOOM * 2.4, 0, Math.PI * 2);
+   473→        ctx.fill();
+   474→        ctx.globalAlpha = 0.1 * fade;
+   475→        ctx.fillStyle = '#e8f2fa';
+   476→        ctx.beginPath();
+   477→        ctx.arc(x + a.size * ZOOM, y + wob + 3, a.size * ZOOM * 1.7, 0, Math.PI * 2);
+   478→        ctx.fill();
+   479→        break;
+   480→      }
+   481→      case FOAM: {
+   482→        // espuma: estalla en 2-3 destellos discretos durante su vida corta
+   483→        const strobe = Math.sin(a.t * (9 + a.seed * 5) + a.seed * 30) > 0 ? 1 : 0.12;
+   484→        ctx.globalAlpha = (0.55 + 0.45 * strobe) * fade;
+   485→        ctx.fillStyle = '#ffffff';
+   486→        ctx.fillRect(x, y, 2, 2);
+   487→        if (strobe > 0) {
+   488→          ctx.globalAlpha = 0.25 * fade;
+   489→          ctx.fillRect(x - 1, y - 1, 4, 4);
+   490→        }
+   491→        break;
+   492→      }
+   493→      case MEMORA: {
+   494→        // mota dorada pálida; parpadeo (pulso de alpha) al morir — de noche, más tenue
+   495→        const dying = lifeK < 0.4;
+   496→        const pulse = dying ? 0.35 + 0.65 * Math.abs(Math.sin(a.t * 9 + a.seed * 20)) : 1;
+   497→        ctx.globalAlpha = (isNight(g) ? 0.34 : 0.55) * fade * pulse;
+   498→        ctx.fillStyle = a.seed > 0.5 ? '#ecdcae' : '#d8c898';
+   499→        ctx.fillRect(x + Math.sin(g.globalT * 1.6 + a.seed * 8) * 2, y, a.size * ZOOM * 0.9, a.size * ZOOM * 0.9);
+   500→        break;
+   501→      }
+   502→      case SNOW: {
+   503→        // copo: blanco, tamaño variado (la ventisca se siente por la cantidad)
+   504→        ctx.globalAlpha = 0.85 * fade;
+   505→        ctx.fillStyle = '#f2f6ff';
+   506→        ctx.fillRect(x, y, a.size * ZOOM * 0.8, a.size * ZOOM * 0.8);
+   507→        break;
+   508→      }
+   509→      case WISPFRIO: {
+   510→        // wisp azul-hielo (pariente frío del CRYPTWISP)
+   511→        const pulseF = 0.5 + 0.5 * Math.sin(g.globalT * 1.9 + a.seed * 8);
+   512→        ctx.globalAlpha = 0.28 * fade * (0.4 + pulseF * 0.6);
+   513→        ctx.fillStyle = '#9ecdf0';
+   514→        ctx.beginPath();
+   515→        ctx.arc(x, y, 3 * ZOOM * 0.7, 0, Math.PI * 2);
+   516→        ctx.fill();
+   517→        ctx.globalAlpha = 0.75 * fade * pulseF;
+   518→        ctx.fillStyle = '#e6f6ff';
+   519→        ctx.fillRect(x, y, 1.5 * ZOOM, 1.5 * ZOOM);
+   520→        break;
+   521→      }
+   522→      case FAROBEAM: {
+   523→        // Motas del haz del faro (10-c): órbita alrededor de la linterna
+   524→        // (a.x/a.y), dirección rotando determinista (0.35 rad/s, la misma del
+   525→        // haz cónico del sprite). Trazo alargado ORIENTADO a la tangente del
+   526→        // giro → sensación de barrido de luz. Cull barato: si la linterna
+   527→        // sale de encuadre, updateAmbient las desactiva por posición.
+   528→        const ang = g.globalT * 0.35 + a.seed * 6.28;
+   529→        const rad = (9 + a.t * 17 + a.seed * 6) * ZOOM;
+   530→        const bx = x + Math.cos(ang) * rad;
+   531→        const by = y + Math.sin(ang) * rad * 0.85; // leve achatado cenital
+   532→        const tw = 0.75 + 0.25 * Math.sin(g.globalT * 5 + a.seed * 40);
+   533→        const nightK = isNight(g) ? 1.25 : 1; // de noche arde más en la bruma
+   534→        ctx.globalAlpha = Math.min(0.34, 0.17 * fade * tw * nightK);
+   535→        ctx.strokeStyle = '#fff3c8';
+   536→        ctx.lineWidth = a.size * ZOOM * 0.7;
+   537→        ctx.beginPath();
+   538→        ctx.moveTo(bx - Math.sin(ang) * 3.2 * ZOOM, by + Math.cos(ang) * 3.2 * ZOOM);
+   539→        ctx.lineTo(bx + Math.sin(ang) * 3.2 * ZOOM, by - Math.cos(ang) * 3.2 * ZOOM);
+   540→        ctx.stroke();
+   541→        break;
+   542→      }
+   543→      default: break;
+   544→    }
+   545→  }
+   546→  ctx.globalAlpha = 1;
+   547→}
+   548→
+   549→// ---- capa de cielo: estrellas, luna, antorchas ----
+   550→function drawSky(g: Game, ctx: CanvasRenderingContext2D): void {
+   551→  const t = g.globalT;
+   552→
+   553→  if (g.map.dark) {
+   554→    // ---- Cripta: parpadeo cálido de antorchas ----
+   555→    const flick = 0.5 + 0.5 * Math.sin(t * 11) * 0.6 + 0.25 * Math.sin(t * 23 + 1.7) + 0.15 * Math.sin(t * 7.7);
+   556→    ctx.save();
+   557→    ctx.globalCompositeOperation = 'lighter';
+   558→    ctx.globalAlpha = 0.05 + 0.035 * Math.max(0, flick);
+   559→    ctx.fillStyle = '#ff9a50';
+   560→    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   561→    ctx.restore();
+   562→    return;
+   563→  }
+   564→
+   565→  // factor de noche coherente con drawLighting
+   566→  const dayLight = Math.max(0.1, Math.sin(g.dayT * Math.PI * 2) * 1.25 + 0.25);
+   567→  const nf = 1 - Math.min(1, dayLight);
+   568→  if (nf < 0.08) return;
+   569→
+   570→  // ---- estrellas titilantes (deterministas) ----
+   571→  for (let i = 0; i < 46; i++) {
+   572→    const s1 = hash2(i * 7 + 1, 3);
+   573→    const s2 = hash2(i * 13 + 2, 5);
+   574→    const s3 = hash2(i * 17 + 4, 9);
+   575→    const x = s1 * VIEW_W;
+   576→    const y = s2 * VIEW_H * 0.55;
+   577→    const tw = 0.25 + 0.75 * Math.abs(Math.sin(t * (0.5 + s3 * 1.2) + s3 * 9));
+   578→    ctx.globalAlpha = nf * tw * 0.8;
+   579→    ctx.fillStyle = s3 > 0.85 ? '#ffe9c8' : '#dce4ff';
+   580→    ctx.fillRect(x, y, s3 > 0.7 ? 2 : 1, s3 > 0.7 ? 2 : 1);
+   581→  }
+   582→  ctx.globalAlpha = 1;
+   583→
+   584→  // ---- luna con halo ----
+   585→  if (nf > 0.3) {
+   586→    const mx = VIEW_W * 0.8, my = 64;
+   587→    ctx.save();
+   588→    ctx.globalCompositeOperation = 'lighter';
+   589→    const halo = ctx.createRadialGradient(mx, my, 6, mx, my, 52);
+   590→    halo.addColorStop(0, `rgba(214,226,255,${0.30 * nf})`);
+   591→    halo.addColorStop(1, 'rgba(214,226,255,0)');
+   592→    ctx.fillStyle = halo;
+   593→    ctx.fillRect(mx - 56, my - 56, 112, 112);
+   594→    ctx.restore();
+   595→    ctx.globalAlpha = Math.min(1, nf * 1.2);
+   596→    ctx.fillStyle = '#e8ecf4';
+   597→    ctx.beginPath();
+   598→    ctx.arc(mx, my, 11, 0, Math.PI * 2);
+   599→    ctx.fill();
+   600→    ctx.fillStyle = 'rgba(180,192,214,0.7)';   // cráteres
+   601→    ctx.fillRect(mx - 4, my - 3, 3, 3);
+   602→    ctx.fillRect(mx + 2, my + 3, 2, 2);
+   603→    ctx.fillRect(mx + 3, my - 5, 2, 2);
+   604→    ctx.globalAlpha = 1;
+   605→  }
+   606→}
+   607→
+   608→// ---------------- FX de combate (agente 8-c) ----------------
+   609→// Impactos que se SIENTEN: solo partículas del pool g.particles (render
+   610→// ya las dibuja cada frame), nada de draws nuevos ni allocations por frame
+   611→// fuera del pool. Estilo consistente con el polvo de pasos de arriba.
+   612→
+   613→/**
+   614→ * Chispas direccionales de impacto: cono con spread angular alrededor de
+   615→ * (dirX, dirY), gravedad suave y vida corta (0.2-0.35 s). Barato: n
+   616→ * típico 4-6, power ~70. Para el rebote de un tajo el llamador pasa la
+   617→ * dirección OPUESTA al swing; para estelas/recoil, la que necesite.
+   618→ */
+   619→export function combatSparks(g: Game, x: number, y: number, dirX: number, dirY: number, color: string, n = 6, power = 70): void {
+   620→  const base = Math.atan2(dirY, dirX);
+   621→  for (let i = 0; i < n; i++) {
+   622→    const ang = base + (Math.random() - 0.5) * 1.7;    // cono ±~49°
+   623→    const spd = power * (0.45 + Math.random() * 0.75);
+   624→    const t = 0.2 + Math.random() * 0.15;
+   625→    g.particles.push({
+   626→      x: x + (Math.random() - 0.5) * 5, y: y + (Math.random() - 0.5) * 5,
+   627→      vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
+   628→      t, maxT: t, color, size: 1 + Math.random() * 1.5, grav: 60,
+   629→    });
+   630→  }
+   631→}
+   632→
+   633→/**
+   634→ * Soplo de esquiva: anillo horizontal de partículas que se abren desde
+   635→ * el Portador (vista cenital: achatado en y) y se posan — un "¡fuá!" de aire.
+   636→ */
+   637→export function dodgeRing(g: Game, x: number, y: number): void {
+   638→  const N = 9;
+   639→  for (let i = 0; i < N; i++) {
+   640→    const a = (i / N) * Math.PI * 2 + 0.35;
+   641→    const rx = Math.cos(a);
+   642→    const ry = Math.sin(a) * 0.55;                     // anillo achatado sobre el suelo
+   643→    g.particles.push({
+   644→      x: x + rx * 4, y: y + 2 + ry * 4,
+   645→      vx: rx * 46, vy: ry * 46 - 8,
+   646→      t: 0.3, maxT: 0.3, color: '#cfe0f2', size: 1.7, grav: 30,
+   647→    });
+   648→  }
+   649→}
+   650→
+   651→/**
+   652→ * Destello de crítico: 3 partículas doradas grandes que se abren y se
+   653→ * apagan (tamaños decrecientes + vida escalonada → sensación de expansión).
+   654→ * Complementa el flash de daño (e.hitFlash) sin tocar render.
+   655→ */
+   656→export function critGlint(g: Game, x: number, y: number): void {
+   657→  for (let i = 0; i < 3; i++) {
+   658→    const a = i * (Math.PI * 2 / 3) + 0.5;
+   659→    const t = 0.28 + i * 0.04;
+   660→    g.particles.push({
+   661→      x: x + Math.cos(a) * 3, y: y + Math.sin(a) * 3,
+   662→      vx: Math.cos(a) * 24, vy: Math.sin(a) * 24,
+   663→      t, maxT: t, color: i === 0 ? '#ffe86a' : '#ffd24a', size: 4.4 - i * 0.8, grav: 14,
+   664→    });
+   665→  }
+   666→}
+   667→
+   668→// ---------------- Consultas para render.ts ----------------
+   669→
+   670→/** Estelas de esquiva vivas (para dibujar afterimages). */
+   671→export function getRollTrail(): TrailPt[] {
+   672→  return rollTrail;
+   673→}
+   674→
+   675→/** Progreso del banner de jefe: slide 0→1 (entrada), out 1→0 (salida). */
+   676→export function bannerInfo(g: Game): { slide: number; out: number; elapsed: number } {
+   677→  return {
+   678→    slide: Math.min(1, bannerElapsed / 0.45),
+   679→    out: Math.min(1, g.bossBannerT / 0.4),
+   680→    elapsed: bannerElapsed,
+   681→  };
+   682→}
+   683→
+   684→/** Alpha del overlay de memoria (entrada 0.5 s, salida según t restante). */
+   685→export function memoryAlpha(g: Game): number {
+   686→  if (!g.memoryReveal) return 0;
+   687→  return Math.max(0, Math.min(1, memElapsed / 0.5, g.memoryReveal.t / 0.6));
+   688→}
+   689→

@@ -51,14 +51,42 @@
 // ============================================================
 
 import type { Game } from './engine';
-import type { Enemy, Player } from './types';
+import type { Enemy, Player, EnemyType, Projectile } from './types';
 import type { EnemyDef } from './data';
 import { audio } from './audio';
 import { addShake, addFlash, requestSlowmo, stepKnockback } from './fxcore';
 // ciclo update→enemies_expansion→update: seguro (uso solo dentro de
 // funciones, mismo patrón ya verificado del ciclo fx↔update por isNight).
 // getPortadorVel devuelve la velocidad real del Portador medida por update.ts.
-import { getPortadorVel } from './update';
+// isNight (14-a): la activación nocturna de Vult usa el MISMO criterio que
+// el motor (noche = dayT>0.7 || <0.08) para no duplicar la definición.
+import { getPortadorVel, isNight } from './update';
+// MAPS (14-a): SOLO LECTURA-MUTACIÓN de las tablas de spawns en carga para
+// activar los 2 enemigos nuevos de mapa SIN tocar maps*.ts (congelados esta
+// ronda): push de SpawnDef sobre los arrays ya existentes de MAPS.
+import { MAPS } from './maps';
+
+// ── 14-a: ids de los 2 jefes-enemigos nuevos (los del Acto II quedan como
+// literales 'sirena'/'golem' por consistencia con el fuente original).
+export const T_VULT = 'vult' as const;
+export const T_CORO = 'coro' as const;
+
+// ── 14-a: SPAWNS de los 2 enemigos nuevos de mapa (Eco Desgarrado y Sátiro
+// de la Niebla). Mutación de las tablas ya existentes SOLO UNA VEZ por carga
+// del módulo (guarda anti-doble-push por HMR/recarga de módulo). El hp/dmg
+// de ENEMY_DEFS_14A ya pasa por makeEnemy → recibe el balanceador (12-c).
+let spawns14aPuestos = false;
+function puestarSpawns14a(): void {
+  if (spawns14aPuestos) return;
+  spawns14aPuestos = true;
+  // Eco Desgarrado: ecos partidos — donde hubo canto roto (bosque y cripta)
+  if (MAPS.bosque) MAPS.bosque.spawns.push({ type: 'ecodesg', x: 8, y: 12, patrol: 3, zone: 'bosque' });
+  if (MAPS.cripta) MAPS.cripta.spawns.push({ type: 'ecodesg', x: 31, y: 14, patrol: 2, zone: 'cripta' });
+  // Sátiro de la Niebla: músico cabrío — la niebla del bosque y el paso alto
+  if (MAPS.bosque) MAPS.bosque.spawns.push({ type: 'satiro', x: 47, y: 22, patrol: 4, zone: 'bosque' });
+  if (MAPS.cumbres) MAPS.cumbres.spawns.push({ type: 'satiro', x: 18, y: 18, patrol: 4, zone: 'cumbres' });
+}
+puestarSpawns14a();
 
 // ---------------- utilidades ----------------
 
@@ -106,6 +134,30 @@ interface ExpMem {
   ventT?: number;        // acumulador de la ventisca (fase 2)
   frostT?: number;       // escarcha restante tras el slam (9-a)
   corazonT?: number;     // acumulador del CORAZÓN DE HIELO (fase 2, 9-a)
+  // ── 14-a (jefes-enemigos) ──
+  // vult
+  vAct?: 'rafaga' | 'tajo' | 'embiste' | 'salto'; // acción elegida del ciclo
+  vIdx?: number;         // alternancia del pool de acciones
+  acechoCd?: number;     // cooldown del MODO ACECHO (fase 3, cada 8 s)
+  saltoX?: number;       // destino del salto (centro del telegraph)
+  saltoY?: number;
+  // coro
+  maskRoto?: boolean;    // la máscara ya cayó en ESTE periodo de quebrado
+  maskIdx?: number;      // máscara activa: 1 = EL PULSO · 2 = EL VERA · 3 = EL SILENCIO
+  coroRot?: number;      // 0 = cruz cardinal · 1 = cruz diagonal (F2)
+  coroT?: number;        // acumulador de la lluvia de notas (F3)
+  lluviaSfx?: number;    // contador para no spamear sfx de la lluvia
+  // sirena — MAREA DOBLE (fase final, 14-a)
+  mareaDobleT?: number;  // acumulador (cada 7 s en fase 3)
+  mareaPend?: number;    // crestas en cola (2 = doble)
+  mareaGap?: number;     // separación entre las 2 crestas (0.5 s)
+  // gólem — METEORITO DE ESCARCHA (fase final, 14-a)
+  meteoT?: number;       // acumulador (cada 9 s en fase 2)
+  meteoPend?: number;    // tiempo restante de caída (sincronizado con el telegraph)
+  meteoX?: number;       // centro del impacto (para el splash)
+  meteoY?: number;
+  // ecodesg
+  blinkSide?: number;    // flanco alternante del parpadeo
 }
 
 // ARPÍAS EN PANDILLA (9-a): instante (g.globalT) del último picado iniciado
@@ -192,8 +244,10 @@ function commonTick(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
     const nightMult = isNightG(g) ? 1.3 : 1;
     if (dist(e.x, e.y, p.x, p.y) < def.aggroR * nightMult) {
       e.aggro = true;
-      if (e.etype !== 'sirena' && e.etype !== 'golem') audio.sfx('blip');
-      // el banner de jefes lo disparan sus cerebros (flags sirenaIntro/golemIntro)
+      // 14-a: los jefes nuevos NO pitan (sus cerebros disparan banner+sfx propio,
+      // misma técnica que sirena/golem)
+      if (e.etype !== 'sirena' && e.etype !== 'golem' && e.etype !== T_VULT && e.etype !== T_CORO) audio.sfx('blip');
+      // el banner de jefes lo disparan sus cerebros (flags sirenaIntro/golemIntro/vultIntro/coroIntro)
     }
   }
 
@@ -202,8 +256,17 @@ function commonTick(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
   // (clave para el REMATE del Portador). El motor fija aiT=4 genérico
   // en damageEnemy al quebrar; los jefes lo ajustan a su duración.
   if (e.ai === 'aturdido') {
-    const stunT = e.etype === 'sirena' ? 2.6 : e.etype === 'golem' ? 2.8 : 1.6;
+    // 14-a: Vult se sacude más rápido (2.0 s); El Coro Roto tiene su
+    // propia mecánica: quebrar = CAE LA MÁSCARA (ver abajo, 1.4 s).
+    const stunT = e.etype === 'sirena' ? 2.6 : e.etype === 'golem' ? 2.8 : e.etype === T_VULT ? 2.0 : 1.6;
     if (e.aiT > stunT) e.aiT = stunT;
+    // 14-a EL CORO ROTO: al quebrar la barra de quiebre cae la máscara
+    // actual y entra la siguiente con patrón nuevo (UNA vez por periodo).
+    if (e.etype === T_CORO && !m.maskRoto) {
+      m.maskRoto = true;
+      e.aiT = 1.4; // el trastabilleo de la caída es más corto que un quebrado
+      caeMascara(g, e, m, true);
+    }
     e.aiT -= dt;
     e.moving = false;
     e.windup = 0;
@@ -231,6 +294,7 @@ function commonTick(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
     if (e.aiT <= 0) {
       e.ai = 'persigue';
       if (e.maxSta > 0) e.sta = e.maxSta;
+      if (e.etype === T_CORO) m.maskRoto = false; // la siguiente máscara puede volver a caer
     }
     return true;
   }
@@ -1105,10 +1169,649 @@ function deathGolem(g: Game, e: Enemy): void {
   addShake(g, 8);
 }
 
+// ============================================================
+// VULT, EL CAZADOR DE ECOS — JEFE opcional (14-a), SIEMPRE return true
+// Cumbres de NOCHE con contenido posterior a q11 (activación:
+// expansionBossWatchers). Ciclo: RAFAGA (abanico de dagas) · EMBISTE
+// (dash con estela) · SALTO (slam telegrafiado sobre la posición
+// predicha). A melé: TAJO en arco. FASE 3 (<30% hp): MODO ACECHO cada
+// 8 s — se desvanece, reaparece a tu espalda y su siguiente ataque
+// sale casi al instante. Cazador nocturno: +10% de velocidad de noche.
+// ============================================================
+
+function pushDaga(g: Game, x: number, y: number, vx: number, vy: number): void {
+  g.projectiles.push({
+    x, y, vx, vy, t: 1.5, dmg: 11, element: 'sombra', from: 'enemy', sprite: 'shard', radius: 4, pierce: 0,
+  });
+}
+
+function fireRafaga(g: Game, e: Enemy, p: Player): void {
+  const base = Math.atan2(p.y - 4 - e.y, p.x - e.x);
+  const n = e.phase >= 3 ? 9 : e.phase === 2 ? 7 : 5;
+  for (let i = 0; i < n; i++) {
+    const a = base + (i / (n - 1) - 0.5) * 0.9;
+    pushDaga(g, e.x, e.y - 4, Math.cos(a) * 175, Math.sin(a) * 175);
+  }
+  audio.sfx('whoosh');
+}
+
+/** MODO ACECHO (fase 3): desvanecimiento + reaparición a la espalda. */
+function acechoVult(g: Game, e: Enemy, p: Player, m: ExpMem): void {
+  m.acechoCd = 0;
+  g.burst(e.x, e.y, '#c8b0e8', 18, 90);
+  audio.sfx('whoosh');
+  e.invulT = 0.9; // entre las páginas de su mapa
+  // reaparece MÁS ALLÁ del Portador (a su espalda respecto a Vult)
+  const ang = Math.atan2(p.y - e.y, p.x - e.x);
+  for (const dd of [55, 42, 68, 30, 80]) {
+    const x = p.x + Math.cos(ang) * dd, y = p.y + Math.sin(ang) * dd;
+    if (!g.tileSolidAt(x, y)) { e.x = x; e.y = y; break; }
+  }
+  g.burst(e.x, e.y, '#c8b0e8', 18, 90);
+  e.atkCd = 0.35; // el primer ataque sale casi al instante
+  g.floatAt(e.x, e.y - 22, '¡ACECHO!', '#c8b0e8', 8);
+  m.lastAtkCd = e.atkCd;
+}
+
+function tickVult(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boolean {
+  // guarda de muerte: FX final antes de que el motor lo filtre
+  if (e.hp <= 0 && !e.dead) { deathVult(g, e); return true; }
+  if (commonTick(g, e, dt, def, m)) return true;
+  const p = g.player;
+  if (!p) { idleFloat(g, e, dt); return true; }
+  const d = dist(e.x, e.y, p.x, p.y);
+
+  // ---- banner del jefe (misma técnica que sirena/golem) ----
+  if (e.aggro && !g.flags.vultIntro) {
+    g.flags.vultIntro = true;
+    g.bossBannerT = 3.2;
+    g.bossBannerText = 'VULT, EL CAZADOR DE ECOS';
+    g.bossBannerSub = 'El mapa de tus pasos es su contrato';
+    addFlash(g, '#c8b0e8', 0.25);
+    addShake(g, 4);
+    audio.sfx('banner');
+    g.toast('Un mapa se despliega en la niebla: Vult ha encontrado tus pasos', '#c8b0e8');
+  }
+
+  // ---- fases (1: >60% · 2: 60-30% · 3: <30% = MODO ACECHO) ----
+  const hpPct = e.hp / e.maxHp;
+  const newPhase = hpPct > 0.6 ? 1 : hpPct > 0.3 ? 2 : 3;
+  if (newPhase > e.phase) {
+    e.phase = newPhase;
+    addFlash(g, '#c8b0e8', 0.2);
+    addShake(g, 5);
+    requestSlowmo(g, 0.2);
+    audio.sfx('roar');
+    g.toast(e.phase === 3 ? 'Vult entra en MODO ACECHO: no parpadees' : `Vult se enfurece (${e.phase}/3)`, '#c8b0e8');
+    e.windup = 0;
+    if (e.ai === 'carga') e.ai = 'persigue';
+  }
+
+  // MODO ACECHO (fase 3, cada 8 s; no interrumpe un ataque en curso)
+  if (e.aggro && e.phase === 3 && e.ai !== 'carga') {
+    m.acechoCd = (m.acechoCd ?? 0) + dt;
+    if (m.acechoCd >= 8) acechoVult(g, e, p, m);
+  }
+
+  // cazador nocturno: +10% de velocidad bajo la noche
+  const spd = def.speed * (isNightG(g) ? 1.1 : 1.0);
+
+  switch (e.ai) {
+    case 'patrulla': {
+      e.aiT -= dt;
+      if (e.aiT <= 0) { e.aiT = 2 + Math.random() * 2; e.patrolAngle = Math.random() * Math.PI * 2; }
+      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 50;
+      const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
+      moveDir(g, e, Math.cos(ang), Math.sin(ang), spd * 0.4, dt);
+      if (e.aggro) e.ai = 'persigue';
+      break;
+    }
+    case 'persigue': {
+      if (!e.aggro) { e.ai = 'patrulla'; break; }
+      // banda de cazador: 70-120 px
+      const ang = Math.atan2(p.y - e.y, p.x - e.x);
+      if (d > 120) moveDir(g, e, Math.cos(ang), Math.sin(ang), spd, dt);
+      else if (d < 70) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), spd, dt);
+      e.dir = p.x > e.x ? 'right' : 'left';
+      if (e.atkCd <= 0) {
+        if (d < def.atkR + 10) {
+          // TAJO en arco (melé): el 'aro' del telegraph explota al expirar
+          e.ai = 'carga';
+          m.vAct = 'tajo';
+          e.windup = 0.35;
+          e.telegraphKind = 'aro';
+          g.telegraphs.push({ x: e.x, y: e.y, r: 34, t: 0.35, maxT: 0.35, dmg: 12, kind: 'aro' });
+        } else {
+          // ciclo de cazador: rafaga → embiste → salto
+          const ciclo: Array<'rafaga' | 'embiste' | 'salto'> = ['rafaga', 'embiste', 'salto'];
+          m.vIdx = ((m.vIdx ?? -1) + 1) % 3;
+          m.vAct = ciclo[m.vIdx];
+          e.ai = 'carga';
+          if (m.vAct === 'rafaga') {
+            e.windup = 0.5;
+            e.telegraphKind = undefined;
+          } else if (m.vAct === 'embiste') {
+            e.windup = 0.42;
+            e.telegraphKind = 'onda';
+          } else {
+            // SALTO: slam sobre la posición PREDICHA del Portador
+            const v = getPortadorVel();
+            const tx = p.x + v.x * 0.35, ty = p.y + v.y * 0.35;
+            m.saltoX = tx; m.saltoY = ty;
+            e.windup = 0.75;
+            e.telegraphKind = 'slam';
+            e.invulT = Math.max(e.invulT ?? 0, 0.75); // en el aire
+            g.telegraphs.push({ x: tx, y: ty, r: 44, t: 0.75, maxT: 0.75, dmg: 13, kind: 'slam' });
+            audio.sfx('whoosh');
+          }
+        }
+      }
+      break;
+    }
+    case 'carga': {
+      e.windup -= dt;
+      e.moving = false;
+      e.dir = p.x > e.x ? 'right' : 'left';
+      if (e.windup <= 0) {
+        e.telegraphKind = undefined;
+        if (m.vAct === 'rafaga') {
+          fireRafaga(g, e, p);
+          e.atkCd = 1.7 * (0.9 + Math.random() * 0.2);
+          e.ai = 'recupera'; e.aiT = 0.3;
+        } else if (m.vAct === 'embiste') {
+          const ang = Math.atan2(p.y - e.y, p.x - e.x);
+          m.dashDx = Math.cos(ang); m.dashDy = Math.sin(ang);
+          m.dashHit = false;
+          e.ai = 'ataca'; e.aiT = 0.5;
+          audio.sfx('whoosh');
+        } else if (m.vAct === 'salto') {
+          // aterriza donde telegrafiaba + onda de impacto
+          if (m.saltoX !== undefined && m.saltoY !== undefined) { e.x = m.saltoX; e.y = m.saltoY; }
+          g.waves.push({ x: e.x, y: e.y, r: 0, maxR: 54, speed: 210, dmg: 13, hit: false });
+          g.burst(e.x, e.y, '#c8b0e8', 14, 80);
+          addShake(g, 5);
+          audio.sfx('roar');
+          e.atkCd = 1.8;
+          e.ai = 'recupera'; e.aiT = 0.4;
+        } else {
+          // tajo: el 'aro' dañó; remata con una daga corta
+          pushDaga(g, e.x, e.y - 4, (p.x - e.x) * 1.4, (p.y - e.y) * 1.4);
+          e.atkCd = 1.2;
+          e.ai = 'recupera'; e.aiT = 0.3;
+        }
+      }
+      break;
+    }
+    case 'ataca': {
+      // EMBESTIDA con estela (daño por contacto una vez — contactHit)
+      e.aiT -= dt;
+      g.moveEntity(e, (m.dashDx ?? 0) * 265 * dt, (m.dashDy ?? 0) * 265 * dt);
+      e.moving = true;
+      g.particles.push({ x: e.x + (Math.random() - 0.5) * 8, y: e.y + (Math.random() - 0.5) * 6, vx: 0, vy: -8, t: 0.35, maxT: 0.35, color: '#c8b0e8', size: 1.6, grav: 0 });
+      contactHit(g, e, def, m);
+      // el cazador no se estrella: corta la embestida en el muro
+      if (g.tileSolidAt(e.x + (m.dashDx ?? 0) * 10, e.y + (m.dashDy ?? 0) * 10)) { e.aiT = 0; addShake(g, 3); }
+      if (e.aiT <= 0) { e.ai = 'recupera'; e.aiT = 0.35; e.atkCd = 1.6; }
+      break;
+    }
+    case 'recupera': {
+      e.aiT -= dt;
+      e.moving = false;
+      if (e.aiT <= 0) e.ai = 'persigue';
+      break;
+    }
+    default: break;
+  }
+
+  m.lastAtkCd = e.atkCd;
+  return true;
+}
+
+// ============================================================
+// EL CORO ROTO — JEFE post-Acto III (14-a), SIEMPRE return true
+// Cripta con acto3Done + Guardián recordado descansado (activación:
+// expansionBossWatchers). Tres máscaras unidas por la nota del revés
+// de Velmora: quebrar la barra de quiebre hace CAER la máscara activa
+// (caeMascara) y entra la siguiente con patrón nuevo:
+//   · EL PULSO    (coro1) — orbes pulsantes radiales + onda
+//   · EL VERA     (coro2) — rayos en cruz (cardinal ↔ diagonal)
+//   · EL SILENCIO (coro3) — lluvia continua de notas caídas
+// ============================================================
+
+const MASCARA_INFO: Record<number, { nombre: string; color: string }> = {
+  1: { nombre: 'EL PULSO', color: '#7ee8ff' },
+  2: { nombre: 'EL VERA', color: '#ffe9a0' },
+  3: { nombre: 'EL SILENCIO', color: '#b48fff' },
+};
+
+/** Cae la máscara activa del Coro Roto: estallido + la siguiente entra
+ *  cantando (el latch maskRoto del bloque común garantiza 1 llamada por
+ *  quebrado; al salir del aturdimiento, maskRoto vuelve a false). */
+function caeMascara(g: Game, e: Enemy, m: ExpMem, _primera: boolean): void {
+  m.maskIdx = ((m.maskIdx ?? 1) % 3) + 1;
+  e.sprite = `coro${m.maskIdx}`;
+  const info = MASCARA_INFO[m.maskIdx] ?? MASCARA_INFO[1];
+  g.burst(e.x, e.y - 6, '#c8b0e8', 26, 110);
+  addFlash(g, info.color, 0.22);
+  addShake(g, 6);
+  audio.sfx('holy');
+  audio.sfx('roar');
+  g.floatAt(e.x, e.y - 26, '¡cae la máscara!', info.color, 8);
+  g.toast(`El Coro Roto muestra su siguiente máscara: ${info.nombre}`, info.color);
+  e.atkCd = 1.0; // la nueva máscara tarda un respiro en cantar
+  m.coroT = 0;
+  m.lastAtkCd = e.atkCd;
+}
+
+/** El canto de la máscara activa (al expirar el windup del 'aro'). */
+function cantaMascara(g: Game, e: Enemy, p: Player, m: ExpMem): void {
+  const maskIdx = m.maskIdx ?? 1;
+  if (maskIdx === 1) {
+    // EL PULSO: anillo de 8 orbes lentos + onda pulsante
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2 + (m.coroRot ?? 0) * 0.4;
+      g.projectiles.push({
+        x: e.x + Math.cos(a) * 12, y: e.y - 4 + Math.sin(a) * 12,
+        vx: Math.cos(a) * 88, vy: Math.sin(a) * 88,
+        t: 2.6, dmg: 11, element: 'sombra', from: 'enemy', sprite: 'orb', radius: 5.5, pierce: 0,
+      });
+    }
+    g.waves.push({ x: e.x, y: e.y, r: 0, maxR: 64, speed: 160, dmg: 12, hit: false });
+    audio.sfx('holy');
+    addShake(g, 3);
+  } else if (maskIdx === 2) {
+    // EL VERA: rayos en cruz — cardinal ↔ diagonal (alterna con cada canto)
+    m.coroRot = ((m.coroRot ?? 0) + 1) % 2;
+    const baseA = (m.coroRot ?? 0) === 1 ? Math.PI / 4 : 0;
+    for (let k = 0; k < 4; k++) {
+      const a = baseA + (k / 4) * Math.PI * 2;
+      for (let j = 1; j <= 3; j++) {
+        const rr = 12 * j;
+        g.projectiles.push({
+          x: e.x + Math.cos(a) * rr, y: e.y - 4 + Math.sin(a) * rr,
+          vx: Math.cos(a) * 150, vy: Math.sin(a) * 150,
+          t: 1.6, dmg: 11, element: 'sombra', from: 'enemy', sprite: 'nota', radius: 4.5, pierce: 0,
+        });
+      }
+    }
+    audio.sfx('ice');
+    addFlash(g, '#ffe9a0', 0.12);
+  } else {
+    // EL SILENCIO: ráfaga dirigida que castiga acercarse (mientras llueve)
+    const base = Math.atan2(p.y - 4 - e.y, p.x - e.x);
+    for (let i = 0; i < 3; i++) {
+      const a = base + (i / 2 - 0.5) * 0.5;
+      g.projectiles.push({
+        x: e.x, y: e.y - 4, vx: Math.cos(a) * 135, vy: Math.sin(a) * 135,
+        t: 1.8, dmg: 10, element: 'sombra', from: 'enemy', sprite: 'nota', radius: 4.5, pierce: 0,
+      });
+    }
+    audio.sfx('whoosh');
+  }
+}
+
+function tickCoro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boolean {
+  if (e.hp <= 0 && !e.dead) { deathCoro(g, e); return true; }
+  if (commonTick(g, e, dt, def, m)) return true;
+  const p = g.player;
+  if (!p) { idleFloat(g, e, dt); return true; }
+  const d = dist(e.x, e.y, p.x, p.y);
+  const maskIdx = m.maskIdx ?? 1;
+
+  // ---- banner del jefe ----
+  if (e.aggro && !g.flags.coroIntro) {
+    g.flags.coroIntro = true;
+    g.bossBannerT = 3.2;
+    g.bossBannerText = 'EL CORO ROTO';
+    g.bossBannerSub = 'Tres máscaras, una nota al revés';
+    addFlash(g, '#c8b0e8', 0.25);
+    addShake(g, 4);
+    audio.sfx('banner');
+    g.toast('El altar resuena: las tres máscaras giran hacia ti', '#c8b0e8');
+  }
+
+  switch (e.ai) {
+    case 'patrulla': {
+      // flota junto al altar
+      e.aiT -= dt;
+      if (e.aiT <= 0) { e.aiT = 2 + Math.random() * 2; e.patrolAngle = Math.random() * Math.PI * 2; }
+      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 44;
+      const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
+      moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.35, dt);
+      if (e.aggro) e.ai = 'persigue';
+      break;
+    }
+    case 'persigue': {
+      if (!e.aggro) { e.ai = 'patrulla'; break; }
+      // coro lento: banda 100-170 (fuera de melé, dentro de su canto)
+      const ang = Math.atan2(p.y - e.y, p.x - e.x);
+      if (d > 170) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
+      else if (d < 100) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), def.speed, dt);
+      else {
+        if (m.orbitDir === undefined) m.orbitDir = 1;
+        if (Math.random() < 0.002) m.orbitDir *= -1;
+        const tang = ang + (Math.PI / 2) * m.orbitDir;
+        moveDir(g, e, Math.cos(tang), Math.sin(tang), def.speed * 0.5, dt);
+      }
+      e.dir = p.x > e.x ? 'right' : 'left';
+
+      // EL SILENCIO (máscara 3): lluvia continua de notas caídas sobre ti
+      if (maskIdx === 3) {
+        m.coroT = (m.coroT ?? 0) + dt;
+        if (m.coroT >= 0.22) {
+          m.coroT = 0;
+          g.projectiles.push({
+            x: p.x + (Math.random() - 0.5) * 130, y: p.y - 95 + (Math.random() - 0.5) * 30,
+            vx: (Math.random() - 0.5) * 14, vy: 118,
+            t: 1.35, dmg: 10, element: 'sombra', from: 'enemy', sprite: 'nota', radius: 4.5, pierce: 0,
+          });
+          m.lluviaSfx = (m.lluviaSfx ?? 0) + 1;
+          if ((m.lluviaSfx ?? 0) % 6 === 0) audio.sfx('ice');
+        }
+      }
+
+      if (e.atkCd <= 0) {
+        e.ai = 'carga';
+        e.windup = 0.7;
+        e.telegraphKind = 'aro';
+        g.telegraphs.push({ x: e.x, y: e.y, r: 40, t: 0.7, maxT: 0.7, dmg: def.dmg, kind: 'aro' });
+      }
+      break;
+    }
+    case 'carga': {
+      e.windup -= dt;
+      e.moving = false;
+      e.dir = p.x > e.x ? 'right' : 'left';
+      if (e.windup <= 0) {
+        e.telegraphKind = undefined;
+        cantaMascara(g, e, p, m);
+        e.atkCd = (maskIdx === 3 ? 2.6 : 2.1) * (0.9 + Math.random() * 0.2);
+        e.ai = 'recupera';
+        e.aiT = 0.4;
+      }
+      break;
+    }
+    case 'recupera': {
+      e.aiT -= dt;
+      e.moving = false;
+      if (e.aiT <= 0) e.ai = 'persigue';
+      break;
+    }
+    default: break;
+  }
+
+  m.lastAtkCd = e.atkCd;
+  return true;
+}
+
+// ============================================================
+// ECO DESGARRADO — enemigo de mapa (14-a): un eco partido en dos que
+// PARPADEA a tu flanco (flanco alternante, con destello de aviso) y
+// arremete en dash corto.
+// ============================================================
+function tickEcodesg(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boolean {
+  if (commonTick(g, e, dt, def, m)) return true;
+  const p = g.player;
+  if (!p) { idleFloat(g, e, dt); return true; }
+  const d = dist(e.x, e.y, p.x, p.y);
+
+  switch (e.ai) {
+    case 'patrulla': {
+      e.aiT -= dt;
+      if (e.aiT <= 0) { e.aiT = 1.5 + Math.random() * 1.5; e.patrolAngle = Math.random() * Math.PI * 2; }
+      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 40;
+      const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
+      moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.35, dt);
+      if (e.aggro) e.ai = 'persigue';
+      break;
+    }
+    case 'persigue': {
+      if (!e.aggro) { e.ai = 'patrulla'; break; }
+      const ang = Math.atan2(p.y - e.y, p.x - e.x);
+      if (d > 90) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
+      e.dir = p.x > e.x ? 'right' : 'left';
+      if (e.atkCd <= 0 && d < 135) {
+        // PARPADEO al flanco (la bruma destella ANTES: es la telegrafía)
+        m.blinkSide = (m.blinkSide ?? 1) * -1;
+        const fa = ang + (Math.PI / 2) * (m.blinkSide ?? 1);
+        g.burst(e.x, e.y, '#b48fff', 12, 70);
+        audio.sfx('whoosh');
+        for (const dd of [42, 34, 52, 26]) {
+          const x = p.x + Math.cos(fa) * dd, y = p.y + Math.sin(fa) * dd;
+          if (!g.tileSolidAt(x, y)) { e.x = x; e.y = y; break; }
+        }
+        g.burst(e.x, e.y, '#b48fff', 12, 70);
+        e.ai = 'carga';
+        e.windup = 0.3; // media ventana para girarte
+      }
+      break;
+    }
+    case 'carga': {
+      e.windup -= dt;
+      e.moving = false;
+      if (e.windup <= 0) {
+        const ang = Math.atan2(p.y - e.y, p.x - e.x);
+        m.dashDx = Math.cos(ang); m.dashDy = Math.sin(ang);
+        m.dashHit = false;
+        e.ai = 'ataca'; e.aiT = 0.32;
+        audio.sfx('blip');
+      }
+      break;
+    }
+    case 'ataca': {
+      // arremetida corta (daño por contacto una vez)
+      e.aiT -= dt;
+      g.moveEntity(e, (m.dashDx ?? 0) * 215 * dt, (m.dashDy ?? 0) * 215 * dt);
+      e.moving = true;
+      contactHit(g, e, def, m);
+      if (g.tileSolidAt(e.x + (m.dashDx ?? 0) * 8, e.y + (m.dashDy ?? 0) * 8)) e.aiT = 0;
+      if (e.aiT <= 0) { e.ai = 'recupera'; e.aiT = 0.55; e.atkCd = 1.5; }
+      break;
+    }
+    case 'recupera': {
+      e.aiT -= dt;
+      e.moving = false;
+      if (e.aiT <= 0) e.ai = 'persigue';
+      break;
+    }
+    default: break;
+  }
+  m.lastAtkCd = e.atkCd;
+  return true;
+}
+
+// ============================================================
+// SÁTIRO DE LA NIEBLA — enemigo de mapa (14-a): silba BALADAS CURVAS
+// que caen sobre la posición PREDICHA del Portador (telegraph 'aro' como
+// marca de caída + orbe real con el daño); si te acercas, huye silbando.
+// ============================================================
+function tickSatiro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boolean {
+  if (commonTick(g, e, dt, def, m)) return true;
+  const p = g.player;
+  if (!p) { idleFloat(g, e, dt); return true; }
+  const d = dist(e.x, e.y, p.x, p.y);
+
+  switch (e.ai) {
+    case 'patrulla': {
+      e.aiT -= dt;
+      if (e.aiT <= 0) { e.aiT = 2 + Math.random() * 2; e.patrolAngle = Math.random() * Math.PI * 2; }
+      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 44;
+      const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
+      moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.4, dt);
+      if (e.aggro) e.ai = 'persigue';
+      break;
+    }
+    case 'persigue': {
+      if (!e.aggro) { e.ai = 'patrulla'; break; }
+      const ang = Math.atan2(p.y - e.y, p.x - e.x);
+      if (d < 75) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), def.speed * 0.95, dt);
+      else if (d > 165) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
+      else {
+        if (m.orbitDir === undefined) m.orbitDir = 1;
+        if (Math.random() < 0.004) m.orbitDir *= -1;
+        const tang = ang + (Math.PI / 2) * m.orbitDir;
+        moveDir(g, e, Math.cos(tang), Math.sin(tang), def.speed * 0.6, dt);
+      }
+      e.dir = p.x > e.x ? 'right' : 'left';
+      if (e.atkCd <= 0 && d < def.atkR + 20) {
+        // BALADA CURVA: marca de caída en la posición PREDICHA (0.5 s)
+        const v = getPortadorVel();
+        const px = p.x + v.x * 0.5, py = p.y + v.y * 0.5;
+        m.saltoX = px; m.saltoY = py;
+        e.ai = 'carga';
+        e.windup = 0.8;
+        e.telegraphKind = 'aro';
+        // el telegraph SOLO avisa (dmg 0): el daño lo lleva el orbe
+        g.telegraphs.push({ x: px, y: py, r: 24, t: 0.8, maxT: 0.8, dmg: 0, kind: 'aro' });
+      }
+      break;
+    }
+    case 'carga': {
+      e.windup -= dt;
+      e.moving = false;
+      e.dir = p.x > e.x ? 'right' : 'left';
+      if (e.windup <= 0) {
+        e.telegraphKind = undefined;
+        // silba el orbe hacia el punto marcado (llega cuando el 'aro' cierra)
+        if (m.saltoX !== undefined && m.saltoY !== undefined) {
+          const a = Math.atan2(m.saltoY - e.y, m.saltoX - e.x);
+          const dd = Math.hypot(m.saltoX - e.x, m.saltoY - e.y);
+          // el punto de spawn NUNCA dentro de pared (el bucle de proyectiles
+          // elimina al instante los orbes nacidos en tile sólido): prueba el
+          // offset de boca, el centro del cuerpo y un empujón en la dirección
+          let ox = e.x, oy = e.y - 6;
+          if (g.tileSolidAt(ox, oy)) oy = e.y;
+          if (g.tileSolidAt(ox, oy)) { ox = e.x + Math.cos(a) * 10; oy = e.y + Math.sin(a) * 10; }
+          g.projectiles.push({
+            x: ox, y: oy, vx: Math.cos(a) * Math.max(60, dd / 0.8), vy: Math.sin(a) * Math.max(60, dd / 0.8),
+            t: 1.1, dmg: def.dmg, element: 'ninguno', from: 'enemy', sprite: 'orb', radius: 4, pierce: 0,
+          });
+        }
+        audio.sfx('blip');
+        e.atkCd = 2.2 * (0.9 + Math.random() * 0.2);
+        e.ai = 'recupera'; e.aiT = 0.4;
+      }
+      break;
+    }
+    case 'recupera': {
+      e.aiT -= dt;
+      e.moving = false;
+      if (e.aiT <= 0) e.ai = 'persigue';
+      break;
+    }
+    default: break;
+  }
+  m.lastAtkCd = e.atkCd;
+  return true;
+}
+
+// ============================================================
+// FX DE MUERTE de los jefes 14-a (mismo patrón que sirena/gólem)
+// ============================================================
+
+function deathVult(g: Game, e: Enemy): void {
+  if (deathFxVisto.has(e)) return;
+  deathFxVisto.add(e);
+  // el mapa de tus pasos se rasga: dagas y páginas caen
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2;
+    g.particles.push({
+      x: e.x + Math.cos(a) * 6, y: e.y - 6 + Math.sin(a) * 4,
+      vx: Math.cos(a) * 70, vy: Math.sin(a) * 40 - 30,
+      t: 0.6 + (i % 3) * 0.1, maxT: 0.7, color: i % 2 ? '#c8b0e8' : '#f0ead0', size: 2, grav: 120,
+    });
+  }
+  requestSlowmo(g, 0.3);
+}
+
+function deathCoro(g: Game, e: Enemy): void {
+  if (deathFxVisto.has(e)) return;
+  deathFxVisto.add(e);
+  // las tres máscaras se parten a la vez: notas al revés que suben
+  for (let i = 0; i < 15; i++) {
+    const a = (i / 15) * Math.PI * 2 + 0.3;
+    const t = 0.6 + (i % 4) * 0.08;
+    g.particles.push({
+      x: e.x + Math.cos(a) * 8, y: e.y - 6 + Math.sin(a) * 5,
+      vx: Math.cos(a) * 60, vy: Math.sin(a) * 60 - 24,
+      t, maxT: t, color: i % 3 === 0 ? '#7ee8ff' : i % 3 === 1 ? '#ffe9a0' : '#b48fff', size: 2.2, grav: -14,
+    });
+  }
+  addFlash(g, '#c8b0e8', 0.3);
+  requestSlowmo(g, 0.35);
+}
+
 /** Punto de enganche para update.ts: FX de muerte de los jefes del Acto II. */
 export function expansionDeathFx(g: Game, e: Enemy): void {
   if (e.etype === 'sirena') deathSirena(g, e);
   else if (e.etype === 'golem') deathGolem(g, e);
+  else if (e.etype === T_VULT) deathVult(g, e); // 14-a
+  else if (e.etype === T_CORO) deathCoro(g, e); // 14-a
+}
+
+// ============================================================
+// WATCHERS de los jefes opcionales 14-a (llamado 1×/frame desde update.ts,
+// barato: primero filtra por mapa).
+//   · VULT: Cumbres de NOCHE con contenido posterior a q11 (questIdx>=11).
+//     Caza al Portador una sola vez (vultDefeated lo cierra para siempre).
+//     El guard de "ya hay un vult vivo" hace el spawn auto-saneable: si
+//     sales del mapa y vuelves, reaparece entero (jefe OPCIONAL de caza,
+//     sin memoria de hp — decisión documentada).
+//   · EL CORO ROTO: Cripta con acto3Done + Guardián recordado descansado.
+//     Despierta cuando el Portador se acerca al altar libre (200 px).
+// La barra/banner los pintan los mecanismos ya existentes (bossRef/
+// bossActive + cerebros), al estilo update.ts:398 y hooks.acto3_subir.
+// ============================================================
+export function expansionBossWatchers(g: Game): void {
+  if (g.state !== 'play' || !g.player) return;
+  const p = g.player;
+
+  // ---- activación de la barra de jefe al acercarte (vult) ----
+  const vult = g.mapId === 'cumbres' ? g.enemies.find(e => e.etype === T_VULT && !e.dead) : undefined;
+  if (vult && !g.bossActive) {
+    g.bossRef = vult;
+    if (dist(p.x, p.y, vult.x, vult.y) < 190) { g.bossActive = true; audio.playTrack('boss'); }
+  }
+
+  // ---- activación de la barra de jefe al acercarte (coro) ----
+  const coro = g.mapId === 'cripta' ? g.enemies.find(e => e.etype === T_CORO && !e.dead) : undefined;
+  if (coro && !g.bossActive) {
+    g.bossRef = coro;
+    if (dist(p.x, p.y, coro.x, coro.y) < 190) { g.bossActive = true; audio.playTrack('boss'); }
+  }
+
+  // ---- spawn de VULT (Cumbres de noche, tras q11) ----
+  if (g.mapId === 'cumbres' && !g.flags.vultDefeated
+      && !g.enemies.some(e => e.etype === T_VULT && !e.dead)
+      && g.questIdx >= 11 && isNightG(g)) {
+    const v = g.makeEnemy('vult', p.x, p.y, 2, 'boss');
+    // colócalo a distancia de caza (makeEnemy lo creó sobre el Portador)
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2 + g.globalT;
+      const x = p.x + Math.cos(a) * 170, y = p.y + Math.sin(a) * 170;
+      if (!g.tileSolidAt(x, y)) { v.x = x; v.y = y; v.homeX = x; v.homeY = y; break; }
+    }
+    v.spawnGuard = 0.2;
+    g.enemies.push(v);
+    g.burst(v.x, v.y, '#c8b0e8', 20, 90);
+    audio.sfx('whoosh');
+    g.toast('Las cumbres susurran: hay un cazador en la noche', '#c8b0e8');
+  }
+
+  // ---- spawn de EL CORO ROTO (Cripta, post-Acto III) ----
+  if (g.mapId === 'cripta' && g.flags.acto3Done && g.flags.guardianRecordadoDerrotado
+      && !g.flags.coroDefeated && !g.enemies.some(e => e.etype === T_CORO && !e.dead)) {
+    const altar = g.map.props.find(pr => pr.id === 'altar_c');
+    const ax = (altar ? altar.x : 19) * 16 + 8; // TILE=16, constante del proyecto
+    const ay = (altar ? altar.y + 4 : 8) * 16 + 8;
+    if (dist(p.x, p.y, ax, ay) < 200) {
+      const c = g.makeEnemy('coro', ax, ay, 0, 'boss');
+      g.enemies.push(c);
+      g.burst(ax, ay, '#c8b0e8', 24, 100);
+      g.shake = 8;
+      g.toast('El altar libre canta al revés... EL CORO ROTO despierta', '#c8b0e8');
+    }
+  }
 }
 
 // ============================================================
@@ -1123,6 +1826,10 @@ export function expansionTick(g: Game, e: Enemy, dt: number, def: EnemyDef): boo
     case 'arpi': return tickArpi(g, e, dt, def, mem(e));
     case 'sirena': return tickSirena(g, e, dt, def, mem(e));
     case 'golem': return tickGolem(g, e, dt, def, mem(e));
+    case 'vult': return tickVult(g, e, dt, def, mem(e)); // 14-a
+    case 'coro': return tickCoro(g, e, dt, def, mem(e)); // 14-a
+    case 'ecodesg': return tickEcodesg(g, e, dt, def, mem(e)); // 14-a
+    case 'satiro': return tickSatiro(g, e, dt, def, mem(e)); // 14-a
     default: return false; // tipos base: IA genérica del motor
   }
 }
