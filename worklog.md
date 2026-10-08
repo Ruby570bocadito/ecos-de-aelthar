@@ -132,3 +132,20 @@ Work Log:
 Stage Summary:
 - Demo mejorada: sistema de Tono con apodos, 3 Memorias del Portador con overlay vitral, reputación de 4 facciones, REMATE, knockback suave, Ilwen elemental con Lluvia de Estrellas, banner de jefe, 3 NPC nuevos de la biblia, 9 sprites/retratos nuevos, partículas ambientales por mapa, ciclo día/noche con luna/estrellas, sfx nuevos, título y menús pulidos.
 - Contrato de extensión documentado en hooks.ts para futuro contenido (Actos II-IV).
+
+---
+Task ID: 4
+Agent: Super Z (agente principal)
+Task: Corregir bug reportado por el usuario: "al entrar a la cripta se queda en negro" (pantalla negra en la Cripta de Aelthar).
+
+Work Log:
+- Reproducido con agent-browser: nueva partida → fadeTo('cripta',19,30) → pantalla negra total (solo HUD/minimapa). Sin loopError (el render no lanzaba excepción).
+- Descartadas causas: groundCanvas con contenido (muestreo de píxeles OK), ctx.filter soportado y funcional (blit con/sin filtro verificado leyendo píxeles), drawWorld alcanzado (niebla/estrellas sí se dibujaban).
+- CAUSA RAÍZ (preexistente desde Task 1, latente): drawLighting rellenaba la pantalla con color de oscuridad OPACO y recortaba los "agujeros de luz" con destination-out SOBRE EL CANVAS PRINCIPAL → borraba los píxeles del mundo dibujado (mundo+entidades), dejando ver el fondo CSS de la página (#06070f, casi negro). En la cripta (darkness=0.8 constante) era 100% negro; de noche en exteriores (darkness>0.02) también ocultaba el mundo (captura histórica shot_cryptdoor.png del QA original ya lo mostraba en Bosque-presente nocturno; pasó desapercibido porque la mayoría del QA fue diurno).
+- FIX en render.ts (drawLighting): capa de oscuridad en canvas offscreen (getLightCanvas, singleton perezoso VIEW_W×VIEW_H). Secuencia: clear → fillRect con globalAlpha=darkness (0.62 noche / 0.8 cripta con parpadeo) → destination-out para el gradiente del Portador (r 130 cripta / 170 exterior, 0.95 centro) y de santuarios (pulso) sobre SOLO la capa → componer con drawImage sobre el mundo → tintes posteriores intactos (púrpura cripta / azul noche / cálido amanecer).
+- Verificación E2E: cripta muestra suelo, muros, esqueletos, cofres, eco y círculo de luz del jugador (shot_cripta_fixed.png); noche de Lunaris con tinte azul, luna, estrellas, santuario iluminado y mundo visible (shot_lunaris_noche_fixed.png); combate en cripta con telegrafías, daño flotante, banner GUARDIÁN HUECO, barra de jefe y santuario brillando (shot_cripta_combate.png); loopError=null en todo el recorrido.
+- Lint 0 errores; tsc: 0 errores en src/ del juego (los restantes son de examples/ y skills/ de la plantilla, preexistentes y ajenos).
+
+Stage Summary:
+- Bug de pantalla negra corregido de raíz para TODAS las capas de oscuridad: cripta, noches de Lunaris/Bosque y futuros mapas oscuros. La técnica de capa offscreen es la estándar (oscuridad con agujeros de luz compuesta sobre el mundo) y desbloquea el paso del Bosque → Cripta → Guardián Hueco.
+- Capturas de verificación en scripts/shot_cripta_fixed.png, shot_lunaris_noche_fixed.png, shot_cripta_combate.png.

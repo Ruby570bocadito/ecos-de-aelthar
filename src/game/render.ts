@@ -509,6 +509,21 @@ function drawCombatFx(g: Game, sx: (n: number) => number, sy: (n: number) => num
 
 // ---------------- Iluminación ----------------
 
+// Canvas offscreen para la capa de oscuridad: los agujeros de luz
+// (destination-out) deben borrar SOLO la oscuridad. Si se hace sobre el
+// canvas principal, se borra el mundo dibujado y los "huecos" dejan ver el
+// fondo de la página (negro) → pantallas negras de noche y en la cripta.
+let lightCv: HTMLCanvasElement | null = null;
+let lightCtx: CanvasRenderingContext2D | null = null;
+function getLightCanvas(): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
+  if (!lightCv) {
+    lightCv = document.createElement('canvas');
+    lightCv.width = VIEW_W; lightCv.height = VIEW_H;
+    lightCtx = lightCv.getContext('2d');
+  }
+  return { canvas: lightCv, ctx: lightCtx! };
+}
+
 function drawLighting(g: Game) {
   const ctx = g.ctx;
   const p = g.player;
@@ -521,29 +536,38 @@ function drawLighting(g: Game) {
     darkness = 0.8 + Math.sin(g.globalT * 11) * 0.02 + Math.sin(g.globalT * 23 + 1.7) * 0.015;
   }
   if (darkness > 0.02) {
-    ctx.save();
-    ctx.fillStyle = g.map.dark ? '#060810' : '#0a1030';
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    ctx.globalCompositeOperation = 'destination-out';
+    const lc = getLightCanvas();
+    const lx = lc.ctx;
+    // 1) capa de oscuridad con alpha real (0.62 noche / 0.8 cripta)
+    lx.globalCompositeOperation = 'source-over';
+    lx.clearRect(0, 0, VIEW_W, VIEW_H);
+    lx.globalAlpha = Math.min(1, darkness);
+    lx.fillStyle = g.map.dark ? '#060810' : '#0a1030';
+    lx.fillRect(0, 0, VIEW_W, VIEW_H);
+    lx.globalAlpha = 1;
+    // 2) agujeros de luz sobre la capa (borran oscuridad, no mundo)
+    lx.globalCompositeOperation = 'destination-out';
     const px = p.x * ZOOM - g.camX, py = (p.y - 6) * ZOOM - g.camY;
-    const grad = ctx.createRadialGradient(px, py, 10, px, py, g.map.dark ? 130 : 170);
+    const grad = lx.createRadialGradient(px, py, 10, px, py, g.map.dark ? 130 : 170);
     grad.addColorStop(0, 'rgba(0,0,0,0.95)');
     grad.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(px - 200, py - 200, 400, 400);
+    lx.fillStyle = grad;
+    lx.fillRect(px - 200, py - 200, 400, 400);
     // santuarios iluminan (con pulso suave)
     for (const pr of g.map.props) {
       if (pr.kind !== 'sanctuary') continue;
       const sxp = pr.x * TILE * ZOOM + 8 - g.camX, syp = pr.y * TILE * ZOOM - g.camY;
       if (sxp < -100 || syp < -100 || sxp > VIEW_W + 100 || syp > VIEW_H + 100) continue;
       const rad = 80 + Math.sin(g.globalT * 2 + pr.x) * 5;
-      const grad2 = ctx.createRadialGradient(sxp, syp, 4, sxp, syp, rad);
+      const grad2 = lx.createRadialGradient(sxp, syp, 4, sxp, syp, rad);
       grad2.addColorStop(0, 'rgba(0,0,0,0.7)');
       grad2.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = grad2;
-      ctx.fillRect(sxp - 95, syp - 95, 190, 190);
+      lx.fillStyle = grad2;
+      lx.fillRect(sxp - 95, syp - 95, 190, 190);
     }
-    ctx.restore();
+    lx.globalCompositeOperation = 'source-over';
+    // 3) componer la capa sobre el mundo: los huecos revelan el escenario
+    ctx.drawImage(lc.canvas, 0, 0);
     if (g.map.dark) {
       ctx.fillStyle = 'rgba(30,20,60,0.18)';
       ctx.fillRect(0, 0, VIEW_W, VIEW_H);
