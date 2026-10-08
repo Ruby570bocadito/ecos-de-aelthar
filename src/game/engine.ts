@@ -9,18 +9,52 @@ import type {
 } from './types';
 import { MAPS, mapRows, tileAt } from './maps';
 import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
+import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
 import { audio } from './audio';
 import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue } from './data';
 import { updateGame } from './update';
 import { drawGame } from './render';
 import { handleCustomAction, recordDialogueTone } from './hooks';
+import { challengeTick, onChallengeDeath, type ChallengeRun } from './challenge';
+import { skillTick } from './skilltree';
+import { balanceTick, enemyStatMult } from './balance';
+import { worldTick } from './worldlife';
+import { timeTick, beginEpochShift } from './timeskip';
 
-export const VIEW_W = 960, VIEW_H = 540;
+// Vista DINÁMICA (fix barra negra): el buffer se ajusta al aspecto real de la
+// ventana (sin letterbox en 16:10/3:2/4:3/21:9). `let` + live bindings: todos
+// los módulos importan VIEW_W/VIEW_H y leen el valor actual en cada frame.
+export let VIEW_W = 960, VIEW_H = 540;
 export const ZOOM = 2;
 
-export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end';
+/**
+ * Ajusta el buffer del juego al aspecto de la ventana para eliminar el
+ * letterbox (la "barra negra" abajo/arriba). Mantiene 540px de alto base
+ * a 16:9 exacto; pantallas más anchas ganan vista lateral (hasta 1600px)
+ * y más cuadradas ganan vista vertical (hasta 800px). Clamp de seguridad
+ * para aspectos extremos (móvil vertical): ahí el letterbox es aceptable.
+ */
+export function fitViewToWindow(winW: number, winH: number): void {
+  const a = winW / Math.max(1, winH);
+  let vw = Math.round(540 * a);
+  let vh = 540;
+  if (vw < 840) { vw = 840; vh = Math.round(vw / a); }
+  else if (vw > 1600) { vw = 1600; vh = Math.round(vw / a); }
+  vh = Math.max(460, Math.min(800, vh));
+  vw = Math.max(840, Math.min(1600, Math.round(vh * a)));
+  if (vw !== VIEW_W || vh !== VIEW_H) { VIEW_W = vw; VIEW_H = vh; }
+}
 
-export interface UiHit { x: number; y: number; w: number; h: number; cb: () => void; hover?: boolean }
+/** Flag de derrota por tipo de JEFE (Acto II: sirena/golem se suman al Guardián). */
+export const BOSS_DEFEAT_FLAG: Record<string, string> = {
+  guardian: 'guardianDefeated',
+  sirena: 'sirenaDefeated',
+  golem: 'golemDefeated',
+};
+
+export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end' | 'skills';
+
+export interface UiHit { x: number; y: number; w: number; h: number; cb: () => void; hover?: boolean; state?: GState }
 
 export class Game {
   canvas: HTMLCanvasElement;
@@ -32,6 +66,10 @@ export class Game {
   sfxVolUi = 0.8;
 
   requestCreate() {
+    // blindaje anti clic-fantasma (2ª capa): la creación SOLO existe desde el
+    // título. Si algún uiHit residual de otra instancia/estado disparara esto,
+    // el guard lo ignora y el overlay DOM nunca se abre en plena partida.
+    if (this.state !== 'title') return;
     audio.sfx('confirm');
     this.onRequestCreate?.();
   }
@@ -111,6 +149,9 @@ export class Game {
   bossRef: Enemy | null = null;
   bossActive = false;
 
+  // modo desafío (arena): sesión volátil — no se serializa en save()
+  challengeRun: ChallengeRun | null = null;
+
   // bucle
   private raf = 0;
   private lastTs = 0;
@@ -122,6 +163,7 @@ export class Game {
     this.ctx = canvas.getContext('2d')!;
     this.ctx.imageSmoothingEnabled = false;
     initSprites();
+    initExpansionSprites(); // Acto II: sprites de neumo/espectro/arpi/sirena/golem + proyectiles
     this.bindInput();
     // volúmenes persistidos (sistema → sliders)
     try {
@@ -149,6 +191,57 @@ export class Game {
 
   update(dt: number) {
     updateGame(this, dt);
+    // Watchers del Acto II que viven en el motor (O(1) por frame; update.ts es
+    // de otro agente). q7 paso 0→1: la Sirena entra en combate. Elección
+    // documentada: watcher por ACTIVACIÓN DEL JEFE (bossActive al acercarte al
+    // naufragio) — más simple y robusto que medir distancia al prop 'wreck';
+    // la flag sirenaSeen evita que se repita (y se serializa en el guardado).
+    if (this.bossActive && this.bossRef?.etype === 'sirena' &&
+        this.questIdx === 6 && this.questStep === 0 && !this.flags.sirenaSeen) {
+      this.flags.sirenaSeen = true;
+      this.questAdvance();
+      this.toast('La Sirena te ha visto...', '#8ef0ff');
+    }
+    this.catchUpActo2();
+    // módulos de juego (no-ops de costo O(1) si no aplican)
+    challengeTick(this, dt); // modo desafío (arena)
+    skillTick(this, dt);     // pasivas del árbol de habilidades
+    balanceTick(this, dt);   // monitor de dificultad dinámica
+    worldTick(this, dt);     // fauna, rumores y eventos del mundo (13-b)
+    timeTick(this, dt);      // inmersión del viaje temporal (13-c)
+  }
+
+  /**
+   * 11-a (integración): red de seguridad del Acto II contra JUEGO FUERA DE
+   * ORDEN. Los pasos de q7-q9 se completaban solo por EVENTO (watcher de
+   * aggro, killEnemy, lightLamp, eco_*_taken): si el jugador completa el
+   * objetivo ANTES de aceptar la misión —mata a la Sirena durante q6, mata al
+   * Gólem durante q8, enciende los 3 faroles antes de q8 o toma un Eco por
+   * adelantado— el evento ya no puede repetirse (jefe muerto no re-spawnea,
+   * altar vacío, farol ya encendido) y la cadena quedaba bloqueada para
+   * siempre. Igual que el fix de visitas de 8-int, el avance es IDEMPOTENTE
+   * POR ESTADO: cada paso se completa si su condición final ya es cierta, en
+   * cualquier orden. O(1): early-out salvo cadena del Acto II activa.
+   */
+  private catchUpActo2() {
+    if (this.questIdx < 5 || this.questIdx > 9) return;
+    // q7 (idx 6): 0 avistada · 1 derrotada · 2 Eco de las Mareas tomado
+    if (this.questIdx === 6) {
+      if (this.questStep === 0 && this.flags.sirenaDefeated) this.questAdvance();
+      if (this.questIdx === 6 && this.questStep === 1 && this.flags.sirenaDefeated) this.questAdvance();
+      if (this.questIdx === 6 && this.questStep === 2 && this.flags.ecoMareas) this.questAdvance();
+    }
+    // q8 (idx 7): 1 los 3 faroles encendidos (orden-independiente) · 2 Eco de los Nombres
+    if (this.questIdx === 7) {
+      if (this.questStep === 1 &&
+          (['lamp1', 'lamp2', 'lamp3'] as const).filter(l => this.flags[l]).length >= 3) this.questAdvance();
+      if (this.questIdx === 7 && this.questStep === 2 && this.flags.ecoNombres) this.questAdvance();
+    }
+    // q9 (idx 8): 1 gólem derrotado · 2 Eco de las Cumbres tomado
+    if (this.questIdx === 8) {
+      if (this.questStep === 1 && this.flags.golemDefeated) this.questAdvance();
+      if (this.questIdx === 8 && this.questStep === 2 && this.flags.ecoCumbres) this.questAdvance();
+    }
   }
 
   // ---------------- Ciclo de vida ----------------
@@ -324,8 +417,10 @@ export class Game {
   loadMap(id: MapId, tx: number, ty: number) {
     // memoria del jefe: si sales de la cripta con el Guardián herido, no se
     // regenera al volver (cierra el exploit de reseteo de combate)
-    if (this.mapId === 'cripta' && this.bossRef && !this.bossRef.dead && !this.flags.guardianDefeated) {
-      this.flags.bossHp = this.bossRef.hp;
+    // memoria del jefe (generalizada Acto II): si sales de un mapa con su JEFE vivo, no se regenera
+    if (this.bossRef && !this.bossRef.dead) {
+      this.flags[`bossHp_${this.mapId}`] = this.bossRef.hp;
+      if (this.mapId === 'cripta') this.flags.bossHp = this.bossRef.hp; // compat con saves antiguos
     }
     this.mapId = id;
     this.map = MAPS[id];
@@ -341,9 +436,11 @@ export class Game {
     this.exitCd = 0.9;
     this.spawnEnemies();
     // restaura la vida memorizada del Guardián si la partida sigue en curso
-    if (id === 'cripta' && !this.flags.guardianDefeated && typeof this.flags.bossHp === 'number') {
-      const boss = this.enemies.find(e => e.etype === 'guardian');
-      if (boss) boss.hp = Math.max(1, Math.min(boss.maxHp, this.flags.bossHp as number));
+    const savedBossHp = typeof this.flags[`bossHp_${id}`] === 'number' ? (this.flags[`bossHp_${id}`] as number)
+      : id === 'cripta' && typeof this.flags.bossHp === 'number' ? (this.flags.bossHp as number) : null;
+    if (savedBossHp !== null) {
+      const boss = this.enemies.find(e => BOSS_DEFEAT_FLAG[e.etype] !== undefined);
+      if (boss) boss.hp = Math.max(1, Math.min(boss.maxHp, savedBossHp));
     }
     this.spawnNpcs();
     this.projectiles = []; this.waves = []; this.telegraphs = [];
@@ -358,6 +455,13 @@ export class Game {
       this.flags.visitedCripta = true;
       if (this.questIdx === 3 && this.questStep === 0) this.questAdvance();
     }
+    // Acto II: pisar cada mapa nuevo completa su objetivo de viaje. Sin guard
+    // de "primera visita": si el jugador llega ANTES de aceptar la misión, el
+    // avance debe funcionar igual al volver (condición idempotente por estado).
+    if (id === 'costa' && this.questIdx === 5 && this.questStep === 0) this.questAdvance();
+    if (id === 'aldea' && this.questIdx === 7 && this.questStep === 0) this.questAdvance();
+    if (id === 'cumbres' && this.questIdx === 8 && this.questStep === 0) this.questAdvance();
+    if (!this.flags[`visited_${id}`]) this.flags[`visited_${id}`] = true;
     this.mapTitleT = 2.6;
     this.updateCamera(true);
   }
@@ -373,16 +477,22 @@ export class Game {
       for (let ty = 0; ty < h; ty++) {
         for (let tx = 0; tx < w; tx++) {
           const ch = tileAt(this.map, this.rows, tx, ty, ep);
-          drawTile(x, ch, tx, ty, this.mapId, 0, (dx: number, dy: number) =>
-            tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
+          // Acto II: arena/nieve/hielo y suelos por bioma los dibuja la expansión; fallback genérico
+          // (el fallback usa el drawTile v2 con hook de vecinos para autotiling — merge mejora-visual)
+          if (!drawExpansionTile(x, ch, tx, ty, this.mapId))
+            drawTile(x, ch, tx, ty, this.mapId, 0, (dx: number, dy: number) =>
+              tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
         }
       }
       // objetos altos por orden de fila
       for (let ty = 0; ty < h; ty++) {
         for (let tx = 0; tx < w; tx++) {
           const ch = tileAt(this.map, this.rows, tx, ty, ep);
-          if (SOLID_CHARS.has(ch) && (ch === 't' || ch === 'p')) drawTallTile(x, ch, tx, ty, this.mapId, (dx: number, dy: number) =>
-            tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
+          if (SOLID_CHARS.has(ch) && (ch === 't' || ch === 'p')) {
+            if (!drawExpansionTallTile(x, ch, tx, ty, this.mapId))
+              drawTallTile(x, ch, tx, ty, this.mapId, (dx: number, dy: number) =>
+                tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
+          }
         }
       }
       return c;
@@ -397,6 +507,7 @@ export class Game {
       for (let tx = 0; tx < w; tx++) {
         const ch = tileAt(this.map, this.rows, tx, ty, 'presente');
         mx.fillStyle =
+          ch === 's' ? '#d8c07a' : ch === 'S' ? '#dfe8f2' : ch === 'i' ? '#a8cfe8' :
           ch === '~' ? '#3a6a9a' : ch === '=' ? '#b89a6a' :
           ch === ':' ? '#6a6a7a' : ch === 't' || ch === 'p' ? '#24512a' :
           ch === '#' || ch === 'H' || ch === 'r' ? '#7a7a8a' :
@@ -410,16 +521,24 @@ export class Game {
   spawnEnemies() {
     this.enemies = [];
     for (const s of this.map.spawns) {
-      if (s.type === 'guardian' && this.flags.guardianDefeated) continue;
+      if (s.needPast && this.epoch !== 'pasado') continue;
+      if (s.needPresent && this.epoch !== 'presente') continue;
+      const defFlag = BOSS_DEFEAT_FLAG[s.type];
+      if (defFlag && this.flags[defFlag]) continue; // jefes derrotados no renacen
       this.enemies.push(this.makeEnemy(s.type, s.x * TILE + 8, s.y * TILE + 8, s.patrol ?? 2, s.zone));
     }
   }
 
   makeEnemy(type: Enemy['etype'], x: number, y: number, patrol: number, zone?: string): Enemy {
     const d = ENEMY_DEFS[type];
+    // balanceador de dificultad (12-c): multiplica hp del spawn (neutro en desafío)
+    const bm = enemyStatMult(this);
+    const hp = Math.max(1, Math.round(d.hp * bm.hp));
     return {
-      kind: 'enemy', etype: type, x, y, w: type === 'guardian' ? 22 : 12, h: type === 'guardian' ? 16 : 10,
-      vx: 0, vy: 0, dir: 'down', hp: d.hp, maxHp: d.hp, sprite: d.sprite, anim: Math.random() * 9, moving: false,
+      kind: 'enemy', etype: type, x, y,
+      w: type === 'guardian' || type === 'sirena' || type === 'golem' ? 22 : 12,
+      h: type === 'guardian' || type === 'sirena' || type === 'golem' ? 16 : 10,
+      vx: 0, vy: 0, dir: 'down', hp, maxHp: hp, sprite: d.sprite, anim: Math.random() * 9, moving: false,
       ai: 'patrulla', aiT: Math.random() * 2, homeX: x, homeY: y, patrolAngle: Math.random() * Math.PI * 2,
       aggro: false, windup: 0, atkCd: Math.random(), sta: d.breakBar ?? 0, maxSta: d.breakBar ?? 0,
       statuses: [], slowT: 0, phase: 1, sumT: 0, hitFlash: 0, spawnGuard: zone === 'boss' ? 0.5 : 0,
@@ -516,6 +635,8 @@ export class Game {
       this.toast('La Cripta existe fuera del tiempo.', '#9aa0b8');
       return;
     }
+    // inmersión temporal (13-c): transición y posible veto (momento hostil)
+    if (!beginEpochShift(this)) return;
     this.epoch = this.epoch === 'presente' ? 'pasado' : 'presente';
     this.epochFx = 0.8;
     audio.sfx('epoch');
@@ -554,6 +675,7 @@ export class Game {
       else if (pr.kind === 'fragment') consider(px, py, 'frag', 'Fragmento de Eco', () => this.openDialogue('voz_fragment'), 30);
       else if (pr.kind === 'altarEcho') consider(px, py, 'altar', 'Altar del Eco', () => this.tryTakeEco(), 30);
       else if (pr.kind === 'sign') consider(px, py, 'sign', 'Leer cartel', () => this.readSign(pr.label ?? ''), 28);
+      else if (pr.kind === 'lamp' && !this.flags[pr.id]) consider(px, py, 'lamp', 'Encender el Farol del Recuerdo', () => this.lightLamp(pr.id), 28);
     }
     for (const ec of this.map.echoes) {
       if (this.takenEchoes.has(ec.id)) continue;
@@ -588,7 +710,54 @@ export class Game {
     this.openDialogue('lore');
   }
 
+  /** Enciende un Farol del Recuerdo de Merrow (Acto II, misión q8). */
+  lightLamp(id: string) {
+    this.flags[id] = true;
+    audio.sfx('lamp');
+    const pr = this.map.props.find(x => x.id === id);
+    if (pr) {
+      this.burst(pr.x * TILE + 8, pr.y * TILE - 6, '#ffe9a0', 14, 60);
+      this.floatAt(pr.x * TILE + 8, pr.y * TILE - 14, 'Un nombre vuelve', '#ffe9a0', 5);
+    }
+    const lamps = ['lamp1', 'lamp2', 'lamp3'].filter(l => this.flags[l]).length;
+    if (this.questIdx === 7 && this.questStep === 1) {
+      if (lamps >= 3) {
+        this.questAdvance();
+        this.toast('Los tres faroles arden: la Espectro de Merrow te espera', '#ffe9a0');
+      } else {
+        this.toast(`Farol encendido (${lamps}/3)`, '#8ef0b0');
+      }
+    } else {
+      this.toast('El farol se enciende: un recuerdo de Merrow regresa', '#ffe9a0');
+    }
+  }
+
   tryTakeEco() {
+    // Acto II: cada mapa con altar tiene su Eco y su custodio
+    if (this.mapId === 'costa') {
+      if (this.flags.ecoMareas) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
+      if (!this.flags.sirenaDefeated) { this.toast('La Sirena custodia el Eco. Calma su canto primero.', '#e88'); return; }
+      if (DIALOGUES['eco_mareas']) { this.openDialogue('eco_mareas'); return; }
+      this.dynNodes['eco_mareas'] = {
+        name: 'Eco de las Mareas', portrait: 'fragment',
+        text: 'El segundo canto asciende del naufragio, salado y vivo. «El mar guardó mi nota bajo la quilla de un barco que soñaba con estrellas. Cántala, Portador: hay mareás que solo se curan cantando.» (Eco de las Mareas recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
+        onEnd: 'eco_mareas_taken',
+      };
+      this.openDialogue('eco_mareas');
+      return;
+    }
+    if (this.mapId === 'cumbres') {
+      if (this.flags.ecoCumbres) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
+      if (!this.flags.golemDefeated) { this.toast('El Gólem custodia el Eco. Rompe su hielo primero.', '#e88'); return; }
+      if (DIALOGUES['eco_cumbres']) { this.openDialogue('eco_cumbres'); return; }
+      this.dynNodes['eco_cumbres'] = {
+        name: 'Eco de las Cumbres', portrait: 'fragment',
+        text: 'El tercer canto desciende con la ventisca, limpio y paciente. «Las montañas aprendieron a guardar voces bajo el hielo. La primera fue la de los pastores que cantaban por turnos para no dormirse. Toma la suya: ahora canta contigo.» (Eco de las Cumbres recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
+        onEnd: 'eco_cumbres_taken',
+      };
+      this.openDialogue('eco_cumbres');
+      return;
+    }
     if (this.flags.ecoVoz) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
     if (!this.flags.guardianDefeated) { this.toast('El Guardián custodia el Eco. Derótalo primero.', '#e88'); return; }
     this.openDialogue('eco_voz');
@@ -614,6 +783,16 @@ export class Game {
   }
 
   talkTo(nid: string) {
+    // q5→q6: «Regresa con la Anciana Brisa» (1 paso) se completa AL hablar con
+    // ella tras el Guardián. Se avanza ANTES de resolver el nodo para que
+    // getDialogue vea la misión nueva (coordinación agente 8-a: con questIdx 5
+    // debe servir el nodo cuyo onEnd es accept_q6; con questIdx 9, el nodo
+    // final del Acto II cuyo onEnd es end_demo).
+    if (nid === 'brisa' && this.questIdx === 4 && this.questStep === 0) this.questAdvance();
+    // 10-b (balance): q10 se completa al regresar con Brisa (nodo brisa_final2 →
+    // acto2_report en hooks.ts, congelado); pagamos su recompensa al abrir ese
+    // nodo, con flag q10Paid para no duplicar si se reabre el diálogo
+    if (nid === 'brisa' && this.questIdx === 9 && !this.flags.acto2Done) this.grantQuestLoot(9);
     const key = getDialogue(nid, { questIdx: this.questIdx, questStep: this.questStep, flags: this.flags, companion: !!this.companion });
     this.openDialogue(key);
   }
@@ -623,6 +802,14 @@ export class Game {
   openDialogue(key: string) {
     this.dlgKey = key;
     this.dlgNode = this.dynNodes[key] ?? DIALOGUES[key] ?? null;
+    // robustez multi-agente: si el nodo resuelto no existe todavía (data.ts se
+    // edita en paralelo), se cae a un nodo seguro en vez de dejar el juego en
+    // un estado raro (diálogo que no abre / pantalla bloqueada)
+    if (!this.dlgNode && key !== 'brisa_idle') {
+      console.warn(`[EcosAelthar] Nodo de diálogo inexistente: '${key}' — fallback: 'brisa_idle'`);
+      this.dlgKey = 'brisa_idle';
+      this.dlgNode = DIALOGUES['brisa_idle'] ?? null;
+    }
     this.dlgCharT = 0;
     this.dlgSel = 0;
     if (this.dlgNode) this.setState('dialogue');
@@ -679,6 +866,28 @@ export class Game {
         this.questIdx = 4; this.questStep = 0;
         audio.sfx('quest'); this.toast('Nueva misión: Ecos de Esperanza', '#8ef0b0');
         break;
+      // ------- ACTO II · aceptación de misiones q6-q10 (disparadas desde los
+      // nodos de diálogo del Acto II en data.ts — agente 8-a) -------
+      case action === 'accept_q6':
+        this.questIdx = 5; this.questStep = 0; this.flags.q6 = true;
+        audio.sfx('quest'); this.toast('Nueva misión: El Rumor del Mar', '#8ef0b0');
+        break;
+      case action === 'accept_q7':
+        this.questIdx = 6; this.questStep = 0; this.flags.q7 = true;
+        audio.sfx('quest'); this.toast('Nueva misión: La Sirena sin Canto', '#8ef0b0');
+        break;
+      case action === 'accept_q8':
+        this.questIdx = 7; this.questStep = 0; this.flags.q8 = true;
+        audio.sfx('quest'); this.toast('Nueva misión: La Aldea que Olvidó su Nombre', '#8ef0b0');
+        break;
+      case action === 'accept_q9':
+        this.questIdx = 8; this.questStep = 0; this.flags.q9 = true;
+        audio.sfx('quest'); this.toast('Nueva misión: La Cumbre del Segundo Canto', '#8ef0b0');
+        break;
+      case action === 'accept_q10':
+        this.questIdx = 9; this.questStep = 0; this.flags.q10 = true;
+        audio.sfx('quest'); this.toast('Nueva misión: Dos Voces más Fuertes', '#8ef0b0');
+        break;
       case action === 'fragment_touched':
         this.flags.fragmentTouched = true;
         p.hasEcho = true;
@@ -693,6 +902,22 @@ export class Game {
         p.hp = p.maxHp;
         if (this.questIdx === 3 && this.questStep === 2) this.questAdvance();
         this.toast('Eco de la Voz recuperado: +1 punto de habilidad, +10 reputación', '#ffe9a0');
+        break;
+      case action === 'eco_mareas_taken':
+        this.flags.ecoMareas = true;
+        p.points += 1; p.repGuardianes += 10;
+        p.hp = p.maxHp;
+        if (this.questIdx === 6 && this.questStep === 2) this.questAdvance();
+        this.applyAction('memory_mem_faro');
+        this.toast('Eco de las Mareas recuperado: +1 punto de habilidad, +10 reputación', '#ffe9a0');
+        break;
+      case action === 'eco_cumbres_taken':
+        this.flags.ecoCumbres = true;
+        p.points += 1; p.repGuardianes += 10;
+        p.hp = p.maxHp;
+        if (this.questIdx === 8 && this.questStep === 2) this.questAdvance();
+        this.applyAction('memory_mem_invierno');
+        this.toast('Eco de las Cumbres recuperado: +1 punto de habilidad, +10 reputación', '#ffe9a0');
         break;
       case action === 'fragment':
         break;
@@ -737,6 +962,8 @@ export class Game {
           `Nivel ${p.level} · ${p.kills} enemigos derrotados · ${p.gold} coronas\n` +
           `Reputación Guardianes: ${p.repGuardianes >= 0 ? '+' : ''}${p.repGuardianes} · Muertes: ${p.deaths}\n` +
           `Tiempo de juego: ${mins}m ${secs}s · Época favorita: la que tú elijas`;
+        // el mismo cierre sirve de final del Acto I (questIdx<9) o del Acto II
+        if (this.questIdx >= 9) this.toast('Fin del Acto II', '#ffe9a0');
         this.save();
         this.setState('end');
         audio.playTrack('title');
@@ -762,11 +989,49 @@ export class Game {
     if (this.questStep < QUESTS[this.questIdx].steps.length - 1) {
       this.questStep++;
     } else {
+      const prev = this.questIdx;
       this.questIdx = Math.min(QUESTS.length - 1, this.questIdx + 1);
       this.questStep = 0;
-      if (this.questIdx === 4) this.toast('Nueva misión: Ecos de Esperanza', '#8ef0b0');
+      // 10-b (balance): botín pequeño al COMPLETAR cada misión del Acto II
+      // (q6-q10), clave = índice de la misión recién terminada. Solo dispara
+      // en el cambio de misión, así no interfiere con los avances de paso.
+      this.grantQuestLoot(prev);
+      // toast generalizado al CAMBIAR de misión (antes solo lo cantaba el paso
+      // q4→q5 con texto hardcodeado); si el clamp ya está en la última misión,
+      // no repite el aviso
+      if (this.questIdx !== prev) this.toast(`Nueva misión: ${QUESTS[this.questIdx].name}`, '#8ef0b0');
     }
     audio.sfx('quest');
+  }
+
+  /**
+   * 10-b (balance): recompensa por completar una misión del Acto II.
+   * q6 +20 coronas · q7 +40 y 1 poción · q8 +35 · q9 +50 y 1 poción · q10 +60.
+   * q10 se paga desde talkTo('brisa') (el cierre real del Acto II vive en
+   * hooks.acto2_report, archivo congelado) con flag q10Paid anti-doble pago;
+   * la entrada 9 del mapa queda por si el motor algún día avanza desde q10.
+   */
+  grantQuestLoot(doneIdx: number) {
+    const LOOT: Record<number, { gold: number; potions?: number }> = {
+      5: { gold: 20 },             // q6 El Rumor del Mar
+      6: { gold: 40, potions: 1 }, // q7 La Sirena sin Canto
+      7: { gold: 35 },             // q8 La Aldea que Olvidó su Nombre
+      8: { gold: 50, potions: 1 }, // q9 La Cumbre del Segundo Canto
+      9: { gold: 60 },             // q10 Dos Voces más Fuertes
+    };
+    const loot = LOOT[doneIdx];
+    if (!loot || !this.player) return;
+    if (doneIdx === 9) {
+      if (this.flags.q10Paid) return;
+      this.flags.q10Paid = true;
+    }
+    const p = this.player;
+    p.gold += loot.gold;
+    if (loot.potions) p.potions += loot.potions;
+    const txt = `Recompensa: +${loot.gold} coronas${loot.potions ? ' y 1 poción' : ''}`;
+    this.floatAt(p.x, p.y - 26, txt, '#f0c84a', 7);
+    this.toast(txt, '#f0c84a');
+    audio.sfx('coin');
   }
 
   questProgressText(): string | null {
@@ -817,6 +1082,9 @@ export class Game {
   }
 
   respawn() {
+    // en desafío la muerte NO respawnea al santuario de campaña: el módulo
+    // challenge muestra resultados y vuelve al título
+    if (this.challengeRun) { onChallengeDeath(this); return; }
     const p = this.player!;
     const [sx, sy] = this.sanctuaryPos(this.mapId);
     this.epoch = 'presente';
@@ -839,7 +1107,24 @@ export class Game {
     // teclas pegadas tras alt-tab / cambio de ventana: soltar todo
     window.addEventListener('blur', this.onLoseFocus);
     document.addEventListener('visibilitychange', this.onLoseFocus);
+    // vista dinámica: sin barras negras a cualquier aspecto de ventana
+    window.addEventListener('resize', this.onResize);
+    this.fitCanvas();
   }
+
+  /** Recalcula el buffer al aspecto actual y redimensiona el bitmap del canvas. */
+  private fitCanvas() {
+    const before = `${VIEW_W}x${VIEW_H}`;
+    fitViewToWindow(window.innerWidth, window.innerHeight);
+    if (this.canvas.width !== VIEW_W || this.canvas.height !== VIEW_H) {
+      this.canvas.width = VIEW_W;
+      this.canvas.height = VIEW_H;
+      this.ctx.imageSmoothingEnabled = false; // el resize resetea el estado del ctx
+    }
+    if (before !== `${VIEW_W}x${VIEW_H}`) this.updateCamera(true);
+  }
+
+  private onResize = () => { this.fitCanvas(); };
 
   private onLoseFocus = () => {
     this.keys.clear();
@@ -851,7 +1136,16 @@ export class Game {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onLoseFocus);
+    window.removeEventListener('resize', this.onResize);
     document.removeEventListener('visibilitychange', this.onLoseFocus);
+    // FIX clics fantasma: desvincular TAMBIÉN los listeners del canvas. Antes
+    // quedaban colgados: con el doble montaje de React (StrictMode) la primera
+    // instancia moría sin soltarlos, su uiHit quedaba congelado con los botones
+    // del título y al hacer clic "donde estaban" durante la partida se abría la
+    // creación de personaje (requestCreate sigue ligado al setState del overlay).
+    this.canvas.removeEventListener('mousemove', this.onMouseMove);
+    this.canvas.removeEventListener('mousedown', this.onMouseDown);
+    this.canvas.removeEventListener('mouseup', this.onMouseUp);
     this.stop();
   }
 
@@ -892,8 +1186,11 @@ export class Game {
         audio.sfx('save');
       }
       else if (['1', '2', '3', '4'].includes(k)) this.useSkill(parseInt(k, 10) - 1);
+      else if (k === 'k') { this.setState('skills'); audio.sfx('uiOpen'); }
     } else if (this.state === 'pause') {
       if (k === 'escape' || k === 'm') this.setState('play');
+    } else if (this.state === 'skills') {
+      if (k === 'escape' || k === 'k' || k === 'm') { this.setState('play'); audio.sfx('uiOpen'); }
     } else if (this.state === 'dead') {
       if (k === 'e' || k === 'enter') this.respawn();
     } else if (this.state === 'end') {
@@ -914,16 +1211,21 @@ export class Game {
   }
 
   private onMouseMove = (e: MouseEvent) => {
+    if (!this.running) return; // instancia muerta: ignora input (clics fantasma)
     const p = this.canvasPos(e);
     this.mouse.x = p.x; this.mouse.y = p.y;
   };
 
   private onMouseDown = (e: MouseEvent) => {
+    if (!this.running) return; // instancia muerta: ignora input (clics fantasma)
     audio.resume();
     const p = this.canvasPos(e);
     this.mouse.x = p.x; this.mouse.y = p.y;
-    // UI hits primero
+    // UI hits primero — solo del estado ACTUAL (stamp anti-fantasma: los hits
+    // se registran con el estado del frame en que se dibujaron; un clic que
+    // aterrice en la misma frame de una transición título→juego no reabre menús)
     for (const h of this.uiHit) {
+      if (h.state !== this.state) continue;
       if (p.x >= h.x && p.x <= h.x + h.w && p.y >= h.y && p.y <= h.y + h.h) {
         audio.sfx('select');
         h.cb();
@@ -940,6 +1242,7 @@ export class Game {
   };
 
   private onMouseUp = (e: MouseEvent) => {
+    if (!this.running) return; // instancia muerta: ignora input
     if (e.button === 0) {
       this.mouse.down = false;
       if (this.player?.charging) this.releaseCharge();
@@ -1161,6 +1464,12 @@ export class Game {
   }
 
   damageEnemy(e: Enemy, dmg: number, element: Element, kb: number, kbx = 0, kby = 0) {
+    if (e.invulT !== undefined && e.invulT > 0) {
+      // fase intangible (espectro desvaneciéndose / sirena sumergida): el golpe atraviesa
+      this.floatAt(e.x, e.y - 16, 'intangible', '#b8c8e0', 5);
+      audio.sfx('wraith');
+      return;
+    }
     if (e.dead) return;
     const def = ENEMY_DEFS[e.etype];
     e.aggro = true;
@@ -1225,7 +1534,7 @@ export class Game {
     p.kills++;
     const espMult = 1 + p.attrs.esp * 0.1;
     p.res = Math.min(p.maxRes, p.res + 10 * espMult);
-    this.gainXp(def.xp);
+    this.gainXp(Math.max(1, Math.round(def.xp * enemyStatMult(this).xp)));
     const gold = Math.round(def.gold[0] + Math.random() * (def.gold[1] - def.gold[0]));
     p.gold += gold;
     this.floatAt(e.x, e.y - 20, `+${gold} coronas`, '#f0c84a');
@@ -1241,6 +1550,7 @@ export class Game {
     if (e.etype === 'guardian') {
       this.flags.guardianDefeated = true;
       delete this.flags.bossHp;
+      delete this.flags.bossHp_cripta;
       this.bossActive = false;
       audio.setCombat(false);
       audio.playTrack('crypt');
@@ -1248,6 +1558,33 @@ export class Game {
       this.toast('El Guardián Hueco se deshace en notas de silencio...', '#7ee8ff');
       this.toast('El altar del Eco brilla al norte', '#ffe9a0');
       if (this.questIdx === 3 && this.questStep === 1) this.questAdvance();
+    } else if (e.etype === 'sirena') {
+      this.flags.sirenaDefeated = true;
+      delete this.flags.bossHp_costa;
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('costa');
+      this.shake = 8;
+      audio.sfx('song');
+      this.toast('La Sirena Abisal se deshace en espuma que susurra un nombre...', '#8ef0ff');
+      this.toast('El altar del naufragio brilla: el Eco de las Mareas es libre', '#ffe9a0');
+      // 10-b (balance): botín garantizado de jefa (economía del Acto II)
+      p.potions += 1;
+      this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción', '#7ef0a0');
+      if (this.questIdx === 6 && this.questStep === 1) this.questAdvance();
+    } else if (e.etype === 'golem') {
+      this.flags.golemDefeated = true;
+      delete this.flags.bossHp_cumbres;
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('cumbres');
+      this.shake = 8;
+      this.toast('El Gólem de Escarcha se aquieta: las cumbres recuerdan su canto', '#a8d8ff');
+      this.toast('El altar del paso brilla: el Eco de las Cumbres es libre', '#ffe9a0');
+      // 10-b (balance): botín garantizado del jefe (economía del Acto II)
+      p.gold += 30;
+      this.floatAt(e.x, e.y - 34, 'Botín del jefe: +30 coronas', '#f0c84a');
+      if (this.questIdx === 8 && this.questStep === 1) this.questAdvance();
     }
   }
 
@@ -1274,6 +1611,8 @@ export class Game {
 
   damagePlayer(dmg: number, fromX: number, fromY: number) {
     const p = this.player!;
+    // balanceador (12-c): embudo único de todo el daño enemigo (neutro en desafío)
+    dmg = Math.max(1, Math.round(dmg * enemyStatMult(this).dmg));
     if (p.iframes > 0 || p.rollT > 0 || this.state !== 'play') return;
     if (p.parryT > 0) {
       // ¡parada perfecta!

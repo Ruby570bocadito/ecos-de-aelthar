@@ -104,13 +104,33 @@ export function bar(
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 }
 
+/**
+ * Puntos contador para trackers visuales (faroles 0/3, Ecos, etc.).
+ * Dibuja `total` puntos de 2 px con paso `pitch`; los primeros `done`
+ * van rellenos con `color` y el resto, apagados. Determinista y sin
+ * estado: pensado para HUD/pantallas futuras (agente 10-a).
+ */
+export function counterDots(
+  g: Game, x: number, y: number, total: number, done: number, color = COL.gold, pitch = 6,
+) {
+  const ctx = g.ctx;
+  const filled = Math.max(0, Math.min(total, Math.floor(done)));
+  for (let i = 0; i < total; i++) {
+    ctx.fillStyle = i < filled ? color : 'rgba(154,160,184,0.35)';
+    ctx.fillRect(x + i * pitch, y, 2, 2);
+  }
+}
+
 export function clearHits(g: Game) {
   g.uiHit = [];
 }
 
 export function addHit(g: Game, x: number, y: number, w: number, h: number, cb: () => void) {
   const hover = g.mouse.x >= x && g.mouse.x <= x + w && g.mouse.y >= y && g.mouse.y <= y + h;
-  g.uiHit.push({ x, y, w, h, cb, hover });
+  // stamp anti-fantasma: el hit recuerda el estado en que se dibujó; el motor
+  // solo lo honra si el estado NO ha cambiado (evita reabrir menús en la frame
+  // de una transición o con uiHit residual de otra instancia muerta)
+  g.uiHit.push({ x, y, w, h, cb, hover, state: g.state });
   return hover;
 }
 

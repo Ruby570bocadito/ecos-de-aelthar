@@ -5,6 +5,8 @@
 // Kael, Gran Inquisidor, Teo, Doran, Nimue), lobo, Guardián
 // Hueco, cofres, santuario, fragmento, wisps + tiles del mundo.
 // Además: arcos de ataque (slash) y retratos de diálogo.
+// (9-b) Poses de ataque/lanzamiento lazy-cacheadas (getAttackFrames/
+// getCastFrames) + paletas merrow_* de Merrow (reservadas, futuro).
 // ============================================================
 
 import { hash2 } from './world/palette';
@@ -514,6 +516,19 @@ const PALS: Record<string, HumanPal> = {
     body: '#5a8a72', bodyS: '#446a58', accent: '#bff0dc',
     legs: '#4a6a5a', boots: '#38504a', eye: '#7ae8c0', ears: 'elf', hairLong: true,
   },
+  // ----- Aldeanos de Merrow (agente 9-b · paletas reservadas, aún sin uso) -----
+  merrow_h: {
+    // Pescador de Merrow: jersey de trabajo descolorido, barba canosa
+    outline: '#1c222a', hair: '#5a5a50', hairS: '#46463e', skin: '#d8a878',
+    body: '#5a6a6a', bodyS: '#465454', accent: '#8a7a5a',
+    legs: '#3e4a50', legsS: '#333e44', boots: '#3a2e20', eye: '#2a2a30', beard: '#6a6a5e',
+  },
+  merrow_m: {
+    // Pescadora de Merrow: capucha de marinar y gabardina verde agua
+    outline: '#241c22', hair: '#4a6a5e', hairS: '#3a544a', skin: '#e0b088',
+    body: '#6a7a72', bodyS: '#525f58', accent: '#9a8a6a',
+    legs: '#4a5450', legsS: '#3c443f', boots: '#3a2e20', eye: '#2a3a34', hood: true,
+  },
 };
 
 export function initSprites(): void {
@@ -531,6 +546,433 @@ export function initSprites(): void {
 
 export function getSpr(name: string): Frames {
   return SPR[name] ?? SPR['hero_alba'];
+}
+
+/**
+ * Registro de sprites para módulos de expansión (ACTO II).
+ * Contrato: los módulos nuevos (p. ej. sprites_expansion.ts) llaman aquí
+ * desde su initExpansionSprites() en vez de tocar este archivo.
+ * Frames: array de canvas (1 = estático, 2+ = ciclo de animación).
+ */
+export function registerSpr(name: string, frames: Frames): void {
+  SPR[name] = frames;
+}
+
+// ---------------- Poses de combate (AGENTE 9-b · ataque y lanzamiento) ----------------
+//
+// Frames lazy-cacheados generados a partir de la MISMA paleta y layout del
+// humanoide (drawHumanFrame como base + brazos/arma repintados): mismo tamaño
+// (16×L.H) y mismo estilo de pixel art. CONTRATO con render.ts (agente 9-c):
+//   · getAttackFrames(base, dir) → [anticipación, golpe] | null. El render los
+//     usa con attackT>0: prog<0.5 → frames[0], prog>=0.5 → frames[1].
+//   · getCastFrames(base, dir)  → [concentrar, liberar] | null (misma regla).
+//   · dir: 'down' | 'up' | 'left' | 'right'. Igual que los frames de andar,
+//     las poses laterales se dibujan mirando a la DERECHA y es el render quien
+//     las voltea para 'left' (flip = e.dir === 'left') — NUNCA se pre-espejan.
+//   · Anticipación (frame 0): arma atrás sobre el hombro y cuerpo atrás 1px
+//     (mismo truco de elevación del pase). Golpe (frame 1): brazo y arma
+//     extendidos en la dirección. Ilwen (arco): [tensado apuntando, suelto
+//     con el arco bajado].
+//   · Si no hay pose para un nombre/dirección devuelve null y el render cae
+//     al sprite de andar — NUNCA rompe.
+
+interface WeaponDef {
+  kind: 'sword' | 'staff' | 'hammer' | 'bow';
+  metal: string; // hoja / cabeza / madera del arco
+  glint: string; // brillo del filo / núcleo / cuerda
+  grip: string;  // empuñadura / mango
+  trim: string;  // guarda / gema / punta brillante (accent del dueño)
+}
+
+const ATTACK_POSES = new Set(['hero_alba', 'hero_tejedor', 'brisa', 'toln', 'ilwen', 'doran', 'kael']);
+const CAST_POSES = new Set(['hero_tejedor']);
+
+// Arma por personaje — colores coherentes con su paleta/accent de la biblia:
+// alba espada roja-plateada · tejedor bastón con punta dorada · brisa bastón
+// de anciana · toln martillo de forja · doran bastón-druida · kael espada de
+// la Orden · ilwen arco curvo marrón con cuerda clara.
+const WEAPONS: Record<string, WeaponDef> = {
+  hero_alba: { kind: 'sword', metal: '#d8dee8', glint: '#f6f9fc', grip: '#5a3a28', trim: '#c8384a' },
+  kael: { kind: 'sword', metal: '#dfe3ea', glint: '#ffffff', grip: '#4a4a54', trim: '#8a94a8' },
+  hero_tejedor: { kind: 'staff', metal: '#8a6a44', glint: '#fff8d8', grip: '#6a4e30', trim: '#f0c84a' },
+  brisa: { kind: 'staff', metal: '#9a7a50', glint: '#f8f0d0', grip: '#6a4e30', trim: '#e8d8a8' },
+  doran: { kind: 'staff', metal: '#6d4520', glint: '#e0f4c0', grip: '#54381e', trim: '#8ac05a' },
+  toln: { kind: 'hammer', metal: '#9aa4b4', glint: '#c8d2dc', grip: '#7a5c3a', trim: '#3a3a3e' },
+  ilwen: { kind: 'bow', metal: '#8a5a2b', glint: '#e8e0c8', grip: '#54381e', trim: '#e8c860' },
+};
+
+const attackPoseCache = new Map<string, HTMLCanvasElement[] | null>();
+const castPoseCache = new Map<string, HTMLCanvasElement[] | null>();
+
+/** Frames de ataque por dirección para un humanoide registrado.
+ *  Devuelve [anticipación, golpe] (2 canvas) o null si no existen.
+ *  El render los dibuja cuando attackT>0: prog = 1 - attackT/attackDur
+ *  → prog<0.5 usa frames[0], prog>=0.5 usa frames[1]. */
+export function getAttackFrames(baseName: string, dir: string): HTMLCanvasElement[] | null {
+  const key = baseName + '|' + dir;
+  if (attackPoseCache.has(key)) return attackPoseCache.get(key) ?? null;
+  const frames = typeof document === 'undefined' ? null : buildCombatPose(baseName, dir, 'attack');
+  attackPoseCache.set(key, frames);
+  return frames;
+}
+
+/** Frames de lanzamiento de hechizo (brazos al frente, brillo entre manos).
+ *  Misma firma y regla de uso que getAttackFrames; solo hero_tejedor
+ *  (disciplina tejedor) tiene poses — el resto devuelve null. */
+export function getCastFrames(baseName: string, dir: string): HTMLCanvasElement[] | null {
+  const key = baseName + '|' + dir;
+  if (castPoseCache.has(key)) return castPoseCache.get(key) ?? null;
+  const frames = typeof document === 'undefined' ? null : buildCombatPose(baseName, dir, 'cast');
+  castPoseCache.set(key, frames);
+  return frames;
+}
+
+/** px con recorte defensivo (algunas poses rozan el borde del canvas). */
+function pxc(x: CanvasRenderingContext2D, X: number, Y: number, W: number, H: number, C: string): void {
+  if (W <= 0 || H <= 0) return;
+  px(x, X, Y, W, H, C);
+}
+
+/** Canvas base de una pose: cuerpo de pie (fase de pase, sin balanceo de
+ *  brazos) — después se borran/redibujan solo los brazos que posan. */
+function poseCanvas(
+  pal: HumanPal, dir3: 'down' | 'up' | 'side', bob: number,
+): { c: HTMLCanvasElement; x: CanvasRenderingContext2D; bT: number; L: Layout } {
+  const L = layoutFor(pal);
+  const { c, x } = mkCanvas(16, L.H);
+  drawHumanFrame(x, pal, dir3, 1, bob, L);
+  return { c, x, bT: L.bodyTop + bob, L };
+}
+
+function clearArmR(x: CanvasRenderingContext2D, bT: number, armLen: number): void {
+  x.clearRect(12, bT, 2, armLen + 1);
+}
+function clearArmL(x: CanvasRenderingContext2D, bT: number, armLen: number): void {
+  x.clearRect(2, bT, 2, armLen + 1);
+}
+function clearArmFront(x: CanvasRenderingContext2D, bT: number): void {
+  x.clearRect(8, bT, 4, 4); // brazo delantero + mano (pose lateral)
+}
+
+/** Repinta el hombro derecho (hombrera/hojas) tras borrar el brazo. */
+function restoreShoulderR(x: CanvasRenderingContext2D, pal: HumanPal, bT: number): void {
+  if (pal.pauldrons) px(x, 11, bT, 2, 2, pal.accent);
+  else if (pal.leafy) px(x, 11, bT, 2, 1, '#8ac05a');
+}
+
+/** Arma vertical: empuñadura en (cx, gy), cuerpo hacia arriba (up) o abajo. */
+function weaponVert(x: CanvasRenderingContext2D, W: WeaponDef, cx: number, gy: number, len: number, up: boolean): void {
+  pxc(x, cx, gy, 2, 1, W.grip);                       // empuñadura
+  pxc(x, cx - 1, up ? gy - 1 : gy + 1, 4, 1, W.trim); // guarda
+  const s0 = up ? gy - 2 : gy + 2;                    // primera fila del arma
+  if (W.kind === 'sword') {
+    const top = up ? s0 - len + 1 : s0;
+    pxc(x, cx, top, 2, len, W.metal);
+    pxc(x, cx, top, 1, len, W.glint);                 // filo (columna de brillo)
+    pxc(x, cx, up ? top : top + len - 1, 2, 1, '#ffffff'); // punta
+  } else if (W.kind === 'staff') {
+    const sl = Math.max(1, len - 1);
+    const top = up ? s0 - sl + 1 : s0;
+    pxc(x, cx, top, 1, sl, W.metal);                  // vara
+    const gemY = up ? top - 1 : top + sl;
+    pxc(x, cx, gemY, 2, 1, W.trim);                   // gema/punta
+    pxc(x, cx, gemY, 1, 1, W.glint);
+  } else { // hammer
+    const sl = Math.max(1, len - 2);
+    const top = up ? s0 - sl + 1 : s0;
+    pxc(x, cx, top, 1, sl, W.grip);                   // mango
+    const headY = up ? top - 2 : top + sl - 1;
+    pxc(x, cx - 1, headY, 4, 2, W.metal);             // cabeza
+    pxc(x, cx - 1, up ? headY : headY + 1, 4, 1, W.glint);
+  }
+}
+
+/** Arma horizontal hacia la derecha: guarda en (hx, ry). */
+function weaponHoriz(x: CanvasRenderingContext2D, W: WeaponDef, hx: number, ry: number, len: number): void {
+  if (W.kind === 'sword') {
+    pxc(x, hx, ry - 1, 1, 4, W.trim);
+    pxc(x, hx + 1, ry, len, 2, W.metal);
+    pxc(x, hx + 1, ry, len, 1, W.glint);
+    pxc(x, hx + len, ry, 1, 2, '#ffffff');
+  } else if (W.kind === 'staff') {
+    pxc(x, hx + 1, ry, len, 1, W.metal);
+    pxc(x, hx + len, ry - 1, 1, 3, W.trim);
+    pxc(x, hx + len, ry, 1, 1, W.glint);
+  } else { // hammer
+    pxc(x, hx + 1, ry, Math.max(1, len - 1), 1, W.grip);
+    pxc(x, hx + len - 1, ry - 1, 2, 4, W.metal);
+    pxc(x, hx + len - 1, ry - 1, 2, 1, W.glint);
+  }
+}
+
+/** Poses con arma en mano (espada/bastón/martillo). dir ya resuelto a
+ *  'down'|'up'|'right' (las poses laterales miran a la derecha). */
+function weaponPoses(pal: HumanPal, W: WeaponDef, dir3: 'down' | 'up' | 'side', dir: 'down' | 'up' | 'right'): Frames {
+  const L = layoutFor(pal);
+
+  // frame 0 · anticipación: arma atrás sobre el hombro, cuerpo atrás 1px
+  const f0 = (() => {
+    const P = poseCanvas(pal, dir3, -1);
+    if (dir3 === 'side') {
+      clearArmFront(P.x, P.bT);
+      px(P.x, 9, P.bT - 2, 2, 3, pal.body);  // brazo alzado
+      px(P.x, 9, P.bT - 3, 2, 1, pal.skin);
+      if (W.kind === 'hammer') {
+        // martillo descansando tras la cabeza (la cabeza no toca el borde)
+        pxc(P.x, 10, P.bT - 4, 1, 2, W.grip);
+        pxc(P.x, 9, P.bT - 6, 4, 2, W.metal);
+        pxc(P.x, 9, P.bT - 6, 4, 1, W.glint);
+      } else {
+        weaponVert(P.x, W, 10, P.bT - 4, Math.max(1, P.bT - 5), true);
+      }
+    } else {
+      clearArmR(P.x, P.bT, L.armLen);
+      restoreShoulderR(P.x, pal, P.bT);
+      px(P.x, 12, P.bT - 2, 2, 3, pal.body); // brazo alzado sobre el hombro
+      px(P.x, 12, P.bT - 3, 2, 1, pal.skin);
+      if (W.kind === 'hammer') {
+        pxc(P.x, 13, P.bT - 4, 1, 2, W.grip);
+        pxc(P.x, 12, P.bT - 6, 4, 2, W.metal);
+        pxc(P.x, 12, P.bT - 6, 4, 1, W.glint);
+      } else {
+        weaponVert(P.x, W, 13, P.bT - 4, Math.max(1, P.bT - 5), true);
+      }
+    }
+    return P.c;
+  })();
+
+  // frame 1 · golpe: brazo y arma extendidos en la dirección
+  const f1 = (() => {
+    if (dir === 'down') {
+      const P = poseCanvas(pal, 'down', 0);
+      clearArmR(P.x, P.bT, L.armLen);
+      restoreShoulderR(P.x, pal, P.bT);
+      px(P.x, 9, P.bT + 2, 2, 2, pal.body);  // brazo que clava al frente
+      px(P.x, 9, P.bT + 4, 2, 1, pal.skin);
+      weaponVert(P.x, W, 9, P.bT + 5, Math.max(1, L.H - P.bT - 7), false);
+      return P.c;
+    }
+    if (dir === 'up') {
+      const P = poseCanvas(pal, 'up', 1);    // cuerpo abajo 1px: hueco para el arma
+      clearArmR(P.x, P.bT, L.armLen);
+      restoreShoulderR(P.x, pal, P.bT);
+      px(P.x, 12, P.bT - 3, 2, 3, pal.body); // brazo estirado hacia arriba
+      px(P.x, 12, P.bT - 4, 2, 1, pal.skin);
+      weaponVert(P.x, W, 13, P.bT - 5, Math.max(1, P.bT - 6), true);
+      return P.c;
+    }
+    const P = poseCanvas(pal, 'side', 0);
+    clearArmFront(P.x, P.bT);
+    px(P.x, 9, P.bT + 1, 3, 2, pal.body);    // brazo extendido
+    px(P.x, 11, P.bT + 1, 1, 2, pal.skin);
+    weaponHoriz(P.x, W, 12, P.bT + 1, 3);
+    return P.c;
+  })();
+
+  return [f0, f1];
+}
+
+/** Poses de arco de Ilwen: frame 0 = tensado apuntando en la dirección,
+ *  frame 1 = brazo suelto con el arco bajado (disparo). */
+function bowPoses(pal: HumanPal, W: WeaponDef, dir3: 'down' | 'up' | 'side'): Frames {
+  const L = layoutFor(pal);
+  if (dir3 === 'side') {
+    const f0 = (() => {
+      const P = poseCanvas(pal, 'side', 0);
+      clearArmFront(P.x, P.bT);
+      const bT = P.bT;
+      px(P.x, 9, bT + 1, 3, 2, pal.body);      // brazo del arco extendido
+      px(P.x, 12, bT + 1, 1, 2, pal.skin);     // mano en el puño
+      px(P.x, 6, bT + 1, 2, 2, pal.bodyS);     // brazo trasero doblado
+      px(P.x, 8, bT + 1, 1, 2, pal.skin);      // mano de la cuerda
+      px(P.x, 9, bT + 1, 3, 1, '#c8a86a');     // flecha (madera clara)
+      px(P.x, 12, bT + 1, 1, 1, W.trim);       // punta dorada
+      px(P.x, 13, bT - 3, 1, 2, W.metal);      // rama superior
+      px(P.x, 13, bT - 1, 1, 1, W.glint);      // cuerda (tramo alto)
+      px(P.x, 14, bT, 1, 2, W.metal);          // panza alta
+      px(P.x, 13, bT + 1, 1, 2, W.grip);       // puño envuelto
+      px(P.x, 14, bT + 3, 1, 2, W.metal);      // panza baja
+      px(P.x, 13, bT + 3, 1, 1, W.glint);      // cuerda (tramo bajo)
+      px(P.x, 13, bT + 5, 1, 2, W.metal);      // rama inferior
+      return P.c;
+    })();
+    const f1 = (() => {
+      const P = poseCanvas(pal, 'side', 0);
+      clearArmFront(P.x, P.bT);
+      const bT = P.bT;
+      px(P.x, 9, bT + 2, 2, 2, pal.body);      // brazo relajado
+      px(P.x, 12, bT + 2, 1, 2, pal.skin);
+      px(P.x, 13, bT - 1, 1, 7, W.glint);      // cuerda recta (en reposo)
+      px(P.x, 13, bT - 2, 1, 2, W.metal);      // arco bajado 1px
+      px(P.x, 14, bT, 1, 2, W.metal);
+      px(P.x, 13, bT + 2, 1, 2, W.grip);
+      px(P.x, 14, bT + 4, 1, 2, W.metal);
+      px(P.x, 13, bT + 6, 1, 2, W.metal);
+      return P.c;
+    })();
+    return [f0, f1];
+  }
+  if (dir3 === 'down') {
+    const f0 = (() => {
+      const P = poseCanvas(pal, 'down', 0);
+      clearArmR(P.x, P.bT, L.armLen);
+      const bT = P.bT;
+      px(P.x, 9, bT + 2, 2, 2, pal.body);      // brazo que baja
+      px(P.x, 9, bT + 4, 2, 1, pal.skin);      // mano en la cuerda
+      px(P.x, 6, bT + 4, 6, 1, W.glint);       // cuerda tensa
+      px(P.x, 6, bT + 5, 2, 1, W.metal);       // rama izquierda
+      px(P.x, 10, bT + 5, 2, 1, W.metal);      // rama derecha
+      px(P.x, 8, bT + 6, 2, 1, W.metal);       // panza
+      px(P.x, 8, bT + 5, 1, 2, '#c8a86a');     // flecha hacia abajo
+      px(P.x, 8, bT + 7, 1, 1, W.trim);        // punta
+      return P.c;
+    })();
+    const f1 = (() => {
+      const P = poseCanvas(pal, 'down', 0);
+      clearArmR(P.x, P.bT, L.armLen);
+      const bT = P.bT;
+      px(P.x, 9, bT + 1, 2, 2, pal.body);      // brazo suelto
+      px(P.x, 9, bT + 3, 2, 1, pal.skin);
+      px(P.x, 6, bT + 5, 6, 1, W.glint);       // arco bajado 1px, sin flecha
+      px(P.x, 6, bT + 6, 2, 1, W.metal);
+      px(P.x, 10, bT + 6, 2, 1, W.metal);
+      px(P.x, 8, bT + 7, 2, 1, W.metal);
+      return P.c;
+    })();
+    return [f0, f1];
+  }
+  // dir3 === 'up'
+  const f0 = (() => {
+    const P = poseCanvas(pal, 'up', 1);        // cuerpo abajo 1px: hueco para el arco
+    clearArmR(P.x, P.bT, L.armLen);
+    const bT = P.bT;
+    px(P.x, 9, bT - 3, 2, 3, pal.body);        // brazo alzado
+    px(P.x, 9, bT - 4, 2, 2, pal.skin);        // mano hacia la cuerda
+    pxc(P.x, 7, bT - 8, 2, 1, W.metal);        // panza
+    pxc(P.x, 5, bT - 7, 2, 1, W.metal);        // rama izquierda
+    pxc(P.x, 9, bT - 7, 2, 1, W.metal);        // rama derecha
+    pxc(P.x, 5, bT - 6, 6, 1, W.glint);        // cuerda
+    pxc(P.x, 7, bT - 7, 1, 2, '#c8a86a');      // flecha hacia arriba
+    pxc(P.x, 7, bT - 8, 1, 1, W.trim);         // punta
+    return P.c;
+  })();
+  const f1 = (() => {
+    const P = poseCanvas(pal, 'up', 0);
+    clearArmR(P.x, P.bT, L.armLen);
+    const bT = P.bT;
+    px(P.x, 9, bT + 1, 2, 2, pal.body);        // brazo suelto
+    px(P.x, 12, bT + 1, 1, 2, pal.skin);
+    px(P.x, 13, bT - 1, 1, 7, W.glint);        // arco bajado a un lado, vertical
+    px(P.x, 13, bT - 2, 1, 2, W.metal);
+    px(P.x, 14, bT, 1, 2, W.metal);
+    px(P.x, 13, bT + 2, 1, 2, W.grip);
+    px(P.x, 14, bT + 4, 1, 2, W.metal);
+    px(P.x, 13, bT + 6, 1, 2, W.metal);
+    return P.c;
+  })();
+  return [f0, f1];
+}
+
+/** Poses de lanzamiento (brazos al frente, brillo entre manos) — hero_tejedor. */
+function castPoses(pal: HumanPal, W: WeaponDef, dir3: 'down' | 'up' | 'side'): Frames {
+  if (dir3 === 'side') {
+    const f0 = (() => {
+      const P = poseCanvas(pal, 'side', 0);
+      clearArmFront(P.x, P.bT);
+      const bT = P.bT;
+      px(P.x, 9, bT + 1, 3, 2, pal.body);      // brazos al frente
+      px(P.x, 12, bT + 1, 1, 2, pal.skin);
+      px(P.x, 11, bT + 3, 1, 1, pal.skin);     // segunda mano
+      pxc(P.x, 13, bT + 1, 2, 2, W.trim);      // chispa naciendo
+      pxc(P.x, 13, bT + 1, 1, 1, W.glint);
+      return P.c;
+    })();
+    const f1 = (() => {
+      const P = poseCanvas(pal, 'side', 0);
+      clearArmFront(P.x, P.bT);
+      const bT = P.bT;
+      px(P.x, 9, bT + 1, 4, 2, pal.body);      // empujón hacia delante
+      px(P.x, 13, bT + 1, 1, 2, pal.skin);
+      pxc(P.x, 14, bT, 2, 4, W.trim);          // estallido
+      pxc(P.x, 14, bT + 1, 2, 2, W.glint);
+      pxc(P.x, 14, bT + 1, 1, 2, '#ffffff');
+      pxc(P.x, 13, bT - 1, 1, 1, W.trim);      // chispas
+      pxc(P.x, 15, bT + 4, 1, 1, W.glint);
+      return P.c;
+    })();
+    return [f0, f1];
+  }
+  const f0 = (() => {
+    const P = poseCanvas(pal, dir3, 0);
+    clearArmL(P.x, P.bT, P.L.armLen);
+    clearArmR(P.x, P.bT, P.L.armLen);
+    const bT = P.bT;
+    if (dir3 === 'down') {
+      px(P.x, 3, bT + 1, 2, 2, pal.body);      // manos hacia el centro
+      px(P.x, 5, bT + 1, 1, 2, pal.skin);
+      px(P.x, 11, bT + 1, 2, 2, pal.body);
+      px(P.x, 10, bT + 1, 1, 2, pal.skin);
+      pxc(P.x, 7, bT + 1, 2, 2, W.trim);       // brillo pequeño entre manos
+      pxc(P.x, 7, bT + 1, 1, 1, W.glint);
+    } else {
+      px(P.x, 2, bT - 2, 2, 3, pal.body);      // manos en alto
+      px(P.x, 2, bT - 3, 2, 1, pal.skin);
+      px(P.x, 12, bT - 2, 2, 3, pal.body);
+      px(P.x, 12, bT - 3, 2, 1, pal.skin);
+      pxc(P.x, 7, bT - 4, 2, 2, W.trim);
+      pxc(P.x, 7, bT - 4, 1, 1, W.glint);
+    }
+    return P.c;
+  })();
+  const f1 = (() => {
+    const P = poseCanvas(pal, dir3, 0);
+    clearArmL(P.x, P.bT, P.L.armLen);
+    clearArmR(P.x, P.bT, P.L.armLen);
+    const bT = P.bT;
+    if (dir3 === 'down') {
+      px(P.x, 4, bT + 2, 2, 2, pal.body);      // empuje al frente
+      px(P.x, 4, bT + 4, 2, 1, pal.skin);
+      px(P.x, 10, bT + 2, 2, 2, pal.body);
+      px(P.x, 10, bT + 4, 2, 1, pal.skin);
+      pxc(P.x, 6, bT + 2, 4, 3, W.trim);       // estallido al frente
+      pxc(P.x, 7, bT + 3, 2, 1, W.glint);
+      pxc(P.x, 7, bT + 3, 1, 1, '#ffffff');
+      pxc(P.x, 5, bT + 1, 1, 1, W.trim);       // chispas
+      pxc(P.x, 10, bT + 5, 1, 1, W.glint);
+    } else {
+      px(P.x, 2, bT - 3, 2, 3, pal.body);
+      px(P.x, 2, bT - 4, 2, 1, pal.skin);
+      px(P.x, 12, bT - 3, 2, 3, pal.body);
+      px(P.x, 12, bT - 4, 2, 1, pal.skin);
+      pxc(P.x, 6, bT - 7, 4, 3, W.trim);       // estallido sobre la cabeza
+      pxc(P.x, 7, bT - 6, 2, 1, W.glint);
+      pxc(P.x, 7, bT - 6, 1, 1, '#ffffff');
+      pxc(P.x, 5, bT - 4, 1, 1, W.trim);
+      pxc(P.x, 10, bT - 8, 1, 1, W.glint);
+    }
+    return P.c;
+  })();
+  return [f0, f1];
+}
+
+/** Punto de entrada común: resuelve paleta/arma/dirección y delega.
+ *  'left' reutiliza las frames de 'right' (el render ya las voltea). */
+function buildCombatPose(baseName: string, dir: string, kind: 'attack' | 'cast'): HTMLCanvasElement[] | null {
+  if (dir !== 'down' && dir !== 'up' && dir !== 'left' && dir !== 'right') return null;
+  if (kind === 'attack' ? !ATTACK_POSES.has(baseName) : !CAST_POSES.has(baseName)) return null;
+  const pal = PALS[baseName];
+  const W = WEAPONS[baseName];
+  if (!pal || !W) return null;
+
+  const dir3: 'down' | 'up' | 'side' = dir === 'down' || dir === 'up' ? dir : 'side';
+  const sideDir: 'down' | 'up' | 'right' = dir === 'down' ? 'down' : dir === 'up' ? 'up' : 'right';
+
+  const frames = kind === 'cast'
+    ? castPoses(pal, W, dir3)
+    : baseName === 'ilwen'
+      ? bowPoses(pal, W, dir3)
+      : weaponPoses(pal, W, dir3, sideDir);
+  return frames.length === 2 ? [frames[0], frames[1]] : null;
 }
 
 // ---------------- Arco de ataque (slash) ----------------

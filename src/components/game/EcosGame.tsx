@@ -70,8 +70,10 @@ export default function EcosGame() {
         style={{
           imageRendering: 'pixelated',
           background: '#06070f',
-          width: 'min(100vw, 177.78vh)',
-          height: 'min(56.25vw, 100vh)',
+          // sin letterbox: el motor ajusta el buffer al aspecto real de la
+          // ventana (fitViewToWindow), así que aquí basta llenar el viewport
+          width: '100vw',
+          height: '100vh',
         }}
         tabIndex={0}
       />

@@ -37,7 +37,21 @@ export function toneFlagOf(flags: Record<string, number | boolean>): ToneKind | 
  *                        Ej.: 'rep_circulo_5', 'rep_orden_-5'
  *   eco_taken_mem      → ejecuta la acción original 'eco_taken' del motor y
  *                        concede 'mem_nana' (la nana: primera memoria del Eco).
- *   flag_<clave>       → activa una bandera simple (true); utilidad de contenido.
+ *   flag_<clave>       → activa una bandera simple (true); utilidad de contenido
+ *                        (usada por data.ts: flag_metVult / flag_metMera / flag_metIvo).
+ *   accept_q6          → Brisa ofrece el sur (fin del Acto I): acepta q6
+ *                        'El Rumor del Mar' (engine.talkTo ya avanza q5→q6 antes
+ *                        de resolver el nodo). Idempotente (flag q6, sin regreso).
+ *   mara_met           → la conversación con Mara completa el objetivo de q6
+ *                        (índice 5, paso 1) y abre q7.
+ *   mara_gift          → Mara enciende el faro tras la Sirena (una vez):
+ *                        +2 pociones, +5 rep. Círculo Verde, flag maraGift.
+ *   mera_eco           → la Espectro de Merrow devuelve el Eco de los Nombres
+ *                        (Eco menor): flag ecoNombres, +1 punto, sfx 'echo',
+ *                        ráfaga dorada; si q8 (índice 7) está en su último paso,
+ *                        avanza la cadena (→ q9).
+ *   acto2_report       → el regreso final a Brisa cierra q10 (una vez):
+ *                        flag acto2Done y +5 rep. Guardianes del Canto.
  */
 export function handleCustomAction(g: Game, action: string): boolean {
   const p = g.player;
@@ -75,6 +89,67 @@ export function handleCustomAction(g: Game, action: string): boolean {
   // flag_<clave>: utilidades de contenido (banderas simples)
   if (action.startsWith('flag_')) {
     g.flags[action.slice(5)] = true;
+    return true;
+  }
+
+  // ----- Acto II · Las Notas Perdidas (agente 8-a: historia y diálogos) -----
+
+  // accept_q6: Brisa ofrece el sur — acepta q6 'El Rumor del Mar'.
+  // Nota de coordinación: engine.talkTo ya avanza q5→q6 ANTES de resolver el
+  // nodo, así que aquí normalmente questIdx ya es 5; la rama questIdx<5
+  // auto-repara aceptaciones anticipadas (brisa_final en q4) o saves antiguos.
+  if (action === 'accept_q6') {
+    if (g.questIdx < 5) {
+      g.questIdx = 5;
+      g.questStep = g.flags.visited_costa ? 1 : 0; // como accept_q3 del motor
+    }
+    if (!g.flags.q6) {
+      g.flags.q6 = true;
+      audio.sfx('quest');
+      g.toast('Nueva misión: El Rumor del Mar', '#8ef0b0');
+    }
+    return true;
+  }
+
+  // mara_met: hablar con Mara completa el objetivo de q6 (nodo mara_intro)
+  // 11-a: el toast de 'Nueva misión' ya lo emite questAdvance (generalizado en
+  // 8-b) — el explícito de aquí lo duplicaba en pantalla; se elimina.
+  if (action === 'mara_met') {
+    if (g.questIdx === 5 && g.questStep === 1) g.questAdvance();
+    return true;
+  }
+
+  // mara_gift: Mara enciende el faro tras la Sirena y paga en pociones (una vez)
+  if (action === 'mara_gift') {
+    p.potions += 2;
+    g.flags.maraGift = true;
+    audio.sfx('potion');
+    g.applyAction('rep_circulo_5'); // el Círculo Verde celebra que la costa vuelva a tener luz
+    g.toast('Mara enciende el faro tras 300 años: +2 pociones', '#ffe9a0');
+    return true;
+  }
+
+  // mera_eco: la Espectro devuelve el Eco de los Nombres (Eco menor de Merrow)
+  // 11-a: el toast de 'Nueva misión' ya lo emite questAdvance (generalizado en
+  // 8-b) — el explícito de aquí lo duplicaba en pantalla; se elimina.
+  if (action === 'mera_eco') {
+    g.flags.ecoNombres = true;
+    p.points += 1;
+    audio.sfx('echo');
+    g.burst(p.x, p.y - 8, '#ffe9a0', 22, 70);
+    if (g.questIdx === 7 && g.questStep === 2) g.questAdvance();
+    g.toast('Eco de los Nombres recuperado: +1 punto de habilidad', '#ffe9a0');
+    return true;
+  }
+
+  // acto2_report: el regreso final a Brisa cierra q10 (informe del Acto II)
+  if (action === 'acto2_report') {
+    if (g.questIdx === 9 && !g.flags.acto2Done) {
+      g.flags.acto2Done = true;
+      audio.sfx('quest');
+      g.applyAction('rep_guardianes_5');
+      g.toast('Misión completada: Dos Voces más Fuertes', '#8ef0b0');
+    }
     return true;
   }
 
