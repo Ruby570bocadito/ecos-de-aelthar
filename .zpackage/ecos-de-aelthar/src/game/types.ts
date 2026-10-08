@@ -14,6 +14,9 @@ export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian';
 export type Element = 'fuego' | 'hielo' | 'rayo' | 'sombra' | 'sagrado' | 'ninguno';
 export type StatusKind = 'quemado' | 'congelado' | 'aturdido' | 'marcado';
 
+// Tono de diálogo del Portador (biblia: personalidad moldeable)
+export type ToneKind = 'empatico' | 'pragmatico' | 'sarcastico' | 'amenazante';
+
 export interface StatusFx {
   kind: StatusKind;
   t: number;      // tiempo restante
@@ -97,6 +100,7 @@ export interface Entity {
   anim: number;                 // fase de animación
   moving: boolean;
   dead?: boolean;
+  kbVx?: number; kbVy?: number; // knockback suave (se aplica y decae en update)
 }
 
 export interface Enemy extends Entity {
@@ -118,6 +122,7 @@ export interface Enemy extends Entity {
   hitFlash: number;
   telegraphKind?: 'slam' | 'onda' | 'aro';
   spawnGuard?: number;          // no aggro al inicio
+  marked?: number;              // >0: marcado por Ilwen (flechas focalizadas + daño extra)
 }
 
 export interface Companion extends Entity {
@@ -152,6 +157,10 @@ export interface Player extends Entity {
   parryFx: number;
   attackT: number;              // >0 en ataque (combo)
   combo: number;
+  comboT?: number;              // ventana restante para encadenar combo
+  tones?: Record<ToneKind, number>;          // contadores de tono (biblia)
+  memories?: string[];                       // ids de memorias recuperadas por Eco
+  repFacciones?: Record<string, number>;     // guardianes | orden | circulo | liga
   chargeT: number;              // carga de ataque
   charging: boolean;
   chargedHit?: boolean;
@@ -175,6 +184,7 @@ export interface DialogueOption {
   text: string;
   next?: string;
   action?: string;   // 'accept_q2' | 'forge' | 'recruit_ilwen' | ...
+  tone?: ToneKind;   // tono de la respuesta (define el rasgo dominante)
 }
 
 export interface DialogueNode {
@@ -198,6 +208,9 @@ export interface SaveData {
     attrs: Player['attrs']; points: number;
     gold: number; weaponPlus: number; potions: number;
     hasEcho: boolean; kills: number; deaths: number; repGuardianes: number; playTime: number;
+    tones?: Record<ToneKind, number>;
+    memories?: string[];
+    repFacciones?: Record<string, number>;
   };
   map: MapId;
   x: number; y: number;

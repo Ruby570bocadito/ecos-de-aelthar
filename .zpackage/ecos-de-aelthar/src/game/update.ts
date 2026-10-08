@@ -4,14 +4,31 @@
 // ============================================================
 
 import type { Game } from './engine';
-import { TILE } from './engine';
-import type { Enemy, Dir } from './types';
+import { TILE, playerMeleeDmg } from './engine';
+import type { Enemy, Dir, Element, Player, Companion } from './types';
 import { ENEMY_DEFS } from './data';
 import { audio } from './audio';
-import { tileAt } from './maps';
-import { SOLID_CHARS } from './sprites';
+import { addShake, addFlash, requestSlowmo, applyKnockback, stepKnockback } from './fxcore';
 
 const DIRS: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
+
+// ---------------- Estado transitorio de mecánicas (3-b) ----------------
+// WeakMap/WeakSet a nivel de módulo: no persiste en el guardado y no
+// ensucia types.ts (contrato).
+
+/** Ciclo elemental de las flechas de Ilwen (biblia: fuego → hielo → rayo). */
+const ARROW_CYCLE: Element[] = ['fuego', 'hielo', 'rayo'];
+
+/** Memoria transitoria de Ilwen por compañero: cds de técnica/marca, ciclo de flechas y vínculo. */
+interface IlwenMem { rainCd: number; markCd: number; arrowIdx: number; bondT: number }
+const ilwenMem = new WeakMap<Companion, IlwenMem>();
+
+/** REMATE: bonus único por periodo de quebrado/aturdimiento por enemigo. */
+const finisherUsed = new WeakSet<Enemy>();
+const wasAturdido = new WeakMap<Enemy, boolean>();
+
+/** Detección de golpe recién liberado (empuje cargado y remate). */
+const lastAttackT = new WeakMap<Player, number>();
 
 function dist(ax: number, ay: number, bx: number, by: number): number {
   return Math.hypot(bx - ax, by - ay);
@@ -38,6 +55,9 @@ export function updateGame(g: Game, dt: number) {
   if (p.buffT) { p.buffT -= dt; if (p.buffT <= 0) p.buffT = undefined; }
 
   // ---------------- fades y transición de mapa ----------------
+  // enfriamiento de salidas: tras cargar un mapa se ignoran sus zonas de
+  // salida un instante (defensa extra anti-bucle de teletransporte)
+  if (g.exitCd > 0) g.exitCd -= dt;
   if (g.fadeDir !== 0) {
     g.fadeT += g.fadeDir * dt * 2.4;
     if (g.fadeT >= 1 && g.fadeDir > 0) {
@@ -71,6 +91,9 @@ export function updateGame(g: Game, dt: number) {
   if (p.parryFx > 0) p.parryFx -= dt;
   if (p.lastHitT > 0) p.lastHitT -= dt;
   for (let i = 0; i < p.cds.length; i++) if (p.cds[i] > 0) p.cds[i] -= dt;
+
+  // knockback suave del jugador (ondas del jefe, slams) — contrato fxcore
+  stepKnockback(g, p, dt);
 
   // carga de ataque
   if (p.charging) {
@@ -111,6 +134,54 @@ export function updateGame(g: Game, dt: number) {
     }
   }
 
+  // ---------------- ventana de combo · golpe recién liberado · REMATE ----------------
+  const prevAttackT = lastAttackT.get(p) ?? 0;
+  const attackStarted = p.attackT > 0 && prevAttackT <= 0;
+  lastAttackT.set(p, p.attackT);
+  // p.chargedHit es del motor (la usa render para el arco cargado); se limpia al
+  // terminar el golpe para que el siguiente ataque no herede el flag.
+  if (p.attackT <= 0 && p.chargedHit) p.chargedHit = false;
+
+  // ventana de combo: se mantiene mientras encadenas; al caducar el combo se reinicia
+  if (p.attackT > 0) {
+    p.comboT = 1.2;
+  } else if ((p.comboT ?? 0) > 0) {
+    p.comboT = (p.comboT ?? 0) - dt;
+    if ((p.comboT ?? 0) <= 0) { p.comboT = 0; p.combo = 0; }
+  }
+
+  if (attackStarted) {
+    // impacto cargado: onda de empuje frontal (el peso del Portador)
+    if (p.chargedHit) {
+      const [fdx, fdy] = DIRS[p.dir];
+      const cx2 = p.x + fdx * 20, cy2 = p.y + fdy * 20;
+      for (const e of g.enemies) {
+        if (e.dead) continue;
+        if (Math.hypot(e.x - cx2, e.y - cy2) < 36 + e.w / 2) {
+          applyKnockback(e, e.x - p.x, e.y - p.y, 200);
+        }
+      }
+    }
+    // REMATE: enemigo quebrado cerca + golpe recién liberado → bonus único por quebrado
+    for (const e of g.enemies) {
+      if (e.dead || e.ai !== 'aturdido' || e.maxSta <= 0) continue;
+      if (finisherUsed.has(e)) continue;
+      if (dist(p.x, p.y, e.x, e.y) < 30) {
+        finisherUsed.add(e);
+        const [rdx, rdy] = DIRS[p.dir];
+        g.damageEnemy(e, playerMeleeDmg(p) * 0.6, 'ninguno', 90, rdx, rdy);
+        g.floatAt(e.x, e.y - 26, '¡REMATE!', '#ffe86a', 12);
+        addShake(g, 4);
+        requestSlowmo(g, 0.2);
+        p.res = Math.min(p.maxRes, p.res + 15);
+        // sfx 'break' es nuevo del contrato (lo añade 3-a); audio.sfx no tiene
+        // default: nombre desconocido = no-op seguro.
+        audio.sfx('break');
+        break;
+      }
+    }
+  }
+
   // esquiva
   if (k.has(' ') && p.rollT <= 0 && p.attackT <= 0 && p.sta >= 20) {
     p.rollT = 0.3;
@@ -138,7 +209,7 @@ export function updateGame(g: Game, dt: number) {
   }
 
   // ---------------- salidas de mapa ----------------
-  if (g.fadeDir === 0) {
+  if (g.fadeDir === 0 && g.exitCd <= 0) {
     const ptx = Math.floor(p.x / TILE), pty = Math.floor(p.y / TILE);
     for (const ex of g.map.exits) {
       if (ex.needPast && g.epoch !== 'pasado') continue;
@@ -148,6 +219,21 @@ export function updateGame(g: Game, dt: number) {
         break;
       }
     }
+  }
+
+  // ---------------- watchers de contenido (baratos, O(1) por frame) ----------------
+  // q2_done: Brisa da por completada la misión de los lobos → Ilwen aparece en el Bosque
+  // (la bandera no la fijaba nadie y su showFlag dejaba a la elfa invisible para siempre)
+  if (g.questIdx >= 2 && !g.flags.q2_done) g.flags.q2_done = true;
+  // Memoria II: tras recuperar el Eco de la Voz, la casa junto al río aflora al pisar el Bosque
+  if (g.flags.ecoVoz && g.mapId === 'bosque' && !g.flags.mem_casa) {
+    g.flags.mem_casa = true;
+    if (!(p.memories ?? []).includes('mem_casa')) g.applyAction('memory_mem_casa');
+  }
+  // Memoria III: la madre sin rostro aflora al vencer al Guardián Hueco
+  if (g.flags.guardianDefeated && !g.flags.mem_madre) {
+    g.flags.mem_madre = true;
+    if (!(p.memories ?? []).includes('mem_madre')) g.applyAction('memory_mem_madre');
   }
 
   // ---------------- compañera ----------------
@@ -184,20 +270,24 @@ export function updateGame(g: Game, dt: number) {
     pr.t -= dt;
     pr.x += pr.vx * dt;
     pr.y += pr.vy * dt;
-    const tx = Math.floor(pr.x / TILE), ty = Math.floor(pr.y / TILE);
-    const ch = tileAt(g.map, g.rows, tx, ty, g.epoch);
-    let dead = pr.t <= 0 || SOLID_CHARS.has(ch);
-    if (pr.from === 'player') {
+    // colisión de pared: tileSolidAt es el método público del motor (SOLID_CHARS + época)
+    let dead = pr.t <= 0 || g.tileSolidAt(pr.x, pr.y);
+    if (pr.from !== 'enemy') {
+      // proyectil aliado (Portador o Ilwen): daña enemigos
       if (Math.random() < 0.5) g.particles.push({ x: pr.x, y: pr.y, vx: 0, vy: 0, t: 0.22, maxT: 0.22, color: pr.element === 'fuego' ? '#ff9040' : pr.element === 'hielo' ? '#a0e8ff' : '#ffe86a', size: 1.5, grav: 0 });
       for (const e of g.enemies) {
         if (e.dead) continue;
         if (dist(pr.x, pr.y, e.x, e.y - 4) < pr.radius + e.w / 2 + 2) {
           g.damageEnemy(e, pr.dmg, pr.element, 30, Math.sign(pr.vx), Math.sign(pr.vy));
+          // empuje según elemento: el fuego arrea más (contrato fxcore)
+          const kbForce = pr.from === 'companion' ? 90 : pr.element === 'fuego' ? 150 : pr.element === 'rayo' ? 110 : 85;
+          applyKnockback(e, pr.vx, pr.vy, kbForce);
           dead = true;
           break;
         }
       }
     } else {
+      // proyectil enemigo: parable o dañino para el Portador
       if (dist(pr.x, pr.y, p.x, p.y - 4) < pr.radius + 7) {
         if (p.parryT > 0) {
           // ¡parada perfecta de proyectil!
@@ -224,6 +314,8 @@ export function updateGame(g: Game, dt: number) {
     w.r += w.speed * dt;
     if (w.dmg > 0 && !w.hit) {
       if (Math.abs(dist(w.x, w.y, p.x, p.y) - w.r) < 8) {
+        // onda del Guardián: empuja al Portador si el golpe entra (no en parada)
+        if (p.parryT <= 0 && p.iframes <= 0 && p.rollT <= 0) applyKnockback(p, p.x - w.x, p.y - w.y, 260);
         g.damagePlayer(w.dmg, w.x, w.y);
         w.hit = true;
       }
@@ -240,6 +332,8 @@ export function updateGame(g: Game, dt: number) {
       g.shake = 6;
       g.burst(t.x, t.y, '#c8b8a0', 18, 90);
       if (dist(p.x, p.y, t.x, t.y) < t.r && p.rollT <= 0 && p.iframes <= 0) {
+        // slam del Guardián: el impacto arrea al Portador
+        if (p.parryT <= 0) applyKnockback(p, p.x - t.x, p.y - t.y, 260);
         g.damagePlayer(t.dmg, t.x, t.y);
       }
       g.telegraphs.splice(i, 1);
@@ -249,11 +343,17 @@ export function updateGame(g: Game, dt: number) {
   g.updateCamera();
 }
 
-// ---------------- Compañera ----------------
+// ---------------- Compañera (Ilwen mejorada, biblia) ----------------
 
 function updateCompanion(g: Game, dt: number) {
   const c = g.companion!;
   const p = g.player!;
+  const mem = ilwenMem.get(c) ?? { rainCd: 8, markCd: 3, arrowIdx: 0, bondT: 0 };
+  ilwenMem.set(c, mem);
+
+  // knockback suave (la empujan ondas/impactos)
+  stepKnockback(g, c, dt);
+
   if (c.downT > 0) {
     c.downT -= dt;
     if (c.downT <= 0) { c.hp = Math.floor(c.maxHp * 0.5); g.toast('Ilwen se incorpora de nuevo', '#8ef0b0'); }
@@ -269,7 +369,8 @@ function updateCompanion(g: Game, dt: number) {
     c.moving = true; c.anim += dt;
     c.dir = dx > 0 ? 'right' : dx < 0 ? 'left' : dy > 0 ? 'down' : 'up';
   } else { c.moving = false; c.anim += dt * 0.4; }
-  // disparo a enemigos aggro cercanos
+  // disparo a enemigos aggro cercanos: flechas elementales cíclicas fuego→hielo→rayo
+  // (fuego/hielo aplican sus estados vía damageEnemy; rayo solo daño)
   if (c.atkCd <= 0) {
     let best: Enemy | null = null, bd = 150;
     for (const e of g.enemies) {
@@ -279,14 +380,71 @@ function updateCompanion(g: Game, dt: number) {
     }
     if (best) {
       c.atkCd = 1.5;
+      const el = ARROW_CYCLE[mem.arrowIdx % ARROW_CYCLE.length];
+      mem.arrowIdx = (mem.arrowIdx + 1) % ARROW_CYCLE.length;
+      // flechas focalizadas: a enemigos marcados +60% de daño
+      const dmg = (7 + p.level * 1.5) * ((best.marked ?? 0) > 0 ? 1.6 : 1);
       const dx = best.x - c.x, dy = best.y - 4 - (c.y - 6);
       const l = Math.max(1, Math.hypot(dx, dy));
       g.projectiles.push({
         x: c.x, y: c.y - 6, vx: (dx / l) * 190, vy: (dy / l) * 190, t: 1.2,
-        dmg: 7 + p.level * 1.5, element: 'ninguno', from: 'companion', sprite: 'p_arrow', radius: 3, pierce: 0,
+        dmg, element: el, from: 'companion', sprite: 'p_arrow', radius: 3, pierce: 0,
       });
       audio.sfx('companionShot');
     }
+  }
+  // MARCA de Ilwen: en combate, cada 6 s fija al enemigo aggro más cercano (5 s)
+  mem.markCd -= dt;
+  if (mem.markCd <= 0) {
+    let best: Enemy | null = null, bd = 180;
+    for (const e of g.enemies) {
+      if (e.dead || !e.aggro) continue;
+      const dd = dist(c.x, c.y, e.x, e.y);
+      if (dd < bd) { bd = dd; best = e; }
+    }
+    if (best) {
+      best.marked = 5;
+      g.floatAt(best.x, best.y - 24, 'MARCADO', '#e8a8c8', 6);
+      mem.markCd = 6;
+    }
+  }
+  // Técnica combinada «Lluvia de estrellas» (afinidad ≥ 20 · cd 24 s · biblia)
+  mem.rainCd -= dt;
+  if (mem.rainCd <= 0 && c.affinity >= 20) {
+    const targets = g.enemies.filter(e => !e.dead && e.aggro && dist(c.x, c.y, e.x, e.y) < 140);
+    if (targets.length > 0) {
+      mem.rainCd = 24;
+      const t0 = targets[0];
+      const baseAng = Math.atan2(t0.y - c.y, t0.x - c.x);
+      // ráfaga de 10 flechas elementales en abanico hacia los enemigos
+      for (let i = 0; i < 10; i++) {
+        const ang = baseAng + ((i / 9) - 0.5) * 1.6;
+        g.projectiles.push({
+          x: c.x, y: c.y - 8, vx: Math.cos(ang) * 210, vy: Math.sin(ang) * 210, t: 1.1,
+          dmg: 9 + p.level * 1.8, element: ARROW_CYCLE[i % ARROW_CYCLE.length],
+          from: 'companion', sprite: 'p_arrow', radius: 3, pierce: 0,
+        });
+      }
+      g.waves.push({ x: c.x, y: c.y, r: 4, maxR: 64, speed: 150, dmg: 0, hit: true });
+      g.waves.push({ x: c.x, y: c.y, r: 4, maxR: 96, speed: 190, dmg: 0, hit: true });
+      addFlash(g, '#ffe9a0', 0.15);
+      addShake(g, 3);
+      g.floatAt(c.x, c.y - 26, 'LLUVIA DE ESTRELLAS', '#ffe9a0', 9);
+      audio.sfx('holy');
+      audio.sfx('bolt');
+    }
+  }
+  // vínculo: combatir codo con codo fortalece la afinidad (+1 cada 10 s de combate)
+  const fighting = g.enemies.some(e => !e.dead && e.aggro);
+  if (fighting) {
+    mem.bondT += dt;
+    if (mem.bondT >= 10) {
+      mem.bondT -= 10;
+      c.affinity = Math.min(30, c.affinity + 1);
+      g.floatAt(c.x, c.y - 20, '♥', '#8ef0b0');
+    }
+  } else {
+    mem.bondT = Math.max(0, mem.bondT - dt * 0.5);
   }
   if (c.hp < c.maxHp) c.hp = Math.min(c.maxHp, c.hp + 2 * dt);
   if (c.hp <= 0) { c.downT = 8; g.toast('Ilwen cae... se repondrá en unos segundos', '#e8a0a0'); }
@@ -306,6 +464,14 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
   if (e.hitFlash > 0) e.hitFlash -= dt;
   if (e.spawnGuard && e.spawnGuard > 0) { e.spawnGuard -= dt; return; }
 
+  // REMATE disponible al entrar en aturdimiento/quebrado (una vez por periodo)
+  const prevStun = wasAturdido.get(e) ?? false;
+  if (e.ai === 'aturdido' && !prevStun) finisherUsed.delete(e);
+  wasAturdido.set(e, e.ai === 'aturdido');
+
+  // knockback suave (proyectiles, cargas, ondas) — contrato fxcore
+  stepKnockback(g, e, dt);
+
   // estados
   for (let i = e.statuses.length - 1; i >= 0; i--) {
     const s = e.statuses[i];
@@ -317,6 +483,11 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
     }
     if (s.t <= 0) e.statuses.splice(i, 1);
   }
+  // decae la marca de Ilwen (el icono lo dibuja 3-a)
+  if (e.marked !== undefined) {
+    e.marked -= dt;
+    if (e.marked <= 0) e.marked = undefined;
+  }
   if (e.hp < e.maxHp) e.aggro = true;
 
   const d = dist(e.x, e.y, p.x, p.y);
@@ -324,7 +495,18 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
   const aggroR = def.aggroR * nightMult * (e.etype === 'guardian' ? (g.bossActive ? 99 : 1) : 1);
   if (!e.aggro && d < aggroR && g.state === 'play') {
     e.aggro = true;
-    if (e.etype === 'guardian') { /* activación gestionada fuera */ }
+    if (e.etype === 'guardian') {
+      // primera vez que entra en aggro: banner del jefe (render lo dibuja)
+      if (!g.flags.bossIntro) {
+        g.flags.bossIntro = true;
+        g.bossBannerT = 3.2;
+        g.bossBannerText = 'GUARDIÁN HUECO';
+        g.bossBannerSub = 'Custodio del Eco de la Voz';
+        addFlash(g, '#7ee8ff', 0.25);
+        // sfx 'banner' es nuevo del contrato (3-a); no-op seguro hasta entonces
+        audio.sfx('banner');
+      }
+    }
     else audio.sfx('blip');
   }
   e.atkCd -= dt;
@@ -397,7 +579,11 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
           e.ai = 'ataca';
           e.aiT = 0.22;
           audio.sfx('slam');
-          if (d < 46) g.damagePlayer(def.dmg * e.phase, e.x, e.y);
+          if (d < 46) {
+            // el slam del Guardián arrea al Portador
+            if (p.parryT <= 0 && p.iframes <= 0 && p.rollT <= 0) applyKnockback(p, p.x - e.x, p.y - e.y, 260);
+            g.damagePlayer(def.dmg * e.phase, e.x, e.y);
+          }
           g.burst(e.x, e.y, '#8a84a8', 14, 80);
           g.shake = 5;
         } else {
@@ -451,7 +637,9 @@ function guardianBrain(g: Game, e: Enemy, dt: number, d: number) {
     e.phase = newPhase;
     audio.sfx('roar');
     g.toast(`El Guardián cambia de fase (${e.phase}/3)`, '#7ee8ff');
-    g.shake = 6;
+    addShake(g, 5);
+    addFlash(g, e.phase === 3 ? '#e8a0ff' : '#7ee8ff', 0.2);
+    requestSlowmo(g, 0.25);
     if (e.phase === 2) {
       // invoca sombras
       for (let i = 0; i < 2; i++) {
@@ -483,7 +671,6 @@ function guardianBrain(g: Game, e: Enemy, dt: number, d: number) {
       e.aiT = 0.5;
     }
   }
-  void dt; void p;
 }
 
 export function isNight(g: Game): boolean {

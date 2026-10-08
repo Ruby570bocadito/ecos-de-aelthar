@@ -88,6 +88,7 @@ export class Game {
   shake = 0;
   fadeT = 0; fadeDir = 0;   // transición de mapa
   pendingMap: { to: MapId; tx: number; ty: number } | null = null;
+  exitCd = 0;               // enfriamiento anti-bucle tras loadMap (ignora zonas de salida)
 
   // UI
   uiHit: UiHit[] = [];
@@ -125,6 +126,10 @@ export class Game {
 
   setState(s: GState) {
     this.state = s;
+    // transición fantasma: si se sale de play/dialogue a mitad de un fade
+    // (pausa, muerte…), el viaje pendiente se cancela para no teletransportar
+    // al reanudar ni reescribir el autoguardado con posición incorrecta.
+    if (s !== 'play' && s !== 'dialogue') this.pendingMap = null;
     this.onStateChange?.(s);
     if (s === 'title') audio.playTrack('title');
   }
@@ -223,7 +228,16 @@ export class Game {
   continueGame() {
     const raw = (() => { try { return localStorage.getItem('ecos-aelthar-save'); } catch { return null; } })();
     if (!raw) return;
-    const d = JSON.parse(raw) as SaveData;
+    let d: SaveData;
+    try {
+      d = JSON.parse(raw) as SaveData;
+      if (!d || !d.player || typeof d.x !== 'number' || typeof d.y !== 'number' || !MAPS[d.map]) throw new Error('forma inválida');
+    } catch {
+      // save corrupto: nunca dejar el juego muerto — se descarta y se puede empezar de nuevo
+      try { localStorage.removeItem('ecos-aelthar-save'); } catch { /* noop */ }
+      this.toast('La partida guardada estaba dañada y no pudo recuperarse.', '#ff8060');
+      return;
+    }
     const p = d.player;
     const maxHp = p.maxHp;
     this.player = {
@@ -253,7 +267,13 @@ export class Game {
     if (this.flags.visitedBosque) this.visitedMaps.bosque = true;
     if (this.flags.visitedCripta) this.visitedMaps.cripta = true;
     this.loadMap(d.map, Math.floor(d.x / TILE), Math.floor(d.y / TILE));
-    this.player!.x = d.x; this.player!.y = d.y;
+    // restaura la posición fina del guardado SOLO si su tile es seguro
+    // (ni sólido ni dentro de una zona de salida); si no, conserva el tile
+    // seguro que eligió loadMap — rescate de partidas atrapadas en el bucle
+    const stx = Math.floor(d.x / TILE), sty = Math.floor(d.y / TILE);
+    if (this.player && !this.tileSolidAt(d.x, d.y) && !this.inExitZone(stx, sty)) {
+      this.player.x = d.x; this.player.y = d.y;
+    }
     this.mapTitleT = 2.5;
     this.setState('play');
     audio.playTrack(this.map.music);
@@ -294,9 +314,13 @@ export class Game {
     this.rows = mapRows(this.map);
     this.buildGround();
     if (this.player) {
-      this.player.x = tx * TILE + 8;
-      this.player.y = ty * TILE + 8;
+      // defensa anti-softlock: nunca aterrizar sobre un tile sólido ni dentro
+      // de una zona de salida del destino (provocaba el bucle cripta↔bosque)
+      const [sx, sy] = this.findSafeTile(tx, ty);
+      this.player.x = sx * TILE + 8;
+      this.player.y = sy * TILE + 8;
     }
+    this.exitCd = 0.9;
     this.spawnEnemies();
     this.spawnNpcs();
     this.projectiles = []; this.waves = []; this.telegraphs = [];
@@ -404,6 +428,36 @@ export class Game {
     const tx = Math.floor(px / TILE), ty = Math.floor(py / TILE);
     const ch = tileAt(this.map, this.rows, tx, ty, this.epoch);
     return SOLID_CHARS.has(ch);
+  }
+
+  /** ¿(tx,ty) está dentro de alguna zona de salida del mapa actual? */
+  private inExitZone(tx: number, ty: number): boolean {
+    return this.map.exits.some(ex => {
+      if (ex.needPast && this.epoch !== 'pasado') return false;
+      return tx >= ex.x && tx < ex.x + ex.w && ty >= ex.y && ty < ex.y + ex.h;
+    });
+  }
+
+  /**
+   * Busca el tile más cercano (búsqueda por anillos) que sea transitable y
+   * NO esté dentro de una zona de salida. Garantiza que ningún viaje aterrice
+   * en un muro ni en un teletransporte (bucle cripta↔bosque, P0-1).
+   */
+  private findSafeTile(tx: number, ty: number): [number, number] {
+    const ok = (x: number, y: number) =>
+      x >= 0 && y >= 0 && x < this.map.w && y < this.map.h &&
+      !this.tileSolidAt(x * TILE + 8, y * TILE + 8) &&
+      !this.inExitZone(x, y);
+    if (ok(tx, ty)) return [tx, ty];
+    for (let r = 1; r <= 8; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          if (ok(tx + dx, ty + dy)) return [tx + dx, ty + dy];
+        }
+      }
+    }
+    return [tx, ty]; // sin sitio libre: comportamiento anterior
   }
 
   boxFree(x: number, y: number, w: number, h: number): boolean {
@@ -749,17 +803,31 @@ export class Game {
     this.canvas.addEventListener('mousedown', this.onMouseDown);
     this.canvas.addEventListener('mouseup', this.onMouseUp);
     this.canvas.addEventListener('contextmenu', e => e.preventDefault());
+    // teclas pegadas tras alt-tab / cambio de ventana: soltar todo
+    window.addEventListener('blur', this.onLoseFocus);
+    document.addEventListener('visibilitychange', this.onLoseFocus);
   }
+
+  private onLoseFocus = () => {
+    this.keys.clear();
+    this.mouse.down = false;
+    this.mouse.rdown = false;
+  };
 
   dispose() {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
+    window.removeEventListener('blur', this.onLoseFocus);
+    document.removeEventListener('visibilitychange', this.onLoseFocus);
     this.stop();
   }
 
   private onKeyDown = (e: KeyboardEvent) => {
     const k = e.key.toLowerCase();
-    if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
+    // no interceptar teclas cuando se escribe en un input DOM (nombre del Portador)
+    const t = e.target as HTMLElement | null;
+    const isDomInput = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+    if (!isDomInput && [' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
     if (e.repeat) return;
     this.keys.add(k);
     audio.resume();

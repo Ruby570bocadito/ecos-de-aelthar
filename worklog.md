@@ -149,3 +149,31 @@ Work Log:
 Stage Summary:
 - Bug de pantalla negra corregido de raíz para TODAS las capas de oscuridad: cripta, noches de Lunaris/Bosque y futuros mapas oscuros. La técnica de capa offscreen es la estándar (oscuridad con agujeros de luz compuesta sobre el mundo) y desbloquea el paso del Bosque → Cripta → Guardián Hueco.
 - Capturas de verificación en scripts/shot_cripta_fixed.png, shot_lunaris_noche_fixed.png, shot_cripta_combate.png.
+
+---
+Task ID: 5
+Agent: Super Z (agente principal)
+Task: Corregir el bucle cripta↔bosque (P0-1 del informe de 30 agentes + reporte del usuario) + quick-wins asociados y push a GitHub.
+
+Work Log:
+- CONFIRMADO el softlock: la salida de la cripta aterriza en bosque (10,3) = tile 'A' (altar SÓLIDO) DENTRO de la zona de salida bosque→cripta (x:8..12, y:2..3) → ping-pong de teletransporte con autoguardado en cada ciclo.
+- FIX P0-1 (3 capas):
+  1. maps.ts: destino de la salida cripta→bosque cambiado (10,3)→(10,5) — tile libre bajo la puerta (x=9..11,y=4) y fuera de toda zona de salida.
+  2. engine.ts loadMap: findSafeTile() — búsqueda por anillos que rechaza tiles sólidos Y dentro de zonas de salida (inExitZone); nunca se aterriza en un muro ni en un teletransporte.
+  3. engine.ts/update.ts: exitCd=0.9 tras loadMap, decae en update y las zonas de salida se ignoran mientras exitCd>0 (defensa extra anti-bucle).
+- FIX rescate de saves atrapados: continueGame sobreescribía la posición segura de loadMap con las coords crudas del save → ahora solo restaura la posición fina si su tile es seguro (ni sólido ni en zona de salida). Un save del bucle (bosque, altar 10,3) ahora aterriza en (9,4) y queda estable.
+- FIX save corrupto (P1): continueGame valida forma (player/x/y/map) con try/catch; si está dañado lo borra, avisa con toast y no deja el juego muerto.
+- FIX transición fantasma (P1): setState limpia pendingMap al salir de play/dialogue (Esc durante un fade ya no teletransporta ni reescribe el autoguardado).
+- FIX teclas pegadas (P1): blur/visibilitychange limpian keys y botones de ratón (onLoseFocus), con limpieza en dispose().
+- FIX nombre con espacios (P1): onKeyDown ya no hace preventDefault cuando el target es un INPUT/TEXTAREA.
+- Verificación E2E (agent-browser): (19,31) reubicado a (18,30) por la defensa; salida cripta→bosque aterriza en (10,5) estable sin re-teletransporte; vuelta bosque→cripta aterriza en (19,30); save atrapado rescatado a (9,4) estable; loopError=null en todo el recorrido.
+- P0-2 (flechas de Ilwen) y q2_done: YA corregidos en Task 3-b (update.ts pr.from!=='enemy' + watcher); el informe de los 30 agentes revisó el commit 71d290e (anterior a Task 3) y varios hallazgos están desactualizados.
+- P0-4: tsconfig excluye examples/skills/scripts (scaffold de plantilla) → `bun run typecheck` (nuevo script) en verde para todo el proyecto; eliminado typescript.ignoreBuildErrors de next.config.ts (el build vuelve a validar tipos).
+- README.md reescrito: controles reales (clic izq atacar, clic der parada, Espacio esquiva, 1-4 skills, F poción, Q época, Shift+T alba, Esc/M pausa), Node ≥20.9, novedades v0.2.1 y estructura actual (13 módulos).
+- Push a GitHub: sincronizado staging (.zpackage/ecos-de-aelthar) con el proyecto actual, commit 123b8ee "v0.2.1: ..." → main de Ruby570bocadito/ecos-de-aelthar (verificado via API: 13 módulos en src/game). Lint 0, typecheck 0, dev server 200.
+
+Stage Summary:
+- Bucle cripta↔bosque roto a 3 niveles (destino seguro + findSafeTile + exitCd) y rescate de saves atrapados; fixes rápidos de save corrupto, transición fantasma, teclas pegadas y nombre con espacios.
+- El repo privado quedó en v0.2.1 (123b8ee) con README honesto y typecheck exigente en build.
+- Pendiente (backlog del informe): controles táctiles móviles (P0-3), persistencia de volúmenes, fórmulas de ESTADO desde fuente única, rebalance de jefe/quemado, poda de scaffold, OG/SEO, CI.
+- Recordatorio reiterado: revocar/rotar el PAT ghp_... (sigue activo a fecha de este push).

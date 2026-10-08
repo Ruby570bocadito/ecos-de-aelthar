@@ -353,7 +353,10 @@ export const MAPS: Record<MapId, MapDef> = {
       { type: 'guardian', x: 19, y: 8, zone: 'boss' },
     ],
     exits: [
-      { x: 18, y: 31, w: 4, h: 3, to: 'bosque', tx: 10, ty: 3, label: 'Bosque Susurrante' },
+      // destino (10,5): tile libre justo bajo la puerta (x=9..11, y=4) y FUERA
+      // de la zona de salida bosque→cripta (x:8..12, y:2..3). El destino antiguo
+      // (10,3) era el altar sólido DENTRO de la zona → bucle de teletransporte.
+      { x: 18, y: 31, w: 4, h: 3, to: 'bosque', tx: 10, ty: 5, label: 'Bosque Susurrante' },
     ],
     props: [
       { id: 'sanc_c', kind: 'sanctuary', x: 19, y: 23 },

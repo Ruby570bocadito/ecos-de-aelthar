@@ -55,6 +55,9 @@ export function updateGame(g: Game, dt: number) {
   if (p.buffT) { p.buffT -= dt; if (p.buffT <= 0) p.buffT = undefined; }
 
   // ---------------- fades y transición de mapa ----------------
+  // enfriamiento de salidas: tras cargar un mapa se ignoran sus zonas de
+  // salida un instante (defensa extra anti-bucle de teletransporte)
+  if (g.exitCd > 0) g.exitCd -= dt;
   if (g.fadeDir !== 0) {
     g.fadeT += g.fadeDir * dt * 2.4;
     if (g.fadeT >= 1 && g.fadeDir > 0) {
@@ -206,7 +209,7 @@ export function updateGame(g: Game, dt: number) {
   }
 
   // ---------------- salidas de mapa ----------------
-  if (g.fadeDir === 0) {
+  if (g.fadeDir === 0 && g.exitCd <= 0) {
     const ptx = Math.floor(p.x / TILE), pty = Math.floor(p.y / TILE);
     for (const ex of g.map.exits) {
       if (ex.needPast && g.epoch !== 'pasado') continue;
