@@ -14,6 +14,7 @@ import { drawSlashArc, entityFrame, drawPortrait, hash2 } from './sprites';
 import * as SPRITES from './sprites'; // poses de combate (contrato 9-b, llamada opcional)
 import { drawExpansionProp, drawExpansionProjectile } from './sprites_expansion';
 import { drawSkillTree } from './skilltree';
+import { drawWorldLife } from './worldlife';
 import { tileAt } from './maps';
 import {
   fxFrame, updateAmbient, drawAmbient, getRollTrail,
@@ -128,6 +129,9 @@ function drawWorld(g: Game) {
     const sprC = getSpr(opened ? 'chest_open' : 'chest')[0];
     ctx.drawImage(sprC, sx(ch.x * TILE), sy(ch.y * TILE - 2), 16 * ZOOM, 14 * ZOOM);
   }
+
+  // fauna y viajante del mundo vivo (13-b) — capa ambiente bajo las entidades
+  drawWorldLife(g, sx, sy);
 
   drawCombatFx(g, sx, sy);
 

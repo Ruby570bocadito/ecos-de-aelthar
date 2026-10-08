@@ -18,7 +18,7 @@ import { handleCustomAction, recordDialogueTone } from './hooks';
 import { challengeTick, onChallengeDeath, type ChallengeRun } from './challenge';
 import { skillTick } from './skilltree';
 import { balanceTick, enemyStatMult } from './balance';
-import { worldTick } from './worldlife';
+import { worldTick, worldInteract } from './worldlife';
 import { timeTick, beginEpochShift } from './timeskip';
 
 // Vista DINÁMICA (fix barra negra): el buffer se ajusta al aspecto real de la
@@ -1248,6 +1248,8 @@ export class Game {
   tryInteract() {
     const it = this.nearestInteract();
     if (it) { audio.sfx('select'); it.act(); }
+    // micro-interacciones del mundo vivo (13-b): pozo, lápidas, agua, faroles…
+    else if (worldInteract(this)) { audio.sfx('select'); }
     else this.toast('No hay nada que interactuar aquí.', '#9aa0b8');
   }
 
