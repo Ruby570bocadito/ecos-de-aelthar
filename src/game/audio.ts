@@ -50,7 +50,7 @@ const VILLAGE: Pattern = {
   bass: ['C3','-','-','G2','C3','-','-','-','A2','-','-','E2','A2','-','-','-',
          'F2','-','-','C3','F2','-','-','-','G2','-','-','D3','G2','-','B2','-'],
   pad:  ['C4', 'C4', 'A3', 'A3', 'F3', 'F3', 'G3', 'G3'],
-  drums: 'h...k...h...k...h...k...h.s.k..',
+  drums: 'h...k...h...k...h...k...h.s.k...', // FIX agente 7-c: tenía 31 chars (deriva de 1 paso vs melodía de 32)
 };
 
 const FOREST: Pattern = {
@@ -108,9 +108,72 @@ const TITLE: Pattern = {
   pad:  ['A3', 'A3', 'F3', 'F3', 'C3', 'C3', 'E3', 'E3'],
 };
 
+// ---- Costa de Bruma: el mar que guardó las notas del dios ----
+// Mixolidio en Sol (F natural = color de dilema). Arpegios que suben y
+// bajan como olas; bajo sine profundo y redondo que va y viene; la
+// "espuma" son hats de ruido agudo dispersos de forma irregular.
+const COSTA: Pattern = {
+  bpm: 92,
+  leadType: 'triangle',
+  bassType: 'sine',
+  padType: 'sine',
+  gainLead: 0.15, gainBass: 0.22, gainPad: 0.09,
+  lead: ['G4','B4','D5','G5','F5','D5','B4','G4',
+         'A4','C5','E5','A5','G5','E5','C5','A4',
+         'B4','D5','F5','B5','A5','F5','D5','B4',
+         'C5','E5','G5','E5','C5','A4','G4','-'],
+  bass: ['G1','-','-','-','G2','-','-','-','C2','-','-','-','C3','-','-','-',
+         'A1','-','-','-','A2','-','-','-','G1','-','-','-','D2','-','-','-'],
+  pad:  ['G3', 'G3', 'C4', 'C4', 'A3', 'A3', 'F3', 'G3'],
+  // espuma: chispeo de ruido agudo, irregular como olapillas
+  drums: 'h.....h...h...h.h.....h...h.h..h',
+};
+
+// ---- Aldea de Merrow: caja de música rota; la aldea olvidó su canto ----
+// Re menor, tempo lento. Melodía simple con HUECOS (pasos silenciosos
+// donde debería haber nota) y frases que responden como ecos tardíos;
+// el bajo es mínimo y el compás final se apaga solo.
+const ALDEA: Pattern = {
+  bpm: 58,
+  leadType: 'sine',
+  bassType: 'sine',
+  padType: 'sine',
+  gainLead: 0.15, gainBass: 0.17, gainPad: 0.12,
+  lead: ['D5','-','-','-','F5','-','-','-','E5','-','-','D5','-','-','-','-',
+         'F5','-','-','-','E5','-','-','-','D5','-','-','C5','-','-','-','-'],
+  bass: ['D2','-','-','-','-','-','-','-','G1','-','-','-','-','-','-','-',
+         'A#1','-','-','-','-','-','-','-','A1','-','-','-','-','-','-','-'],
+  pad:  ['D3', 'D3', 'G2', 'G2', 'A#2', 'A#2', 'A2', 'A2'],
+  // mecanismo de la caja: clics muy espaciados (solo respiran en combate)
+  drums: 'h...............h...............',
+};
+
+// ---- Las Cumbres: campanas sobre silencio inmenso ----
+// Pentatónica fría de La m sobre bajada de lamento (A-G-F-E). Notas
+// campana sine muy espaciadas (el decaimiento exponencial del motor las
+// hace tintinear) y destellos de hielo casi imperceptibles.
+const CUMBRES: Pattern = {
+  bpm: 76,
+  leadType: 'sine',
+  bassType: 'sine',
+  padType: 'sine',
+  gainLead: 0.12, gainBass: 0.18, gainPad: 0.1,
+  lead: ['A5','-','-','-','-','-','-','-','G5','-','-','E5','-','-','-','-',
+         'D5','-','-','-','-','-','-','-','C5','-','-','E5','-','-','G5','-'],
+  bass: ['A1','-','-','-','-','-','-','-','G1','-','-','-','-','-','-','-',
+         'F1','-','-','-','-','-','-','-','E1','-','-','-','-','-','-','-'],
+  pad:  ['A2', 'A2', 'G2', 'G2', 'F2', 'F2', 'E2', 'E2'],
+  // hielo/viento: destellos tenues, casi ausentes
+  drums: 'h...............h.......h.......',
+};
+
 const TRACKS: Record<TrackName, Pattern> = {
   village: VILLAGE, forest: FOREST, crypt: CRYPT, boss: BOSS, title: TITLE,
+  costa: COSTA, aldea: ALDEA, cumbres: CUMBRES,
 };
+
+// +1 semitono (micro-variación de melodía 1 de cada 4 loops — Task 10-c)
+const SEMI_UP = Math.pow(2, 1 / 12);
 
 export class AudioEngine {
   ctx: AudioContext | null = null;
@@ -125,6 +188,10 @@ export class AudioEngine {
   private cur: TrackName | null = null;
   private combatOn = false;
   private drumGain = 0;
+  // Task 10-c: loop absoluto en curso (step/32) para la micro-variación de
+  // melodía, y fundido 0→1 del "tambor de tensión" de combate.
+  private loopNo = 0;
+  private tensionGain = 0;
 
   musicVol = 0.7;
   sfxVol = 0.8;
@@ -159,10 +226,15 @@ export class AudioEngine {
   playTrack(name: TrackName) {
     this.init();
     if (!this.ctx) return;
+    // Guard anti-reinicio (verificado 10-c): llamar playTrack con la pista
+    // que YA suena no la reinicia (engine/update la llaman por frame-evento;
+    // esto evita cortes de frase al recargar mapa o repetir llamadas).
     if (this.cur === name) return;
     this.cur = name;
     this.step = 0;
     this.drumGain = 0;
+    this.tensionGain = 0;
+    this.loopNo = 0;
     if (this.musicTimer !== null) { clearInterval(this.musicTimer); this.musicTimer = null; }
     const pat = TRACKS[name];
     const stepDur = 60 / pat.bpm / 4;
@@ -175,6 +247,7 @@ export class AudioEngine {
         this.nextNoteTime = this.ctx.currentTime + 0.05;
       }
       while (this.nextNoteTime < this.ctx.currentTime + 0.18) {
+        this.loopNo = Math.floor(this.step / 32); // para micro-variación (10-c)
         this.scheduleStep(pat, this.step % 32, this.nextNoteTime, stepDur);
         this.step++;
         this.nextNoteTime += stepDur;
@@ -187,14 +260,27 @@ export class AudioEngine {
     this.cur = null;
   }
 
+  // Capa de combate ADAPTATIVA Y GENÉRICA: actúa sobre cualquier pista de
+  // TRACKS que tenga línea de percusión (drums). El target sube a 1 cuando
+  // combatOn (la batería entra con fundido) y baja a 0.55 fuera de combate
+  // (1 siempre en 'boss'). costa/aldea/cumbres la heredan sin cambios.
+  // Task 10-c: además, en pistas de MAPA (no boss), setCombat(true) enciende
+  // un "tambor de tensión" — kick sintético suave en pasos pares (≈0.31-0.52 s
+  // según bpm) con fundido propio — ver scheduleStep/tensionKick.
   setCombat(on: boolean) { this.combatOn = on; }
 
   private scheduleStep(pat: Pattern, step: number, t: number, dur: number) {
     if (!this.ctx) return;
+    // Micro-variación de pista (Task 10-c): en tracks de mapa (no boss/title),
+    // 1 de cada 4 loops la MELODÍA sube +1 semitono durante ESE loop y revierte
+    // sola al siguiente (loopNo avanza con el contador absoluto de pasos — sin
+    // estado que restaurar). Bajo/pad quedan anclados: el color armónico cambia
+    // sin romper el tema. Coste: 1 comparación + 1 multiplicación por nota.
+    const tr = (this.cur !== 'boss' && this.cur !== 'title' && (this.loopNo % 4) === 2) ? SEMI_UP : 1;
     const lead = pat.lead[step % pat.lead.length];
     if (lead && lead !== '-') {
       const f = noteFreq(lead);
-      if (f) this.tone(f, t, dur * 1.9, pat.leadType, pat.gainLead ?? 0.15, this.musicGain, 0.004, dur * 0.5);
+      if (f) this.tone(f * tr, t, dur * 1.9, pat.leadType, pat.gainLead ?? 0.15, this.musicGain, 0.004, dur * 0.5);
     }
     const bass = pat.bass[step % pat.bass.length];
     if (bass && bass !== '-') {
@@ -217,6 +303,16 @@ export class AudioEngine {
       if (d === 'k') this.kick(t, 0.5 * this.drumGain);
       else if (d === 's') this.noiseBurst(t, 0.07, 1800, 0.16 * this.drumGain, 'bandpass');
       else if (d === 'h') this.noiseBurst(t, 0.03, 7000, 0.05 * this.drumGain, 'highpass');
+      // Tambor de tensión (Task 10-c): latido de combate en pistas de MAPA.
+      // En pasos pares (≈0.5 s de pulso) fuerza un kick suave SI la batería
+      // del patrón no pisa ya un 'k' ahí (nunca dobla). En 'boss' NO actúa
+      // (ya hay percusión completa). Reversible y barato: fundido propio
+      // tensionGain → 0 al salir de combate; 1 osc + 1 gain por hit.
+      const tensionTarget = this.combatOn && this.cur !== 'boss' ? 1 : 0;
+      this.tensionGain += (tensionTarget - this.tensionGain) * 0.03;
+      if (step % 2 === 0 && d !== 'k' && this.tensionGain > 0.05) {
+        this.tensionKick(t, 0.15 * this.tensionGain);
+      }
     }
   }
 
@@ -245,6 +341,22 @@ export class AudioEngine {
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.13);
     o.connect(g); g.connect(this.musicGain);
     o.start(t); o.stop(t + 0.15);
+  }
+
+  /** Tambor de tensión (Task 10-c): kick sintético más agudo y corto que el
+   *  kick principal — el "latido" sutil del combate en pistas de mapa. Solo
+   *  suena mientras tensionGain > 0.05, así se funde en entrada y salida. */
+  private tensionKick(t: number, gain: number) {
+    if (!this.ctx) return;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(48, t + 0.09);
+    g.gain.setValueAtTime(gain * 0.5, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
+    o.connect(g); g.connect(this.musicGain);
+    o.start(t); o.stop(t + 0.12);
   }
 
   private noiseBurst(t: number, dur: number, freq: number, gain: number, filter: BiquadFilterType) {
@@ -301,6 +413,43 @@ export class AudioEngine {
     src.start(t); src.stop(t + dur + 0.02);
   }
 
+  /** Tono de sirena: sine largo con vibrato real (LFO sobre la frecuencia). */
+  private sSongTone(f0: number, dur: number, gain: number, delay = 0, vib = 5) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime + delay;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    const lfo = this.ctx.createOscillator();
+    const lg = this.ctx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(f0, t);
+    lfo.type = 'sine';
+    lfo.frequency.value = vib;
+    lg.gain.value = f0 * 0.018; // vibrato sutil (~2%)
+    lfo.connect(lg); lg.connect(o.frequency);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + 0.18); // ataque lento = etéreo
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(this.sfxGain);
+    o.start(t); o.stop(t + dur + 0.05);
+    lfo.start(t); lfo.stop(t + dur + 0.05);
+  }
+
+  // ============================================================
+  // AUDITORÍA SFX (Task 10-c) — usados en src/game vs cases de abajo.
+  // USADOS (40, verificado por script sobre update.ts, engine.ts,
+  // enemies_expansion.ts, hooks.ts, screens.ts):
+  //   swing, swing2, hit, crit, parry, parryFail, dodge, hurt, enemyDie,
+  //   coin, potion, chest, levelup, quest, blip, select, confirm, echo,
+  //   epoch, fire, ice, bolt, holy, shadow, roar, slam, die, save, uiOpen,
+  //   error, companionShot, break, memory, banner, whoosh,
+  //   splash, song, gust, lamp, wraith
+  // DEFINIDOS: los mismos 40 → 0 faltan, 0 cases muertos.
+  //   (engine.ts:1242 interpola por elemento: solo emite 'fire'/'ice'/'bolt'
+  //   — los literales 'fuego'/'hielo' ahí son Element, no SFX.)
+  // NOTA: este switch NO lleva 'default' a propósito — un nombre de SFX
+  // desconocido cae fuera de todos los cases y es un no-op seguro.
+  // ============================================================
   sfx(name: string) {
     this.init();
     if (!this.ctx) return;
@@ -369,8 +518,35 @@ export class AudioEngine {
         // susurro de esquiva
         this.sNoise(0.16, 1400, 0.09, 'bandpass', 0, 3800);
         break;
-      default:
-        // SFX desconocido: no-op seguro (no rompe el juego)
+      // ----- SFX ambientales de biomas nuevos (agente 7-c) -----
+      case 'splash':
+        // salpicadura: masa de agua (lowpass descendente) + burbujas cortas
+        this.sNoise(0.22, 1500, 0.16, 'lowpass', 0, 260);
+        this.sTone(320, 760, 0.07, 'sine', 0.08, 0.04);
+        this.sTone(480, 940, 0.06, 'sine', 0.07, 0.1);
+        break;
+      case 'song':
+        // canto de sirena: 3 tonos sine largos con vibrato, etéreos
+        this.sSongTone(784, 1.1, 0.07, 0, 4.6);
+        this.sSongTone(988, 1.0, 0.06, 0.35, 5.3);
+        this.sSongTone(659, 1.4, 0.05, 0.7, 4.1);
+        this.sNoise(1.2, 5200, 0.02, 'highpass', 0.2, 8000); // brillo del agua
+        break;
+      case 'gust':
+        // ráfaga de viento: ruido bandpass barrido 400→2000 Hz
+        this.sNoise(0.5, 400, 0.13, 'bandpass', 0, 2000);
+        break;
+      case 'lamp':
+        // farol encendido: tono cálido ascendente corto + chispa
+        this.sTone(196, 524, 0.16, 'triangle', 0.13);
+        this.sTone(524, 524, 0.1, 'sine', 0.06, 0.14);
+        this.sNoise(0.05, 5600, 0.07, 'highpass', 0.05);
+        break;
+      case 'wraith':
+        // susurro de espectro: aliento highpass muy suave + tono fantasmal descendente
+        this.sNoise(0.5, 6200, 0.045, 'highpass', 0, 8200);
+        this.sTone(880, 240, 0.55, 'sine', 0.05);
+        this.sTone(830, 200, 0.6, 'triangle', 0.035, 0.06); // detune fantasmal
         break;
     }
   }
