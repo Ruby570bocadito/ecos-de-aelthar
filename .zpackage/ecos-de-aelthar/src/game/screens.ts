@@ -6,7 +6,7 @@
 // ============================================================
 
 import type { Game } from './engine';
-import { VIEW_W, VIEW_H, QUESTS, getSpr } from './engine';
+import { VIEW_W, VIEW_H, QUESTS, getSpr, playerMeleeDmg } from './engine';
 import { ATTR_INFO, KEY_ITEMS, MEMORIES } from './data';
 import { dominantTone, TONE_LABEL } from './hooks';
 import { drawPortrait } from './sprites';
@@ -161,7 +161,7 @@ function drawTitle(g: Game) {
   }
 
   text(g, 'Basado en el Documento de Diseño de @papito · 8 oct 2026', VIEW_W / 2, VIEW_H - 40, 15, 'rgba(154,160,184,0.8)', 'center');
-  text(g, 'v0.1 · Lunaris — Bosque Susurrante — Cripta del Primer Canto', VIEW_W / 2, VIEW_H - 20, 14, 'rgba(122,128,148,0.7)', 'center');
+  text(g, 'v0.2.1 · Lunaris — Bosque Susurrante — Cripta del Primer Canto', VIEW_W / 2, VIEW_H - 20, 14, 'rgba(122,128,148,0.7)', 'center');
 }
 
 // helpers deterministas locales (evitan importar hash2 aquí)
@@ -309,8 +309,8 @@ function drawPause(g: Game) {
       y += 26;
     }
     // stats derivados
-    const melee = 12 + p.attrs.fue * 1.5 + p.level + p.weaponPlus * 2.5;
-    const spell = 10 + p.attrs.int * 1.6 + p.level;
+    const melee = playerMeleeDmg(p); // fuente única de verdad (motor)
+    const spell = 6 + p.attrs.int * 1.6 + p.level + p.weaponPlus * 1.5;
     text(g, `Daño melé: ${Math.round(melee)}   Daño de Cantos: ${Math.round(spell)}   Crítico: ${Math.min(40, 5 + p.attrs.des * 2)}%`, cx, y + 6, 14, COL.dim);
     text(g, `Vida: ${p.maxHp}   Reducción: ${Math.min(50, p.attrs.vig)}%   Resonancia máx: ${p.maxRes}`, cx, y + 24, 14, COL.dim);
 
@@ -442,8 +442,14 @@ function drawSlider(g: Game, x: number, y: number, w: number, cb: (v: number) =>
 }
 
 function audioClick() { audio.sfx('select'); }
-function audioSetMusic(g: Game, v: number) { g.musicVolUi = v; audio.setMusicVol(v * 0.9); }
-function audioSetSfx(g: Game, v: number) { g.sfxVolUi = v; audio.setSfxVol(v * 0.9); }
+function audioSetMusic(g: Game, v: number) {
+  g.musicVolUi = v; audio.setMusicVol(v * 0.9);
+  try { localStorage.setItem('ecos-vol', JSON.stringify({ m: g.musicVolUi, s: g.sfxVolUi })); } catch { /* noop */ }
+}
+function audioSetSfx(g: Game, v: number) {
+  g.sfxVolUi = v; audio.setSfxVol(v * 0.9);
+  try { localStorage.setItem('ecos-vol', JSON.stringify({ m: g.musicVolUi, s: g.sfxVolUi })); } catch { /* noop */ }
+}
 
 // ---------------- Diálogo ----------------
 
@@ -548,7 +554,7 @@ function drawDead(g: Game) {
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   textShadow(g, 'HAS CAÍDO', VIEW_W / 2, 170, 34, '#c8384a', '#000', 'center', true);
   const p = g.player!;
-  const lost = Math.floor(p.gold / 2);
+  const lost = g.lastGoldLost; // oro REAL perdido (calculado en playerDied)
   const lines = [
     'La Niebla Muda susurra tu nombre...',
     lost > 0 ? `Dejas un eco con ${lost} coronas donde caíste. Vuelve por él.` : 'Tu oro queda contigo... esta vez.',

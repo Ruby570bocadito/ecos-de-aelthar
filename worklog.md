@@ -177,3 +177,25 @@ Stage Summary:
 - El repo privado quedó en v0.2.1 (123b8ee) con README honesto y typecheck exigente en build.
 - Pendiente (backlog del informe): controles táctiles móviles (P0-3), persistencia de volúmenes, fórmulas de ESTADO desde fuente única, rebalance de jefe/quemado, poda de scaffold, OG/SEO, CI.
 - Recordatorio reiterado: revocar/rotar el PAT ghp_... (sigue activo a fecha de este push).
+
+---
+Task ID: 6
+Agent: Super Z (agente principal)
+Task: Segunda tanda de fixes del informe de 30 agentes (P1 de jugabilidad) + push.
+
+Work Log:
+- P1 crash: startAttack/startParry/drinkPotion/useSkill/castSkill/aimAtMouse con guard `if (!this.player) return` — el clic derecho en título ya no lanza TypeError (verificado: state=title, playerNull=true, err=null).
+- P1 esquiva en cadena: detección de borde — keydown ' ' en play encola rollQueued solo si la acción es posible (rollT/attackT/sta válidos), update la consume; mantener Espacio ya no encadena i-frames (verificado: tap → 1 voltereta; mantener 0,6 s → no se relanza).
+- P1 quemado infinito: los estados se REFRESCAN en vez de apilarse (quemado: t cap 6 s, power cap 8; congelado: t cap 5). Verificado: 3 impactos de fuego → 1 status, t=6, power=8.
+- P1 exploit del jefe: loadMap memoriza bossHp en flags al salir de la cripta con el Guardián vivo y lo restaura al volver (se limpia al derrotarlo). Verificado: 250/300 → salir → volver → sigue 250/300.
+- P1 muro por cambio de época: epochSwitch recoloca al Portador con findSafeTile si el nuevo presente/pasado trae un tile sólido hasta su posición (toast informativo).
+- P1 pantalla de muerte mentía: playerDied guarda lastGoldLost y drawDead lo muestra (40 coronas → dice 20, no 10). Verificado.
+- P1 ESTADO duplicaba fórmula: ahora importa playerMeleeDmg del motor (fuente única); nota: ATTR_INFO de vigor ya era correcta en el código actual (maxHp+=7 y reducción vig*0.01 existen) — hallazgo obsoleto del informe.
+- P1 volúmenes: sliders persisten en localStorage 'ecos-vol' y el constructor los restaura (verificado: 0.2/0.2 sobreviven reload).
+- P2 título: v0.1 → v0.2.1.
+- P1 animación de lobo/guardián clavada: el informe era contra el commit 71d290e; el entityFrame actual ya cicla correctamente los 2 frames (mod min(2,n)) — sin acción.
+- Typecheck 0, lint 0. Push 2949fe7 a main (verificado via API).
+
+Stage Summary:
+- 8 fixes de jugabilidad del informe aplicados y verificados E2E; repo en 2949fe7.
+- Quedan del backlog: controles táctiles móviles (P0-3), contenido narrativo muerto (voz_vesh/voz_guardian/brisa_end), rebalance jefe/quiebre, poda de scaffold, OG/SEO/CI.
