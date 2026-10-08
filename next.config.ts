@@ -2,10 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  /* config options here */
-  typescript: {
-    ignoreBuildErrors: true,
-  },
+  // typecheck en verde: `bun run typecheck` (tsc --noEmit) pasa en todo src/,
+  // así que el build vuelve a validar tipos (sin ignoreBuildErrors).
   reactStrictMode: false,
 };
 

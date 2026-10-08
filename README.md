@@ -1,72 +1,87 @@
-# Ecos de Aelthar — Demo jugable (vertical slice)
+# Ecos de Aelthar — Demo jugable (v0.2.1)
 
-RPG 2D de acción con píxeles dibujados por código, mecánica de **Ecos** (viaje entre el pasado y el presente), combate táctico, 3 zonas, jefe final de 3 fases y cadena principal de 5 misiones. Todo el arte, los mapas y la música chiptune se generan proceduralmente: **no necesita assets externos**.
+RPG de acción 2D con mecánica de **Ecos**: viaja entre el presente y el pasado para
+devolver el Primer Canto al mundo. Todo el juego es procedural (pixel art y música
+chiptune generados por código), sin un solo asset externo.
 
 ## Requisitos
 
-- Node.js 18 o superior (o Bun 1.x)
-- Navegador moderno (Chrome / Edge / Firefox)
+- **Node.js 20.9 o superior** (Next.js 16 lo exige) o **Bun 1.x**
 
-## Cómo ejecutar
-
-```bash
-# 1. Instalar dependencias
-npm install        # o: bun install
-
-# 2. Arrancar en modo desarrollo
-npm run dev        # o: bun run dev
-
-# 3. Abrir en el navegador
-# http://localhost:3000
-```
-
-Producción:
+## Ejecutar
 
 ```bash
-npm run build
-npm start          # http://localhost:3000
+bun install        # o npm install
+bun run dev        # o npm run dev
 ```
 
-> El juego funciona íntegramente en el cliente (canvas + WebAudio). La partida se guarda en `localStorage` al activar Santuarios y al cambiar de zona. No requiere base de datos.
+Abre http://localhost:3000 — la página es el juego a pantalla completa.
 
-## Estructura del proyecto
-
-```
-src/
-  components/game/EcosGame.tsx   # Componente React: canvas a pantalla completa + creación de personaje
-  game/
-    engine.ts     # Máquina de estados, bucle principal, guardado, misiones, forja/tienda
-    update.ts     # IA de enemigos, jefe de 3 fases, compañera, proyectiles, día/noche
-    render.ts     # Render del mundo, iluminación, HUD, minimapa, barra de jefe
-    screens.ts    # Título, intro, pausa (4 pestañas), diálogos, muerte, final
-    maps.ts       # Lunaris, Bosque y Cripta + diferencias entre épocas
-    data.ts       # Misiones, diálogos, enemigos, habilidades y objetos (editable)
-    sprites.ts    # Pixel art generado por código (héroe, NPCs, enemigos, tiles)
-    audio.ts      # Chiptune procedural (5 pistas) + ~30 efectos de sonido sintetizados
-    ui.ts         # Helpers de UI en canvas (texto pixel, paneles, barras, sliders)
-    types.ts      # Tipos del motor
-```
+Otros scripts: `bun run build` / `bun run start` (producción), `bun run lint`,
+`bun run typecheck` (validación de tipos en todo el proyecto).
 
 ## Controles
 
-| Tecla | Acción |
+| Entrada | Acción |
 |---|---|
-| WASD / Flechas | Moverse |
-| J / Z | Atacar (combo ×3) |
-| K / X | Habilidad (según disciplina) |
-| L / C | Esquiva (con i-frames) |
-| Shift (en defensa) | Parada perfecta (0,2 s) |
-| E | Interactuar / Hablar |
-| Q | Cambiar de época (Ecos) |
-| 1–4 | Habilidades |
-| Shift+T | Esperar al alba |
-| Esc / P | Pausa (Estado / Equipo / Diario / Sistema) |
+| `WASD` / flechas | Moverse |
+| **Clic izquierdo** | Atacar (combo ×3; mantén para golpe cargado) |
+| **Clic derecho** | Parada perfecta (0,2 s — aturde) |
+| `Espacio` | Esquiva (i-frames) |
+| `1` – `4` | Habilidades de tu disciplina |
+| `E` | Interactuar / avanzar diálogo |
+| `F` | Beber poción |
+| `Q` | Alternar pasado / presente (tras recuperar el Eco) |
+| `Shift+T` | Esperar al alba |
+| `Esc` / `M` | Pausa (Estado · Equipo · Diario · Sistema) |
+
+En los diálogos con opciones, las respuestas **moldean tu tono** (empático,
+pragmático, sarcástico, amenazante): los personajes reaccionan y la cifra
+dominante se refleja en el Estado.
 
 ## Contenido de la demo
 
-- 3 zonas: **Lunaris** (pueblo), **Bosque de Susurros** y **Cripta de Aelthar**
-- 2 disciplinas iniciales: **Tejedor de Vientos** y **Eco de Piedra**
-- Combate táctico: combo, carga, esquiva, parada perfecta y **quiebre** de guardia
-- Mecánica de Ecos: dos épocas por mapa (puente roto/entero, niebla, cobertizo…)
-- Jefe final **Guardián Hueco** con 3 fases, onda expansiva e invocación de sombras
-- 5 misiones de la cadena principal, ~25 nodos de diálogo, santuarios con guardado y viaje rápido, ciclo día/noche y música adaptativa por zona/combate
+- 3 zonas: **Valle de Lunaris**, **Bosque Susurrante** y **Cripta del Primer Canto**
+- 2 disciplinas iniciales: **Espada del Alba** (cuerpo a cuerpo) y **Tejedor de Ecos** (magia elemental)
+- Combate táctico: combo ×3, carga, esquiva con i-frames, parada perfecta,
+  **barra de quiebre + REMATE**, empuje físico y estados (quemado/congelado)
+- Jefe **Guardián Hueco** de 3 fases con banner cinematográfico
+- Compañera **Ilwen**: arco elemental cíclico, sistema de MARCA y técnica
+  combinada «Lluvia de estrellas» (sube su afinidad combatiendo a tu lado)
+- Sistema de **tono de diálogo** con apodos y reacciones de los NPC
+- **Memorias del Portador** (overlay vitral) ligadas al progreso
+- **Reputación** con 4 facciones (Guardianes, Orden, Círculo Verde, Liga)
+- NPC de la biblia: Doran, el Heraldo de Vesh, Teo… y un secreto bajo las flores
+- Santuarios con **guardado** y **viaje rápido**, ciclo día/noche,
+  misiones, forja, tienda y pantalla final con estadísticas
+
+> El juego funciona íntegramente en el cliente (canvas + WebAudio). La partida
+> se guarda en `localStorage` (Santuarios y autoguardado al cambiar de zona).
+> No requiere base de datos.
+
+## Estructura
+
+```
+src/
+  game/
+    engine.ts     # máquina de estados, guardado, misiones, interacción
+    update.ts     # IA de enemigos, jefe de 3 fases, compañera, proyectiles
+    render.ts     # mundo + HUD + iluminación por capas (canvas offscreen)
+    screens.ts    # título, intro, pausa, diálogo, muerte, final
+    maps.ts       # Lunaris, Bosque y Cripta + diferencias entre épocas
+    data.ts       # misiones, diálogos, enemigos, habilidades, memorias
+    sprites.ts    # pixel art por código (personajes, tiles, retratos)
+    fx.ts         # partículas ambientales, estelas, banner de jefe
+    fxcore.ts     # shake / flash / slowmo / knockback
+    hooks.ts      # acciones de diálogo extendidas (memorias, reputación)
+    audio.ts      # chiptune procedural + ~30 SFX sintetizados
+    types.ts      # tipos del motor
+    ui.ts         # helpers de UI en canvas
+  components/game/EcosGame.tsx
+```
+
+## Estado
+
+Demo vertical slice (Acto I). v0.2.1: sistema de tono, memorias, reputación,
+remate, knockback, Ilwen elemental, iluminación por capas corregida y
+defensas anti-softlock en los viajes entre mapas.
