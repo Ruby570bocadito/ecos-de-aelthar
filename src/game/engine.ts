@@ -5,13 +5,13 @@
 
 import type {
   Player, Enemy, Npc, Companion, MapId, Epoch, Projectile, Particle, FloatText,
-  Toast, Shockwave, TeleGraph, SaveData, DialogueNode, DialogueOption, Dir, Element,
+  Toast, Shockwave, TeleGraph, SaveData, DialogueNode, DialogueOption, Dir, Element, StatsData,
 } from './types';
 import { MAPS, mapRows, tileAt } from './maps';
 import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
 import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
 import { audio } from './audio';
-import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue } from './data';
+import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue, SENNUEL } from './data';
 import { updateGame } from './update';
 import { drawGame } from './render';
 import { handleCustomAction, recordDialogueTone } from './hooks';
@@ -20,6 +20,11 @@ import { skillTick, skillCdMult, setSkillCdDecay } from './skilltree';
 import { balanceTick, enemyStatMult } from './balance';
 import { worldTick, worldInteract } from './worldlife';
 import { timeTick, beginEpochShift } from './timeskip';
+import { defaultStats, sanitizeStats, statsTick, achievementTick } from './achievements'; // 16-c: estadísticas + logros
+import {
+  cycleCompanionMode, useSenno, registerCorpse16b, bossSennoLoot16b, companionInterpose,
+  noteDialogueClosed16b, rumorAfterDialogue16b, interaccionInteract16b,
+} from './interaccion'; // 16-b: órdenes tácticas + señuelo + restos + rumores
 import {
   ARMORS, ARMOR_HEAVY_SPEED, armorActive, armorActiveId, armorDefFor, armorReduction, armorTick,
 } from './armor';
@@ -181,6 +186,9 @@ export class Game {
   // modo desafío (arena): sesión volátil — no se serializa en save()
   challengeRun: ChallengeRun | null = null;
 
+  // ==== 16-c (logros-stats): estadísticas de la partida (save/load con defaults) ====
+  stats: StatsData = defaultStats();
+
   // bucle
   private raf = 0;
   private lastTs = 0;
@@ -246,6 +254,9 @@ export class Game {
     worldTick(this, dt);     // fauna, rumores y eventos del mundo (13-b)
     timeTick(this, dt);      // inmersión del viaje temporal (13-c)
     armorTick(this, dt);     // 14-b: pasiva de la Malla del Alba (+vigor/s)
+    // ==== 16-c (logros-stats): tiempoJugado + memorias + logros (O(1), early-out) ====
+    statsTick(this, dt);
+    achievementTick(this);
     this.companionTick(dt);  // 14-b: escolta, teletransporte, apoyo y avisos de Ilwen
     this.antiStuck();        // 14-b: red anti-encallamiento del Portador
   }
@@ -353,6 +364,8 @@ export class Game {
     this.deadGolds = [];
     this.companion = null;
     this.visitedMaps = { lunaris: true };
+    // ==== 16-c (logros-stats): partida nueva, contadores a cero ====
+    this.stats = defaultStats();
     this.dayT = 0.15;
     this.setState('intro');
     this.introIdx = 0;
@@ -406,8 +419,15 @@ export class Game {
     this.openedChests = new Set(d.openedChests);
     this.takenEchoes = new Set(d.takenEchoes);
     this.deadGolds = d.deadGolds ?? [];
+    // ==== 16-c (logros-stats): restore tolerante (saves antiguos sin stats) ====
+    this.stats = sanitizeStats(d.stats);
     this.epoch = d.epoch === 'pasado' && p.hasEcho ? 'pasado' : 'presente';
     this.companion = d.companion ? this.makeCompanion() : null;
+    // ==== 16-b: restaura la orden táctica del compañero (saves viejos sin el
+    // campo → undefined = 'seguir', el comportamiento de siempre) ====
+    if (this.companion && (d.companionMode === 'agresivo' || d.companionMode === 'defensivo' || d.companionMode === 'seguir')) {
+      this.companion.mode = d.companionMode;
+    }
     this.visitedMaps = { lunaris: true };
     if (this.flags.visitedBosque) this.visitedMaps.bosque = true;
     if (this.flags.visitedCripta) this.visitedMaps.cripta = true;
@@ -446,9 +466,13 @@ export class Game {
       takenEchoes: [...this.takenEchoes],
       deadGolds: this.deadGolds,
       companion: !!this.companion,
+      companionMode: this.companion?.mode ?? 'seguir', // 16-b: orden táctica serializada
       saveTime: Date.now(),
+      stats: { ...this.stats }, // 16-c: estadísticas dentro del guardado
     };
     try { localStorage.setItem('ecos-aelthar-save', JSON.stringify(d)); } catch { /* noop */ }
+    // ==== 16-c (logros-stats): espejo de las últimas cifras para el título ====
+    try { localStorage.setItem('ecos-stats', JSON.stringify(this.stats)); } catch { /* noop */ }
   }
 
   // ---------------- Mapa ----------------
@@ -658,6 +682,8 @@ export class Game {
       let best: Enemy | null = null, bd = 190;
       for (const e of this.enemies) {
         if (e.dead || !e.aggro) continue;
+        // ==== 16-b: en modo DEFENSIVO Ilwen solo apoya a enemigos a <2 tiles del Portador ====
+        if ((c.mode ?? 'seguir') === 'defensivo' && Math.hypot(e.x - p.x, e.y - p.y) >= 2 * TILE) continue;
         const score = Math.hypot(e.x - p.x, e.y - p.y) - ((e.marked ?? 0) > 0 ? 60 : 0);
         if (score < bd) { bd = score; best = e; }
       }
@@ -787,8 +813,15 @@ export class Game {
     // movimiento (caminar, rodar, empujones, Paso de Brisa): una sola fuente
     // de verdad, sin tocar update.ts. Los enemigos y la compañera no pesan.
     if (e === this.player && this.flags.armor_3) { dx *= ARMOR_HEAVY_SPEED; dy *= ARMOR_HEAVY_SPEED; }
+    const wasX = e.x, wasY = e.y;
     if (dx !== 0 && this.boxFree(e.x + dx, e.y, e.w, e.h)) e.x += dx;
     if (dy !== 0 && this.boxFree(e.x, e.y + dy, e.w, e.h)) e.y += dy;
+    // ==== 16-c (logros-stats): distancia andada del Portador. moveEntity es la
+    // ÚNICA puerta del movimiento (caminar, rodar, hielo, empujones): se cuenta
+    // solo el desplazamiento REALMENTE aplicado (aprox. por tiles al mostrar).
+    if (e === this.player && !this.challengeRun) {
+      this.stats.distanciaAndada += Math.hypot(e.x - wasX, e.y - wasY);
+    }
   }
 
   updateCamera(snap = false) {
@@ -816,6 +849,8 @@ export class Game {
     if (!beginEpochShift(this)) return;
     this.epoch = this.epoch === 'presente' ? 'pasado' : 'presente';
     this.epochFx = 0.8;
+    // ==== 16-c (logros-stats): solo cuenta el viaje REAL (tras el veto de 13-c) ====
+    if (!this.challengeRun) this.stats.vecesCambioEpoca++;
     audio.sfx('epoch');
     // el cambio de época puede traer un muro hasta ti: recoloca si quedas dentro
     if (this.player && this.tileSolidAt(this.player.x, this.player.y)) {
@@ -867,7 +902,10 @@ export class Game {
     this.openedChests.add(id);
     audio.sfx('chest');
     const parts: string[] = [];
-    if (ch.gold) { this.player!.gold += ch.gold; parts.push(`${ch.gold} coronas`); this.floatAt(ch.x * TILE + 8, ch.y * TILE, `+${ch.gold}`, '#f0c84a'); }
+    if (ch.gold) {
+      this.player!.gold += ch.gold; parts.push(`${ch.gold} coronas`); this.floatAt(ch.x * TILE + 8, ch.y * TILE, `+${ch.gold}`, '#f0c84a');
+      if (!this.challengeRun) this.stats.coronasGanadas += ch.gold; // ==== 16-c ====
+    }
     if (ch.potions) { this.player!.potions += ch.potions; parts.push(`${ch.potions} poción(es)`); }
     if (ch.item) parts.push(ch.item);
     this.toast(`Cofre abierto: ${parts.join(', ')}`, '#f0c84a');
@@ -1018,6 +1056,7 @@ export class Game {
   closeDialogue() {
     this.dlgKey = null;
     this.dlgNode = null;
+    noteDialogueClosed16b(this); // ==== 16-b: habilita el rumor al re-pulsar E ====
     if (this.state === 'dialogue') this.setState('play');
   }
 
@@ -1103,14 +1142,29 @@ export class Game {
         if (p.weaponPlus >= 5) { this.toast('Toln: «+5 es lo que da de sí esta forja, Portador.»', '#e8a'); audio.sfx('error'); }
         else if (p.gold >= cost) {
           p.gold -= cost; p.weaponPlus++;
+          if (!this.challengeRun) this.stats.coronasGastadas += cost; // ==== 16-c: pago en forja ====
           audio.sfx('confirm');
           this.toast(`Arma mejorada a +${p.weaponPlus} (${cost} coronas)`, '#f0c84a');
         } else { this.toast(`Te faltan coronas (${cost} necesarias)`, '#e88'); audio.sfx('error'); }
         break;
       }
       case action === 'buy_potion':
-        if (p.gold >= 15) { p.gold -= 15; p.potions++; audio.sfx('coin'); this.toast('Poción comprada (15 coronas)', '#f0c84a'); }
+        if (p.gold >= 15) {
+          p.gold -= 15; p.potions++;
+          if (!this.challengeRun) this.stats.coronasGastadas += 15; // ==== 16-c: pago en tienda ====
+          audio.sfx('coin'); this.toast('Poción comprada (15 coronas)', '#f0c84a');
+        }
         else { this.toast('Te faltan coronas', '#e88'); audio.sfx('error'); }
+        break;
+      // ==== 16-b: señuelo de caza (item apilable 'sennuelo' en flags.sennuelos) ====
+      case action === 'buy_sennuelo':
+        if (p.gold >= SENNUEL.price) {
+          p.gold -= SENNUEL.price;
+          if (!this.challengeRun) this.stats.coronasGastadas += SENNUEL.price; // 16-c: espejo
+          this.flags.sennuelos = (Number(this.flags.sennuelos ?? 0) || 0) + 1;
+          audio.sfx('coin');
+          this.toast(`Señuelo de caza comprado (${SENNUEL.price} coronas) — llevas ${this.flags.sennuelos}`, '#e8c88a');
+        } else { this.toast(`Te faltan coronas (${SENNUEL.price} necesarias)`, '#e88'); audio.sfx('error'); }
         break;
       // 14-b: compra de corazas en la forja de Toln (diálogo 'toln_armaduras')
       case action.startsWith('armor_'): {
@@ -1124,6 +1178,7 @@ export class Game {
           }
           if (p.gold >= a.cost) {
             p.gold -= a.cost;
+            if (!this.challengeRun) this.stats.coronasGastadas += a.cost; // ==== 16-c: pago de coraza ====
             this.flags[a.id] = true;
             audio.sfx('confirm');
             this.toast(`${a.name} forjada (${a.cost} coronas): daño recibido −${Math.round(a.red * 100)}%`, '#f0c84a');
@@ -1223,6 +1278,7 @@ export class Game {
     }
     const p = this.player;
     p.gold += loot.gold;
+    if (!this.challengeRun) this.stats.coronasGanadas += loot.gold; // ==== 16-c ====
     if (loot.potions) p.potions += loot.potions;
     const txt = `Recompensa: +${loot.gold} coronas${loot.potions ? ' y 1 poción' : ''}`;
     this.floatAt(p.x, p.y - 26, txt, '#f0c84a', 7);
@@ -1267,6 +1323,7 @@ export class Game {
   playerDied() {
     const p = this.player!;
     p.deaths++;
+    if (!this.challengeRun) this.stats.muertes++; // ==== 16-c (logros-stats) ====
     const lost = Math.floor(p.gold / 2);
     this.lastGoldLost = lost;
     if (lost > 0) {
@@ -1388,6 +1445,10 @@ export class Game {
         this.toast('Esperas junto al camino hasta el alba...', '#ffe86a');
         audio.sfx('save');
       }
+      // ==== 16-b (interacción-compañeros): órdenes tácticas (T) y señuelo (8;
+      // las teclas 5/6/7 son de las herramientas del árbol, 12-b) ====
+      else if (k === 't') cycleCompanionMode(this);
+      else if (k === '8') useSenno(this);
       else if (['1', '2', '3', '4'].includes(k)) this.useSkill(parseInt(k, 10) - 1);
       else if (k === 'k') { this.setState('skills'); audio.sfx('uiOpen'); }
     } else if (this.state === 'pause') {
@@ -1454,10 +1515,16 @@ export class Game {
   };
 
   tryInteract() {
+    // ==== 16-b: E de nuevo justo tras cerrar un diálogo → rumor corto del NPC
+    // (ventana 2.5 s, cooldown 60 s por NPC; si no toca, abre el diálogo normal) ====
+    if (rumorAfterDialogue16b(this)) { audio.sfx('select'); return; }
     const it = this.nearestInteract();
     if (it) { audio.sfx('select'); it.act(); }
     // micro-interacciones del mundo vivo (13-b): pozo, lápidas, agua, faroles…
     else if (worldInteract(this)) { audio.sfx('select'); }
+    // ==== 16-b: restos de enemigos y cofres ya abiertos (añadidos al final de
+    // la cadena: nunca roban NPCs/cofres cerrados/santuarios ni casos 13-b) ====
+    else if (interaccionInteract16b(this)) { audio.sfx('select'); }
     else this.toast('No hay nada que interactuar aquí.', '#9aa0b8');
   }
 
@@ -1467,6 +1534,7 @@ export class Game {
     if (p.potions <= 0) { this.toast('No te quedan pociones', '#e88'); audio.sfx('error'); return; }
     if (p.hp >= p.maxHp) { this.toast('Vida al máximo', '#9aa0b8'); return; }
     p.potions--;
+    if (!this.challengeRun) this.stats.pocionesUsadas++; // ==== 16-c (logros-stats) ====
     const heal = Math.round(p.maxHp * 0.4);
     p.hp = Math.min(p.maxHp, p.hp + heal);
     audio.sfx('potion');
@@ -1737,6 +1805,10 @@ export class Game {
 
   killEnemy(e: Enemy) {
     e.dead = true;
+    // ==== 16-b (interacción con todo): restos examinables con E + botín raro
+    // de jefes (8% de +1 señuelo de caza) ====
+    registerCorpse16b(this, e);
+    bossSennoLoot16b(this, e);
     const def = ENEMY_DEFS[e.etype];
     const p = this.player!;
     p.kills++;
@@ -1745,6 +1817,13 @@ export class Game {
     this.gainXp(Math.max(1, Math.round(def.xp * enemyStatMult(this).xp)));
     const gold = Math.round(def.gold[0] + Math.random() * (def.gold[1] - def.gold[0]));
     p.gold += gold;
+    // ==== 16-c (logros-stats): combate acumulado + chequeo puntual de logros ====
+    if (!this.challengeRun) {
+      this.stats.enemigosDerrotados++;
+      this.stats.coronasGanadas += gold;
+      if (BOSS_DEFEAT_FLAG[e.etype] !== undefined) this.stats.jefesDerrotados++;
+      achievementTick(this);
+    }
     this.floatAt(e.x, e.y - 20, `+${gold} coronas`, '#f0c84a');
     this.burst(e.x, e.y - 4, e.etype === 'guardian' ? '#7ee8ff' : '#9ec4b4', e.etype === 'guardian' ? 40 : 14, e.etype === 'guardian' ? 120 : 60);
     audio.sfx('enemyDie');
@@ -1871,7 +1950,10 @@ export class Game {
     const ared = armorReduction(this);
     const red = Math.min(0.5, p.attrs.vig * 0.01);
     const final = Math.max(1, Math.round(dmg * (1 - ared) * (1 - red)));
-    p.hp -= final;
+    // ==== 16-b: INTERPOSICIÓN — con la compañera en modo defensivo a <1.5
+    // tiles, ella absorbe el 50% de este golpe melé (cooldown 6 s) ====
+    const interposed16b = companionInterpose(this, final, fromX, fromY);
+    p.hp -= final - interposed16b;
     p.iframes = 0.6;
     p.lastHitT = 0.3;
     // 14-b: Manto de Ecos — refleja 15% SOLO de contacto melé (el origen del

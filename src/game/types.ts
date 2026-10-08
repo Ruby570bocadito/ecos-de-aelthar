@@ -10,7 +10,7 @@ export type MapId = 'lunaris' | 'bosque' | 'cripta' | 'costa' | 'aldea' | 'cumbr
 export type Epoch = 'presente' | 'pasado';
 export type TrackName = 'village' | 'forest' | 'crypt' | 'boss' | 'title' | 'costa' | 'aldea' | 'cumbres';
 
-export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian' | 'neumo' | 'espectro' | 'arpi' | 'sirena' | 'golem' | 'vult' | 'coro' | 'ecodesg' | 'satiro';
+export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian' | 'neumo' | 'espectro' | 'arpi' | 'sirena' | 'golem' | 'vult' | 'coro' | 'ecodesg' | 'satiro' | 'heraldo'; // 16-a: jefe final del Acto IV
 export type Element = 'fuego' | 'hielo' | 'rayo' | 'sombra' | 'sagrado' | 'ninguno';
 export type StatusKind = 'quemado' | 'congelado' | 'aturdido' | 'marcado';
 
@@ -91,6 +91,9 @@ export interface MapDef {
 
 export type EnemyAIState = 'patrulla' | 'alerta' | 'persigue' | 'carga' | 'ataca' | 'recupera' | 'huye' | 'aturdido' | 'muerto';
 
+/** 16-b (interacción-compañeros): órdenes tácticas del compañero (tecla T). */
+export type CompMode = 'seguir' | 'agresivo' | 'defensivo';
+
 export interface Entity {
   kind: 'player' | 'enemy' | 'npc' | 'companion';
   x: number; y: number;         // px en mundo
@@ -127,6 +130,7 @@ export interface Enemy extends Entity {
   marked?: number;              // >0: marcado por Ilwen (flechas focalizadas + daño extra)
   subT?: number;                // timer auxiliar para cerebros de IA nuevos
   invulT?: number;              // >0: invulnerable (fase espectral de espectro/sirena)
+  lured?: number;               // 16-b: >0 — atraído por un señuelo (segundos restantes)
 }
 
 export interface Companion extends Entity {
@@ -135,6 +139,7 @@ export interface Companion extends Entity {
   atkCd: number;
   downT: number;
   affinity: number;
+  mode?: CompMode;              // 16-b: orden táctica activa (default 'seguir'; serializada en save)
 }
 
 export interface Npc extends Entity {
@@ -203,6 +208,21 @@ export interface DialogueNode {
 
 // ---------- Guardado ----------
 
+// 16-c (logros-stats): estadísticas acumuladas de la partida. Opcional en el
+// guardado para mantener compatibilidad con saves antiguos (defaults seguros).
+export interface StatsData {
+  enemigosDerrotados: number;
+  jefesDerrotados: number;
+  muertes: number;
+  coronasGanadas: number;
+  coronasGastadas: number;
+  pocionesUsadas: number;
+  vecesCambioEpoca: number;
+  distanciaAndada: number;   // px aplicados (se muestra ≈ tiles: px/TILE)
+  tiempoJugado: number;      // segundos en estado play/dialogue
+  memoriasHalladas: number;
+}
+
 export interface SaveData {
   v: number;
   player: {
@@ -225,7 +245,9 @@ export interface SaveData {
   takenEchoes: string[];
   deadGolds: { map: MapId; x: number; y: number; amount: number }[];
   companion: boolean;
+  companionMode?: CompMode;  // 16-b: orden táctica del compañero (opcional: saves viejos = 'seguir')
   saveTime: number;
+  stats?: StatsData;         // 16-c: ausente en saves antiguos → defaults
 }
 
 export interface Toast { text: string; t: number; color?: string }
