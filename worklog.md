@@ -38,3 +38,21 @@ Stage Summary:
 - Demo vertical slice completa y verificada en navegador: 3 zonas, 2 disciplinas, combate táctico (combo×3, carga, esquiva i-frames, parada perfecta 0,2 s, quiebre), mecánica de Ecos con dos épocas, jefe de 3 fases, cadena principal de 5 misiones, Santuarios con guardado/viaje rápido, compañera reclutable, ciclo día/noche, música adaptativa chiptune, pantalla final con estadísticas.
 - La página contiene únicamente el juego a pantalla completa (petición explícita del usuario).
 - Partida persistente vía localStorage (guardado en Santuarios, autoguardado al cambiar de zona).
+
+---
+Task ID: 2
+Agent: Super Z (agente principal)
+Task: Empaquetar la demo "Ecos de Aelthar" en un ZIP y subirla a un repositorio privado de GitHub del usuario (token proporcionado por el usuario en el chat).
+
+Work Log:
+- Creado ZIP limpio del proyecto (sin node_modules/.next/.git): download/ecos-de-aelthar-demo.zip (228 KB, 96 archivos).
+- Staging en .zpackage/ecos-de-aelthar con package.json renombrado a "ecos-de-aelthar", scripts simplificados (dev/build/start sin tee) y README.md con instrucciones de ejecucion y controles.
+- Verificado token de GitHub (usuario Ruby570bocadito, scopes repo+workflow).
+- Creado repositorio PRIVADO via API: Ruby570bocadito/ecos-de-aelthar.
+- git init limpio (rama main) en staging + commit unico con descripcion del juego + push verificado (71d290e).
+- Contenido del repo verificado via API: codigo del juego completo en src/game/, README, configs.
+
+Stage Summary:
+- ZIP entregable: /home/z/my-project/download/ecos-de-aelthar-demo.zip
+- Repo privado: https://github.com/Ruby570bocadito/ecos-de-aelthar (rama main, commit 71d290e)
+- PENDIENTE avisar al usuario: revocar/rotar el token ghp_... compartido en el chat por seguridad.
