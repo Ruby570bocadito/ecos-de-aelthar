@@ -56,3 +56,79 @@ Stage Summary:
 - ZIP entregable: /home/z/my-project/download/ecos-de-aelthar-demo.zip
 - Repo privado: https://github.com/Ruby570bocadito/ecos-de-aelthar (rama main, commit 71d290e)
 - PENDIENTE avisar al usuario: revocar/rotar el token ghp_... compartido en el chat por seguridad.
+
+---
+Task ID: 3-0
+Agent: Super Z (agente principal)
+Task: Preparar contrato compartido para mejora en paralelo con 2 agentes (3-a visuales, 3-b mecánicas) alineada con la biblia de la historia.
+
+Work Log:
+- types.ts: añadidos ToneKind, DialogueOption.tone, Entity.kbVx/kbVy, Enemy.marked, Player.comboT/tones/memories/repFacciones, SaveData opcional (compatible con guardados antiguos).
+- engine.ts: integración de hooks (recordDialogueTone en advanceDialogue, default→handleCustomAction), campos de feedback (flashT/flashColor/slowmoT/memoryReveal/bossBanner*), decaimientos en el bucle, serialización en newGame/continueGame/save.
+- fxcore.ts (NUEVO, congelado): addShake, addFlash, requestSlowmo, applyKnockback, stepKnockback.
+- hooks.ts (NUEVO, propiedad del agente 3-b): stub con recordDialogueTone/dominantTone/TONE_LABEL funcionales y handleCustomAction no-op.
+- data.ts: export MEMORIES (3 memorias de la biblia: nana, casa, madre sin rostro) para Diario y overlays.
+
+Stage Summary:
+- Contrato listo: agentes pueden trabajar en paralelo sin tocar engine.ts/types.ts/fxcore.ts.
+- Propiedad de archivos: 3-a = sprites/render/screens/audio + fx.ts (nuevo); 3-b = update/data/maps + hooks.ts.
+- Lint base en verde y dev.log compila.
+
+---
+Task ID: 3-b
+Agent: full-stack-developer (3-b mecánicas)
+Task: Profundizar mecánicas de combate (knockback, combo, remate, Ilwen mejorada, feedback de jefe) y añadir contenido de la biblia (tono de diálogo, memorias, facciones, NPC Doran/Heraldo/Teo, ecos menores, easter egg Nimue).
+
+Work Log:
+- Leído worklog.md y TODOS los archivos del contrato (engine, types, fxcore, audio, render, screens, data, maps, hooks, update) antes de escribir.
+- T1 · hooks.ts (implementación completa, sustituye el stub):
+  - handleCustomAction: 'memory_<id>' (concede memoria única + overlay memoryReveal t=5.5 + toast + sfx), 'rep_<faccion>_<±n>' (guardianes|orden|circulo|liga, clamp ±100, toast coloreado), 'eco_taken_mem' (llama g.applyAction('eco_taken') y concede mem_nana), 'flag_<clave>' (utilidad). Documentado en comentario para el equipo.
+  - recordDialogueTone: mantiene conteo + g.flags.tonoDominante; NUEVO: primera vez que un tono se vuelve dominante → +1 afinidad de Ilwen si está reclutada (biblia: los compañeros reaccionan a tu personalidad).
+  - dominantTone y TONE_LABEL intactos; añadido helper toneFlagOf() exportado (lee el tono de flags con narrowing seguro: flags es Record<string, number|boolean> congelado, el tono se guarda como string en runtime con cast documentado).
+- T2 · update.ts (combate):
+  - stepKnockback aplicado a jugador, enemigos e Ilwen. Knockback generado con applyKnockback en: proyectiles aliados (fuego 150 > rayo 110 > resto 85; flechas de Ilwen 90), ondas y slams del jefe contra el Portador (260, sin empujar si parada), impactos cargados del jugador (onda de empuje frontal 200, detectando p.chargedHit recién activo y limpiándolo al terminar el golpe para que no se herede al render/siguiente ataque).
+  - Ventana de combo: p.comboT = 1.2 mientras attackT > 0; decae al terminar el golpe; al caducar p.combo = 0.
+  - REMATE: enemigo ai='aturdido' con maxSta>0 a <30px en golpe recién liberado → damageEnemy ×0.6 extra, float '¡REMATE!' grande, addShake(4), requestSlowmo(0.2), +15 resonancia, sfx 'break'. Una vez por periodo de quebrado (WeakSet/WeakMap a nivel de módulo, reset al re-aturdirse).
+  - Ilwen: flechas elementales cíclicas fuego→hielo→rayo (fuego/hielo aplican estados vía damageEnemy, rayo solo daño); MARCA cada 6 s al enemigo aggro más cercano (e.marked=5, decae en mi update; flechas a marcados +60% daño); técnica combinada «Lluvia de estrellas» con affinity>=20 + enemigos aggro <140px + cd 24 s (WeakMap<Companion>): ráfaga de 10 proyectiles elementales en abanico + 2 ondas visuales + addFlash('#ffe9a0') + addShake(3) + float + sfx holy/bolt. Fuente de afinidad nueva: +1 cada 10 s de combate codo con codo (cap 30) + tonos (máx +4).
+  - Jefe (guardianBrain): banner de primera entrada en aggro (bossBannerT 3.2, 'GUARDIÁN HUECO' / 'Custodio del Eco de la Voz', addFlash #7ee8ff, sfx 'banner', flag bossIntro); cambios de fase con addFlash + addShake(5) + requestSlowmo(0.25); slam directo y ondas arrea al Portador (applyKnockback 260).
+  - Estados: e.marked decae; quemado/congelado intactos; balance del jefe sin tocar.
+  - FIX en mi archivo: el bucle de proyectiles enviaba las flechas de Ilwen (from='companion') a la rama de proyectiles ENEMIGOS: nunca dañaban a enemigos y podían herir al Portador por fuego amigo. Ahora `pr.from !== 'enemy'` daña enemigos; solo 'enemy' puede dañar al jugador.
+  - FIX en mi archivo: flags.q2_done no lo fijaba nadie → el showFlag de Ilwen la dejaba invisible para siempre. Watcher O(1) en updateGame (questIdx>=2 → q2_done=true).
+- T3 · data.ts (contenido biblia):
+  - Opciones con tone (empático/pragmático/sarcástico/amenazante) en: brisa_intro3, brisa_reward, toln_forge, ilwen_intro, voz_fragment, eco_voz, + nodos de reacción cortos (brisa_reac_*, brisa_rw_*, toln_forge_sarc, ilwen_reac_amenaz, voz_frag_*, eco_voz_*).
+  - eco_voz onEnd → 'eco_taken_mem' (primera memoria: la nana, al recuperar el Eco de la Voz).
+  - Variantes por tono dominante vía getDialogue (firma intacta): Toln llama 'Listillo' al sarcástico (toln_intro_listillo), Brisa usa 'alma' con el empático y desconfía del amenazante (brisa_idle_emp / brisa_idle_amenaz), Ilwen respeta al pragmático (ilwen_chat_prag 'Hablamos claro, los dos').
+  - Watchers de memorias en updateGame (no hooks): flags.ecoVoz + bosque → mem_casa; flags.guardianDefeated → mem_madre (una vez, flags mem_casa/mem_madre).
+  - NPC nuevos (diálogos): doran_intro/verde/sarc/orden/reject/bye (Círculo Verde: «no es maldad, es lo que había antes»; rep_circulo_5 en empático/pragmático; rep_orden_-5 al rechazar a la Orden), heraldo_intro/amenaz/prag/emp (te llama «el recipiente», «la Lanza ya está preparada para la segunda vez», Gran Inquisidor; rep_orden_-5 al desafiar), teo_intro/emp/prag/sarc (niño rescatado; la nana de su madre = guiño a la melodía del Portador).
+  - Ecos menores nuevos: e3 'Los Guardianes que aún cantan' (Lunaris), b_e4 'La Rebelión de los Sordos' (Bosque), c_e3 'La Lanza Muda' de los Durn (Cripta, conecta con la cita del Heraldo).
+  - Easter egg Nimue: cartel needPast en el Bosque (donde la Niebla se disipa en el pasado) que susurra «...nimue... nimue...» y juega con el nombre Naia que usa Ilwen. readSign consume pr.label (verificado: pasa el texto completo).
+- T4 · maps.ts: NPC teo (23,20, showFlag wolfKills), heraldo (28,17, showFlag ecoVoz, sprite 'sombra' seguro mientras 3-a crea el suyo), doran (36,24, sprite/portrait 'doran'); ecos/props nuevos en tiles libres sin tocar layout ni diffs de época; fix import Epoch (faltaba y rompía tsc).
+- sfx nuevos del contrato ('break', 'memory', 'banner'): verificado que el switch de audio.sfx NO tiene default → nombre desconocido = no-op seguro; se llaman directamente (documentado en comentarios).
+- Verificación: bun run lint 0 errores; bunx tsc --noEmit 0 errores en mis 4 archivos; dev.log compila y sirve 200.
+
+Stage Summary:
+- Combate: knockback físico suave (fxcore) en jugador/enemigos/Ilwen, ventana de combo real (1.2 s), REMATE potenciado sobre quebrados, ondas y slams del jefe empujan, impactos cargados desplazan.
+- Ilwen: arco elemental cíclico, sistema de MARCA (+60% daño focalizado), técnica combinada «Lluvia de estrellas» gated por afinidad (crece combatiendo y con tu tono), y FIX crítico: sus flechas ahora dañan enemigos (antes fuego amigo / inútiles).
+- Jefe: banner cinematográfico en su despertar + flash/shake/slowmo en cambios de fase.
+- Narrativa: sistema de tono con consecuencias (apodos y trato de Brisa/Toln/Ilwen), 3 memorias del Portador encadenadas al progreso (nana vía Eco, casa vía Bosque post-Eco, madre vía Guardián), reputación de 4 facciones viva en diálogos, 3 NPC nuevos (Doran, Heraldo de Vesh, Teo), 3 ecos menores nuevos y easter egg de Nimue.
+- Para el integrador: nuevas acciones de hooks ('memory_<id>', 'rep_<faccion>_<±n>', 'eco_taken_mem', 'flag_<clave>') documentadas en hooks.ts; usarlas en cualquier diálogo futuro. g.flags.tonoDominante contiene un string en runtime (cast documentado).
+- Notas para 3-a: sprites/portraits que faltan por crear: 'doran' (mundo+retrato), 'teo' (mundo+retrato), 'kael' (retrato del Heraldo; su sprite de mundo uso 'sombra'), icono de MARCADO (e.marked) sobre enemigos. render/screens aún no dibujan memoryReveal/bossBanner/flashT (los decae el motor). sprites.ts a medio refactor en paralelo: mientras tanto update.ts ya no importa SOLID_CHARS (usa g.tileSolidAt, método público del motor, semántica idéntica).
+- Errores preexistentes vistos en archivos congelados/ajenos (NO tocados): engine.ts redeclara VIEW_W/VIEW_H/ZOOM (línea 1209 vs 18-19), render.ts(316) usa e.dispName sin estrechar Entity, sprites.ts WIP de 3-a sin exportar aún SOLID_CHARS/TILE/drawTile/drawTallTile (engine.ts falla igual, se reconciliará al terminar 3-a).
+
+---
+Task ID: 3
+Agent: Super Z (agente principal) + agentes 3-a y 3-b
+Task: Mejora integral de la demo con 2 agentes en paralelo: animaciones/visuales (3-a), mecánicas/funciones/contenido (3-b), integración y QA (principal). Alineado con la biblia de la historia proporcionada por el usuario.
+
+Work Log:
+- Contrato compartido (Task 3-0): types.ts (ToneKind, tones/memories/repFacciones, kbVx/kbVy, marked, comboT), fxcore.ts congelado (shake/flash/slowmo/knockback), hooks.ts, integración en engine.ts (applyAction default→hooks, recordDialogueTone, decaimientos de feedback en el bucle, serialización compatible), MEMORIES en data.ts.
+- Agente 3-b (mecánicas) COMPLETÓ: hooks.ts completo (memory_<id>, rep_<faccion>_<n>, eco_taken_mem, flag_<k>), tono dominante con +1 afinidad; combate: knockback suave por elemento, ventana de combo, REMATE sobre quebrados (WeakSet), Ilwen con flechas elementales cíclicas + MARCA + «Lluvia de estrellas» (afinidad ≥20, cd 24s), jefe con banner y flash/slowmo por fase; FIX: flechas de Ilwen iban a rama enemiga y Ilwen era invisible (flags.q2_done); contenido: opciones de tono en 6 diálogos, variantes por tono (Listillo/alma/claridad), 3 NPC nuevos (Doran Círculo Verde, Heraldo de Vesh «el recipiente», Teo), 3 ecos menores nuevos, easter egg Nimue (cartel needPast).
+- Agente 3-a (visuales) murió por timeout a mitad del refactor de sprites.ts (perdió exports TILE/SOLID_CHARS/drawTile/drawTallTile) PERO completó: ciclos de andar humanoides (drawHumanFrame/layout), paletas y retratos de 9 personajes nuevos (sasha/brokk/maelis/corvin/kael/inquisidor/teo/doran/nimue) + drawPortrait con fallback, drawSlashArc, fx.ts (partículas ambientales por mapa, estelas de esquiva, bannerInfo, memoryAlpha), render (flash, overlay de memoria tipo vitral con marca de onda, banner de jefe con temblor, iconos de estado con marcado, ping de santuarios en minimapa), screens (título con niebla/notas/estrellas, Estado con «Velmora te observa» [tono/memorias/facciones], Diario con memorias y teasers, final con memorias), audio (sfx break/memory/banner/whoosh + default seguro).
+- Integración (principal): restaurada sección de tiles desde git HEAD; corregidos reexport VIEW_W/H/ZOOM en engine.ts (conflicto tsc), export TRAIL_LIFE en fx.ts, cast de chargedHit y dispName en render.ts, guards hairS en retratos; loopError ahora guarda stack.
+- FIX de UI detectado en navegador: las opciones de diálogo solapaban el texto del nodo → drawDialogue recalcula altura de caja según líneas totales y opciones (box crece, opciones bajo el texto).
+- Verificación E2E con agent-browser: título → creación (DOM) → intro → juego (HUD/retrato/partículas/minimapa); diálogo Brisa con 4 tonos visibles sin solape y contador empatico:1; overlay Memoria I y II (watcher automático en bosque); banner GUARDIÁN HUECO; pausa Estado (tono/memorias 1/3/facciones) y Diario (memoria desbloqueada + teasers); combate real: arcos de slash, daño, muerte/respawn, REMATE confirmado (doble golpe 18+18); apodo sarcástico «Listillo» en Toln; NPC Teo y Heraldo con retratos; noche con luna/estrellas/luz radial; Bosque pasado/presente y Cripta sin errores de bucle. Un error transitorio drawImage tras loadMap por consola no fue reproducible tras la integración (loopError con stack quedó instrumentado).
+- Final: lint 0, tsc 0 (src), dev.log compila y sirve 200.
+
+Stage Summary:
+- Demo mejorada: sistema de Tono con apodos, 3 Memorias del Portador con overlay vitral, reputación de 4 facciones, REMATE, knockback suave, Ilwen elemental con Lluvia de Estrellas, banner de jefe, 3 NPC nuevos de la biblia, 9 sprites/retratos nuevos, partículas ambientales por mapa, ciclo día/noche con luna/estrellas, sfx nuevos, título y menús pulidos.
+- Contrato de extensión documentado en hooks.ts para futuro contenido (Actos II-IV).

@@ -1,0 +1,250 @@
+export const TILE = 16;
+
+export function drawTile(
+  x: CanvasRenderingContext2D, ch: string, tx: number, ty: number,
+  mapId: string, t: number,
+): void {
+  const px0 = tx * TILE, py0 = ty * TILE;
+  const r = hash2(tx, ty);
+  const r2 = hash2(tx * 7 + 3, ty * 11 + 5);
+  switch (ch) {
+    case '.': case ',': { // hierba
+      const g = mapId === 'bosque' ? ['#3f6d3a', '#396334'] : ['#4f8a46', '#467c3e'];
+      px(x, px0, py0, TILE, TILE, r < 0.5 ? g[0] : g[1]);
+      for (let i = 0; i < 4; i++) {
+        const hx = hash2(tx * 4 + i, ty * 9 + i);
+        if (hx < 0.35) {
+          x.fillStyle = '#5a9a50';
+          x.fillRect(px0 + Math.floor(hx * 14), py0 + Math.floor(hash2(tx + i, ty * 3 + i) * 14), 1, 2);
+        }
+      }
+      if (ch === ',') {
+        const cols = ['#f0d060', '#e878a0', '#f0f0f0', '#e88a4a'];
+        const col = cols[Math.floor(r2 * cols.length)];
+        x.fillStyle = col;
+        x.fillRect(px0 + 4 + Math.floor(r * 7), py0 + 4 + Math.floor(r2 * 7), 2, 2);
+        x.fillStyle = '#fff';
+        x.fillRect(px0 + 4 + Math.floor(r * 7), py0 + 4 + Math.floor(r2 * 7), 1, 1);
+      }
+      break;
+    }
+    case '=': { // camino
+      px(x, px0, py0, TILE, TILE, '#b89a6a');
+      px(x, px0, py0, TILE, 1, '#c4a878');
+      for (let i = 0; i < 5; i++) {
+        const hx = hash2(tx * 13 + i, ty * 5 + i * 3);
+        if (hx < 0.4) {
+          x.fillStyle = '#a08454';
+          x.fillRect(px0 + Math.floor(hx * 13), py0 + Math.floor(hash2(tx + i * 7, ty + i) * 13), 2, 1);
+        }
+      }
+      break;
+    }
+    case '~': { // agua
+      const w = Math.sin((t * 2 + tx * 0.9 + ty * 1.3)) * 0.5 + 0.5;
+      px(x, px0, py0, TILE, TILE, '#3a6a9a');
+      px(x, px0, py0, TILE, TILE, w > 0.5 ? '#3f72a4' : '#3a6a9a');
+      x.fillStyle = '#6aa0cc';
+      if (r > 0.5) x.fillRect(px0 + 2, py0 + 4 + Math.floor(w * 3), 6, 1);
+      if (r2 > 0.5) x.fillRect(px0 + 8, py0 + 10 + Math.floor(w * 2), 5, 1);
+      break;
+    }
+    case 'B': case 'x': { // puente / roto
+      px(x, px0, py0, TILE, TILE, '#3a6a9a');
+      if (ch === 'B') {
+        px(x, px0, py0 + 2, TILE, 12, '#9a7040');
+        for (let i = 0; i < 4; i++) px(x, px0, py0 + 2 + i * 3, TILE, 1, '#7a5530');
+        px(x, px0, py0 + 2, TILE, 1, '#b89058');
+      } else {
+        px(x, px0 + 1, py0 + 3, 5, 3, '#8a6438');
+        px(x, px0 + 9, py0 + 9, 6, 3, '#8a6438');
+      }
+      break;
+    }
+    case ':': case '_': { // suelo piedra / madera
+      if (ch === ':') {
+        px(x, px0, py0, TILE, TILE, '#6a6a7a');
+        px(x, px0, py0, TILE, 1, '#7a7a8a');
+        if (r > 0.7) { x.fillStyle = '#5a5a6a'; x.fillRect(px0 + 3, py0 + 9, 7, 1); }
+        x.fillStyle = '#585868';
+        x.fillRect(px0, py0, TILE, 1); x.fillRect(px0, py0, 1, TILE);
+      } else {
+        px(x, px0, py0, TILE, TILE, '#8a6a44');
+        px(x, px0, py0 + 7, TILE, 1, '#6a4e30');
+        px(x, px0, py0, 1, TILE, '#6a4e30');
+        px(x, px0 + (r > 0.5 ? 4 : 10), py0 + 2, 1, 5, '#7a5c3a');
+      }
+      break;
+    }
+    case '#': { // muro piedra
+      px(x, px0, py0, TILE, TILE, '#5a5a6e');
+      x.fillStyle = '#4a4a5c';
+      for (let row = 0; row < 4; row++) {
+        x.fillRect(px0, py0 + row * 4 + 3, TILE, 1);
+        const off = row % 2 === 0 ? 0 : 8;
+        x.fillRect(px0 + ((off + 3) % 16), py0 + row * 4, 1, 3);
+        x.fillRect(px0 + ((off + 11) % 16), py0 + row * 4, 1, 3);
+      }
+      x.fillStyle = '#6e6e84';
+      x.fillRect(px0, py0, TILE, 1);
+      if (r > 0.75) { x.fillStyle = '#3e3e50'; x.fillRect(px0 + 5, py0 + 6, 3, 2); }
+      break;
+    }
+    case 'H': { // pared casa
+      px(x, px0, py0, TILE, TILE, '#e2d0ac');
+      x.fillStyle = '#7a5c38';
+      x.fillRect(px0, py0, TILE, 2);
+      x.fillRect(px0, py0, 2, TILE);
+      x.fillRect(px0 + 14, py0, 2, TILE);
+      x.fillStyle = '#d0bc94';
+      x.fillRect(px0 + 4, py0 + 6, 8, 6);
+      break;
+    }
+    case 'r': { // tejado
+      px(x, px0, py0, TILE, TILE, '#a8503a');
+      for (let row = 0; row < 4; row++) {
+        x.fillStyle = row % 2 === 0 ? '#94422e' : '#a8503a';
+        x.fillRect(px0, py0 + row * 4, TILE, 4);
+        x.fillStyle = '#7e3626';
+        x.fillRect(px0, py0 + row * 4 + 3, TILE, 1);
+      }
+      x.fillStyle = '#c86850';
+      x.fillRect(px0, py0, TILE, 1);
+      break;
+    }
+    case 'd': { // puerta
+      px(x, px0, py0, TILE, TILE, '#e2d0ac');
+      px(x, px0 + 3, py0 + 2, 10, 14, '#5c3a1e');
+      px(x, px0 + 4, py0 + 3, 8, 13, '#7a5230');
+      px(x, px0 + 10, py0 + 9, 1, 2, '#f0c84a');
+      break;
+    }
+    case 'F': { // valla
+      px(x, px0, py0 + 4, TILE, 2, '#8a6a3e');
+      px(x, px0, py0 + 10, TILE, 2, '#8a6a3e');
+      px(x, px0 + 2, py0 + 2, 3, 13, '#9a7848');
+      px(x, px0 + 11, py0 + 2, 3, 13, '#9a7848');
+      px(x, px0 + 2, py0 + 2, 3, 1, '#b89868');
+      break;
+    }
+    case 'c': { // cultivo
+      px(x, px0, py0, TILE, TILE, '#6a4e30');
+      for (let row = 0; row < 3; row++) {
+        x.fillStyle = '#4f8a46';
+        x.fillRect(px0 + 2, py0 + 3 + row * 5, 12, 2);
+        x.fillStyle = '#5a9a50';
+        x.fillRect(px0 + 2, py0 + 3 + row * 5, 12, 1);
+      }
+      break;
+    }
+    case 'w': { // pozo
+      px(x, px0, py0, TILE, TILE, '#4f8a46');
+      px(x, px0 + 2, py0 + 4, 12, 10, '#6a6a7a');
+      px(x, px0 + 3, py0 + 5, 10, 8, '#2a3444');
+      px(x, px0 + 2, py0 + 4, 12, 2, '#7a7a8a');
+      px(x, px0 + 3, py0 - 4, 10, 2, '#8a6a3e');
+      break;
+    }
+    case 'R': { // roca
+      px(x, px0, py0, TILE, TILE, r < 0.5 ? '#4f8a46' : '#396334');
+      px(x, px0 + 3, py0 + 6, 10, 8, '#7a7a88');
+      px(x, px0 + 5, py0 + 4, 7, 4, '#8a8a98');
+      px(x, px0 + 4, py0 + 13, 9, 2, '#5a5a6a');
+      px(x, px0 + 6, py0 + 5, 3, 2, '#a0a0b0');
+      break;
+    }
+    case 'g': { // lápida
+      px(x, px0, py0, TILE, TILE, '#396334');
+      px(x, px0 + 4, py0 + 5, 8, 9, '#8a8a98');
+      px(x, px0 + 5, py0 + 3, 6, 4, '#9a9aa8');
+      px(x, px0 + 6, py0 + 7, 4, 1, '#6a6a7a');
+      px(x, px0 + 4, py0 + 14, 8, 1, '#5a5a6a');
+      break;
+    }
+    case 'P': { // pilar
+      px(x, px0, py0, TILE, TILE, ch === 'P' ? '#6a6a7a' : '#6a6a7a');
+      px(x, px0 + 2, py0 - 6, 12, 22, '#8a8a9a');
+      px(x, px0 + 2, py0 - 6, 3, 22, '#a4a4b4');
+      px(x, px0 + 1, py0 - 8, 14, 3, '#9a9aaa');
+      px(x, px0 + 1, py0 + 14, 14, 2, '#5a5a6a');
+      break;
+    }
+    case 'A': { // altar
+      px(x, px0, py0, TILE, TILE, '#585868');
+      px(x, px0 + 2, py0 + 4, 12, 9, '#7a7a8a');
+      px(x, px0 + 3, py0 + 2, 10, 3, '#8a8a9a');
+      px(x, px0 + 4, py0 + 6, 8, 1, '#f0c84a');
+      px(x, px0 + 5, py0 + 8, 6, 1, '#f0c84a');
+      break;
+    }
+    case 'V': { // vacío
+      px(x, px0, py0, TILE, TILE, '#0c0a14');
+      if (r > 0.8) { x.fillStyle = '#1c1828'; x.fillRect(px0 + 3, py0 + 5, 4, 2); }
+      break;
+    }
+    case 'm': { // niebla muda (suelo)
+      px(x, px0, py0, TILE, TILE, '#4a5a52');
+      x.globalAlpha = 0.3;
+      px(x, px0, py0 + 4 + Math.floor(Math.sin(t + tx) * 2), TILE, 8, '#9ec4b4');
+      x.globalAlpha = 1;
+      break;
+    }
+    case 'n': { // niebla densa (bloquea)
+      px(x, px0, py0, TILE, TILE, '#3c4a48');
+      x.globalAlpha = 0.55;
+      px(x, px0, py0 + 3, TILE, 10, '#7ea49a');
+      x.globalAlpha = 1;
+      px(x, px0, py0 + 2, TILE, 2, '#2c3a38');
+      break;
+    }
+    default: {
+      px(x, px0, py0, TILE, TILE, '#4f8a46');
+      break;
+    }
+  }
+}
+
+// Objetos altos (dibujados por encima del suelo, con orden por fila)
+export function isTallTile(ch: string): boolean {
+  return ch === 't' || ch === 'p';
+}
+
+export function drawTallTile(
+  x: CanvasRenderingContext2D, ch: string, tx: number, ty: number, mapId: string,
+): void {
+  const px0 = tx * TILE, py0 = ty * TILE;
+  const r = hash2(tx * 3 + 1, ty * 5 + 7);
+  if (ch === 't') { // árbol coposo
+    x.fillStyle = '#5c4028';
+    x.fillRect(px0 + 6, py0 + 8, 4, 8);
+    x.fillStyle = '#4a3420';
+    x.fillRect(px0 + 6, py0 + 14, 4, 2);
+    const c1 = mapId === 'bosque' ? '#2e5d34' : '#3a703c';
+    const c2 = mapId === 'bosque' ? '#3e7244' : '#4a8a4c';
+    x.fillStyle = c1;
+    x.fillRect(px0 + 1, py0 - 6, 14, 14);
+    x.fillRect(px0 + 3, py0 - 10, 10, 6);
+    x.fillStyle = c2;
+    x.fillRect(px0 + 2, py0 - 8, 8, 6);
+    x.fillRect(px0 + 4, py0 - 11, 5, 4);
+    if (r > 0.6) {
+      x.fillStyle = r > 0.8 ? '#e05858' : '#e8c860';
+      x.fillRect(px0 + 3 + Math.floor(r * 6), py0 - 4, 2, 2);
+    }
+  } else if (ch === 'p') { // pino
+    x.fillStyle = '#54381e';
+    x.fillRect(px0 + 6, py0 + 10, 4, 6);
+    x.fillStyle = '#1e4a2c';
+    x.fillRect(px0 + 3, py0 - 2, 10, 8);
+    x.fillRect(px0 + 5, py0 - 8, 6, 7);
+    x.fillRect(px0 + 6, py0 - 12, 4, 5);
+    x.fillStyle = '#2e6238';
+    x.fillRect(px0 + 4, py0 - 4, 6, 4);
+    x.fillRect(px0 + 6, py0 - 10, 3, 3);
+    x.fillStyle = '#e8f0f4';
+    if (r > 0.7) x.fillRect(px0 + 5, py0 - 9, 2, 1);
+  }
+}
+
+// Árbol cortado en el pasado (diffs usan '.')
+export const SOLID_CHARS = new Set(['t', 'p', '#', 'H', 'r', 'F', 'R', 'w', 'g', 'P', 'A', 'V', '~', 'd', 'x', 'n']);

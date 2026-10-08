@@ -4,7 +4,7 @@
 // Generación determinista (sin azar de ejecución)
 // ============================================================
 
-import type { MapDef, MapId, EpochDiff } from './types';
+import type { MapDef, MapId, EpochDiff, Epoch } from './types';
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -243,6 +243,11 @@ export const MAPS: Record<MapId, MapDef> = {
     npcs: [
       { id: 'brisa', x: 23, y: 13, sprite: 'brisa', name: 'Anciana Brisa' },
       { id: 'toln', x: 35, y: 11, sprite: 'toln', name: 'Maestro Toln' },
+      // Teo (biblia: niño rescatado de la Niebla) — aparece en cuanto empiezas a
+      // empujar la Niebla (primer lobo cazado)
+      { id: 'teo', x: 23, y: 20, sprite: 'teo', name: 'Teo', showFlag: 'wolfKills' },
+      // Heraldo de la Orden de Vesh (biblia) — aparece tras recuperar el Eco de la Voz
+      { id: 'heraldo', x: 28, y: 17, sprite: 'sombra', name: 'Heraldo de Vesh', showFlag: 'ecoVoz' },
     ],
     chests: [
       { id: 'l1', x: 5, y: 24, gold: 40, needPast: true },
@@ -253,6 +258,7 @@ export const MAPS: Record<MapId, MapDef> = {
     echoes: [
       { id: 'e1', x: 21, y: 13, title: 'Eco menor · El pozo de los nombres', text: '«Antes de la Noche del Silencio, los aldeanos susurraban sus nombres al pozo para que el dios los tejiera en su canto. Ahora el pozo solo devuelve silencio.»' },
       { id: 'e2', x: 40, y: 31, title: 'Eco menor · La nieta del herrero', text: '«Toln aún forja todas las noches, aunque nadie compra. Dice que el metal recuerda el ritmo del martillo... y que algún día el canto volverá a necesitarlo.»' },
+      { id: 'e3', x: 14, y: 17, title: 'Eco menor · Los Guardianes que aún cantan', text: '«Cada noche, tres capellanes subían a la muralla y cantaban las horas para que el valle durmiera sin miedo. Cuando el canto murió, dos callaron. El tercero aún canta: lo hacen las piedras por él, cuando llueve.»' },
     ],
     spawns: [
       { type: 'lobo', x: 13, y: 33, patrol: 4, zone: 'valle' },
@@ -280,6 +286,8 @@ export const MAPS: Record<MapId, MapDef> = {
     music: 'forest',
     npcs: [
       { id: 'ilwen', x: 16, y: 32, sprite: 'ilwen', name: 'Ilwen', showFlag: 'q2_done' },
+      // Doran, druida del Círculo Verde (biblia) — cerca del santuario de la Ruina Antigua
+      { id: 'doran', x: 36, y: 24, sprite: 'doran', name: 'Doran' },
     ],
     chests: [
       { id: 'b1', x: 4, y: 40, potions: 2 },
@@ -292,6 +300,7 @@ export const MAPS: Record<MapId, MapDef> = {
       { id: 'b_e1', x: 33, y: 26, title: 'Eco menor · La Madre Espina', text: '«Cuando el canto murió, las raíces del Bosque enloquecieron de dolor. La Madre Espina no es mala: solo tiene roto el corazón.»' },
       { id: 'b_e2', x: 48, y: 12, title: 'Eco menor · El guardián de la niebla', text: '«Los lobos de niebla fueron una vez perros guardianes de Lunaris. Aún patrullan. Ya no saben para qué.»' },
       { id: 'b_e3', x: 12, y: 38, title: 'Eco menor · El primer Portador', text: '«Hubo otros antes que tú. Todos oyeron el primer Eco. Ninguno volvió de la Ciudadela. Prepara tu despedida, Portador.»' },
+      { id: 'b_e4', x: 30, y: 24, title: 'Eco menor · La Rebelión de los Sordos', text: '«Hubo un año en que los aldeanos del bosque se taparon los oídos con cera de abejas: "si el canto nos gobernaba, el silencio nos libera". Duraron un invierno. La Niebla los encontró igual: el silencio también se puede robar.»' },
     ],
     spawns: [
       { type: 'lobo', x: 32, y: 36, patrol: 4, zone: 'bosque' },
@@ -313,6 +322,8 @@ export const MAPS: Record<MapId, MapDef> = {
       { id: 'fragment', kind: 'fragment', x: 41, y: 24 },
       { id: 'sign_b', kind: 'sign', x: 27, y: 41, label: '«Bosque Susurrante. Los caminos cambian con la luz.»' },
       { id: 'sign_c', kind: 'sign', x: 15, y: 5, label: '«Cripta del Primer Canto. Aquí durmió la voz del dios.»' },
+      // easter egg Nimue (biblia: hermana de Ilwen, atrapada en la Niebla) — solo en el pasado
+      { id: 'sign_nimue', kind: 'sign', x: 25, y: 6, needPast: true, label: 'Las flores del pasado no crecen en círculo por casualidad. Entre las raíces, apenas un hilo de voz que ya no es voz: «...nimue... nimue...» Alguien duerme aquí debajo, y la Niebla la cuida como a una semilla. (Ilwen busca a su hermana... pero jura que no se llamaba así.)' },
     ],
   },
 
@@ -333,6 +344,7 @@ export const MAPS: Record<MapId, MapDef> = {
     echoes: [
       { id: 'c_e1', x: 27, y: 13, title: 'Eco menor · El eco del guardián', text: '«El Guardián Hueco fue el primer coro de Aelthar. Cuando el dios calló, el coro siguió cantando... hasta que su propia voz lo vació por dentro.»' },
       { id: 'c_e2', x: 12, y: 25, title: 'Eco menor · El peregrino', text: '«Cientos peregrinos subieron a oír el Primer Canto. Este dejó su lámpara encendida para el siguiente. Aún arde.»' },
+      { id: 'c_e3', x: 24, y: 26, title: 'Eco menor · La Lanza Muda', text: '«Aquí forjaron los Durn la Lanza que mató al dios: una lanza sin canto, sorda de nacimiento, para que el canto del dios no la desviara. Nadie la volvió a ver. Los que la buscaron dicen que sigue silbando en algún rincón del mundo... esperando la segunda vez.»' },
     ],
     spawns: [
       { type: 'esqueleto', x: 10, y: 26, patrol: 3, zone: 'cripta' },

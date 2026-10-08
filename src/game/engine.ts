@@ -13,6 +13,7 @@ import { audio } from './audio';
 import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue } from './data';
 import { updateGame } from './update';
 import { drawGame } from './render';
+import { handleCustomAction, recordDialogueTone } from './hooks';
 
 export const VIEW_W = 960, VIEW_H = 540;
 export const ZOOM = 2;
@@ -60,6 +61,15 @@ export class Game {
   waves: Shockwave[] = [];
   telegraphs: TeleGraph[] = [];
   lastNote: Element = 'fuego';
+
+  // feedback visual compartido (contrato fxcore)
+  flashT = 0;
+  flashColor = '#ffffff';
+  slowmoT = 0;
+  memoryReveal: { id: string; title: string; text: string; t: number } | null = null;
+  bossBannerT = 0;
+  bossBannerText = '';
+  bossBannerSub = '';
 
   // progreso
   flags: Record<string, number | boolean> = {};
@@ -134,13 +144,17 @@ export class Game {
       try {
         let dt = Math.min(0.05, (ts - this.lastTs) / 1000);
         this.lastTs = ts;
+        if (this.flashT > 0) this.flashT = Math.max(0, this.flashT - dt);
+        if (this.bossBannerT > 0) this.bossBannerT = Math.max(0, this.bossBannerT - dt);
+        if (this.memoryReveal) { this.memoryReveal.t -= dt; if (this.memoryReveal.t <= 0) this.memoryReveal = null; }
         if (this.hitStop > 0) { this.hitStop -= dt; dt *= 0.12; }
+        if (this.slowmoT > 0) { this.slowmoT -= dt; dt *= 0.35; }
         this.globalT += dt;
         if (this.state === 'play' || this.state === 'dialogue') this.update(dt);
         drawGame(this);
         this.loopError = null;
       } catch (err) {
-        this.loopError = String(err);
+        this.loopError = err instanceof Error ? (err.stack ?? String(err)) : String(err);
         console.error('[EcosAelthar loop]', err);
         try {
           this.ctx.fillStyle = '#000';
@@ -178,6 +192,9 @@ export class Game {
       iframes: 0, parryT: 0, parryFx: 0, attackT: 0, combo: 0,
       chargeT: 0, charging: false, rollT: 0, lastHitT: 0,
       hasEcho: false, kills: 0, deaths: 0, repGuardianes: 0, playTime: 0,
+      tones: { empatico: 0, pragmatico: 0, sarcastico: 0, amenazante: 0 },
+      memories: [],
+      repFacciones: { guardianes: 0, orden: 0, circulo: 0, liga: 0 },
     };
     this.flags = {};
     this.questIdx = 0; this.questStep = 0;
@@ -221,6 +238,9 @@ export class Game {
       chargeT: 0, charging: false, rollT: 0, lastHitT: 0,
       hasEcho: p.hasEcho, kills: p.kills, deaths: p.deaths,
       repGuardianes: p.repGuardianes, playTime: p.playTime,
+      tones: p.tones ?? { empatico: 0, pragmatico: 0, sarcastico: 0, amenazante: 0 },
+      memories: p.memories ?? [],
+      repFacciones: p.repFacciones ?? { guardianes: 0, orden: 0, circulo: 0, liga: 0 },
     };
     this.flags = { ...d.flags };
     this.questIdx = d.questIdx; this.questStep = d.questStep;
@@ -251,6 +271,7 @@ export class Game {
         gold: p.gold, weaponPlus: p.weaponPlus, potions: p.potions,
         hasEcho: p.hasEcho, kills: p.kills, deaths: p.deaths,
         repGuardianes: p.repGuardianes, playTime: p.playTime,
+        tones: p.tones, memories: p.memories, repFacciones: p.repFacciones,
       },
       map: this.mapId, x: Math.round(p.x), y: Math.round(p.y),
       epoch: this.epoch,
@@ -534,6 +555,7 @@ export class Game {
     if (this.dlgNode.onEnd) this.applyAction(this.dlgNode.onEnd);
     if (this.dlgNode.options && this.dlgNode.options.length > 0) {
       const opt = this.dlgNode.options[this.dlgSel];
+      recordDialogueTone(this, opt);
       if (opt.action) this.applyAction(opt.action);
       if (opt.next) { this.openDialogue(opt.next); return; }
       this.closeDialogue();
@@ -636,6 +658,10 @@ export class Game {
       }
       case action === 'close':
         this.closeDialogue();
+        break;
+      default:
+        // acciones extendidas (sistema de tono, memorias, facciones...) — ver hooks.ts
+        handleCustomAction(this, action);
         break;
     }
   }
@@ -1180,4 +1206,4 @@ export function initGame(canvas: HTMLCanvasElement): Game {
 }
 
 // re-exportar helpers usados por update/render
-export { MAPS, tileAt, getSpr, frameIndex, SKILLS, ENEMY_DEFS, QUESTS, DIALOGUES, audio, hash2, TILE, ZOOM, VIEW_W, VIEW_H };
+export { MAPS, tileAt, getSpr, frameIndex, SKILLS, ENEMY_DEFS, QUESTS, DIALOGUES, audio, hash2, TILE };

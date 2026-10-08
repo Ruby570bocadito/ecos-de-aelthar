@@ -345,6 +345,33 @@ export class AudioEngine {
       case 'uiOpen': this.sTone(440, 660, 0.07, 'square', 0.07); break;
       case 'error': this.sTone(220, 180, 0.12, 'square', 0.1); break;
       case 'companionShot': this.sNoise(0.06, 3000, 0.07, 'highpass'); this.sTone(900, 1500, 0.05, 'triangle', 0.05); break;
+      // ----- SFX nuevos (agente 3-b los llama desde update.ts) -----
+      case 'break':
+        // cristal/quebradura: chasquido de ruido + tono descendente
+        this.sNoise(0.18, 4200, 0.2, 'highpass', 0, 1200);
+        this.sTone(1800, 220, 0.28, 'triangle', 0.16);
+        this.sNoise(0.12, 900, 0.12, 'bandpass', 0.05, 300);
+        break;
+      case 'memory':
+        // campanita suave de 4 notas ascendentes, timbre de nana
+        [659, 784, 880, 1175].forEach((f, i) => {
+          this.sTone(f, f, 0.5, 'sine', 0.09, i * 0.16);
+          this.sTone(f * 2, f * 2, 0.28, 'sine', 0.03, i * 0.16);
+        });
+        break;
+      case 'banner':
+        // cuerno grave breve (anuncia al jefe)
+        this.sTone(98, 92, 0.55, 'sawtooth', 0.2);
+        this.sTone(147, 138, 0.5, 'sawtooth', 0.12, 0.02);
+        this.sNoise(0.4, 300, 0.06, 'lowpass');
+        break;
+      case 'whoosh':
+        // susurro de esquiva
+        this.sNoise(0.16, 1400, 0.09, 'bandpass', 0, 3800);
+        break;
+      default:
+        // SFX desconocido: no-op seguro (no rompe el juego)
+        break;
     }
   }
 }
