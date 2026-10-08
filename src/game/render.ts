@@ -7,6 +7,7 @@
 import type { Game } from './engine';
 import type { Entity, Enemy } from './types';
 import { VIEW_W, VIEW_H, ZOOM, TILE, getSpr, SKILLS, QUESTS } from './engine';
+import { tileAt } from './maps';
 import { ENEMY_DEFS } from './data';
 import { COL, text, textShadow, panel, bar, clearHits, wrapText, fBody } from './ui';
 import { drawScreens } from './screens';
@@ -15,6 +16,12 @@ import {
   fxFrame, updateAmbient, drawAmbient, getRollTrail,
   bannerInfo, memoryAlpha, TRAIL_LIFE,
 } from './fx';
+import { drawLightingV2 } from './world/lighting';
+import { updateWeather, drawWeatherWorld, drawWeatherSky } from './world/weather';
+import { drawDayNightGrade, drawCloudShadows } from './world/sky';
+import { waterOverlay } from './world/water';
+import { drawPropV2 } from './world/props';
+import { drawMinimapOverlay } from './world/minimap';
 
 const WORLD_FILTER: Record<string, string> = {
   presente: 'saturate(0.74) contrast(0.98)',
@@ -35,6 +42,7 @@ export function drawGame(g: Game) {
 
   if (g.state === 'play' || g.state === 'dialogue') {
     updateAmbient(g, dtF);
+    updateWeather(g, dtF); // clima por mapa (R1): pool determinista, resetea al cambiar mapa/época
   }
 
   drawWorld(g);
@@ -64,6 +72,18 @@ function drawWorld(g: Game) {
     ctx.restore();
   }
 
+  // sombras de nube (módulo sky): solo exterior de día; se dibuja ENCIMA del
+  // suelo y SIN WORLD_FILTER (atmósfera, no terreno)
+  drawCloudShadows(ctx, g);
+
+  // agua animada (módulo water): olas/espuma sobre el prerrender estático,
+  // con el MISMO filtro de época que el suelo para fundirse con él
+  ctx.save();
+  ctx.filter = WORLD_FILTER[g.epoch] ?? 'none';
+  waterOverlay(ctx, camX, camY, g.globalT, g.mapId,
+    (tx, ty) => tileAt(g.map, g.rows, tx, ty, g.epoch));
+  ctx.restore();
+
   const sx = (wx: number) => wx * ZOOM - camX;
   const sy = (wy: number) => wy * ZOOM - camY;
 
@@ -87,8 +107,8 @@ function drawWorld(g: Game) {
     ctx.globalAlpha = 1;
   }
 
-  // props
-  drawProps(g, sx, sy);
+  // props (v2: obeliscos, forja, fragmentos, altares, carteles, portones)
+  drawProps(g);
 
   // estelas de esquiva (afterimages del jugador, bajo las entidades)
   drawRollTrail(g, sx, sy);
@@ -128,11 +148,25 @@ function drawWorld(g: Game) {
 
   // partículas ambientales del mapa (motas, hojas, ceniza, niebla...)
   drawAmbient(g, 'world');
+  // clima por mapa (R1): niebla/haces/bruma + partículas del pool, SIN filtro de época
+  drawWeatherWorld(ctx, g);
 
-  drawLighting(g);
+  // iluminación v2 (módulo lighting): ciclo día/noche + oscuridad recortada
+  // por luces + tinte aditivo + viñeta
+  drawLightingV2(ctx, g);
+  // feedback de juego que vivía en el antiguo drawLighting y NO es iluminación:
+  // niebla del presente, destello de daño y viñeta roja por vida baja
+  drawLightingExtras(g);
+
+  // grading día/noche por franjas (módulo sky), sobre la luz y bajo el HUD
+  if (g.state === 'play' || g.state === 'dialogue') {
+    drawDayNightGrade(ctx, g);
+  }
 
   // capa de cielo: estrellas, luna, antorchas (sobre la iluminación)
   drawAmbient(g, 'sky');
+  // clima capa cielo (R1): luciérnagas/briznas/polen/chispas con halo 'lighter'
+  drawWeatherSky(ctx, g);
 
   // textos flotantes (después de la luz: siempre legibles)
   drawFloats(g, sx, sy);
@@ -199,70 +233,16 @@ function drawRollTrail(g: Game, sx: (n: number) => number, sy: (n: number) => nu
 
 // ---------------- Props ----------------
 
-function drawProps(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
-  const ctx = g.ctx;
+function drawProps(g: Game) {
+  const p = g.player;
   for (const pr of g.map.props) {
     if (pr.needPast && g.epoch !== 'pasado') continue;
     if (pr.needPresent && g.epoch !== 'presente') continue;
     const px = pr.x * TILE + 8, py = pr.y * TILE + 8;
-    if (pr.kind === 'sanctuary') {
-      const fr = Math.floor(g.globalT * 2) % 2;
-      const s = getSpr('sanctuary')[fr];
-      ctx.drawImage(s, sx(px - 10), sy(py - 22), 20 * ZOOM, 30 * ZOOM);
-      // aura
-      ctx.globalAlpha = 0.18 + Math.sin(g.globalT * 2) * 0.08;
-      ctx.fillStyle = '#8ef0ff';
-      ctx.beginPath();
-      ctx.arc(sx(px), sy(py - 6), 26, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    } else if (pr.kind === 'forge') {
-      // yunque + brasa
-      ctx.fillStyle = '#4a4a58';
-      ctx.fillRect(sx(px - 6), sy(py - 4), 12 * ZOOM, 6 * ZOOM);
-      ctx.fillStyle = '#5a5a6a';
-      ctx.fillRect(sx(px - 8), sy(py - 6), 6 * ZOOM, 4 * ZOOM);
-      const fl = 0.6 + Math.sin(g.globalT * 7) * 0.3;
-      ctx.fillStyle = `rgba(255,120,40,${fl})`;
-      ctx.fillRect(sx(px - 3), sy(py - 9), 6 * ZOOM, 5 * ZOOM);
-      ctx.fillStyle = `rgba(255,200,80,${fl})`;
-      ctx.fillRect(sx(px - 2), sy(py - 8), 4 * ZOOM, 3 * ZOOM);
-    } else if (pr.kind === 'fragment') {
-      const fr = Math.floor(g.globalT * 4) % 3;
-      const bob = Math.sin(g.globalT * 2.4) * 3;
-      ctx.globalAlpha = 0.25;
-      ctx.fillStyle = '#ffe9a0';
-      ctx.beginPath();
-      ctx.arc(sx(px), sy(py - 6 + bob), 18, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.drawImage(getSpr('fragment')[fr], sx(px - 6), sy(py - 12 + bob), 12 * ZOOM, 12 * ZOOM);
-    } else if (pr.kind === 'altarEcho') {
-      // altar con el Eco (si no recogido)
-      ctx.fillStyle = '#6a6a7a';
-      ctx.fillRect(sx(px - 7), sy(py - 2), 14 * ZOOM, 8 * ZOOM);
-      ctx.fillStyle = '#8a8a9a';
-      ctx.fillRect(sx(px - 5), sy(py - 5), 10 * ZOOM, 4 * ZOOM);
-      if (!g.flags.ecoVoz) {
-        const bob = Math.sin(g.globalT * 2.6) * 3;
-        const gl = g.flags.guardianDefeated ? 0.7 : 0.25;
-        ctx.globalAlpha = gl;
-        ctx.fillStyle = '#ffe9a0';
-        ctx.beginPath();
-        ctx.arc(sx(px), sy(py - 12 + bob), 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-        ctx.drawImage(getSpr('fragment')[Math.floor(g.globalT * 3) % 3], sx(px - 5), sy(py - 18 + bob), 10 * ZOOM, 10 * ZOOM);
-      }
-    } else if (pr.kind === 'sign') {
-      ctx.fillStyle = '#6d4520';
-      ctx.fillRect(sx(px - 1), sy(py - 6), 2 * ZOOM, 12 * ZOOM);
-      ctx.fillStyle = '#8a5a2b';
-      ctx.fillRect(sx(px - 7), sy(py - 13), 14 * ZOOM, 8 * ZOOM);
-      ctx.fillStyle = '#5c3a1e';
-      ctx.fillRect(sx(px - 6), sy(py - 11), 12 * ZOOM, 1.5 * ZOOM);
-      ctx.fillRect(sx(px - 6), sy(py - 9), 9 * ZOOM, 1.5 * ZOOM);
-    }
+    // prop "seleccionado": cerca del jugador (<24 px) — lo usa 'sign' para
+    // el temblor y el globo de lectura (drawPropV2 aplica su propia cámara)
+    const selected = !!(p && Math.hypot(px - p.x, py - p.y) < 24);
+    drawPropV2(g.ctx, pr.kind, px, py, g, selected);
   }
 }
 
@@ -509,83 +489,11 @@ function drawCombatFx(g: Game, sx: (n: number) => number, sy: (n: number) => num
 
 // ---------------- Iluminación ----------------
 
-// Canvas offscreen para la capa de oscuridad: los agujeros de luz
-// (destination-out) deben borrar SOLO la oscuridad. Si se hace sobre el
-// canvas principal, se borra el mundo dibujado y los "huecos" dejan ver el
-// fondo de la página (negro) → pantallas negras de noche y en la cripta.
-let lightCv: HTMLCanvasElement | null = null;
-let lightCtx: CanvasRenderingContext2D | null = null;
-function getLightCanvas(): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
-  if (!lightCv) {
-    lightCv = document.createElement('canvas');
-    lightCv.width = VIEW_W; lightCv.height = VIEW_H;
-    lightCtx = lightCv.getContext('2d');
-  }
-  return { canvas: lightCv, ctx: lightCtx! };
-}
-
-function drawLighting(g: Game) {
+/** Feedback de juego que vivía dentro del antiguo drawLighting y que NO forma
+ *  parte de la iluminación (esa la lleva ahora world/lighting.ts). Se llama
+ *  justo después de drawLightingV2. */
+function drawLightingExtras(g: Game) {
   const ctx = g.ctx;
-  const p = g.player;
-  if (!p) return;
-  // oscuridad por noche (rampa suave)
-  const dayLight = Math.max(0.1, Math.sin(g.dayT * Math.PI * 2) * 1.25 + 0.25);
-  let darkness = (1 - Math.min(1, dayLight)) * 0.62;
-  if (g.map.dark) {
-    // la cripta parpadea como antorchas lejanas
-    darkness = 0.8 + Math.sin(g.globalT * 11) * 0.02 + Math.sin(g.globalT * 23 + 1.7) * 0.015;
-  }
-  if (darkness > 0.02) {
-    const lc = getLightCanvas();
-    const lx = lc.ctx;
-    // 1) capa de oscuridad con alpha real (0.62 noche / 0.8 cripta)
-    lx.globalCompositeOperation = 'source-over';
-    lx.clearRect(0, 0, VIEW_W, VIEW_H);
-    lx.globalAlpha = Math.min(1, darkness);
-    lx.fillStyle = g.map.dark ? '#060810' : '#0a1030';
-    lx.fillRect(0, 0, VIEW_W, VIEW_H);
-    lx.globalAlpha = 1;
-    // 2) agujeros de luz sobre la capa (borran oscuridad, no mundo)
-    lx.globalCompositeOperation = 'destination-out';
-    const px = p.x * ZOOM - g.camX, py = (p.y - 6) * ZOOM - g.camY;
-    const grad = lx.createRadialGradient(px, py, 10, px, py, g.map.dark ? 130 : 170);
-    grad.addColorStop(0, 'rgba(0,0,0,0.95)');
-    grad.addColorStop(1, 'rgba(0,0,0,0)');
-    lx.fillStyle = grad;
-    lx.fillRect(px - 200, py - 200, 400, 400);
-    // santuarios iluminan (con pulso suave)
-    for (const pr of g.map.props) {
-      if (pr.kind !== 'sanctuary') continue;
-      const sxp = pr.x * TILE * ZOOM + 8 - g.camX, syp = pr.y * TILE * ZOOM - g.camY;
-      if (sxp < -100 || syp < -100 || sxp > VIEW_W + 100 || syp > VIEW_H + 100) continue;
-      const rad = 80 + Math.sin(g.globalT * 2 + pr.x) * 5;
-      const grad2 = lx.createRadialGradient(sxp, syp, 4, sxp, syp, rad);
-      grad2.addColorStop(0, 'rgba(0,0,0,0.7)');
-      grad2.addColorStop(1, 'rgba(0,0,0,0)');
-      lx.fillStyle = grad2;
-      lx.fillRect(sxp - 95, syp - 95, 190, 190);
-    }
-    lx.globalCompositeOperation = 'source-over';
-    // 3) componer la capa sobre el mundo: los huecos revelan el escenario
-    ctx.drawImage(lc.canvas, 0, 0);
-    if (g.map.dark) {
-      ctx.fillStyle = 'rgba(30,20,60,0.18)';
-      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    } else if (darkness > 0.25) {
-      // noche exterior: tinte azul frío
-      ctx.fillStyle = `rgba(16,22,52,${darkness * 0.22})`;
-      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    }
-  }
-
-  // amanecer/atardecer: tinte cálido en las transiciones del ciclo
-  if (!g.map.dark) {
-    const warm = Math.exp(-Math.pow(g.dayT - 0.52, 2) / (2 * 0.075 * 0.075));
-    if (warm > 0.05) {
-      ctx.fillStyle = `rgba(255,148,74,${warm * 0.13})`;
-      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    }
-  }
 
   // niebla del presente (además de las bandas de fx.ts)
   if (g.epoch === 'presente' && g.map.epochDiffs.length > 0) {
@@ -601,22 +509,18 @@ function drawLighting(g: Game) {
     }
     ctx.restore();
   }
+
   // destello de daño
-  const pl = g.player!;
-  if (pl.lastHitT > 0) {
-    ctx.fillStyle = `rgba(200,40,40,${pl.lastHitT * 0.7})`;
+  const p = g.player;
+  if (p && p.lastHitT > 0) {
+    ctx.fillStyle = `rgba(200,40,40,${p.lastHitT * 0.7})`;
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   }
-  // viñeta
-  const vg = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.45, VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.85);
-  vg.addColorStop(0, 'rgba(0,0,0,0)');
-  vg.addColorStop(1, 'rgba(0,0,0,0.32)');
-  ctx.fillStyle = vg;
-  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  if (!p) return;
 
   // viñeta roja pulsante con poca vida
-  const hpPct = pl.hp / pl.maxHp;
-  if (hpPct < 0.3 && pl.hp > 0) {
+  const hpPct = p.hp / p.maxHp;
+  if (hpPct < 0.3 && p.hp > 0) {
     const severity = 1 - hpPct / 0.3;               // 0 → 1
     const pulse = 0.5 + 0.5 * Math.sin(g.globalT * 5);
     const a = (0.10 + pulse * 0.10) * (0.4 + severity * 0.6);
@@ -721,50 +625,11 @@ function drawHud(g: Game) {
   text(g, `${p.potions}× poción (F)`, 242, 42, 13, p.potions > 0 ? '#f0a0b8' : COL.dim);
   if (p.weaponPlus > 0) text(g, `arma +${p.weaponPlus}`, 242, 58, 13, '#d8e0f0');
 
-  // ---- minimapa (arriba-derecha) ----
-  if (g.miniCanvas) {
-    const mw = 140;
-    const mh = Math.round((g.map.h / g.map.w) * mw);
-    const mx = VIEW_W - mw - 10, my = 10;
-    panel(g, mx - 3, my - 3, mw + 6, mh + 6);
-    ctx.drawImage(g.miniCanvas, mx, my, mw, mh);
-    // puntos
-    for (const n of g.npcs) {
-      ctx.fillStyle = '#8ecae8';
-      ctx.fillRect(mx + (n.x / (g.map.w * TILE)) * mw - 1, my + (n.y / (g.map.h * TILE)) * mh - 1, 3, 3);
-    }
-    for (const e of g.enemies) {
-      if (e.dead || e.etype === 'guardian') continue;
-      if (!e.aggro) continue;
-      ctx.fillStyle = '#ff7060';
-      ctx.fillRect(mx + (e.x / (g.map.w * TILE)) * mw - 1, my + (e.y / (g.map.h * TILE)) * mh - 1, 3, 3);
-    }
-    // santuarios con ping pulsante
-    for (const pr of g.map.props) {
-      if (pr.kind !== 'sanctuary') continue;
-      const px2 = mx + (pr.x / g.map.w) * mw;
-      const py2 = my + (pr.y / g.map.h) * mh;
-      const pingT = (g.globalT % 1.4) / 1.4;
-      ctx.globalAlpha = 0.8 * (1 - pingT);
-      ctx.strokeStyle = '#8ef0ff';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(px2, py2, 2 + pingT * 8, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = '#8ef0ff';
-      ctx.fillRect(px2 - 2, py2 - 2, 4, 4);
-    }
-    const px = mx + (p.x / (g.map.w * TILE)) * mw;
-    const py = my + (p.y / (g.map.h * TILE)) * mh;
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(px - 2, py - 2, 4, 4);
-    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-    ctx.strokeRect(px - 4, py - 4, 8, 8);
-    // icono día/noche
-    const night = g.dayT > 0.7 || g.dayT < 0.08;
-    text(g, night ? '☾' : '☀', mx + mw - 12, my + mh + 8, 14, night ? '#a8b8e8' : '#ffe86a');
-    text(g, g.map.name, mx, my + mh + 8, 13, COL.dim);
+  // ---- minimapa v2 (arriba-derecha): marco remachado + placa + marcadores.
+  // El canvas depende de la época (el pasado se genera aparte en buildGround).
+  const mini = g.epoch === 'pasado' && g.miniCanvasPast ? g.miniCanvasPast : g.miniCanvas;
+  if (mini) {
+    drawMinimapOverlay(ctx, mini, g);
   }
 
   // ---- habilidades (abajo-centro) ----

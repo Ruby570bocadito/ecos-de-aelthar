@@ -12,6 +12,7 @@ import { dominantTone, TONE_LABEL } from './hooks';
 import { drawPortrait } from './sprites';
 import { audio } from './audio';
 import { COL, text, textShadow, panel, bar, button, wrapText, addHit } from './ui';
+import { drawSkyBackdrop } from './world/sky';
 
 const INTRO_SLIDES = [
   {
@@ -67,21 +68,9 @@ function drawNote(ctx: CanvasRenderingContext2D, x: number, y: number, s: number
 function drawTitle(g: Game) {
   const ctx = g.ctx;
   const t = g.globalT;
-  // fondo
-  const grad = ctx.createLinearGradient(0, 0, 0, VIEW_H);
-  grad.addColorStop(0, '#0a0c1e');
-  grad.addColorStop(0.6, '#141830');
-  grad.addColorStop(1, '#1e1830');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  // estrellas
-  for (let i = 0; i < 70; i++) {
-    const x = (i * 137.5) % VIEW_W;
-    const y = (i * 89.7) % (VIEW_H * 0.7);
-    const tw = 0.4 + Math.abs(Math.sin(t * 1.5 + i)) * 0.6;
-    ctx.fillStyle = `rgba(220,228,255,${tw * 0.5})`;
-    ctx.fillRect(x, y, 2, 2);
-  }
+  // fondo: cielo v2 del módulo world/sky (bandas + estrellas + luna + nubes;
+  // fuerza escena nocturna en title/controls) — sustituye al gradiente plano
+  drawSkyBackdrop(ctx, g);
   // silueta de la cripta / obelisco
   ctx.fillStyle = '#0c0e1c';
   ctx.fillRect(VIEW_W / 2 - 30, VIEW_H - 150, 60, 150);

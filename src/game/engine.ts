@@ -3,6 +3,11 @@
 // Máquina de estados, bucle, input, mundo, diálogos, guardado
 // ============================================================
 
+// VIEW_W/VIEW_H/ZOOM viven en ./consts (primer import: ver nota allí) y se
+// re-exportan para que `from './engine'` siga funcionando en todo el motor.
+import { VIEW_W, VIEW_H, ZOOM } from './consts';
+export { VIEW_W, VIEW_H, ZOOM };
+
 import type {
   Player, Enemy, Npc, Companion, MapId, Epoch, Projectile, Particle, FloatText,
   Toast, Shockwave, TeleGraph, SaveData, DialogueNode, Dir, Element,
@@ -13,10 +18,8 @@ import { audio } from './audio';
 import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue } from './data';
 import { updateGame } from './update';
 import { drawGame } from './render';
+import { buildMinimapV2 } from './world/minimap';
 import { handleCustomAction, recordDialogueTone } from './hooks';
-
-export const VIEW_W = 960, VIEW_H = 540;
-export const ZOOM = 2;
 
 export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end';
 
@@ -43,6 +46,7 @@ export class Game {
   groundCanvas: HTMLCanvasElement | null = null;
   groundPastCanvas: HTMLCanvasElement | null = null;
   miniCanvas: HTMLCanvasElement | null = null;
+  miniCanvasPast: HTMLCanvasElement | null = null; // minimapa v2 del pasado (solo mapas con epochDiffs)
   epoch: Epoch = 'presente';
   epochFx = 0;
 
@@ -389,22 +393,14 @@ export class Game {
     };
     this.groundCanvas = mk('presente');
     this.groundPastCanvas = this.map.epochDiffs.length ? mk('pasado') : this.groundCanvas;
-    // minimapa
-    const mini = document.createElement('canvas');
-    mini.width = w; mini.height = h;
-    const mx = mini.getContext('2d')!;
-    for (let ty = 0; ty < h; ty++) {
-      for (let tx = 0; tx < w; tx++) {
-        const ch = tileAt(this.map, this.rows, tx, ty, 'presente');
-        mx.fillStyle =
-          ch === '~' ? '#3a6a9a' : ch === '=' ? '#b89a6a' :
-          ch === ':' ? '#6a6a7a' : ch === 't' || ch === 'p' ? '#24512a' :
-          ch === '#' || ch === 'H' || ch === 'r' ? '#7a7a8a' :
-          ch === 'n' ? '#7ea49a' : '#4a8a44';
-        mx.fillRect(tx, ty, 1, 1);
-      }
-    }
-    this.miniCanvas = mini;
+    // minimapa v2 (2 px/tile, relieve + costas + marco en drawMinimapOverlay):
+    // presente siempre; pasado solo si el mapa tiene diffs de época.
+    this.miniCanvas = buildMinimapV2(this.rows, this.map, 'presente',
+      (tx, ty) => tileAt(this.map, this.rows, tx, ty, 'presente'));
+    this.miniCanvasPast = this.map.epochDiffs.length
+      ? buildMinimapV2(this.rows, this.map, 'pasado',
+          (tx, ty) => tileAt(this.map, this.rows, tx, ty, 'pasado'))
+      : null;
   }
 
   spawnEnemies() {

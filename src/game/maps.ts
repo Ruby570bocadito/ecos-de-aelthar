@@ -377,6 +377,7 @@ export function mapRows(m: MapDef): string[] {
 
 export function tileAt(m: MapDef, rows: string[], tx: number, ty: number, epoch: Epoch): string {
   if (tx < 0 || ty < 0 || tx >= m.w || ty >= m.h) return 'V';
+  if (ty >= rows.length || rows[ty].length === 0) return 'V'; // mapa aún no cargado (intro)
   let ch = rows[ty][tx];
   if (epoch === 'pasado') {
     for (const d of m.epochDiffs) {
