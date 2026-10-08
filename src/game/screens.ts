@@ -132,12 +132,15 @@ function drawTitle(g: Game) {
   fogLayer(0.08, 16, VIEW_H - 90, 170, 34, '#9ec4b4', 0);
   fogLayer(0.11, 26, VIEW_H - 48, 150, 26, '#b8d4c4', 120);
 
-  // wisps flotantes
+  // wisps flotantes (guard: durante HMR el módulo de sprites puede estar
+  // vacío un frame — antes drawImage(undefined) lanzaba y mataba el frame)
   for (let i = 0; i < 5; i++) {
     const wx = (VIEW_W / 6) * i + Math.sin(t + i * 2) * 40 + 60;
     const wy = 330 + Math.cos(t * 0.8 + i * 1.7) * 30;
+    const wisp = getSprWisp(t, i);
+    if (!wisp) continue;
     ctx.globalAlpha = 0.5;
-    ctx.drawImage(getSprWisp(t, i), wx, wy, 20, 20);
+    ctx.drawImage(wisp, wx, wy, 20, 20);
     ctx.globalAlpha = 1;
   }
 
@@ -196,7 +199,20 @@ function hashT(i: number, k: number): number {
 }
 function getSprWisp(t: number, i: number): HTMLCanvasElement {
   const frames = getSpr('wisp');
-  return frames[Math.floor(t * 3 + i) % frames.length];
+  const f = frames?.length ? frames[Math.floor(t * 3 + i) % frames.length] : (undefined as unknown as HTMLCanvasElement);
+  if (!f) {
+    const w = window as unknown as { __wispMiss?: unknown[] };
+    if (!w.__wispMiss) w.__wispMiss = [];
+    if (w.__wispMiss.length < 3) {
+      w.__wispMiss.push({
+        t: Math.round(performance.now()), i,
+        hasFrames: !!frames, len: frames?.length ?? -1,
+        hasG: !!(window as unknown as { __g?: unknown }).__g,
+        heroAlba: !!getSpr('hero_alba'),
+      });
+    }
+  }
+  return f;
 }
 
 // esquinas doradas al pasar el ratón (hover más vivo)

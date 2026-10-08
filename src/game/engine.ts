@@ -16,8 +16,29 @@ import { updateGame } from './update';
 import { drawGame } from './render';
 import { handleCustomAction, recordDialogueTone } from './hooks';
 
-export const VIEW_W = 960, VIEW_H = 540;
+// Vista DINÁMICA (fix barra negra): el buffer se ajusta al aspecto real de la
+// ventana (sin letterbox en 16:10/3:2/4:3/21:9). `let` + live bindings: todos
+// los módulos importan VIEW_W/VIEW_H y leen el valor actual en cada frame.
+export let VIEW_W = 960, VIEW_H = 540;
 export const ZOOM = 2;
+
+/**
+ * Ajusta el buffer del juego al aspecto de la ventana para eliminar el
+ * letterbox (la "barra negra" abajo/arriba). Mantiene 540px de alto base
+ * a 16:9 exacto; pantallas más anchas ganan vista lateral (hasta 1600px)
+ * y más cuadradas ganan vista vertical (hasta 800px). Clamp de seguridad
+ * para aspectos extremos (móvil vertical): ahí el letterbox es aceptable.
+ */
+export function fitViewToWindow(winW: number, winH: number): void {
+  const a = winW / Math.max(1, winH);
+  let vw = Math.round(540 * a);
+  let vh = 540;
+  if (vw < 840) { vw = 840; vh = Math.round(vw / a); }
+  else if (vw > 1600) { vw = 1600; vh = Math.round(vw / a); }
+  vh = Math.max(460, Math.min(800, vh));
+  vw = Math.max(840, Math.min(1600, Math.round(vh * a)));
+  if (vw !== VIEW_W || vh !== VIEW_H) { VIEW_W = vw; VIEW_H = vh; }
+}
 
 /** Flag de derrota por tipo de JEFE (Acto II: sirena/golem se suman al Guardián). */
 export const BOSS_DEFEAT_FLAG: Record<string, string> = {
@@ -1055,7 +1076,24 @@ export class Game {
     // teclas pegadas tras alt-tab / cambio de ventana: soltar todo
     window.addEventListener('blur', this.onLoseFocus);
     document.addEventListener('visibilitychange', this.onLoseFocus);
+    // vista dinámica: sin barras negras a cualquier aspecto de ventana
+    window.addEventListener('resize', this.onResize);
+    this.fitCanvas();
   }
+
+  /** Recalcula el buffer al aspecto actual y redimensiona el bitmap del canvas. */
+  private fitCanvas() {
+    const before = `${VIEW_W}x${VIEW_H}`;
+    fitViewToWindow(window.innerWidth, window.innerHeight);
+    if (this.canvas.width !== VIEW_W || this.canvas.height !== VIEW_H) {
+      this.canvas.width = VIEW_W;
+      this.canvas.height = VIEW_H;
+      this.ctx.imageSmoothingEnabled = false; // el resize resetea el estado del ctx
+    }
+    if (before !== `${VIEW_W}x${VIEW_H}`) this.updateCamera(true);
+  }
+
+  private onResize = () => { this.fitCanvas(); };
 
   private onLoseFocus = () => {
     this.keys.clear();
@@ -1067,7 +1105,16 @@ export class Game {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onLoseFocus);
+    window.removeEventListener('resize', this.onResize);
     document.removeEventListener('visibilitychange', this.onLoseFocus);
+    // FIX clics fantasma: desvincular TAMBIÉN los listeners del canvas. Antes
+    // quedaban colgados: con el doble montaje de React (StrictMode) la primera
+    // instancia moría sin soltarlos, su uiHit quedaba congelado con los botones
+    // del título y al hacer clic "donde estaban" durante la partida se abría la
+    // creación de personaje (requestCreate sigue ligado al setState del overlay).
+    this.canvas.removeEventListener('mousemove', this.onMouseMove);
+    this.canvas.removeEventListener('mousedown', this.onMouseDown);
+    this.canvas.removeEventListener('mouseup', this.onMouseUp);
     this.stop();
   }
 
@@ -1130,11 +1177,13 @@ export class Game {
   }
 
   private onMouseMove = (e: MouseEvent) => {
+    if (!this.running) return; // instancia muerta: ignora input (clics fantasma)
     const p = this.canvasPos(e);
     this.mouse.x = p.x; this.mouse.y = p.y;
   };
 
   private onMouseDown = (e: MouseEvent) => {
+    if (!this.running) return; // instancia muerta: ignora input (clics fantasma)
     audio.resume();
     const p = this.canvasPos(e);
     this.mouse.x = p.x; this.mouse.y = p.y;
@@ -1156,6 +1205,7 @@ export class Game {
   };
 
   private onMouseUp = (e: MouseEvent) => {
+    if (!this.running) return; // instancia muerta: ignora input
     if (e.button === 0) {
       this.mouse.down = false;
       if (this.player?.charging) this.releaseCharge();

@@ -676,7 +676,8 @@ function drawWaterGlints(g: Game, sx: (n: number) => number, sy: (n: number) => 
 let lightCv: HTMLCanvasElement | null = null;
 let lightCtx: CanvasRenderingContext2D | null = null;
 function getLightCanvas(): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
-  if (!lightCv) {
+  // vista dinámica: si VIEW_W/VIEW_H cambiaron (resize), re crear el offscreen
+  if (!lightCv || lightCv.width !== VIEW_W || lightCv.height !== VIEW_H) {
     lightCv = document.createElement('canvas');
     lightCv.width = VIEW_W; lightCv.height = VIEW_H;
     lightCtx = lightCv.getContext('2d');
