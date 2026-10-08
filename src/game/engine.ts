@@ -141,7 +141,6 @@ export class Game {
         this.loopError = null;
       } catch (err) {
         this.loopError = String(err);
-        // eslint-disable-next-line no-console
         console.error('[EcosAelthar loop]', err);
         try {
           this.ctx.fillStyle = '#000';

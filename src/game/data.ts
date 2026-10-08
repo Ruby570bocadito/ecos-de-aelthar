@@ -53,6 +53,10 @@ const D: Record<string, DialogueNode> = {
     name: 'Anciana Brisa', portrait: 'brisa',
     text: 'Los lobos aúllan hacia el sur, entre la niebla del valle. Usa la esquiva cuando vayan a saltar y golpea cuando bajen la guardia.',
   },
+  brisa_bosque: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: 'El Bosque Susurrante está al norte. Busca la Ruina Antigua, más allá del río: allí susurra el Fragmento de Eco. Lleva pociones, descansa en los Santuarios... y no confíes en la noche.',
+  },
   brisa_reward: {
     name: 'Anciana Brisa', portrait: 'brisa',
     text: 'El valle ya respira. Toma esto: coronas del fondo del pozo y una poción de la vieja receta. Los Guardianes del Canto te recordarán, Portador.',
@@ -177,7 +181,7 @@ export function getDialogue(nid: string, ctx: DialogueCtx): string {
     if (ctx.flags.demoEnded) return 'brisa_idle';
     if (q === 0) return 'brisa_intro';
     if (q === 1) return s === 0 ? 'brisa_wolves' : 'brisa_reward';
-    if (q === 2) return ctx.flags.fragmentTouched ? 'brisa_fragment' : 'brisa_wolves';
+    if (q === 2) return ctx.flags.fragmentTouched ? 'brisa_fragment' : 'brisa_bosque';
     if (q === 3) return ctx.flags.guardianDefeated ? 'brisa_final' : 'brisa_crypt';
     return 'brisa_final';
   }
@@ -228,9 +232,9 @@ export const ENEMY_DEFS: Record<EnemyType, EnemyDef> = {
     desc: 'Criatura de la Niebla. Devora nombres. Rápida y frágil.',
   },
   guardian: {
-    name: 'Guardián Hueco', hp: 420, dmg: 15, speed: 40, xp: 220, gold: [120, 160],
+    name: 'Guardián Hueco', hp: 300, dmg: 13, speed: 40, xp: 220, gold: [120, 160],
     sprite: 'guardian', aggroR: 150, atkR: 40, windup: 0.8, atkCd: 2.2,
-    element: 'sombra', weakTo: 'ninguno', breakBar: 90,
+    element: 'sombra', weakTo: 'ninguno', breakBar: 70,
     desc: 'Primer coro de Aelthar, vaciado por su propio canto. Rompe su barra de quiebre con golpes continuos.',
   },
 };

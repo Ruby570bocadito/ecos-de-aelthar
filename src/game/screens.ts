@@ -118,6 +118,7 @@ const CONTROLS: [string, string][] = [
   ['Cambiar de época (con Eco)', 'Q'],
   ['Beber poción', 'F'],
   ['Menú y mapa', 'Esc / M'],
+  ['Esperar al alba (accesibilidad)', 'Shift + T'],
 ];
 
 function drawControls(g: Game) {
