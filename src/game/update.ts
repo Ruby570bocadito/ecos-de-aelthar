@@ -15,7 +15,7 @@ import { ENEMY_DEFS } from './data';
 import { audio } from './audio';
 import { addShake, addFlash, requestSlowmo, applyKnockback, stepKnockback } from './fxcore';
 import { combatSparks, dodgeRing, critGlint } from './fx';
-import { expansionTick, expansionDeathFx } from './enemies_expansion';
+import { expansionTick, expansionDeathFx, expansionBossWatchers } from './enemies_expansion';
 import { tileAt } from './maps'; // solo lectura (mapas propiedad de otro agente)
 
 const DIRS: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
@@ -59,7 +59,7 @@ function dist(ax: number, ay: number, bx: number, by: number): number {
 }
 
 /** Tipos de enemigo del Acto II con cerebro propio en enemies_expansion.ts. */
-const EXPANSION_TYPES = new Set<string>(['neumo', 'espectro', 'arpi', 'sirena', 'golem']);
+const EXPANSION_TYPES = new Set<string>(['neumo', 'espectro', 'arpi', 'sirena', 'golem', 'vult', 'coro', 'ecodesg', 'satiro']); // 14-a: +4 tipos
 
 // ---------------- FX de impacto (agente 8-c) ----------------
 // Detección de golpes conectados SIN tocar engine.ts: damageEnemy sube
@@ -382,9 +382,9 @@ export function updateGame(g: Game, dt: number) {
   let anyAggro = false;
   for (const e of g.enemies) {
     if (e.dead) {
-      // jefes del Acto II (9-a): última salva visual en cuanto mueren,
+      // jefes del Acto II (9-a) + jefes 14-a: última salva visual en cuanto mueren,
       // ANTES de que el filtro de abajo los retire del array
-      if (e.etype === 'sirena' || e.etype === 'golem') expansionDeathFx(g, e);
+      if (e.etype === 'sirena' || e.etype === 'golem' || e.etype === 'vult' || e.etype === 'coro') expansionDeathFx(g, e);
       continue;
     }
     updateEnemy(g, e, dt);
@@ -416,6 +416,11 @@ export function updateGame(g: Game, dt: number) {
       }
     }
   }
+
+  // 14-a: jefes opcionales (Vult en Cumbres de noche · El Coro Roto en la
+  // Cripta post-Acto III) — spawn + activación de barra al estilo del bloque
+  // anterior. Barato: el watcher filtra primero por mapa.
+  expansionBossWatchers(g);
 
   // ---------------- proyectiles ----------------
   for (let i = g.projectiles.length - 1; i >= 0; i--) {

@@ -59,8 +59,9 @@ const HOOKS_EXACT = new Set(['eco_taken_mem', 'mara_met', 'mara_gift', 'mera_eco
   'accept_q12', 'accept_q13', 'acto3_mera_ayer', 'acto3_rec_mara', 'acto3_rec_ivo', 'acto3_rec_vult',
   'acto3_verdad', 'acto3_silencio', 'acto3_subir', 'acto3_velmora_fn']);
 const HOOKS_PREFIX = ['memory_', 'rep_', 'flag_'];
+const ENGINE_PREFIX = ['armor_']; // 14-b: armor_N → engine.applyAction (case action.startsWith('armor_'))
 const actionHandled = (a: string) =>
-  ENGINE_ACTIONS.has(a) || HOOKS_EXACT.has(a) || HOOKS_PREFIX.some(p => a.startsWith(p));
+  ENGINE_ACTIONS.has(a) || HOOKS_EXACT.has(a) || HOOKS_PREFIX.some(p => a.startsWith(p)) || ENGINE_PREFIX.some(p => a.startsWith(p));
 let nodes = 0;
 for (const [key, node] of Object.entries(DIALOGUES) as [string, DialogueNode][]) {
   nodes++;

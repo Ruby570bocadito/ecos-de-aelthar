@@ -202,7 +202,9 @@ console.log('\n=== 3) DUELO (victoria, Portador de campaña): restauración + lo
   if ((g.bossBannerText ?? '').includes('SIRENA')) ok('banner de jefe del motor reutilizado (bossBannerText)');
   else bad(`banner: '${g.bossBannerText}'`);
   tick(g, 0.05);
-  if (boss.maxHp === 380) ok('jefe de arena: hp de ENEMY_DEFS sin tocar (versión independiente de campaña)');
+  // 14-a (buff auditable ENEMY_DEFS_14A): la Sirena de arena comparte defs con
+  // la de campaña y sube con ella: 380 → 440 hp (mismo espíritu del pedido)
+  if (boss.maxHp === 440) ok('jefe de arena: hp con el buff 14-a de ENEMY_DEFS (380→440, comparte defs)');
   else bad(`hp jefe: ${boss.maxHp}`);
   g.damageEnemy(boss, 100000, 'rayo', 0);   // killEnemy: flag+botín de campaña (se deshace solo)
   tick(g, 2.0);                             // pausa dramática 1.7 s → finish

@@ -11,6 +11,7 @@ import { VIEW_W, VIEW_H, QUESTS, getSpr, playerMeleeDmg } from './engine';
 import { ATTR_INFO, KEY_ITEMS, MEMORIES } from './data';
 import { dominantTone, TONE_LABEL } from './hooks';
 import { drawBalancePanel } from './balance'; // 12-c: dificultad (pestaña SISTEMA)
+import { drawArmorRow } from './armor'; // 14-b: armadura activa (pestaña ESTADO)
 import { drawPortrait } from './sprites';
 import { audio } from './audio';
 import { COL, text, textShadow, panel, bar, button, wrapText, addHit } from './ui';
@@ -397,6 +398,8 @@ function drawPause(g: Game) {
       const vc = v > 0 ? '#8ef0b0' : v < 0 ? '#ff7060' : COL.dim;
       text(g, `${v > 0 ? '+' : ''}${v}`, fx + 300, fy, 15, vc, 'right');
     });
+    // 14-b: armadura activa (fila compacta, contrato armor.ts)
+    drawArmorRow(g, cx, py + 440, pw - 56);
   } else if (g.pauseTab === 1) {
     // EQUIPO
     text(g, 'ARMA', cx, cy, 16, COL.gold);

@@ -125,9 +125,9 @@ console.log('\n=== 3) Onda Sísmica por useSkill (puente castSkill → castNewSk
   else bad('sin knockback en la onda');
   if (pa.cds[3] > 0 && Math.abs(pa.res - (100 - 30 + 6 * 1.2)) < 0.01) ok('coste/cd por useSkill con la SkillDef equipada (30 res; +7.2 de resonancia por conectar)');
   else bad(`coste/cd: res=${pa.res} cd=${pa.cds[3]}`);
-  // −20% de cd por decaimiento extra en skillTick
+  // 14-b (camino B): el −20% de cd se aplica AL FIJAR en useSkill (decay extra OFF)
   ga.update(1 / 60);
-  if (pa.cds[3] < 8 - 1 / 60 - 1e-9) ok(`cd reducido por skillTick (extra decay): ${pa.cds[3].toFixed(3)}`);
+  if (pa.cds[3] < 8 - 1 / 60 - 1e-9) ok(`cd reducido por árbol (fijado con skillCdMult, camino B): ${pa.cds[3].toFixed(3)}`);
   else bad('cd sin descuento de árbol');
   ga.enemies.length = 0;
 }

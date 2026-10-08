@@ -61,6 +61,7 @@ export const MEMORIES: Record<string, MemoryDef> = {
 // Opciones principales de Toln (compartidas por la variante de tono dominante)
 const TOLN_MAIN: DialogueOption[] = [
   { text: 'Mejorar arma', next: 'toln_forge' },
+  { text: 'Ver corazas de la forja', next: 'toln_armaduras' }, // 14-b
   { text: 'Comprar poción (15 coronas)', next: 'toln_potion', action: 'buy_potion' },
   { text: '¿Qué sabes de la Noche del Silencio?', next: 'toln_lore' },
   { text: 'Hasta luego.', next: 'toln_bye' },
@@ -232,6 +233,19 @@ const D: Record<string, DialogueNode> = {
     name: 'Maestro Toln', portrait: 'toln',
     text: 'Escucha más que tu boca, Listillo. El acero bien templado canta cuando cae la Niebla... y estas últimas noches canta bajito, como rezando. Vuelve al yunque cuando tengas coronas de verdad.',
     next: 'toln_intro',
+  },
+  // 14-b: corazas de la forja (la compra vive en applyAction case 'armor_N')
+  toln_armaduras: {
+    name: 'Maestro Toln', portrait: 'toln',
+    text: 'Corazas, ahora que la Niebla pega más fuerte. El cuero es honesto, la malla canta bajito y las Placas pesan como una confesión. Dime cuál y te la forjo.',
+    options: [
+      { text: 'Coraza de Cuero (80 coronas) — daño recibido −8%', next: 'toln_armaduras', action: 'armor_1' },
+      { text: 'Malla del Alba (160) — −15% · +10 vigor/s', next: 'toln_armaduras', action: 'armor_2' },
+      { text: 'Placas del Canto (240) — −22% · −8% velocidad', next: 'toln_armaduras', action: 'armor_3' },
+      { text: 'Manto de Ecos (280) — −12% · refleja 15% melé', next: 'toln_armaduras', action: 'armor_4' },
+      { text: 'Guarda del Primer Canto (420) — −28%', next: 'toln_armaduras', action: 'armor_5' },
+      { text: 'Volver', next: 'toln_intro' },
+    ],
   },
   toln_potion: {
     name: 'Maestro Toln', portrait: 'toln',
@@ -747,7 +761,9 @@ export interface EnemyDef {
   desc: string;
 }
 
-export const ENEMY_DEFS: Record<EnemyType, EnemyDef> = {
+// Record<string, EnemyDef> (14-a): la expansión inyecta tipos nuevos vía
+// Object.assign (ENEMY_DEFS_14A) sin crecer el literal base.
+export const ENEMY_DEFS: Record<string, EnemyDef> = {
   lobo: {
     name: 'Lobo de Niebla', hp: 30, dmg: 6, speed: 58, xp: 16, gold: [4, 8],
     sprite: 'lobo', aggroR: 95, atkR: 20, windup: 0.45, atkCd: 1.5,
@@ -1308,3 +1324,82 @@ function getDialogueActo3(nid: string, ctx: DialogueCtx): string {
 getDialogue = getDialogueActo3;
 
 // ═══════ FIN DEL BLOQUE 13-a ═══════
+
+// ============================================================
+// ═══════ BLOQUE 14-a (agente jefes-enemigos) — AÑADIDO ═══════
+// Petición explícita del usuario: "más jefes más complicados, más
+// patrones, más vida y daño" + "más enemigos".
+// Contenido de este bloque (APPEND puro: nada de arriba se edita):
+//   1) ENEMY_DEFS_14A — 2 jefes nuevos (vult, coro) + 2 enemigos de
+//      mapa (ecodesg, satiro). types.ts está CONGELADO (EnemyType es
+//      una unión cerrada), así que la extensión de la tabla se hace
+//      en CARGA vía Object.assign: makeEnemy/damageEnemy/killEnemy y
+//      la barra de jefe del render leen ENEMY_DEFS[type] por índice y
+//      funcionan sin cambios. Los cerebros viven en
+//      enemies_expansion.ts (14-a); el set de tipos del Acto II en
+//      update.ts se amplía con los 4 ids.
+//   2) BUFF de los 3 jefes de campaña: +15-20% hp, +1-2 dmg y quiebre
+//      +15%. Se aplica POR ASIGNACIÓN en carga (los literales
+//      originales quedan intactos en el fuente; el valor final vive
+//      aquí para que la tabla antes/después del smoke sea auditable).
+//      NOTA: la Sirena/Gólem del MODO DESAFÍO comparten defs (makeEnemy
+//      lee ENEMY_DEFS): los duelos de arena también suben — mismo
+//      espíritu del pedido del usuario.
+//   3) El hp de TODOS los spawns nuevos pasa por makeEnemy → ya recibe
+//      el multiplicador del balanceador (12-c): los cerebros de
+//      enemies_expansion NO vuelven a multiplicar (cero doble escala).
+// ============================================================
+
+/** Defs de la expansión 14-a (mismo formato que ENEMY_DEFS). */
+export const ENEMY_DEFS_14A: Record<string, EnemyDef> = {
+  // ── JEFE opcional · activación en enemies_expansion.expansionBossWatchers:
+  // Cumbres de NOCHE con contenido posterior a q11 (q12 aceptada o Acto III).
+  vult: {
+    name: 'Vult, el Cazador de Ecos', hp: 420, dmg: 14, speed: 88, xp: 260, gold: [140, 180],
+    sprite: 'vult', aggroR: 150, atkR: 46, windup: 0.5, atkCd: 1.7,
+    element: 'sombra', weakTo: 'sagrado', breakBar: 95,
+    desc: 'El cartógrafo que la Niebla contrató con el mapa de tus pasos. Ráfagas de dagas, embestidas con estela y, al filo de la muerte, el modo acecho: se desvanece y reaparece a tu espalda. Débil a la luz.',
+  },
+  // ── JEFE post-Acto III · activación: Cripta con acto3Done (la sala del
+  // altar queda libre tras caer el Guardián de campaña y el recordado).
+  coro: {
+    name: 'El Coro Roto', hp: 520, dmg: 13, speed: 34, xp: 320, gold: [160, 220],
+    sprite: 'coro1', aggroR: 140, atkR: 150, windup: 0.6, atkCd: 2.1,
+    element: 'sombra', weakTo: 'sagrado', breakBar: 110,
+    desc: 'Tres máscaras que la Niebla unió con la nota del revés de Velmora. Quebrar la barra hace caer la máscara actual: el Pulso y sus orbes, el Vera y sus rayos en cruz, el Silencio y su lluvia de notas caídas. Débil a la luz.',
+  },
+  // ── Enemigos nuevos de mapa (14-a) ──
+  ecodesg: {
+    name: 'Eco Desgarrado', hp: 55, dmg: 11, speed: 84, xp: 30, gold: [8, 14],
+    sprite: 'ecodesg', aggroR: 130, atkR: 26, windup: 0.45, atkCd: 1.5,
+    element: 'sombra', weakTo: 'sagrado',
+    desc: 'Un eco partido en dos que aún intenta cantarse a sí mismo. Rápido: parpadea distancias cortas hasta tu flanco y arremete. Vigila el destello de su bruma. Débil a la luz.',
+  },
+  satiro: {
+    name: 'Sátiro de la Niebla', hp: 44, dmg: 9, speed: 62, xp: 26, gold: [8, 14],
+    sprite: 'satiro', aggroR: 150, atkR: 160, windup: 0.8, atkCd: 2.2,
+    element: 'ninguno', weakTo: 'fuego',
+    desc: 'Músico cabrío que silba baladas curvas: su proyectil describe una parábola que cae sobre quien se esconde. Si te acercas, huye silbando mientras dispara. La quema disipa su niebla.',
+  },
+};
+// Inyección en carga (ver cabecera del bloque): extiende ENEMY_DEFS sin
+// tocar types.ts. El orden de módulos garantiza que esto corre antes de que
+// engine/update/render lean la tabla.
+Object.assign(ENEMY_DEFS, ENEMY_DEFS_14A);
+
+/** BUFF 14-a de los 3 jefes de campaña (antes → después, auditable):
+ *  guardian 300/13/quiebre 70 → 345/14/80  (+15% hp, +1 dmg, +14% quiebre)
+ *  sirena   380/13/quiebre 90 → 440/15/105 (+15.8%, +2, +16.7%)
+ *  golem    460/17/quiebre 110 → 535/19/126 (+16.3%, +2, +14.5%) */
+const BUFF_JEFES_14A = {
+  guardian: { hp: 345, dmg: 14, breakBar: 80 },
+  sirena: { hp: 440, dmg: 15, breakBar: 105 },
+  golem: { hp: 535, dmg: 19, breakBar: 126 },
+} as const;
+for (const k of Object.keys(BUFF_JEFES_14A) as (keyof typeof BUFF_JEFES_14A)[]) {
+  const b = BUFF_JEFES_14A[k];
+  ENEMY_DEFS[k].hp = b.hp;
+  ENEMY_DEFS[k].dmg = b.dmg;
+  ENEMY_DEFS[k].breakBar = b.breakBar;
+}
+void ENEMY_DEFS_14A; // (la referencia viva es ENEMY_DEFS; se mantiene exportada para el smoke)

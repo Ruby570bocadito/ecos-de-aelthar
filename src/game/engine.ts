@@ -5,7 +5,7 @@
 
 import type {
   Player, Enemy, Npc, Companion, MapId, Epoch, Projectile, Particle, FloatText,
-  Toast, Shockwave, TeleGraph, SaveData, DialogueNode, Dir, Element,
+  Toast, Shockwave, TeleGraph, SaveData, DialogueNode, DialogueOption, Dir, Element,
 } from './types';
 import { MAPS, mapRows, tileAt } from './maps';
 import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
@@ -16,10 +16,37 @@ import { updateGame } from './update';
 import { drawGame } from './render';
 import { handleCustomAction, recordDialogueTone } from './hooks';
 import { challengeTick, onChallengeDeath, type ChallengeRun } from './challenge';
-import { skillTick } from './skilltree';
+import { skillTick, skillCdMult, setSkillCdDecay } from './skilltree';
 import { balanceTick, enemyStatMult } from './balance';
 import { worldTick, worldInteract } from './worldlife';
 import { timeTick, beginEpochShift } from './timeskip';
+import {
+  ARMORS, ARMOR_HEAVY_SPEED, armorActive, armorActiveId, armorDefFor, armorReduction, armorTick,
+} from './armor';
+
+// 14-b (auditoría de cooldowns): el motor aplica skillCdMult AL FIJAR el cd
+// en useSkill (camino B del contrato skilltree.ts) → el decaimiento extra por
+// tick se desactiva para que NUNCA se descuente dos veces. Con esto el cd
+// nace reducido en todos los puntos presentes/futuros de fijación.
+setSkillCdDecay(false);
+
+// 14-b (Manto de Ecos): guard anti-reentrancy del reflejo (damageEnemy no
+// daña al jugador, pero el flag blinda el embudo ante cambios futuros).
+let reflectBusy = false;
+
+// 14-b (compañeros): memoria transitoria de Ilwen por instancia (no serializa;
+// mismo patrón WeakMap que update.ts/skilltree). El seguimiento, el disparo
+// base y la Lluvia de estrellas siguen viniendo de update.ts (congelado):
+// este módulo AÑADE escolta robusta + apoyo de combate + avisos.
+interface CompMem { lastX: number; lastY: number; stuckT: number; coverCd: number; lineCd: number; lineIdx: number }
+const compMem = new WeakMap<Companion, CompMem>();
+const COMPANION_LINES = [
+  '¡A tu izquierda!',
+  '¡Vienen varios, no te dejes rodear!',
+  '¡Detrás de ti!',
+  'Cúbreme el flanco.',
+  '¡Están flanqueándote!',
+];
 
 // Vista DINÁMICA (fix barra negra): el buffer se ajusta al aspecto real de la
 // ventana (sin letterbox en 16:10/3:2/4:3/21:9). `let` + live bindings: todos
@@ -50,6 +77,8 @@ export const BOSS_DEFEAT_FLAG: Record<string, string> = {
   guardian: 'guardianDefeated',
   sirena: 'sirenaDefeated',
   golem: 'golemDefeated',
+  vult: 'vultDefeated', // 14-a
+  coro: 'coroDefeated', // 14-a
 };
 
 export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end' | 'skills';
@@ -185,6 +214,13 @@ export class Game {
     // al reanudar ni reescribir el autoguardado con posición incorrecta.
     if (s !== 'play' && s !== 'dialogue') this.pendingMap = null;
     if (s !== 'play') this.rollQueued = false;
+    // 14-b (auditoría): al salir de 'play' (pausa/muerte) con una carga en
+    // curso (clic o J sostenidos), se cancela — si no, al reanudar el
+    // Portador seguía "cargando" con el ratón/tecla ya soltados.
+    if (s !== 'play' && s !== 'dialogue' && this.player?.charging) {
+      this.player.charging = false;
+      this.player.chargeT = 0;
+    }
     this.onStateChange?.(s);
     if (s === 'title') audio.playTrack('title');
   }
@@ -209,6 +245,9 @@ export class Game {
     balanceTick(this, dt);   // monitor de dificultad dinámica
     worldTick(this, dt);     // fauna, rumores y eventos del mundo (13-b)
     timeTick(this, dt);      // inmersión del viaje temporal (13-c)
+    armorTick(this, dt);     // 14-b: pasiva de la Malla del Alba (+vigor/s)
+    this.companionTick(dt);  // 14-b: escolta, teletransporte, apoyo y avisos de Ilwen
+    this.antiStuck();        // 14-b: red anti-encallamiento del Portador
   }
 
   /**
@@ -432,6 +471,18 @@ export class Game {
       const [sx, sy] = this.findSafeTile(tx, ty);
       this.player.x = sx * TILE + 8;
       this.player.y = sy * TILE + 8;
+      // 14-b (auditoría de movimiento): el estado transitorio de combate NO
+      // viaja de mapa — los iframes de un golpe recibido antes del viaje
+      // daban invulnerabilidad gratis al aterrizar, y una voltereta/carga en
+      // curso al iniciar el fundido seguía viva al llegar (roll a ciegas en
+      // el mapa nuevo, posible encallamiento contra muros desconocidos).
+      this.player.iframes = 0;
+      this.player.rollT = 0;
+      this.player.charging = false;
+      this.player.chargeT = 0;
+      this.player.parryT = 0;
+      this.player.lastHitT = 0;
+      this.rollQueued = false;
     }
     this.exitCd = 0.9;
     this.spawnEnemies();
@@ -531,8 +582,8 @@ export class Game {
     const hp = Math.max(1, Math.round(d.hp * bm.hp));
     return {
       kind: 'enemy', etype: type, x, y,
-      w: type === 'guardian' || type === 'sirena' || type === 'golem' ? 22 : 12,
-      h: type === 'guardian' || type === 'sirena' || type === 'golem' ? 16 : 10,
+      w: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' ? 22 : 12,
+      h: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' ? 16 : 10,
       vx: 0, vy: 0, dir: 'down', hp, maxHp: hp, sprite: d.sprite, anim: Math.random() * 9, moving: false,
       ai: 'patrulla', aiT: Math.random() * 2, homeX: x, homeY: y, patrolAngle: Math.random() * Math.PI * 2,
       aggro: false, windup: 0, atkCd: Math.random(), sta: d.breakBar ?? 0, maxSta: d.breakBar ?? 0,
@@ -561,6 +612,127 @@ export class Game {
       vx: 0, vy: 0, dir: 'down', hp: 60, maxHp: 60, sprite: 'ilwen',
       anim: 0, moving: false, atkCd: 0, downT: 0, affinity: 10,
     };
+  }
+
+  // ---------------- Compañera (14-b: escolta robusta) ----------------
+  // El seguimiento, el ciclo de flechas elementales, la marca y la Lluvia de
+  // estrellas siguen en update.ts (congelado). Este tick AÑADE lo que faltaba:
+  // (a) nunca se pierde (teletransporte >12 tiles / atasco / caja en muro),
+  // (b) apoyo de combate propio contra el enemigo aggro más cercano al
+  //     Portador (prioriza marcados) con cadencia propia de 2.4 s,
+  // (c) regeneración extra fuera de combate (+8 hp/s — no muere por su cuenta;
+  //     el regen base de 2 hp/s ya existía en update.ts),
+  // (d) avisos tácticos ocasionales cuando te rodean 2+ enemigos (cd 25 s).
+  private companionTick(dt: number) {
+    const c = this.companion, p = this.player;
+    if (!c || !p || c.downT > 0) return; // derribada: la gestiona update.ts
+    const mem = compMem.get(c) ?? { lastX: c.x, lastY: c.y, stuckT: 0, coverCd: 0.5, lineCd: 14, lineIdx: 0 };
+    compMem.set(c, mem);
+    const d = Math.hypot(p.x - c.x, p.y - c.y);
+    // (a) escolta: a >12 tiles (384 px) reaparece a tu lado; si su caja quedó
+    // dentro de un sólido (sin pathfinding detrás de un muro), también.
+    if (d > 12 * TILE || !this.boxFree(c.x, c.y, c.w, c.h)) {
+      this.companionTeleport(c, p);
+      mem.lastX = c.x; mem.lastY = c.y;
+      return;
+    }
+    // anti-atasco: quería seguirte (d>40) y lleva 1.2 s sin avanzar → teleporte suave
+    const moved = Math.hypot(c.x - mem.lastX, c.y - mem.lastY);
+    mem.lastX = c.x; mem.lastY = c.y;
+    if (d > 40 && moved < 0.6) mem.stuckT += dt; else mem.stuckT = 0;
+    if (mem.stuckT >= 1.2) {
+      this.companionTeleport(c, p);
+      mem.stuckT = 0;
+      return;
+    }
+    // (b) apoyo de combate con cadencia propia: flecha de cobertura SIN
+    // elementos (los estados los pone el ciclo de update.ts, aquí no se
+    // duplican) dirigida al aggro más cercano AL PORTADOR.
+    mem.coverCd -= dt;
+    if (mem.coverCd <= 0 && this.state === 'play') {
+      let best: Enemy | null = null, bd = 190;
+      for (const e of this.enemies) {
+        if (e.dead || !e.aggro) continue;
+        const score = Math.hypot(e.x - p.x, e.y - p.y) - ((e.marked ?? 0) > 0 ? 60 : 0);
+        if (score < bd) { bd = score; best = e; }
+      }
+      if (best) {
+        mem.coverCd = 2.4;
+        const dx = best.x - c.x, dy = best.y - 4 - (c.y - 6);
+        const l = Math.max(1, Math.hypot(dx, dy));
+        this.projectiles.push({
+          x: c.x, y: c.y - 6, vx: (dx / l) * 190, vy: (dy / l) * 190, t: 1.2,
+          dmg: 6 + p.level * 1.2, element: 'ninguno', from: 'companion',
+          sprite: 'p_arrow', radius: 3, pierce: 0,
+        });
+        audio.sfx('companionShot');
+      }
+    }
+    // (c) fuera de combate regenera más rápido (el vínculo la mantiene entera)
+    const inCombat = this.enemies.some(e => !e.dead && e.aggro);
+    if (!inCombat && c.hp < c.maxHp) c.hp = Math.min(c.maxHp, c.hp + 8 * dt);
+    // (d) aviso táctico: 2+ enemigos aggro a <110 px del Portador, cd largo
+    mem.lineCd -= dt;
+    if (mem.lineCd <= 0 && inCombat && this.state === 'play') {
+      let near = 0;
+      for (const e of this.enemies) {
+        if (!e.dead && e.aggro && Math.hypot(e.x - p.x, e.y - p.y) < 110) near++;
+      }
+      if (near >= 2) {
+        mem.lineCd = 25;
+        this.floatAt(c.x, c.y - 24, COMPANION_LINES[mem.lineIdx % COMPANION_LINES.length], '#a8e8c8', 6);
+        mem.lineIdx++;
+      } else {
+        mem.lineCd = 4; // sin rodeo todavía: recheck pronto, sin spamear
+      }
+    }
+  }
+
+  /** Teletransporte de escolta: hueco libre alrededor del Portador (anillos). */
+  private companionTeleport(c: Companion, p: Player) {
+    let placed = false;
+    for (let r = 1; r <= 3 && !placed; r++) {
+      for (let i = 0; i < 8 * r && !placed; i++) {
+        const a = (i / (8 * r)) * Math.PI * 2;
+        const nx = p.x + Math.cos(a) * 18 * r;
+        const ny = p.y + Math.sin(a) * 18 * r;
+        if (this.boxFree(nx, ny, c.w, c.h)) { c.x = nx; c.y = ny; placed = true; }
+      }
+    }
+    if (!placed) { c.x = p.x - 14; c.y = p.y; } // sin hueco: cae a su sombra
+    c.kbVx = 0; c.kbVy = 0;
+    this.burst(c.x, c.y - 4, '#8ef0b0', 8, 40);
+  }
+
+  /**
+   * 14-b (auditoría de movimiento): red anti-encallamiento. moveEntity solo
+   * acepta un eje si la caja COMPLETA queda libre: si el Portador acaba con
+   * su caja dentro de un tile sólido (residuo de knockback antiguo, un save
+   * previo a un fix, un edge de época o de un mapa), TODOS los ejes fallan y
+   * ningún input lo saca — encallamiento permanente. Este guard (O(1) si
+   * estás libre) lo recoloca al tile libre más cercano, misma red que
+   * findSafeTile (sin caer en zonas de salida para no viajar por accidente).
+   */
+  private antiStuck() {
+    const p = this.player;
+    // antes del primer loadMap (estado intro/título) no hay filas: no-op
+    if (!p || !this.rows.length || this.boxFree(p.x, p.y, p.w, p.h)) return;
+    const tx = Math.floor(p.x / TILE), ty = Math.floor(p.y / TILE);
+    for (let r = 1; r <= 6; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const nx = tx + dx, ny = ty + dy;
+          if (nx < 0 || ny < 0 || nx >= this.map.w || ny >= this.map.h) continue;
+          const wx = nx * TILE + 8, wy = ny * TILE + 8;
+          if (this.boxFree(wx, wy, p.w, p.h) && !this.inExitZone(nx, ny)) {
+            p.x = wx; p.y = wy;
+            this.floatAt(p.x, p.y - 20, 'El canto te aparta del muro', '#c8b0e8', 6);
+            return;
+          }
+        }
+      }
+    }
   }
 
   tileSolidAt(px: number, py: number): boolean {
@@ -605,6 +777,11 @@ export class Game {
   }
 
   moveEntity(e: { x: number; y: number; w: number; h: number }, dx: number, dy: number) {
+    // 14-b (armaduras): Placas del Canto — el peso de la armadura frena al
+    // Portador (−8%). moveEntity es la ÚNICA puerta por la que pasa TODO
+    // movimiento (caminar, rodar, empujones, Paso de Brisa): una sola fuente
+    // de verdad, sin tocar update.ts. Los enemigos y la compañera no pesan.
+    if (e === this.player && this.flags.armor_3) { dx *= ARMOR_HEAVY_SPEED; dy *= ARMOR_HEAVY_SPEED; }
     if (dx !== 0 && this.boxFree(e.x + dx, e.y, e.w, e.h)) e.x += dx;
     if (dy !== 0 && this.boxFree(e.x, e.y + dy, e.w, e.h)) e.y += dy;
   }
@@ -930,6 +1107,25 @@ export class Game {
         if (p.gold >= 15) { p.gold -= 15; p.potions++; audio.sfx('coin'); this.toast('Poción comprada (15 coronas)', '#f0c84a'); }
         else { this.toast('Te faltan coronas', '#e88'); audio.sfx('error'); }
         break;
+      // 14-b: compra de corazas en la forja de Toln (diálogo 'toln_armaduras')
+      case action.startsWith('armor_'): {
+        const a = armorDefFor(Number(action.slice(6)));
+        if (a) {
+          if (this.flags[a.id]) { this.toast('Toln: «esa coraza ya te cubre, Portador.»', '#e88'); audio.sfx('error'); break; }
+          if (a.needFlag && !this.flags[a.needFlag]) {
+            this.toast('Toln: «La Guarda del Primer Canto solo la forjo para quien ha oído el tercer canto hasta el final.»', '#e88');
+            audio.sfx('error');
+            break;
+          }
+          if (p.gold >= a.cost) {
+            p.gold -= a.cost;
+            this.flags[a.id] = true;
+            audio.sfx('confirm');
+            this.toast(`${a.name} forjada (${a.cost} coronas): daño recibido −${Math.round(a.red * 100)}%`, '#f0c84a');
+          } else { this.toast(`Te faltan coronas (${a.cost} necesarias)`, '#e88'); audio.sfx('error'); }
+        }
+        break;
+      }
       case action === 'recruit_ilwen':
         if (!this.companion) {
           this.companion = this.makeCompanion();
@@ -1071,6 +1267,13 @@ export class Game {
     if (lost > 0) {
       p.gold -= lost;
       this.deadGolds.push({ map: this.mapId, x: p.x, y: p.y, amount: lost });
+    }
+    // 14-b (compañeros): al caer el Portador, Ilwen se RETIRA — no sigue
+    // peleando sola; reaparece entera a tu lado al despertar en el Santuario
+    // (companionTick la teletransporta y el regen fuera de combate la cura).
+    if (this.companion) {
+      if (this.companion.downT <= 0) this.companion.hp = this.companion.maxHp;
+      this.toast('Ilwen te cubre la retirada...', '#8ef0b0');
     }
     audio.sfx('die');
     this.setState('dead');
@@ -1335,7 +1538,10 @@ export class Game {
     if (p.cds[i] > 0) { this.toast(`${sk.name}: aún en recarga`, '#9aa0b8'); return; }
     if (p.res < sk.cost) { this.toast(`Resonancia insuficiente (${sk.cost})`, '#e88'); audio.sfx('error'); return; }
     p.res -= sk.cost;
-    p.cds[i] = sk.cd;
+    // 14-b (camino B del contrato skilltree.ts): el descuento del árbol se
+    // aplica AL FIJAR (skillCdMult); el decaimiento extra por tick está OFF
+    // (setSkillCdDecay(false)) para que NUNCA se descuente dos veces.
+    p.cds[i] = sk.cd * skillCdMult(p);
     this.castSkill(sk.id, sk.element);
   }
 
@@ -1582,6 +1788,31 @@ export class Game {
       p.gold += 30;
       this.floatAt(e.x, e.y - 34, 'Botín del jefe: +30 coronas', '#f0c84a');
       if (this.questIdx === 8 && this.questStep === 1) this.questAdvance();
+    } else if (e.etype === 'vult') {
+      // 14-a: jefe opcional de caza (Cumbres de noche) — botín generoso
+      this.flags.vultDefeated = true;
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('cumbres');
+      this.shake = 8;
+      this.toast('Vult cae: su mapa se deshace y tus pasos vuelven a ser tuyos', '#c8b0e8');
+      this.toast('El cartógrafo de la Liga descansará esta noche...', '#c8b0e8');
+      p.potions += 1;
+      p.gold += 40;
+      this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción, +40 coronas', '#f0c84a');
+    } else if (e.etype === 'coro') {
+      // 14-a: jefe post-Acto III (Cripta) — cierre del contenido opcional
+      this.flags.coroDefeated = true;
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('crypt');
+      this.shake = 8;
+      audio.sfx('song');
+      this.toast('Las tres máscaras caen a la vez: el Coro Roto por fin descansa', '#c8b0e8');
+      this.toast('La Cripta respira. Fuera del tiempo, algo agradece tu canto', '#ffe9a0');
+      p.potions += 1;
+      p.gold += 60;
+      this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción, +60 coronas', '#f0c84a');
     }
   }
 
@@ -1630,11 +1861,26 @@ export class Game {
       p.parryT = 0;
       return;
     }
+    // 14-b: armadura activa — reduce DESPUÉS del balanceador y ANTES de la
+    // Vigia (contrato armor.ts): dmg_final = max(1, round(bm·(1−red)·(1−vig)))
+    const ared = armorReduction(this);
     const red = Math.min(0.5, p.attrs.vig * 0.01);
-    const final = Math.max(1, Math.round(dmg * (1 - red)));
+    const final = Math.max(1, Math.round(dmg * (1 - ared) * (1 - red)));
     p.hp -= final;
     p.iframes = 0.6;
     p.lastHitT = 0.3;
+    // 14-b: Manto de Ecos — refleja 15% SOLO de contacto melé (el origen del
+    // golpe coincide con el cuerpo de un enemigo); los proyectiles vuelan
+    // desde lejos y NO reflejan (decisión documentada en armor.ts)
+    const refl = armorActive(this)?.reflect;
+    if (refl && final > 0) {
+      const src = this.enemies.find(e => !e.dead
+        && Math.abs(e.x - fromX) < e.w / 2 + 6 && Math.abs(e.y - fromY) < e.h / 2 + 8);
+      if (src) {
+        this.damageEnemy(src, Math.max(1, Math.round(final * refl)), 'ninguno', 0);
+        this.burst(src.x, src.y - 6, '#ffe9a0', 8, 70);
+      }
+    }
     this.shake = 4;
     audio.sfx('hurt');
     this.floatAt(p.x, p.y - 16, `-${final}`, '#ff7060');
