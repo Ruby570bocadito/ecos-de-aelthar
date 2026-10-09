@@ -156,9 +156,12 @@ check('vuelta a AUTO conserva el nivel', loadBalance().auto && loadBalance().lev
 
 // --- fase 6: tabla de multiplicadores + desafío + sin jugador ---
 // (nudge ±1 = paso relativo; la secuencia baja y sube para pasar por los 5 niveles)
+// (R8-7 integrada) — la tabla ×1.08 es la curva de agresión por nivel del
+// jugador (fakePlayer nivel 7 → 1 + (7-3)×0.02 = 1.08); los E valores de
+// tabla subieron con 4.2 (+1: 1.20/1.14, +2: 1.42/1.28).
 const secuencia: [number, number, number, number][] = [
-  [0, 1, 1, 1], [-1, 0.88, 0.90, 0.93], [-2, 0.75, 0.80, 0.85],
-  [-1, 0.88, 0.90, 0.93], [0, 1, 1, 1], [1, 1.15, 1.10, 1.08], [2, 1.30, 1.20, 1.15],
+  [0, 1.08, 1.08, 1], [-1, 0.9504, 0.9720000000000001, 0.93], [-2, 0.81, 0.8640000000000001, 0.85],
+  [-1, 0.9504, 0.9720000000000001, 0.93], [0, 1.08, 1.08, 1], [1, 1.296, 1.2312, 1.08], [2, 1.5336, 1.3824, 1.15],
 ];
 for (const [lvl, hp, dmg, xp] of secuencia) {
   const cur = loadBalance().level;
@@ -176,7 +179,7 @@ const m1 = enemyStatMult(g3);
 check('modo desafío → neutro', m1.hp === 1 && m1.dmg === 1 && m1.xp === 1);
 (g3 as unknown as { challengeRun: unknown }).challengeRun = null;
 const m2 = enemyStatMult(g3);
-check('campaña con nivel 0 → neutro', m2.hp === 1 && m2.dmg === 1 && m2.xp === 1);
+check('campaña con nivel 0 → tabla × agresión (Nv7 → ×1.08)', m2.hp === 1.08 && m2.dmg === 1.08 && m2.xp === 1); // R8-7: la curva aplica en campaña, no en desafío
 // el balanceador tampoco actúa en desafío (muertes no mueven el nivel)
 resetBalance();
 const p4 = fakePlayer();

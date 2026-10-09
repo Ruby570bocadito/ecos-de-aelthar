@@ -138,6 +138,7 @@ console.log('\n=== 2) OLEADAS: arranque, oleada 1, kills, despeje, oleada 2, abo
   const g = newGame();
   const goldPre = g.player!.gold;           // 20
   startChallenge(g, 'oleadas');
+  const goldBase = g.player!.gold;          // R8-7: el Portador del Eco arranca con oro 0
   if (g.state === 'play' && g.mapId === ARENA_MAP_ID && g.challengeRun?.phase === 'jugando')
     ok('startChallenge: estado play, mapa arena, reto en marcha');
   else bad(`startChallenge: state=${g.state} map=${String(g.mapId)} phase=${g.challengeRun?.phase}`);
@@ -172,7 +173,7 @@ console.log('\n=== 2) OLEADAS: arranque, oleada 1, kills, despeje, oleada 2, abo
   if (g.challengeRun?.wave === 2) ok('oleada 2 lanzada tras la cuenta atrás');
   else bad(`wave tras despeje=${g.challengeRun?.wave}`);
   const goldMid = g.player!.gold;
-  if (goldMid > goldPre) ok(`killEnemy pagó oro de campaña (${goldPre}→${goldMid}); la restauración lo devuelve`);
+  if (goldMid > goldBase) ok(`killEnemy pagó oro al Portador del Eco (${goldBase}→${goldMid}); la restauración devuelve el de campaña`); // R8-7
   else bad('killEnemy no pagó oro (¿cambió el motor?)');
   // ABORTO: salir de la arena (equivalente a la puerta sur) → restauración
   g.loadMap('lunaris', 25, 19);
@@ -214,8 +215,8 @@ console.log('\n=== 3) DUELO (victoria, Portador de campaña): restauración + lo
   else bad(`victoria: state=${g.state} phase=${run?.phase}`);
   if (g.flags.sirenaDefeated === undefined) ok('flag de campaña sirenaDefeated DESHECHA (la arena no marca campaña)');
   else bad('sirenaDefeated quedó marcada por el duelo');
-  if (g.player!.potions === potPre + 1) ok(`recompensa: +1 poción por primer duelo (${potPre}→${g.player!.potions})`);
-  else bad(`recompensa: pociones=${g.player!.potions} (esperado ${potPre + 1})`);
+  if (g.player!.potions === potPre) ok(`recompensa limpia: SIN +1 poción filtrada a campaña (R8-7, ${potPre} intactas)`);
+  else bad(`recompensa: pociones=${g.player!.potions} (esperado ${potPre}: sin fuga de campaña)`);
   if (g.player!.gold === goldPre) ok(`oro restaurado exacto tras el botín del motor (${g.player!.gold})`);
   else bad(`oro tras victoria: ${g.player!.gold} ≠ ${goldPre}`);
   const logros = JSON.parse(store.get('ecos-desafio-logros') ?? '[]') as string[];
@@ -267,17 +268,17 @@ console.log('\n=== 5) DUELO con Portador TEMPORAL (desde título sin campaña) =
 {
   const g = new Game(makeCanvas());         // sin newGame: g.player === null
   startChallenge(g, 'jefe', 'golem');
-  if (g.player && g.player.name === 'Portador de Arena' && g.player.level === 8)
-    ok('Portador temporal creado (Alba Nv 8, arma +2)');
-  else bad('no se creó Portador temporal');
+  if (g.player && g.player.name === 'Portador del Eco' && g.player.level === 8)
+    ok('Portador del Eco creado (plantilla propia R8-7: Nv 8, arma +2, sin campaña)');
+  else bad('no se creó Portador del Eco');
   if (g.enemies.some(e => e.etype === 'golem') && g.bossActive) ok('Gólem de Escarcha instanciado');
   else bad('Gólem no instanciado');
   const boss = g.enemies.find(e => e.etype === 'golem')!;
   g.damageEnemy(boss, 100000, 'fuego', 0);
   tick(g, 2.0);
   const logros = JSON.parse(store.get('ecos-desafio-logros') ?? '[]') as string[];
-  if (!logros.includes('duelo:golem')) ok('victoria temporal NO escribe logro (premio reservado a campaña)');
-  else bad('el Portador temporal wrote logro');
+  if (logros.includes('duelo:golem')) ok('corona de duelo escrita también para el Portador del Eco (R8-7: logros del DESAFÍO, no de campaña)');
+  else bad('la corona de duelo del Portador del Eco no se escribió');
   if (g.challengeRun?.phase === 'resultado') ok('resultados al terminar (Portador temporal)');
   else bad(`fase: ${g.challengeRun?.phase}`);
   endChallenge(g, true);
@@ -294,16 +295,19 @@ console.log('\n=== 6) Guardado escrito DENTRO de la arena → reparado al salir 
   tick(g, 3.8);
   for (const e of [...g.enemies]) g.damageEnemy(e, 5000, 'ninguno', 0);
   g.save();                                  // simula GUARDAR Y SALIR desde la pausa en arena
-  if (store.get('ecos-aelthar-save') !== rawPre) ok('guardado en arena detectado (el raw cambió)');
-  else bad('el guardado en arena no cambió el fichero');
+  // ==== 17-a: contrato nuevo — save() es NO-OP dentro del desafío: el
+  // fichero de campaña ni siquiera se escribe (antes se contaminaba y
+  // endChallenge lo "reparaba"; con el bloqueo ya no hay nada que reparar)
+  if (store.get('ecos-aelthar-save') === rawPre) ok('guardado en arena BLOQUEADO (save de campaña intacto)');
+  else bad('el guardado en arena escribió (regresión del fix 17-a)');
   g.damagePlayer(99999, g.player!.x, g.player!.y - 10);
   g.respawn();                               // derrota → resultados
-  endChallenge(g, false);                    // ejecuta la reparación (reescritura)
+  endChallenge(g, false);                    // cierre; el save sigue siendo el de campaña legítimo
   const d = JSON.parse(store.get('ecos-aelthar-save')!) as { map: string; player: { gold: number }; flags: Record<string, unknown> };
-  if (d.map === 'lunaris') ok('save reescrito con mapId lunaris (ya no atrapa en la arena)');
-  else bad(`save reparado con map=${d.map}`);
-  if (d.player.gold === 20 && d.flags.visited_arena === undefined) ok('save reescrito con campaña restaurada (oro/flags)');
-  else bad(`save reparado con oro=${d.player.gold}`);
+  if (d.map === 'lunaris') ok('save intacto con mapId lunaris (nunca atrapa en la arena)');
+  else bad(`save con map=${d.map}`);
+  if (d.player.gold === 20 && d.flags.visited_arena === undefined) ok('save intacto con campaña sana (oro/flags)');
+  else bad(`save con oro=${d.player.gold}`);
   void rawPre;
 }
 

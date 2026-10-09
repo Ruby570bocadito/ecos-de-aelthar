@@ -15,6 +15,7 @@ import type {
   ChestDef,
 } from './types';
 import { MAPS, mapRows, tileAt } from './maps';
+import { ARENA_MAP_ID } from './maps_expansion'; // 17-d: la arena no entra en visitedMaps (ver loadMap)
 import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
 import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
 import { audio } from './audio';
@@ -33,7 +34,7 @@ import { drawGame } from './render';
 import { buildMinimapV2 } from './world/minimap';
 import { handleCustomAction, recordDialogueTone } from './hooks';
 import { challengeTick, onChallengeDeath, type ChallengeRun } from './challenge';
-import { skillTick, skillCdMult, setSkillCdDecay } from './skilltree';
+import { skillTick, skillCdMult, setSkillCdDecay, skillDamageMult } from './skilltree';
 import { balanceTick, enemyStatMult, critChance, CRIT_MULT } from './balance';
 import { worldTick, worldInteract } from './worldlife';
 import { timeTick, beginEpochShift } from './timeskip';
@@ -57,6 +58,13 @@ setSkillCdDecay(false);
 // daña al jugador, pero el flag blinda el embudo ante cambios futuros).
 let reflectBusy = false;
 
+// ==== 17-a (qa-combate) ==== carga de ataque por TECLADO (mantener J):
+// onKeyUp ya liberaba la carga al soltar J, pero ningún keydown la INICIABA
+// (solo el clic izquierdo): el control «mantener J» era imposible. Este set
+// recuerda qué cargas nacieron de J para que cada vía libere solo la suya
+// (soltar el ratón no corta una carga de J y viceversa).
+const chargeViaTecla = new WeakSet<Player>();
+
 // 14-b (compañeros): memoria transitoria de Ilwen por instancia (no serializa;
 // mismo patrón WeakMap que update.ts/skilltree). El seguimiento, el disparo
 // base y la Lluvia de estrellas siguen viniendo de update.ts (congelado):
@@ -78,6 +86,14 @@ export const BOSS_DEFEAT_FLAG: Record<string, string> = {
   golem: 'golemDefeated',
   vult: 'vultDefeated', // 14-a
   coro: 'coroDefeated', // 14-a
+  // ==== 17-a (qa-combate) ==== Vesh ('heraldo', jefe final del Acto IV, 16-a)
+  // no estaba en la tabla: stats.jefesDerrotados no lo contaba al matarlo
+  // (killEnemy cuenta por presencia aquí) y la memoria de HP de jefe de
+  // loadMap lo ignoraba. La flag la fijaba SOLO el watcher de diálogo del
+  // Acto IV (hooks.acto4CatchUp), así que matar a Vesh y caer antes de
+  // hablar con nadie dejaba la derrota huérfana (re-invocable → doble
+  // XP/botín). Rama propia en killEnemy abajo + espejo en interaccion.BOSS_TYPES.
+  heraldo: 'heraldoDerrotado',
 };
 
 // R5-O6 (optimización): topes duros de recursos FX. fx.ts empuja partículas
@@ -463,7 +479,7 @@ export class Game {
       x: d.x, y: d.y, w: 10, h: 8, vx: 0, vy: 0, dir: 'down',
       hp: Math.max(1, p.hp), maxHp, sprite: p.discipline === 'alba' ? 'hero_alba' : 'hero_tejedor',
       anim: 0, moving: false,
-      level: p.level, xp: p.xp, sta: p.maxSta, maxSta: p.maxSta, res: p.res, maxRes: 100,
+      level: p.level, xp: p.xp, sta: typeof p.sta === 'number' && p.sta > 0 ? p.sta : p.maxSta, maxSta: p.maxSta, res: p.res, maxRes: 100, // ==== 17-a (qa): la stamina guardada se restaura EXACTA (saves viejos sin sta → llena) ====
       attrs: { ...p.attrs }, points: p.points,
       gold: p.gold, weaponPlus: p.weaponPlus, potions: p.potions, cds: [0, 0, 0, 0],
       iframes: 0, parryT: 0, parryFx: 0, attackT: 0, combo: 0,
@@ -499,11 +515,15 @@ export class Game {
     this.visitedMaps = { lunaris: true };
     if (this.flags.visitedBosque) this.visitedMaps.bosque = true;
     if (this.flags.visitedCripta) this.visitedMaps.cripta = true;
-    // R7-Q1 #5: restaura también la expansión — sin esto, tras recargar el
-    // santuario dejaba de ofrecer Viajar a los mapas del Acto II ya visitados
-    // (los flags visited_costa/aldea/cumbres SÍ se persisten).
-    for (const mid of ['costa', 'aldea', 'cumbres'] as const) {
-      if (this.flags[`visited_${mid}`]) this.visitedMaps[mid] = true;
+    // ==== 17-a (qa) + R7-Q1 #5: mapas de la expansión (Ronda 14) reconstruidos
+    // al cargar (sus marcas visited_* se escribe desde loadMap); el Acto II
+    // termina en la Cripta pasando por el Bosque, así que acto2Done los implica ====
+    for (const m of ['costa', 'aldea', 'cumbres'] as const) {
+      if (this.flags[`visited_${m}`]) this.visitedMaps[m] = true;
+    }
+    if (this.flags.acto2Done) {
+      this.visitedMaps.bosque = true;
+      this.visitedMaps.cripta = true;
     }
     this.loadMap(d.map, Math.floor(d.x / TILE), Math.floor(d.y / TILE));
     // restaura la posición fina del guardado SOLO si su tile es seguro
@@ -520,9 +540,11 @@ export class Game {
 
   save() {
     if (!this.player) return;
-    // R7-Q1 #1 (ALTA): guardar desde la pausa DENTRO de la arena serializaría
-    // mapId 'arena' + Portador temporal sobre el save de campaña. La
-    // reparación resave de restoreCampaign sigue como segunda línea de defensa.
+    // ==== 17-a (qa) + R7-Q1 #1 (ALTA): la arena NO toca el disco. Guardar
+    // desde la pausa DENTRO del desafío serializaría mapId 'arena' + Portador
+    // temporal sobre el save de campaña: ni el guardado manual ni ningún
+    // autoguardado escriben con un reto en marcha (la reparación resave de
+    // restoreCampaign queda como segunda línea de defensa) ====
     if (this.challengeRun) return;
     const p = this.player;
     const d: SaveData = {
@@ -604,7 +626,12 @@ export class Game {
     this.projectiles = []; this.waves = []; this.telegraphs = [];
     this.bossRef = null; this.bossActive = false;
     audio.setCombat(false);
-    this.visitedMaps[id] = true;
+    // ==== 17-d (qa-mundo): la arena (modo desafío, 12-a) NO participa de la
+    // campaña. Antes loadMap la marcaba en visitedMaps y el menú del Santuario
+    // pasaba a ofrecer «Viajar: Arena del Eco» — un viaje a un mapa sin
+    // campaña, sin santuario y sin botín. Los mapas de campaña siguen
+    // registrándose igual (loadMap también la llama el desafío).
+    if (id !== ARENA_MAP_ID) this.visitedMaps[id] = true;
     if (id === 'bosque' && !this.flags.visitedBosque) {
       this.flags.visitedBosque = true;
       if (this.questIdx === 2 && this.questStep === 0) this.questAdvance();
@@ -1011,7 +1038,25 @@ export class Game {
 
   boxFree(x: number, y: number, w: number, h: number): boolean {
     const x0 = x - w / 2, x1 = x + w / 2, y0 = y - h / 2 - 2, y1 = y + h / 2;
-    return !(this.tileSolidAt(x0, y0) || this.tileSolidAt(x1, y0) || this.tileSolidAt(x0, y1) || this.tileSolidAt(x1, y1));
+    if (this.tileSolidAt(x0, y0) || this.tileSolidAt(x1, y0) || this.tileSolidAt(x0, y1) || this.tileSolidAt(x1, y1)) return false;
+    // ==== 17-d (qa-mundo): cajas más anchas/altas que un tile (jefes 22×16:
+    // guardian/sirena/gólem/vult/coro/heraldo) solo muestreaban las 4
+    // esquinas: un tile sólido podía quedar ENTERO entre dos esquinas
+    // (squeeze diagonal, empujones, knockback) y la caja acababa solapando el
+    // muro con boxFree siempre false — moveEntity se quedaba sin ejes válidos
+    // para siempre y el jefe, enterrado (antiStuck solo cubre al Portador).
+    // Con span > TILE se añaden los puntos medios de los bordes (máx 8
+    // muestras, sin allocations; el Portador/compañera/enemigos base siguen
+    // en exactamente las 4 esquinas de siempre).
+    if (x1 - x0 > TILE) {
+      const xm = (x0 + x1) / 2;
+      if (this.tileSolidAt(xm, y0) || this.tileSolidAt(xm, y1)) return false;
+    }
+    if (y1 - y0 > TILE) {
+      const ym = (y0 + y1) / 2;
+      if (this.tileSolidAt(x0, ym) || this.tileSolidAt(x1, ym)) return false;
+    }
+    return true;
   }
 
   moveEntity(e: { x: number; y: number; w: number; h: number }, dx: number, dy: number) {
@@ -1461,6 +1506,16 @@ export class Game {
   }
 
   sanctuaryPos(id: MapId): [number, number] {
+    // ==== 17-d (qa-mundo): dato, no tabla a mano. Antes devolvía [19,24]
+    // para CUALQUIER mapa que no fuera lunaris/bosque: morir (respawn) o
+    // viajar por el Santuario en la Costa, la Aldea o las Cumbres aterrizaba
+    // a 3-5 tiles del cristal real (respawn costa (19,24) vs santuario
+    // (22,21); aldea (19,24) vs (17,21); cumbres (19,24) vs (14,24)) — el
+    // toast «Despiertas junto al Santuario» mentía y el respiro post-muerte
+    // nacía lejos del punto seguro. Ahora se lee el prop 'sanctuary' del mapa
+    // (aterrizando 1 tile debajo, la convención ya usada por los 3 viejos).
+    const s = MAPS[id]?.props.find(pr => pr.kind === 'sanctuary');
+    if (s) return [s.x, s.y + 1];
     if (id === 'lunaris') return [25, 19];
     if (id === 'bosque') return [38, 27];
     // R7-Q1 #4: santuarios de la expansión (maps_expansion: sanc_co/sanc_a/sanc_cu)
@@ -1769,6 +1824,16 @@ export class Game {
       // las teclas 5/6/7 son de las herramientas del árbol, 12-b) ====
       else if (k === 't') cycleCompanionMode(this);
       else if (k === '8') useSenno(this);
+      // ==== 17-a (qa-combate) ==== carga por teclado: mantener J inicia la
+      // carga (el keyup de abajo ya la liberaba; faltaba el inicio). Si la
+      // carga ya está en curso (ratón u otra J), startAttack no la reinicia
+      // (guard añadido en startAttack) y no se marca como suya.
+      else if (k === 'j') {
+        if (this.player && !this.player.charging) {
+          this.startAttack();
+          if (this.player.charging) chargeViaTecla.add(this.player);
+        }
+      }
       else if (['1', '2', '3', '4'].includes(k)) this.useSkill(parseInt(k, 10) - 1);
       else if (k === 'k') { this.setState('skills'); audio.sfx('uiOpen'); }
     } else if (this.state === 'pause') {
@@ -1784,7 +1849,10 @@ export class Game {
 
   private onKeyUp = (e: KeyboardEvent) => {
     this.keys.delete(e.key.toLowerCase());
-    if (this.player && e.key.toLowerCase() === 'j' && this.player.charging) {
+    // ==== 17-a (qa-combate) ==== soltar J libera SOLO las cargas nacidas de
+    // J: antes cualquier carga (también la del ratón) se cortaba al soltar J.
+    if (this.player && e.key.toLowerCase() === 'j' && this.player.charging
+        && chargeViaTecla.delete(this.player)) {
       this.releaseCharge();
     }
   };
@@ -1829,7 +1897,10 @@ export class Game {
     if (!this.running) return; // instancia muerta: ignora input
     if (e.button === 0) {
       this.mouse.down = false;
-      if (this.player?.charging) this.releaseCharge();
+      // ==== 17-a (qa-combate) ==== soltar el clic libera SOLO las cargas
+      // nacidas del ratón: si la carga en curso es de J, el clic no la corta.
+      const viaTecla = this.player ? chargeViaTecla.delete(this.player) : false;
+      if (this.player?.charging && !viaTecla) this.releaseCharge();
     }
     if (e.button === 2) this.mouse.rdown = false;
   };
@@ -1865,6 +1936,9 @@ export class Game {
   startAttack() {
     if (!this.player) return;
     const p = this.player;
+    // ==== 17-a (qa-combate) ==== si la carga ya está en curso no se reinicia
+    // (antes, pulsar J mientras se mantenía el clic ponía chargeT a 0).
+    if (p.charging) return;
     if (p.attackT > 0 || p.rollT > 0) return;
     p.charging = true;
     p.chargeT = 0;
@@ -1886,9 +1960,10 @@ export class Game {
     p.chargedHit = charged;
     this.aimAtMouse();
     audio.sfx(charged ? 'swing2' : 'swing');
-    // daño del golpe
+    // daño del golpe ==== 17-e (qa): los multiplicadores del árbol (Filo
+    // Templado/Cólera del Alba) aplican al ataque BASE del jugador ====
     const comboMult = [1, 1.12, 1.28][p.combo];
-    const dmg = playerMeleeDmg(p) * comboMult * (charged ? 2.1 : 1);
+    const dmg = playerMeleeDmg(p) * comboMult * (charged ? 2.1 : 1) * skillDamageMult(this, 'melee');
     if (charged) {
       const dirs: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
       const [dx, dy] = dirs[p.dir];
@@ -1947,7 +2022,9 @@ export class Game {
     const dx = wx - p.x, dy = wy - p.y;
     const len = Math.max(1, Math.hypot(dx, dy));
     const nx = dx / len, ny = dy / len;
-    const spellDmg = 10 + p.attrs.int * 1.6 + p.level * 1;
+    // ==== 17-e (qa): Mente de Cristal aplica al hechizo BASE (ascuas,
+    // escarcha, chispa, canto mayor) ====
+    const spellDmg = (10 + p.attrs.int * 1.6 + p.level * 1) * skillDamageMult(this, 'hechizo');
     if (id !== 'grito' && element !== 'ninguno') this.lastNote = element;
     switch (id) {
       case 'tajo': {
@@ -2130,6 +2207,12 @@ export class Game {
   }
 
   killEnemy(e: Enemy) {
+    // ==== 17-a (qa-combate) ==== guard anti-doble-muerte. El VAPOR (hielo
+    // sobre quemado) recursa aoeHit→damageEnemy DENTRO del damageEnemy que
+    // todavía está resolviendo el golpe original: si el daño de vapor mata,
+    // killEnemy corre y el tramo final del golpe EXTERIOR volvía a llamarlo
+    // (e.hp <= 0) → XP, oro, kills y restos otorgados DOS veces. Un solo pago.
+    if (e.dead) return;
     e.dead = true;
     // ==== 16-b (interacción con todo): restos examinables con E + botín raro
     // de jefes (8% de +1 señuelo de caza) ====
@@ -2169,6 +2252,9 @@ export class Game {
       this.bossActive = false;
       audio.setCombat(false);
       this.shake = 8;
+      // ==== 17-a (qa): la pausa dramática del duelo arranca EN EL MISMO golpe
+      // que cae al jefe (challengeTick solo corría en el update siguiente) ====
+      if (this.challengeRun.bossEnemy === e) this.challengeRun.endBeat = 1.7;
       return;
     }
     if (e.etype === 'lobo' && !this.challengeRun && this.questIdx === 1 && this.questStep === 0) {
@@ -2240,7 +2326,33 @@ export class Game {
       p.potions += 1;
       p.gold += 60;
       this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción, +60 coronas', '#f0c84a');
+    } else if (e.etype === 'heraldo') {
+      // ==== 17-a (qa-combate) ==== VESH, la Última Nota (jefe final, 16-a):
+      // killEnemy NO tenía rama y la derrota solo se detectaba en la SIGUIENTE
+      // acción de diálogo (hooks.acto4CatchUp lee ACTO4_BOSS.ref). Consecuencias:
+      // matar y caer antes de hablar dejaba la flag sin fijar (acto4_subir
+      // re-invocable → doble XP/botín), bossActive/música de jefe colgados,
+      // stats.jefesDerrotados sin contarle y SIN botín único garantizado
+      // (todas las demás jefaturas lo sueltan). Rama propia al estilo coro;
+      // el watcher de hooks queda como red idempotente (flag ya puesta → no-op).
+      this.flags.heraldoDerrotado = true;
+      delete this.flags.bossHp_cripta;
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('crypt');
+      this.shake = 8;
+      audio.sfx('song');
+      this.toast('Vesh, la Última Nota, se aquietó: el coro entero respira', '#c8b0e8');
+      // botín único del jefe final (escala con su rol de cierre)
+      p.potions += 1;
+      p.gold += 80;
+      this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción, +80 coronas', '#f0c84a');
+      if (this.questIdx === 14 && this.questStep === 1) this.questAdvance();
     }
+    // ==== 17-a (qa): el duelo entra en pausa dramática EN EL MISMO golpe que
+    // cae al jefe — challengeTick solo corría en el update siguiente y el
+    // endBeat no era observable de inmediato ====
+    if (this.challengeRun && this.challengeRun.bossEnemy === e) this.challengeRun.endBeat = 1.7;
   }
 
   /**

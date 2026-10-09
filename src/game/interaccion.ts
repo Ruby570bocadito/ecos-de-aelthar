@@ -83,7 +83,11 @@ const AOE_BAND_PAD = 2;        // 2.3-b: margen de la banda de onda (px)
 /** Jefes inmunes al señuelo (espejo de BOSS_DEFEAT_FLAG del motor; el élite
  *  del Acto III es 'guardian', así que queda cubierto). Set local para NO
  *  importar valores de engine.ts y mantener el módulo sin ciclos. */
-const BOSS_TYPES = new Set<string>(['guardian', 'sirena', 'golem', 'vult', 'coro']);
+// ==== 17-a (qa-combate) ==== + 'heraldo' (Vesh, jefe final 16-a): sin él el
+// jefe final dejaba restos examinables (registerCorpse16b), no participaba del
+// botín raro de señuelo (bossSennoLoot16b 8%) y quedaba señuelizable en los
+// estados raros sin bossActive (espejo incompleto de BOSS_DEFEAT_FLAG).
+const BOSS_TYPES = new Set<string>(['guardian', 'sirena', 'golem', 'vult', 'coro', 'heraldo']);
 
 // ---------------- RNG inyectable (solo smoke/dev) ----------------
 

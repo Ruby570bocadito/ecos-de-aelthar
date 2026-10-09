@@ -106,6 +106,8 @@ const SPAWN_OK = new Set<string>(['lunaris', 'bosque', 'costa', 'aldea', 'cumbre
 interface WLState {
   clock: number;              // reloj propio (no depende de g.globalT)
   spawnAcc: number;
+  fishAcc: number;            // R7-V4: acumulador del repositor del pez de costa
+  fishTries: number;          // R7-V4: nº de intentos (determinismo por hash)
   evtIn: number;              // segundos hasta el próximo evento callejero
   evtCount: number;
   forced: 'eco' | 'rafaga' | 'viajero' | null; // clase fijada por dev/smoke
@@ -122,7 +124,7 @@ function stateFor(g: Game): WLState {
   let s = STATES.get(g);
   if (!s) {
     s = {
-      clock: 0, spawnAcc: 0, evtIn: 38 + Math.random() * 22, evtCount: 0,
+      clock: 0, spawnAcc: 0, fishAcc: 0, fishTries: 0, evtIn: 38 + Math.random() * 22, evtCount: 0,
       forced: null,
       trav: { active: false, x: 0, y: 0, dir: 1, t: 0 },
       rumorNext: new Map(), rot: 0, rumorsShown: 0, lastRumor: '',
@@ -176,6 +178,19 @@ function qMul(): number {
 /** Cap efectivo de una familia a la calidad actual (mín. 1). */
 function kindCap(kind: number): number {
   return Math.max(1, Math.round(KIND_CAPS[kind] * qMul()));
+}
+
+/** PRNG determinista (mismo patrón que challenge.ts/maps.ts): misma semilla
+ *  ⇒ misma secuencia. El repositor del pez lo usa en vez de hash2 porque los
+ *  hashes de seeds pequeños CLUSTERIZAN (0/54 puntos en agua en la Costa). */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function spawnInterval(g: Game): number {
@@ -337,6 +352,29 @@ function tickFauna(g: Game, dt: number, st: WLState): void {
     if (st.spawnAcc >= spawnInterval(g)) {
       st.spawnAcc = 0;
       trySpawn(g);
+    }
+  }
+  // R7-V4 + 17 (qa): repositor DETERMINISTA del pez de costa. El legacy
+  // trySpawn ya no cría peces y el repositor prometido por el comentario
+  // nunca llegó (la Costa se quedaba sin vida marina). PRNG sembrado con el
+  // reloj del mundo: misma (mapa, reloj, calidad) ⇒ mismo pez, sin allocs.
+  if (g.mapId === 'costa' && kindCount[PEZ] < kindCap(PEZ)) {
+    st.fishAcc += dt;
+    if (st.fishAcc >= 2.2) {
+      st.fishAcc = 0;
+      st.fishTries++;
+      const sd = Math.floor(st.clock) * 31 + st.fishTries * 7919;
+      const rng = mulberry32(sd);
+      const m = 20; // margen como el legacy trySpawn
+      for (let i = 0; i < 10; i++) {
+        const wx = b[0] - m + rng() * (b[2] - b[0] + m * 2);
+        const wy = b[1] - m + rng() * (b[3] - b[1] + m * 2);
+        const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
+        if (tx < 0 || ty < 0 || tx >= g.map.w || ty >= g.map.h) continue;
+        const ch = tileAt(g.map, g.rows, tx, ty, g.epoch);
+        if (ch !== '~' && ch !== 'w') continue; // solo mar/estanque
+        if (spawnDet(PEZ, tx * TILE + TILE / 2, ty * TILE + TILE / 2, 18 + rng() * 14, sd)) break;
+      }
     }
   }
 }

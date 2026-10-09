@@ -174,6 +174,23 @@ function buildBosque(): string[] {
   set(g, 12, 20, 'R'); set(g, 30, 33, 'R'); set(g, 50, 30, 'R');
   scatter(g, 2, 14, 53, 41, ',', 0.05, 303, (x, y) => g[y][x] !== '.');
   scatter(g, 2, 14, 53, 41, 'm', 0.035, 404, (x, y) => g[y][x] !== '.');
+  // ==== 17-d (qa-mundo): despejar coordenadas clave. La dispersión de pinos
+  // (semilla 202) plantó 'p' SÓLIDO sobre puntos de interés: los spawns lobo
+  // (44,34) y esqueleto (30,16) nacían dentro de un árbol (moveEntity sin
+  // ejes válidos → patrulla muerta de por vida), Ilwen (16,32) quedaba dentro
+  // de un pino, el cofre b2 (52,38) era inalcanzable de vista y el eco b_e3
+  // (12,38) se enterraba bajo copas. Mismo pase "despejar coordenadas clave"
+  // que ya usan costa/aldea/cumbres; solo sustituye decoración ('p'/'R').
+  const clearKey: [number, number][] = [
+    [44, 34], [30, 16],   // spawns de zona (lobo, esqueleto)
+    [16, 32],             // NPC Ilwen
+    [52, 38],             // cofre b2
+    [12, 38],             // eco menor b_e3
+  ];
+  for (const [x, y] of clearKey) {
+    const c = g[y][x];
+    if (c === 'p' || c === 'R') set(g, x, y, '.');
+  }
   // abertura este hacia las Cumbres Heladas (Acto II): x54..55, y6..8.
   // El camino va por y=8 para no cruzar la Niebla Muda (y6..7) ni el río.
   pathH(g, 27, 54, 8);
@@ -311,7 +328,10 @@ const BASE_MAPS: Record<'lunaris' | 'bosque' | 'cripta', MapDef> = {
     ],
     echoes: [
       { id: 'b_e1', x: 33, y: 26, title: 'Eco menor · La Madre Espina', text: '«Cuando el canto murió, las raíces del Bosque enloquecieron de dolor. La Madre Espina no es mala: solo tiene roto el corazón.»' },
-      { id: 'b_e2', x: 48, y: 12, title: 'Eco menor · El guardián de la niebla', text: '«Los lobos de niebla fueron una vez perros guardianes de Lunaris. Aún patrullan. Ya no saben para qué.»' },
+      // ==== 17-d (qa-mundo): antes en (48,12) — DENTRO del río ('~' en ambas
+      // épocas): el eco flotaba en el agua y obligaba a interactuar desde la
+      // orilla. (48,13) es la orilla este libre, misma lectura.
+      { id: 'b_e2', x: 48, y: 13, title: 'Eco menor · El guardián de la niebla', text: '«Los lobos de niebla fueron una vez perros guardianes de Lunaris. Aún patrullan. Ya no saben para qué.»' },
       { id: 'b_e3', x: 12, y: 38, title: 'Eco menor · El primer Portador', text: '«Hubo otros antes que tú. Todos oyeron el primer Eco. Ninguno volvió de la Ciudadela. Prepara tu despedida, Portador.»' },
       { id: 'b_e4', x: 30, y: 24, title: 'Eco menor · La Rebelión de los Sordos', text: '«Hubo un año en que los aldeanos del bosque se taparon los oídos con cera de abejas: "si el canto nos gobernaba, el silencio nos libera". Duraron un invierno. La Niebla los encontró igual: el silencio también se puede robar.»' },
     ],

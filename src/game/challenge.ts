@@ -92,6 +92,7 @@ export interface ChallengeSnap {
   repFacciones: Record<string, number> | undefined;
   deadGolds: Game['deadGolds'];
   saveRaw: string | null;                   // contenido del save al entrar (detección de guardado en arena)
+  stats?: Game['stats'];                    // ==== 17-a (qa): las estadísticas de campaña tampoco se tocan en la arena ====
 }
 
 export interface ChallengeRun {
@@ -113,6 +114,7 @@ export interface ChallengeRun {
   spawnedTotal?: number;            // total instanciado → kills = total − vivos
   bossEnemy?: Enemy | null;         // referencia del duelo (victoria = .dead)
   endBeat?: number;                 // pausa dramática (~1,7 s) tras caer el jefe
+  beatCleaned?: boolean;            // ==== 17-a (qa): el mundo se vacía UNA vez al entrar en endBeat ====
   waveHadBoss?: boolean;            // la oleada trae Centinela (mini-jefe)
   waveBossDown?: boolean;           // su rastro de campaña ya se deshizo
   bannerT?: number;                 // aviso grande "OLEADA N" / título de duelo
@@ -216,6 +218,7 @@ function snapshotCampaign(g: Game): ChallengeSnap {
     repFacciones: p?.repFacciones ? { ...p.repFacciones } : undefined,
     deadGolds: g.deadGolds.slice(),
     saveRaw,
+    stats: { ...g.stats } as Game['stats'], // ==== 17-a (qa): fotografía completa, stats incluidas ====
   };
 }
 
@@ -249,7 +252,11 @@ function restoreCampaign(g: Game, run: ChallengeRun): void {
     g.questStep = s.questStep;
     g.flags = { ...s.flags };
     g.deadGolds = s.deadGolds;
-  } else {
+    // ==== 17-a (qa, integrada en el merge): el tiempo de juego y los
+    // contadores acumulados en la arena no son de campaña — el snapshot los
+    // devuelve a su valor exacto ====
+    if (s.stats) g.stats = { ...s.stats } as Game['stats'];
+  } else if (!s.fromCampaign) {
     // Portador del Eco puro (o campaña sin referencia): el oro/pociones que
     // acumuló en la arena no significan nada; endChallenge lo retira al
     // volver al título (aquí aún lo usa el HUD).
@@ -374,6 +381,18 @@ export function challengeTick(g: Game, dt: number): void {
   const run = g.challengeRun;
   if (!run || run.phase !== 'jugando') return;
 
+  // --- ABORTO 2 (PRIMERO, fix merge R8×17): el Portador fue REEMPLAZADO
+  // (Nueva partida / Continuar tras un GUARDAR Y SALIR desde la pausa). El
+  // estado nuevo viene limpio del guardado: NO se restaura nada, solo se
+  // descarta el reto huérfano. DEBE evaluarse ANTES del aborto 1: newGame/
+  // continue ya cambiaron el mapa a lunaris y si el aborto 1 corriera antes,
+  // restoreCampaign recolocaría al Portador de campaña ANTIGUO pisando al
+  // jugador nuevo (bug detectado por smoke_qa17 'aborto 2').
+  if (run.playerRef && g.player !== run.playerRef) {
+    g.challengeRun = null;
+    g.bossRef = null; g.bossActive = false;
+    return;
+  }
   // --- ABORTO 1: se salió de la arena con el reto en marcha (puerta sur o
   // viaje). El loadMap del destino YA regeneró el mundo (enemigos, FX,
   // bossRef) y dejó al Portador del Eco en el punto de aterrizaje; aquí se
@@ -401,14 +420,6 @@ export function challengeTick(g: Game, dt: number): void {
     }
     return;
   }
-  // --- ABORTO 2: el Portador fue REEMPLAZADO (Nueva partida / Continuar
-  // tras un GUARDAR Y SALIR desde la pausa). El estado nuevo viene limpio del
-  // guardado: NO se restaura nada, solo se descarta el reto huérfano.
-  if (run.playerRef && g.player !== run.playerRef) {
-    g.challengeRun = null;
-    g.bossRef = null; g.bossActive = false;
-    return;
-  }
   if (g.state !== 'play' || !g.player) return; // diálogo: el mundo está detenido
 
   const p = g.player;
@@ -424,6 +435,15 @@ export function challengeTick(g: Game, dt: number): void {
   // pausa dramática tras la caída del jefe: deja respirar el slowmo/burst de
   // su muerte (expansionDeathFx) antes de saltar al panel de resultados
   if (run.endBeat !== undefined) {
+    // ==== 17-a (qa): la caída del jefe del duelo setea endBeat EN EL MISMO
+    // killEnemy (el panel no puede esperar al tick siguiente); el vaciado del
+    // mundo que antes hacía la rama del duelo se ejecuta aquí UNA sola vez
+    if (!run.beatCleaned) {
+      run.beatCleaned = true;
+      g.enemies = []; g.projectiles = []; g.waves = []; g.telegraphs = []; // los neumos invocados se disuelven
+      g.bossRef = null; g.bossActive = false;
+      audio.setCombat(false);
+    }
     run.endBeat -= dt;
     if (run.endBeat <= 0) finish(g, run, true);
     return;
@@ -501,7 +521,18 @@ export function onChallengeDeath(g: Game): void {
 
 /** Entrada desde el botón DESAFÍO del título (lo añade 12-a en screens.ts). */
 export function startChallenge(g: Game, mode: 'oleadas' | 'jefe', boss?: string): void {
-  if (g.challengeRun && g.challengeRun.phase === 'jugando') return; // ya hay un reto en marcha
+  // ==== 17-a (qa): reto huérfano (GUARDAR Y SALIR en arena) → DESAFÍO
+  // re-arrancable. Antes: early-return silencioso (botón muerto hasta
+  // cerrar el proceso). Ahora: si el Portador es EL MISMO, se restaura la
+  // campaña del snapshot (el oro de arena se disuelve) y el reto viejo se
+  // descarta; con un Portador NUEVO (aborto 2) no se restaura nada sobre él.
+  const prev = g.challengeRun;
+  if (prev && prev.phase === 'jugando') {
+    if (g.player && prev.playerRef === g.player) restoreCampaign(g, prev);
+    g.challengeRun = null;
+    if (prev.resave === 'rewrite') g.save();          // challengeRun ya null: el save() no está bloqueado
+    else if (prev.resave === 'remove') { try { localStorage.removeItem(SAVE_KEY); } catch { /* noop */ } }
+  }
   menuOpen = false;
 
   const snap = snapshotCampaign(g);           // ANTES de tocar nada del mundo
