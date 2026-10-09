@@ -34,6 +34,13 @@
 // allocations por frame (pools de módulo estilo fx.ts: 12 cadáveres + 1
 // señuelo), cap duro de entidades nuevas = 13. Nada de esto toca world/,
 // sprites, render ni estética.
+//
+// R8-3 (game feel, EPIC 2.1/2.2/2.3): sección 6 — buffers de esquiva/ataque,
+// REFLEJO de proyectiles al parry v2 y cierre de ventana vs AoE. Todo vive en
+// interaccionTick (ya enganchado en update.ts); el parry-Reflejo corre ANTES
+// del bucle de proyectiles de update.ts y recicla el MISMO objeto Projectile
+// (cero allocations). Ver el comentario de la sección 6 para los enganches
+// exactos del motor (opcionales).
 // ============================================================
 
 import type { Game } from './engine'; // SOLO tipo (borrado en runtime: sin ciclo de imports)
@@ -61,6 +68,18 @@ const LOOT_CHANCE = 0.25;             // 25% de coronas extra
 const RUMOR_WINDOW = 2.5;             // s tras cerrar un diálogo en que E da un rumor
 const RUMOR_CD = 60;                  // cooldown del rumor por NPC
 
+// ---------------- Constantes R8-3 (game feel) ----------------
+const DODGE_BUFFER_T = 0.12;   // 2.1: ventana del buffer de esquiva (s)
+const ATTACK_BUFFER_T = 0.14;  // 2.2: ventana del buffer de ataque (s)
+const DODGE_CHAIN_CAP_T = 0.35;// 2.1: cap del modo encadenado (cubre la roll de 0.3 s)
+const ATTACK_CHAIN_CAP_T = 0.45; // 2.2: cap del modo encadenado (cubre tajo cargado 0.4 s)
+const DODGE_STA_NEED = 20;     // sta requerida por la voltereta (espejo update.ts L440)
+const ATK_STA_NEED = 8;        // sta mínima del tajo (espejo engine.releaseCharge)
+const REFLECT_SPEED = 1.2;     // 2.3: velocidad del proyectil reflejado (×1.2)
+const REFLECT_MIN_T = 1.0;     // 2.3: vida mínima de vuelo del reflejado (s)
+const REFLECT_REACH = 8;       // 2.3: margen sobre el umbral de parry de update (px)
+const AOE_BAND_PAD = 2;        // 2.3-b: margen de la banda de onda (px)
+
 /** Jefes inmunes al señuelo (espejo de BOSS_DEFEAT_FLAG del motor; el élite
  *  del Acto III es 'guardian', así que queda cubierto). Set local para NO
  *  importar valores de engine.ts y mantener el módulo sin ciclos. */
@@ -83,6 +102,17 @@ interface IState {
   decoy: { active: boolean; x: number; y: number; t: number }; // pool de 1
   decoyAcc: number;                    // acumulador del marcador visual
   corpseAcc: number;                   // acumulador del marcador de restos
+  // ---- R8-3 (game feel) ----
+  spaceSeen: boolean;                  // flanco previo de Espacio (polling)
+  mouseSeen: boolean;                  // flanco previo de LMB (polling)
+  dodgeBuf: number;                    // clock del último flanco de Espacio (-1 = vacío)
+  atkBuf: number;                      // clock del último flanco de LMB (-1 = vacío)
+  dodgeChain: boolean;                 // el press nació DURANTE un lock (roll/ataque)
+  atkChain: boolean;                   // el press nació DURANTE la recovery del ataque
+  atkHeld: boolean;                    // LMB sigue pulsado desde el press bufferizado
+  lastGlobal: number;                  // g.globalT del último tick (detección de pausa/diálogo)
+  noParryAt: number;                   // clock del último aviso «no parryable» (anti-spam)
+  reflectAt: number;                   // clock del último FX/sfx de reflejo (anti-doble)
 }
 
 const STATES = new WeakMap<Game, IState>();
@@ -95,6 +125,10 @@ function stateFor(g: Game): IState {
       rumorAt: new Map(),
       decoy: { active: false, x: 0, y: 0, t: 0 },
       decoyAcc: 0, corpseAcc: 0,
+      // R8-3: buffers/parry v2
+      spaceSeen: false, mouseSeen: false,
+      dodgeBuf: -1, atkBuf: -1, dodgeChain: false, atkChain: false, atkHeld: false,
+      lastGlobal: -1, noParryAt: 0, reflectAt: 0,
     };
     STATES.set(g, s);
   }
@@ -117,6 +151,12 @@ function memFor(c: Companion): IMem {
 
 function dist(ax: number, ay: number, bx: number, by: number): number {
   return Math.hypot(bx - ax, by - ay);
+}
+
+/** R8-3: distancia al cuadrado (comparaciones sin sqrt). */
+function dist2(ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay;
+  return dx * dx + dy * dy;
 }
 
 const DIRS: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
@@ -574,6 +614,240 @@ export function interaccionTick(g: Game, dt: number): void {
     c2.ttl -= dt;
     if (c2.ttl <= 0) c2.active = false;
   }
+
+  // ==== R8-3 (game feel): buffers de esquiva/ataque + parry v2 (REFLEJO y
+  // cierre de ventana vs AoE). interaccionTick corre en update.ts (línea ~501)
+  // ANTES de que ese mismo frame procese proyectiles (~570), ondas (~666) y
+  // telegrafías (~683): aquí se decide todo lo que esos bucles consumen. ====
+  gameFeelTick(g, dt, st);
+}
+
+// ============================================================
+// 6) GAME FEEL R8-3 (EPIC 2.1 · 2.2 · 2.3)
+// ============================================================
+//
+// DÓNDE VIVÍA CADA MECÁNICA (auditoría R8-3):
+//   · Movimiento real: update.ts ~257-355. Fuera de hielo el control ya es 1:1
+//     (arranque y frenado instantáneos, sin derrape): 2.1 no necesita parche.
+//     El derrape del lago helado (tile 'i', Cumbres) es mecánica INTENCIONAL
+//     del Acto II y se conserva.
+//   · Esquiva: engine.onKeyDown (~1523) solo arma g.rollQueued si se pulsa con
+//     roll/ataque libres y sta≥20 → pulsar DURANTE un lock se perdía; update.ts
+//     (~440-451) la consume. El BUFFER de 120 ms vive aquí (flanco de Espacio
+//     por polling de g.keys + noteDodgePressed como enganche opcional) y se
+//     consume cuando la acción vuelve a estar disponible; si el press nació
+//     DURANTE el lock, ENCADENA hasta que el lock termine (cap 0.35 s, cubre
+//     la voltereta) en vez de caducar antes; si el lock es la recovery del
+//     ataque (attackT>0), la CANCELA (2.2) y rueda al instante. La ejecución
+//     nativa (dirección, FX, sfx, coste) sigue siendo la de update.ts: aquí
+//     solo se arma g.rollQueued — cero duplicación.
+//   · Ataque: engine.startAttack/releaseCharge (~1633-1670): daño instantáneo
+//     al soltar; attackT (0.26/0.4 s) es puro lockout=recovery. Un clic durante
+//     attackT se perdía (startAttack retornaba). El BUFFER de 140 ms vive aquí
+//     (flanco de g.mouse.down + noteAttackPressed opcional): si nació durante
+//     la recovery ENCADENA hasta que attackT termina (cap 0.45 s, cubre el
+//     cargado); al soltarse el lock, si el botón sigue pulsado arranca la
+//     carga nativa y si fue un tap corto suelta el tajo seco (charging +
+//     releaseCharge del motor, sin duplicar daño). La esquiva bufferizada
+//     tiene prioridad (¡evadir manda!).
+//   · Parry: ventana en engine.startParry (~1672: parryT=0.2, parryFx=0.32,
+//     sta−12). Melé: engine.damagePlayer (~2042) — intacto. Proyectil:
+//     update.ts ~617-631 DESTRUYA el proyectil parado. El REFLEJO vive aquí:
+//     corre en interaccionTick, ANTES de ese bucle, recicla el MISMO objeto
+//     (voltea vx/vy hacia el enemigo más cercano, ×1.2 velocidad, from→'player',
+//     t refrescado) y el bucle aliado de update.ts le da el daño original al
+//     objetivo. Cero allocations.
+//   · AoE de jefes: g.waves (dmg>0) y g.telegraphs (dmg>0) resueltos en
+//     update.ts ~666-698 vía damagePlayer; el branch de parry del motor los
+//     ANULABA gratis (res+20 + intento de aturdir) consumiendo el ataque sin
+//     reflejo ni riesgo. Ahora la ventana se CIERRA aquí con feedback de
+//     «no parryable» (tintilla del guardia vía parryFx + sfx parryFail) y el
+//     impacto entra (esquivable con voltereta/iframes, nunca parryable).
+//
+// ENGANCHES OPCIONALES PARA EL ORQUESTADOR (input exacto por evento; sin ellos
+// el polling por frame ya funciona y ambos caminos son idempotentes):
+//   1) engine.ts · onKeyDown (línea ~1523, branch state==='play'): añadir
+//      `if (k === ' ') noteDodgePressed(this);`
+//      (la línea existente de rollQueued puede quedarse: es idempotente).
+//   2) engine.ts · onMouseDown (línea ~1593): cambiar
+//      `else if (this.state === 'play') this.startAttack();`
+//      por
+//      `else if (this.state === 'play') { noteAttackPressed(this); this.startAttack(); }`
+//
+// PRESUPUESTO: O(1) por frame en reposo (2 lecturas de flanco + guardas); los
+// barridos de waves/telegraphs/projectiles solo corren con parryT>0 (ventana
+// de 0.2 s) y sobre arrays pequeños. Cero allocations en régimen; las
+// partículas/ondas de feedback solo se emiten en el EVENTO (patrón del repo).
+// ============================================================
+
+/** Enganche del motor (opcional, ver cabecera): registra el flanco de Espacio
+ *  para el buffer de esquiva de 120 ms. Idempotente con el polling. */
+export function noteDodgePressed(g: Game): void {
+  if (!g.player || g.state !== 'play') return;
+  const st = stateFor(g);
+  const p = g.player;
+  st.dodgeBuf = st.clock;
+  st.dodgeChain = p.rollT > 0 || p.attackT > 0;
+  st.spaceSeen = true;
+}
+
+/** Enganche del motor (opcional, ver cabecera): registra el flanco de LMB
+ *  para el buffer de ataque de 140 ms. Idempotente con el polling. */
+export function noteAttackPressed(g: Game): void {
+  if (!g.player || g.state !== 'play') return;
+  const st = stateFor(g);
+  st.atkBuf = st.clock;
+  st.atkChain = g.player.attackT > 0;
+  st.atkHeld = true;
+  st.mouseSeen = true;
+}
+
+/** Tick de game feel (llamado al final de interaccionTick, estado play). */
+function gameFeelTick(g: Game, dt: number, st: IState): void {
+  const p = g.player!;
+  const space = g.keys.has(' ');
+  const mdown = g.mouse.down;
+
+  // ¿hubo pausa/diálogo/muerte desde el último tick? g.globalT avanza SIEMPRE
+  // con el mismo dt que update (loop del motor), así que gap==dt en juego
+  // continuo; gap grande = frames sin simular → el input que venía pulsado NO
+  // es un flanco limpio y los buffers expiran (nada fantasma al reanudar).
+  const gap = g.globalT - st.lastGlobal;
+  st.lastGlobal = g.globalT;
+  if (gap > dt * 2 + 0.03) {
+    st.dodgeBuf = -1; st.atkBuf = -1; st.atkHeld = false;
+    st.spaceSeen = space; st.mouseSeen = mdown; // re-arma sin disparar flancos
+  } else {
+    if (space && !st.spaceSeen) { // flanco subida Espacio
+      st.dodgeBuf = st.clock;
+      st.dodgeChain = p.rollT > 0 || p.attackT > 0; // nació durante un lock
+    }
+    st.spaceSeen = space;
+    if (mdown && !st.mouseSeen) { // flanco LMB
+      st.atkBuf = st.clock;
+      st.atkChain = p.attackT > 0; // nació durante la recovery
+      st.atkHeld = true;
+    } else if (!mdown) st.atkHeld = false; // el dedo ya soltó: era un tap corto
+    st.mouseSeen = mdown;
+  }
+
+  // ---- 2.1: BUFFER DE ESQUIVA (~120 ms; si nació DURANTE un lock, encadena
+  //      hasta que el lock termine — cap 0.35 s) — y 2.2: si el lock es la
+  //      recovery del ataque, la CANCELA y rueda al instante. El consumo va
+  //      ANTES de la caducidad: el tick en que el lock se suelta ES el momento
+  //      de disparar, no el de expirar. ----
+  if (st.dodgeBuf >= 0) {
+    if (p.rollT <= 0 && p.sta >= DODGE_STA_NEED && !g.rollQueued) {
+      st.dodgeBuf = -1;
+      if (p.attackT > 0) { p.attackT = 0; p.charging = false; } // cancela recovery
+      g.rollQueued = true; // update.ts la ejecuta con su camino nativo (dirección/FX/sfx/coste)
+    } else if (st.clock - st.dodgeBuf > (st.dodgeChain ? DODGE_CHAIN_CAP_T : DODGE_BUFFER_T)) {
+      st.dodgeBuf = -1; // expiró
+    }
+  }
+
+  // ---- 2.2: BUFFER DE ATAQUE (~140 ms; si nació durante la recovery, encadena
+  //      hasta que attackT termine — cap 0.45 s) en vez de perderse ----
+  if (st.atkBuf >= 0) {
+    if (!p.charging && p.attackT <= 0 && p.rollT <= 0 && !g.rollQueued && p.sta >= ATK_STA_NEED) {
+      st.atkBuf = -1;
+      if (st.atkHeld) {
+        g.startAttack(); // sigue pulsado: la carga nativa continúa
+      } else {
+        // tap corto ya soltado: tajo seco vía el propio motor (mismo daño/coste/FX)
+        p.charging = true;
+        p.chargeT = 0;
+        g.releaseCharge();
+      }
+    } else if (st.clock - st.atkBuf > (st.atkChain ? ATTACK_CHAIN_CAP_T : ATTACK_BUFFER_T)) {
+      st.atkBuf = -1; // expiró
+    }
+  }
+
+  if (p.parryT > 0 && p.iframes <= 0 && p.rollT <= 0) {
+    // ---- 2.3-a: PARRY v2 — REFLEJO de proyectiles hacia el enemigo más cercano
+    reflectProjectiles(g, st, p);
+
+    // ---- 2.3-b: PARRY vs AoE — la ventana NO protege de ondas/slam de jefe:
+    //      se cierra con feedback ANTES de que update.ts aplique el impacto ----
+    let aoe = false;
+    for (const w of g.waves) {
+      if (w.dmg <= 0 || w.hit) continue;
+      const rNext = w.r + w.speed * dt; // misma integración que update.ts (~668)
+      const d2w = dist2(w.x, w.y, p.x, p.y);
+      const lo = rNext - 8 - AOE_BAND_PAD;
+      const hi = rNext + 8 + AOE_BAND_PAD;
+      if ((lo <= 0 || d2w > lo * lo) && d2w < hi * hi) { aoe = true; break; }
+    }
+    if (!aoe) {
+      for (const t of g.telegraphs) {
+        if (t.dmg <= 0 || t.t - dt > 0) continue; // estalla este mismo frame
+        if (dist2(t.x, t.y, p.x, p.y) < t.r * t.r) { aoe = true; break; }
+      }
+    }
+    if (aoe) {
+      p.parryT = 0; // ventana cerrada: el AoE entra (esquivable, nunca parryable)
+      noParryFeedback(g, st, p);
+    }
+  }
+}
+
+/** 2.3-a: REFLEJO — recicla cada proyectil enemigo que alcanza la guardia:
+ *  voltea el rumbo hacia el enemigo vivo más cercano (o rebote puro si no hay
+ *  ninguno), velocidad ×1.2, from→'player' (aliado: no daña al Portador, sí a
+ *  enemigos vía el bucle aliado de update.ts) y vida de vuelo refrescada.
+ *  El margen REFLECT_REACH adelanta el reflejo al umbral de parry de update.ts
+ *  (radius+7 tras mover) para que el reflejo SIEMPRE gane la carrera. */
+function reflectProjectiles(g: Game, st: IState, p: Player): void {
+  const projs = g.projectiles;
+  let fx = false;
+  for (let i = 0; i < projs.length; i++) {
+    const pr = projs[i];
+    if (pr.from !== 'enemy') continue;               // solo proyectiles enemigos
+    const dxp = p.x - pr.x, dyp = p.y - 4 - pr.y;    // misma cuenta que update.ts (~620)
+    const reach = pr.radius + 7 + REFLECT_REACH;
+    if (dxp * dxp + dyp * dyp >= reach * reach) continue;
+    if (pr.vx * dxp + pr.vy * dyp <= 0) continue;    // ya se aleja: no reflejar
+    // objetivo: enemigo vivo más cercano AL PROYECTIL (empate: orden de array)
+    let tx = 0, ty = 0, bd2 = Infinity, has = false;
+    for (const e of g.enemies) {
+      if (e.dead) continue;
+      const d2e = dist2(e.x, e.y - 4, pr.x, pr.y);   // e.y−4: centro del cuerpo (update.ts ~593)
+      if (d2e < bd2) { bd2 = d2e; tx = e.x; ty = e.y - 4; has = true; }
+    }
+    const dx = has ? tx - pr.x : -pr.vx;
+    const dy = has ? ty - pr.y : -pr.vy;
+    const l = Math.sqrt(dx * dx + dy * dy) || 1;
+    const sp = Math.sqrt(pr.vx * pr.vx + pr.vy * pr.vy) * REFLECT_SPEED;
+    pr.vx = (dx / l) * sp;                           // reciclado del MISMO objeto: cero alloc
+    pr.vy = (dy / l) * sp;
+    pr.from = 'player';                              // aliado: conserva daño/elemento/sprite
+    pr.t = Math.max(pr.t, REFLECT_MIN_T);            // vida de vuelta garantizada
+    fx = true;
+  }
+  // destello/SFX del reflejo: 1 por frame aunque entren varios proyectiles
+  if (fx && st.clock - st.reflectAt > 0.05) {
+    st.reflectAt = st.clock;
+    audio.sfx('parry');                              // ping metálico existente (sin SFX nuevo)
+    p.res = Math.min(p.maxRes, p.res + 15);          // paridad con el parry de proyectil
+    p.parryFx = 0.4;                                 // destello del guardia (canal de render ~521)
+    g.floatAt(p.x, p.y - 22, '¡REFLEJO!', '#fff8c0', 7);
+    g.burst(p.x, p.y - 8, '#fff8c0', 10, 90);
+    g.waves.push({ x: p.x, y: p.y, r: 3, maxR: 18, speed: 90, dmg: 0, hit: true });
+    g.hitStop = 0.07;                                // micro-pausa (el parry melé usa 0.12)
+  }
+}
+
+/** 2.3-b: feedback de «no parryable» — tintilla breve del guardia (reusa el
+ *  canal parryFx de render), sfx de fallo y aviso flotante. 1 aviso por
+ *  intento (anti-spam 0.4 s). El daño del AoE entra por el camino normal. */
+function noParryFeedback(g: Game, st: IState, p: Player): void {
+  if (st.clock - st.noParryAt < 0.4) return;
+  st.noParryAt = st.clock;
+  audio.sfx('parryFail');
+  p.parryFx = 0.15;
+  g.floatAt(p.x, p.y - 26, '¡no parryable!', '#9aa0b8', 6);
+  g.burst(p.x, p.y - 8, '#8a90a8', 6, 40);
 }
 
 /** Smoke/dev: instantánea del señuelo activo. */

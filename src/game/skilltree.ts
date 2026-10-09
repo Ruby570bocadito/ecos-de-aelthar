@@ -23,6 +23,20 @@
 //   funcionen hoy mismo. Desactivable con window.__ecos_no_skill_bridge.
 //   La integración limpia es una línea en engine.castSkill:
 //     if (castNewSkill(this, id)) return;
+//
+// R8-6 (EPIC 3.7) — árbol v2 (solo sección 10; gameplay intacto):
+//  · Ranuras FUTURAS por rama (3-4 siluetas '???') — sitio visible para
+//    habilidades nuevas sin tocar data.ts.
+//  · Preview con cadena de dependencia dibujada + teclado (flechas/E/1-4)
+//    y cierre POR CAPAS con Esc (popover → árbol → juego).
+//  · Formato de guardado 'ecos-arbol' INTACTO (learned + equip, sin campos
+//    nuevos): las ranuras futuras son solo visuales y jamás entran en
+//    'learned' (getTree valida contra SKILL_TREE) → saves antiguos cargan
+//    igual. La poda por identidad de QA R7-Q1 sigue sin existir (fuera de
+//    alcance): el formato no cambia, así que nada que podar ni migrar.
+//  · Cero allocations por frame en la pantalla: layout cacheado, closures
+//    por nodo cacheadas, strings memoizados, glow horneado, snapshots de
+//    teclas con Sets reutilizados (también en skillTick).
 // ============================================================
 
 import type { Enemy, Element, MapId, Player } from './types';
@@ -232,6 +246,11 @@ export function unequipSlot(p: Player, slot: number): void {
 
 interface Lance { x: number; y: number; vx: number; vy: number; t: number; dmg: number; hits: Set<Enemy> }
 
+// (R8-6) snapshot de teclas sin alocar: snapAdd se pasa a Set.forEach y escribe
+// en snapTarget, que apunta al buffer del frame (patrón de acumulador de módulo).
+let snapTarget: Set<string> | null = null;
+function snapAdd(k: string): void { snapTarget!.add(k); }
+
 interface RT {
   loadedKey: string | null;        // identidad ya inicializada
   prevHp: number;                  // para absorción reactiva (escudo/amuleto)
@@ -239,6 +258,7 @@ interface RT {
   prevKills: number;
   prevLevel: number;               // aviso de +puntos al subir de nivel
   prevKeys: Set<string>;           // flanco de teclas 5/6/7
+  keysSwap: Set<string>;           // (R8-6) buffer par para snapshots de teclas sin alocar
   combat: boolean;                 // flanco de combate (recarga del amuleto)
   campanaCd: number;
   brujulaCd: number;
@@ -263,7 +283,7 @@ function rtOf(p: Player): RT {
   if (!rt) {
     rt = {
       loadedKey: null, prevHp: p.hp, prevGold: p.gold, prevKills: p.kills, prevLevel: p.level,
-      prevKeys: new Set<string>(), combat: false,
+      prevKeys: new Set<string>(), keysSwap: new Set<string>(), combat: false,
       campanaCd: 0, brujulaCd: 0, amuletoCharge: false,
       compassT: 0, compassTick: 0, compassTarget: null, compassMap: null,
       shield: 0, shieldT: 0, auraT: 0, auraTick: 0,
@@ -817,7 +837,14 @@ export function skillTick(g: Game, dt: number): void {
   rt.prevHp = p.hp;
   rt.prevGold = p.gold;
   rt.prevKills = p.kills;
-  rt.prevKeys = new Set(g.keys);
+  // (R8-6: snapshot de teclas con Sets reutilizados — cero allocations por frame)
+  const keysCur = rt.prevKeys;
+  keysCur.clear();
+  snapTarget = keysCur;
+  g.keys.forEach(snapAdd);
+  snapTarget = null;
+  rt.prevKeys = rt.keysSwap;
+  rt.keysSwap = keysCur;
 }
 
 /** Paso propio de las Lanzas del Alba (el pipeline de projectiles del motor

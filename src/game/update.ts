@@ -13,6 +13,7 @@ import { TILE, playerMeleeDmg, BOSS_DEFEAT_FLAG } from './engine';
 import type { Enemy, Dir, Element, Player, Companion } from './types';
 import { ENEMY_DEFS } from './data';
 import { audio } from './audio';
+import { aggroMult } from './balance'; // R8-7: agro escala con el nivel del jugador
 import { addShake, addFlash, requestSlowmo, applyKnockback, stepKnockback } from './fxcore';
 // Ronda 2 · Terror: capas de pavor visual/audio + presentación del jefe + FX de fases
 import { updateHorror } from './actors/horror';
@@ -886,7 +887,7 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
 
   const d2 = dist2(e.x, e.y, p.x, p.y);
   const nightMult = curNightMult; // R5-O10: isNight memoizado 1×/frame en updateGame
-  const aggroR = def.aggroR * nightMult * (e.etype === 'guardian' ? (g.bossActive ? 99 : 1) : 1);
+  const aggroR = def.aggroR * nightMult * aggroMult(g, e.etype) * (e.etype === 'guardian' ? (g.bossActive ? 99 : 1) : 1); // R8-7: agro por nivel (jefes/desafío exentos dentro de aggroMult)
   if (!e.aggro && d2 < aggroR * aggroR && g.state === 'play') {
     e.aggro = true;
     if (e.etype === 'guardian') {

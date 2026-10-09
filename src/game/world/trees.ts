@@ -55,10 +55,49 @@
 //    1 drawImage por hebra en vez de px() por píxel.
 //  - Culling estricto al viewport, early-out sin árboles y plan/lean
 //    reutilizados a nivel de módulo (cero objetos por frame).
+//
+// R8-9 · VAIVÉN v2 (EPIC 5.4 — "los árboles son modestos a moverse"):
+// la capa anima la CIMA COMPLETA de cada árbol visible, no solo hebras.
+// El prerrender sigue congelado (look v3 intacto); el movimiento es un
+// pase encima con tonos de copa:
+//  · Cima que SE MECE: banda superior de copa desplazada por el vaivén —
+//    ±2 joven · ±3 medio · ±4 anciano px en calma, hasta ±6-7 en racha
+//    (la banda asoma a un lado y a otro de la silueta: la copa "rueda").
+//  · Ramas laterales con RETARDO DE FASE (0.55-1.05 rad respecto al
+//    tronco): asoman y se recogen en los bordes de copa — látigo
+//    orgánico, nunca rígido. Los torcidos (muertos) no brotan ramas.
+//  · FASE POR POSICIÓN + ONDA ESPACIAL: aleteo propio por hash2(tile)
+//    (vecinos desfasados) + onda lenta que cruza el mapa (λ≈14 tiles,
+//    ~1.2 tiles/s) — nunca todo el bosque en fase.
+//  · Coherencia HIERBA→ÁRBOLES: el reposo de la copa se peina con
+//    windDir() de grass.ts (el MISMO campo de flujo que peina los
+//    mechones, muestreado en la base del tronco) y la amplitud sube
+//    donde el campo es horizontal (|cos|).
+//  · RÁFAGAS (solo-lectura de weather.ts): |weatherWindAt| (racha-calma,
+//    55-80 s) escala la amplitud ×1..×1.7 con transición suave por
+//    construcción y su signo empuja la copa en la dirección del viento
+//    vivo; weatherIndexAt (90-150 s) infla la amplitud base despacio.
+//  · HOJAS SUELTAS: copas maduras (age ≥ 1, no torcidas) dejan caer 1
+//    hoja cada 14-26 s (determinista por hash+t, tumbo de 2 px, deriva
+//    con el viento vivo); reparto en 3 turnos de 4 s → ~0-2 simultáneas
+//    en pantalla, 0 en calidad baja y la mitad en calidad media.
+//  · COSTE: O(árboles visibles), CERO allocations por frame (todo en
+//    scratch de módulo); stamps de hebra 3×17×2 lazy (~102 mini-canvas
+//    de 17×4 px, +16 KB de bitmap en el PEOR caso vs R5 — compensado
+//    sin stamps por edad: la edad solo escala el índice de vaivén, y
+//    solo 2 largos). Cima/ramas/hojas son fillRect directos: 0 memoria.
 // ============================================================
 
 import { hash2, px, PAL, isForest, pick, type NeighborFn } from './palette';
 import { VIEW_W, VIEW_H, ZOOM as Z } from '../consts'; // R5-O5: vista viva
+// R8-9 · viento vivo (SOLO LECTURA, sin ciclos: grass solo importa palette;
+// weather importa consts/palette/perf; perf solo importa `type Game`):
+//  · windDir/octDX (grass.ts): el campo de flujo que peina la hierba.
+//  · weatherIndexAt/weatherWindAt (weather.ts): rachas del clima.
+//  · perfQuality (perf.ts): escalón adaptativo 0 alta · 1 media · 2 baja.
+import { windDir, octDX } from './grass';
+import { weatherIndexAt, weatherWindAt } from './weather';
+import { perfQuality } from '../perf';
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -643,30 +682,26 @@ export function paintTall(
   else if (ch === 'p') paintPine(x, tx, ty, mapId, nb);
 }
 
-// ---------------- capa animada opcional (R4-A6 + R5-O5) ----------------
+// ---------------- capa animada (R4-A6 + R5-O5 + R8-9) ----------------
 // R5-O5 · VIEW_W/VIEW_H/ZOOM ahora viven en consts.ts (que no importa nada:
 // el ciclo era engine → render → world, y consts está FUERA del ciclo).
 
 const T = 16;                    // TILE
 
 /**
- * CAPA ANIMADA OPCIONAL — puntas de copa en movimiento (R4-A6).
- * NO la llama nadie todavía: mientras el integrador no la conecte,
- * esta función no existe para el juego (inerte, cero riesgo).
- *
- * Dibuja SOLO 2-3 hebras de 1px en la parte superior de cada árbol
- * visible, con vaivén determinista: fase/frecuencia/amplitud salen de
- * hash2(tx,ty) y el ángulo de sin(t), recorrido total ±2-3px. Las
- * puntas coinciden con la geometría del prerrender (coposoPlan/
- * pinePlan + leanOf), así que las hebras nacen pegadas a la copa.
- *
- * Convenio idéntico a waterOverlay (el integrador la llama igual):
+ * CAPA ANIMADA — copas en movimiento (R4-A6 → R5-O5 → R8-9).
+ * render.ts la llama justo tras waterOverlay, MISMO convenio:
  *  - camX/camY: g.camX/g.camY redondeados (px de pantalla).
- *  - mapId: para elegir tonos de copa (bosque vs valle).
+ *  - mapId: elige tonos de copa (bosque vs valle) y densidad de hojas.
  *  - t: g.globalT (segundos).
  *  - at ABSOLUTO: at(tx,ty) = char del tile (tx,ty) del mapa.
- * Se recomienda llamarla dentro del bloque con filtro de época, justo
- * tras waterOverlay, para que las hebras se fundan con el terreno.
+ *
+ * Por árbol visible dibuja: banda de CIMA que se mece + ramas laterales
+ * con retardo de fase + 2-3 hebras de punta (+ hoja suelta ocasional),
+ * todo anclado a la MISMA geometría que el prerrender (coposoPlan/
+ * pinePlan + leanOf) para nacer pegado a la copa. Vaivén determinista:
+ * fase/frecuencia por hash2(tx,ty), onda espacial lenta por posición,
+ * ráfagas por weatherWindAt/IndexAt (solo lectura).
  *
  * R5-O5: snapshot en Uint8Array (1 lectura de at por tile y frame),
  * hebras prerrenderizadas (1 drawImage por hebra), culling estricto al
@@ -684,12 +719,17 @@ function snapNb(tx: number, ty: number): string {
   return String.fromCharCode(snap[(ty - snapY0) * snapW + (tx - snapX0)]);
 }
 
-// — hebras de copa horneadas: (par de tonos) × (vaivén −5..5) × (largo 2..3) —
-const STRAND_HI = 5;                     // vaivén máximo por lado (amp < 5)
-const STRAND_SW = STRAND_HI * 2 + 1;     // 11 índices de vaivén
+// — hebras de copa horneadas: (par de tonos) × (vaivén −8..8) × (largo 2..3) —
+// R8-9: STRAND_HI 5→8 (la cima llega a ±6-7 px en racha) → 3×17×2 = 102
+// mini-canvas de 17×4, creación PEREZOSA (solo los pares/largos que salen
+// en el mapa). Impacto de memoria: +16 KB de bitmap en el peor caso vs
+// R5 (66×11×4); compensado sin stamps por edad (la edad solo escala el
+// índice de vaivén) y manteniendo 2 largos como en R5.
+const STRAND_HI = 8;                     // vaivén máximo por lado (amp < 9)
+const STRAND_SW = STRAND_HI * 2 + 1;     // 17 índices de vaivén
 const strandStamps: (HTMLCanvasElement | null)[] = new Array(3 * STRAND_SW * 2).fill(null);
 
-/** Mini-lámina de 1 hebra (11×4): px d en x = 5 + round(sway·(len−d)/len). */
+/** Mini-lámina de 1 hebra (17×4): px d en x = 8 + round(sway·(len−d)/len). */
 function getStrand(pair: number, swayI: number, lenI: number): HTMLCanvasElement {
   const idx = (pair * STRAND_SW + swayI) * 2 + lenI;
   const hit = strandStamps[idx];
@@ -706,6 +746,28 @@ function getStrand(pair: number, swayI: number, lenI: number): HTMLCanvasElement
   }
   strandStamps[idx] = cv;
   return cv;
+}
+
+// ============================================================
+// R8-9 · VIENTO VIVO (EPIC 5.4) — fase por posición + onda espacial,
+// ráfagas del clima, ramas con retardo de fase y hojas sueltas.
+// Todo O(árboles visibles) y CERO allocations por frame (scratch).
+// ============================================================
+
+const TAU = Math.PI * 2;
+const WIND_NORM = 26;            // weatherWindAt devuelve ±26 px/s (px mundo 1×)
+const LEAF_DUR = 1.2;            // segundos de caída de la hoja suelta
+const WAVE_K = 0.45;             // onda espacial: rad/tile → λ ≈ 14 tiles
+const WAVE_W = 0.55;             // onda espacial: rad/s → cresta a ~1.2 tiles/s
+
+/** Viento/índice del frame memoizado a 1 entrada (1 cálculo real por frame:
+ *  render.ts llama drawTreeCanopy una vez con (mapId, globalT) constantes). */
+let wvMap = '', wvT = -1, wvWind = 0, wvIdx = 0.5;
+function windField(mapId: string, t: number): void {
+  if (mapId === wvMap && t === wvT) return;
+  wvMap = mapId; wvT = t;
+  wvWind = weatherWindAt(mapId, t);      // -26..26 px/s · racha-calma 55-80 s
+  wvIdx = weatherIndexAt(mapId, t);      // 0..1 · período 90-150 s
 }
 
 export function drawTreeCanopy(
@@ -736,6 +798,23 @@ export function drawTreeCanopy(
   }
   if (!hasTree) return; // early-out: ni un árbol en el viewport
 
+  // R8-9 · ráfagas (solo-lectura de weather.ts): |viento| (racha-calma,
+  // 55-80 s) escala la amplitud ×1..×1.75 con transición suave por
+  // construcción (senos superpuestos) y su SIGNO empuja la copa hacia
+  // donde sopla el viento vivo; el índice de clima (90-150 s) infla la
+  // amplitud base de forma lenta. Todo continuo: sin saltos ni pops.
+  windField(mapId, t);
+  const aw = wvWind < 0 ? -wvWind : wvWind;              // |viento| px/s
+  const gustMult = 1 + 0.7 * (aw > WIND_NORM ? 1 : aw / WIND_NORM);
+  const gustPush = (wvWind / WIND_NORM) * 0.4;           // sesgo direccional vivo
+  const swell = 0.88 + 0.22 * wvIdx;                     // inflado lento (índice)
+  const q = perfQuality();                               // 0 alta · 1 media · 2 baja
+  // hojas sueltas: densidad por mapa (bosque 3% · valle 1.5%), repartidas en
+  // 3 turnos de 4 s (nunca todas a la vez) → ~0-2 simultáneas en pantalla;
+  // la mitad en calidad media y 0 en calidad baja (perfQuality, solo lectura)
+  const leafP = q === 2 ? 0 : (mapId === 'bosque' ? 0.03 : 0.015) * (q === 1 ? 0.5 : 1);
+  const leafSlot = Math.floor(t * 0.25) % 3;             // turno activo de hojas
+
   const forest = isForest(mapId);
   const nb: NeighborFn = snapNb; // vecindad desde la snapshot (misma función)
   x.save();
@@ -750,32 +829,157 @@ export function drawTreeCanopy(
       const tx = snapX0 + c;
       const py0 = ty * T + (ty === 0 ? 2 : 0);
       const s = tx * 3 + 1, s2 = ty * 5 + 7;
-      // punta de la copa: misma geometría que el prerrender
+
+      // geometría de la copa (MISMA que el prerrender). Los números se
+      // copian YA: PLAN/LEAN son singletons de módulo reutilizados por tile.
+      const lean = leanOf(nb);
+      let age: number, variant: number, reach: number;
+      let cxT: number, crownTop: number, crownHalf: number;
       let tipX: number, tipY: number, pair: number;
       if (code === 116) {
         const plan = coposoPlan(tx, ty, nb);
-        const lean = leanOf(nb);
-        tipX = tx * T + 7 + lean.lx + (plan.variant === 1 ? 2 : 0);
-        tipY = py0 - plan.reach + lean.ly + (plan.variant === 1 ? 3 : 0);
+        age = plan.age; variant = plan.variant; reach = plan.reach;
+        cxT = tx * T + 7 + lean.lx;
+        crownTop = py0 - reach + lean.ly;
+        crownHalf = Math.round(reach / 2) + 1 + (age === 2 ? 1 : 0); // crownRx
+        tipX = cxT + (variant === 1 ? 2 : 0);
+        tipY = crownTop + (variant === 1 ? 3 : 0);
         pair = forest ? 1 : 0;
       } else {
         const plan = pinePlan(tx, ty, nb);
-        const lean = leanOf(nb);
-        tipX = tx * T + 7 + lean.lx + (plan.variant === 1 ? 2 : 0);
-        tipY = py0 - plan.reach + (plan.variant === 1 ? 0 : 1);
+        age = plan.age; variant = plan.variant; reach = plan.reach;
+        cxT = tx * T + 7 + lean.lx;
+        crownTop = py0 - reach;
+        crownHalf = (variant === 0 ? 6 : variant === 2 ? 9 : 7)  // mismo maxHw
+          + (age === 2 ? 1 : 0) - (age === 0 ? 2 : 0);           // que paintPine
+        tipX = cxT + (variant === 1 ? 2 : 0);
+        tipY = crownTop + (variant === 1 ? 0 : 1);
         pair = 2;
       }
-      // vaivén determinista: sin(t) con fase/frecuencia/amplitud por hash
-      const ph = h2(s * 71 + 13, s2 * 89 + 17) * Math.PI * 2;
-      const fq = 1.0 + h2(s * 13 + 3, s2 * 7 + 11) * 0.6;   // 1.0-1.6 rad/s: vaivén lento
-      const amp = 1.4 + h2(s * 17 + 9, s2 * 23 + 5) * 1.8;  // recorrido ±2-3px
-      const sway = Math.round(Math.sin(t * fq + ph) * amp);
-      const swayI = Math.max(0, Math.min(STRAND_SW - 1, sway + STRAND_HI));
+      const twist = isTwisted(mapId, s, s2);
+
+      // — fase y frecuencia por hash (vecinos NUNCA en fase) —
+      const ph = h2(s * 71 + 13, s2 * 89 + 17) * TAU;
+      const fq = 1.25 + h2(s * 13 + 3, s2 * 7 + 11) * 0.8;   // 1.25-2.05 rad/s
+      // coherencia hierba→copa: el reposo se peina con el campo de flujo
+      // del prado (MISMA windDir que los mechones de grass.ts, muestreada
+      // en la base del tronco) y la amplitud sube donde el campo es
+      // horizontal (|cos|): prado y copas respiran en la misma dirección.
+      const wa = windDir(tx * T + 8, ty * T + 8);
+      const ca = Math.cos(wa);
+      const gBias = octDX(wa) * 0.32;                        // reposo peinado
+      const gAmp = 0.88 + 0.24 * (ca < 0 ? -ca : ca);
+      // amplitud por edad/tamaño: cima ~±2 joven · ±3 medio · ±4 anciano
+      // (antes: 1.4-3.2 plano sobre 2-3 hebras de 1px — casi invisible)
+      const rA = h2(s * 17 + 9, s2 * 23 + 5);
+      const amp = Math.min(7, (age === 0 ? 2.1 + rA * 0.4
+        : age === 1 ? 2.7 + rA * 0.6
+          : 3.3 + rA * 0.7) * swell * gustMult * gAmp);
+
+      // — señal del TRONCO: aleteo propio (hash+frecuencia+armónico) +
+      //   onda espacial lenta que cruza el mapa + sesgos de reposo —
+      const flut = (Math.sin(t * fq + ph)
+        + 0.33 * Math.sin(t * fq * 1.73 + ph * 1.7)) * 0.75; // |flut| ≤ 1
+      const wave = Math.sin((tx + ty * 0.6) * WAVE_K - t * WAVE_W);
+      let bias = gBias + gustPush;
+      if (bias > 1) bias = 1; else if (bias < -1) bias = -1;
+      const sig = 0.6 * flut + 0.28 * wave + 0.12 * bias;    // |sig| ≤ 1
+      const swayR = Math.round(sig * amp);                   // cima del tronco
+
+      // — RAMAS LATERALES: misma frecuencia y onda, FASE RETRASADA
+      //   (0.55-1.05 rad) → látigo orgánico, nunca rígido —
+      const lag = 0.55 + h2(s * 37 + 5, s2 * 31 + 3) * 0.5;
+      const brFlut = (Math.sin(t * fq + ph - lag)
+        + 0.33 * Math.sin(t * fq * 1.73 + ph * 1.7 - lag * 1.3)) * 0.75;
+      const brSway = (0.6 * brFlut + 0.28 * wave + 0.12 * bias) * amp * 0.95;
+      const extR = brSway >= 0.7 ? Math.round(brSway) : 0;   // rama dcha asoma
+      const extL = brSway <= -0.7 ? Math.round(-brSway) : 0; // rama izqda asoma
+
+      const cDark = pair === 2 ? PAL.pineDark : pair === 1 ? PAL.copaDeepB : PAL.copaDeepL;
+      const cMid = pair === 2 ? PAL.pineMid : pair === 1 ? PAL.copaMidB : PAL.copaMidL;
+      const cLight = pair === 2 ? PAL.pineLight : pair === 1 ? PAL.copaLightB : PAL.copaLightL;
+
+      // — CIMA QUE SE MECE: banda superior de copa desplazada por el vaivén.
+      //   El prerrender queda quieto: la banda (tonos de copa) se desliza
+      //   sobre la silueta y asoma a un lado y a otro = copa que rueda.
+      //   Se omite si hay pájaro posado en la punta (no cruzarlo).
+      const rBird = hash2(s * 19 + 4, s2 * 29 + 8);
+      if (rBird >= 0.02 || code === 112) {
+        const half = code === 116 ? (age === 0 ? 2 : 3) : (age === 0 ? 1 : 2);
+        let ridge = swayR;
+        if (ridge > 6) ridge = 6; else if (ridge < -6) ridge = -6;
+        const ry2 = tipY + (code === 116 && variant === 2 ? 0 : 1);
+        x.fillStyle = cDark;
+        x.fillRect(tipX - half + ridge, ry2, half * 2 + 1, 1);
+        px(x, tipX - half + ridge, ry2, 1, 1, cLight);       // luna arriba-izq
+      }
+
+      // — ramas que asoman y se recogen en el borde de la copa (la base
+      //   queda DENTRO de la copa: solo el avance asoma a la silueta).
+      //   Calidad baja las omite; torcidos = muertos: no brotan ramas —
+      if (q < 2 && !twist && (extR > 0 || extL > 0)) {
+        const wLen = 3 + pick(h2(s * 41 + 7, s2 * 43 + 9), 2);         // 3-4 px
+        const chH = code === 116 ? Math.round(reach * 0.9) : reach + 3;
+        const hOff = h2(s * 47 + 1, s2 * 53 + 3);
+        if (extR > 0) {
+          const wy = crownTop + 2 + Math.round((chH - 4) * (0.3 + hOff * 0.35));
+          // pino: halfwidth real a esa altura (mismo perfil que pineCone)
+          const hw = pair === 2
+            ? Math.max(1, Math.round(1 + (crownHalf - 1) * Math.pow((wy - crownTop) / chH, 0.85)))
+            : crownHalf;
+          x.fillStyle = cDark;
+          x.fillRect(cxT + hw - wLen + 1, wy, wLen + extR, 1);
+          px(x, cxT + hw + extR, wy, 1, 1, cMid);
+        }
+        if (extL > 0) {
+          const wy = crownTop + 2 + Math.round((chH - 4) * (0.42 + hOff * 0.35));
+          const hw = pair === 2
+            ? Math.max(1, Math.round(1 + (crownHalf - 1) * Math.pow((wy - crownTop) / chH, 0.85)))
+            : crownHalf;
+          x.fillStyle = cDark;
+          x.fillRect(cxT - hw - extL, wy, wLen + extL, 1);
+          px(x, cxT - hw - extL, wy, 1, 1, cMid);
+        }
+      }
+
+      // — hebras de la punta (R5-O5): 1 drawImage por hebra, con el MISMO
+      //   vaivén del tronco y recorrido completo ±8 en el stamp —
+      const swayI = Math.max(0, Math.min(STRAND_SW - 1, swayR + STRAND_HI));
       const strands = 2 + pick(h2(s * 29 + 1, s2 * 31 + 7), 2); // 2-3 hebras
       for (let i = 0; i < strands; i++) {
         const bx = tipX + Math.floor(h2(s * 37 + i * 3, s2 * 41 + i) * 7) - 3;
         const lenI = pick(h2(s * 43 + i, s2 * 47 + i * 5), 2);
         x.drawImage(getStrand(pair, swayI, lenI), bx - STRAND_HI, tipY);
+      }
+
+      // — HOJA SUELTA (hash+t, determinista): copas maduras sueltan 1 hoja
+      //   cada 14-26 s (reparto en 3 turnos de 4 s); cae 10-20 px con
+      //   vaivén de tumbo y deriva con el viento vivo. En pantalla:
+      //   ~0-2 simultáneas (leafP + turno).
+      if (leafP > 0 && age >= 1 && !twist
+        && h2(s * 151 + 3, s2 * 157 + 5) < leafP
+        && pick(h2(s * 241 + 1, s2 * 251 + 7), 3) === leafSlot) {
+        const cyc = 14 + h2(s * 163 + 7, s2 * 167 + 9) * 12;        // 14-26 s
+        const lt = (t + h2(s * 173 + 11, s2 * 179 + 13) * cyc) % cyc;
+        if (lt < LEAF_DUR) {
+          const u = lt / LEAF_DUR;                                   // 0..1 caída
+          const side = h2(s * 181 + 3, s2 * 191 + 7) < 0.5 ? -1 : 1;
+          const sy0 = crownTop + Math.round(reach * (0.4 + h2(s * 199 + 1, s2 * 211 + 9) * 0.25));
+          // ancho real de copa a la altura de salida (pino: perfil de cono)
+          const tL = Math.min(1, Math.max(0, (sy0 - crownTop) / (reach + 3)));
+          const hwL = pair === 2
+            ? Math.max(1, Math.round(1 + (crownHalf - 1) * Math.pow(tL, 0.85)))
+            : crownHalf;
+          const sx0 = cxT + side * Math.max(1, Math.round(hwL * (0.5 + h2(s * 193 + 5, s2 * 197 + 3) * 0.5)));
+          const fall = 10 + h2(s * 223 + 5, s2 * 227 + 1) * 6 + reach * 0.2;
+          const lyf = sy0 + Math.round(u * fall);
+          const lxf = sx0 + Math.round(Math.sin(u * 5.1 + h2(s * 229 + 7, s2 * 233 + 5) * 6.28) * 1.5
+            + (wvWind / WIND_NORM) * u * 2.5);
+          px(x, lxf, lyf, 1, 1, PAL.leafHang);
+          if (((u * 7) | 0) % 2 === 0) {                             // tumbo intermitente
+            px(x, lxf, lyf - 1, 1, 1, forest ? LEAF_FALL_B : LEAF_FALL_L);
+          }
+        }
       }
     }
   }

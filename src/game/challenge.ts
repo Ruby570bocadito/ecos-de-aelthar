@@ -10,14 +10,25 @@
 // enemigos se instancian aquí, alrededor del Portador (8–14 tiles, nunca
 // encima y solo sobre suelo libre verificado con tileSolidAt/boxFree).
 //
-// AISLAMIENTO DE CAMPAÑA (decisión clave): el motor no sabe que está en un
-// desafío — killEnemy otorga oro/XP, toca flags de jefe, avanza misiones y
-// playerDied cobra el peaje de muerte normal. Para que la arena no ensucie
-// la campaña, startChallenge toma una FOTOGRAFÍA del estado (ChallengeSnap)
-// y finish() la restaura: oro, pociones, muertes, hp/sta/res, misión,
-// banderas, memorias, facciones, oro perdido y stat de kills. La XP/nivel y
-// el tiempo de juego SÍ se conservan a propósito (recompensa del guerrero).
-// El oro de la arena "se disuelve" al salir (flavor + economía intacta).
+// AISLAMIENTO DE CAMPAÑA (decisión clave, reforzada en R8 · 4.3): la arena
+// JAMÁS juega con el Portador de campaña. startChallenge lo APARTA por
+// REFERENCIA (su objeto no se toca: ni attrs, ni equipo, ni oro, ni XP) e
+// instancia el PORTADOR DEL ECO, plantilla propia del modo (Nv 8 fijo,
+// atributos planos, arma +2 — ver makePortadorDelEco). Toda la XP/oro que
+// genera la ronda vive en ese temporal y se descarta al cerrar. Además,
+// startChallenge toma una FOTOGRAFÍA del estado (ChallengeSnap) y finish()
+// la restaura como segunda línea de defensa (flags de jefe que se colaran,
+// deadGolds del peaje de muerte, 'bossIntro' del aggro, arena en
+// visitedMaps…), y Game.save() ni siquiera escribe durante el reto (guard
+// R7-Q1). RECOMPENSAS PERSISTENTES, todas del MODO (nunca de campaña):
+//   · 'ecos-desafio-best'    — mejor puntuación de oleadas (récord)
+//   · 'ecos-desafio-logros'  — marca 'duelo:<jefe>' (✓ en el menú)
+//   · 'ecos-desafio-récords' — top 3 de tiempos (achievements.ts, 16-c)
+//   · logro 'Rondador' en 'ecos-logros' (victoria con >70% de vida)
+// SIN HISTORIA: vencer jefes aquí NO toca flags de campaña ni misiones
+// (killEnemy hace early-return con challengeRun + BOSS_DEFEAT_FLAG, guard
+// R7-Q1 que NO se rompe) y los textos del modo son de arena: victoria =
+// stats de ronda + ranking. Sin fragmentos, citas ni botín de campaña.
 //
 // ABORTOS (redes de seguridad, ver challengeTick):
 // 1) mapId deja de ser la arena (puerta sur / viaje) → restaurar y cerrar.
@@ -48,22 +59,27 @@ const SAVE_KEY = 'ecos-aelthar-save';       // guardado de campaña (solo lectur
 // punto seguro de la arena: centro del empedrado (verificado pisable en buildArena)
 const CENTER_TX = 21, CENTER_TY = 16;
 
-/** Datos de presentación de cada duelo (banner de jefe del motor). */
+/** Datos de presentación de cada duelo (banner de jefe del motor).
+ *  R8 4.3: los subtítulos ya NO narran lore de campaña ('El primer coro,
+ *  vaciado de voz'…) — son Ecos de combate de la arena, sin historia. */
 const BOSS_INFO: Record<string, { name: string; sub: string }> = {
-  guardian: { name: 'GUARDIÁN HUECO', sub: 'El primer coro, vaciado de voz' },
-  sirena: { name: 'SIRENA ABISAL', sub: 'La marea que canta nombres ajenos' },
-  golem: { name: 'GÓLEM DE ESCARCHA', sub: 'El invierno que aprendió a esperar' },
+  guardian: { name: 'GUARDIÁN HUECO', sub: 'Eco de combate del Desafío' },
+  sirena: { name: 'SIRENA ABISAL', sub: 'Eco de combate del Desafío' },
+  golem: { name: 'GÓLEM DE ESCARCHA', sub: 'Eco de combate del Desafío' },
 };
 
 // ---------------- interfaz pública (extensión documentada del esqueleto) ----------------
 
 /**
  * Fotografía del estado de campaña al entrar al desafío. finish() la
- * restaura para que la arena no deje huella (flags de jefe, oro de kills,
- * peaje de muerte, avance de misión por watchers…).
+ * restaura como defensa en profundidad (flags que se colaran por vías
+ * indirectas, deadGolds del peaje de muerte, arena en visitedMaps…).
+ * Desde R8 · 4.3 el Portador de campaña ni siquiera participa (se aparta
+ * por referencia en run.campaignPlayer): la foto cubre solo el estado del
+ * MOTOR (flags/quest/deadGolds), no del jugador.
  */
 export interface ChallengeSnap {
-  fromCampaign: boolean;                    // ¿el Portador existe en campaña o es uno temporal?
+  fromCampaign: boolean;                    // ¿había Portador de campaña vivo al entrar? (se aparta y se devuelve)
   gold: number;
   potions: number;
   deaths: number;
@@ -103,7 +119,9 @@ export interface ChallengeRun {
   bannerText?: string;
   best?: number;                    // récord previo al entrar
   newBest?: boolean;
+  newMark?: boolean;                // R8: primera corona del duelo ganada ESTA ronda
   snap?: ChallengeSnap;             // restauración al terminar
+  campaignPlayer?: Player | null;   // R8 4.3: Portador de campaña APARTADO por referencia (nunca mutado)
   playerRef?: Player | null;        // detección de jugador reemplazado (aborto 2)
   resave?: 'rewrite' | 'remove';    // guardado en arena detectado → arreglar al salir
 }
@@ -153,14 +171,17 @@ function mulberry32(seed: number): () => number {
 }
 
 /**
- * Portador temporal para jugar desde el título sin campaña: Alba de nivel 8
- * con atributos planos y arma +2 — potencia comparable a un Portador a mitad
- * del Acto I avanzado. No toca economía (oro 0) y se descarta al terminar.
+ * R8 4.3 — PORTADOR DEL ECO: plantilla PROPIA del modo Desafío, idéntica
+ * para todo el mundo (ranking justo). Nivel 8 FIJO con atributos planos
+ * (5/5/3/3/5) y arma +2 — potencia comparable a un Portador a mitad del
+ * Acto I avanzado, pero SIN heredar NADA de la campaña: ni attrs, ni
+ * equipo, ni oro, ni memorias, ni árbol de habilidades. La XP/nivel que
+ * gane DURANTE la ronda es suya: se pierde con él al terminar.
  */
-function makeArenaPlayer(): Player {
+function makePortadorDelEco(): Player {
   const maxHp = 158; // 110 base Alba + 7·7 por nivel (misma fórmula que newGame)
   return {
-    kind: 'player', name: 'Portador de Arena', discipline: 'alba',
+    kind: 'player', name: 'Portador del Eco', discipline: 'alba',
     x: 0, y: 0, w: 10, h: 8, vx: 0, vy: 0, dir: 'down',
     hp: maxHp, maxHp, sprite: 'hero_alba', anim: 0, moving: false,
     level: 8, xp: 0, sta: 100, maxSta: 100, res: 0, maxRes: 100,
@@ -200,14 +221,22 @@ function snapshotCampaign(g: Game): ChallengeSnap {
 
 /**
  * Devuelve la campaña a su estado exacto de antes del reto. Se llama en
- * finish() (victoria/derrota/aborto). La XP y el nivel ganados en la arena
- * NO se restauran: son la recompensa persistente de haber sobrevivido.
+ * finish() (victoria/derrota/aborto).
+ *
+ * R8 4.3: el Portador de campaña se APARTÓ POR REFERENCIA al entrar
+ * (run.campaignPlayer) y su objeto nunca fue mutado durante la ronda (la
+ * arena jugó con el Portador del Eco): devolverlo es recolocar g.player.
+ * La escritura defensiva de la foto se mantiene por si algún flux lateral
+ * del motor tocó estado del jugador; la XP/nivel que ganó el Eco se va con
+ * él (el desafío ya no es 'recompensa del guerrero': es un modo aparte).
  */
 function restoreCampaign(g: Game, run: ChallengeRun): void {
   const s = run.snap;
   if (!s) return;
-  const p = g.player;
-  if (s.fromCampaign && p) {
+  if (s.fromCampaign && run.campaignPlayer) {
+    g.player = run.campaignPlayer; // recolocar el objeto de campaña, intacto
+    const p = g.player;
+    // escritura defensiva (no-op en condiciones normales)
     p.gold = s.gold;
     p.potions = s.potions;
     p.deaths = s.deaths;
@@ -220,9 +249,10 @@ function restoreCampaign(g: Game, run: ChallengeRun): void {
     g.questStep = s.questStep;
     g.flags = { ...s.flags };
     g.deadGolds = s.deadGolds;
-  } else if (!s.fromCampaign) {
-    // Portador temporal: el oro/pociones que acumuló en la arena no significan
-    // nada; endChallenge lo retira al volver al título (aquí aún lo usa el HUD).
+  } else {
+    // Portador del Eco puro (o campaña sin referencia): el oro/pociones que
+    // acumuló en la arena no significan nada; endChallenge lo retira al
+    // volver al título (aquí aún lo usa el HUD).
     g.deadGolds = [];
   }
   // ¿el jugador guardó desde la pausa estando DENTRO de la arena? El fichero
@@ -346,15 +376,24 @@ export function challengeTick(g: Game, dt: number): void {
 
   // --- ABORTO 1: se salió de la arena con el reto en marcha (puerta sur o
   // viaje). El loadMap del destino YA regeneró el mundo (enemigos, FX,
-  // bossRef): aquí solo se restaura la campaña y se cierra el reto.
+  // bossRef) y dejó al Portador del Eco en el punto de aterrizaje; aquí se
+  // restaura la campaña y se cierra el reto.
   if (g.state === 'play' && g.mapId !== ARENA_MAP_ID) {
+    // la puerta deja al jugador en el aterrizaje del destino (el único
+    // salida de la arena es lunaris 25,19 — Santuario): si al restaurar
+    // vuelve un Portador de campaña, recolocarlo ahí (sus coords propias
+    // son de su último mapa y podrían caer dentro de un muro)
+    const aterrizaje = g.player ? { x: g.player.x, y: g.player.y } : null;
     restoreCampaign(g, run);
-    const temp = !run.snap?.fromCampaign;
+    if (aterrizaje && g.player && run.campaignPlayer) {
+      g.player.x = aterrizaje.x; g.player.y = aterrizaje.y;
+    }
+    const temp = !run.campaignPlayer;
     g.challengeRun = null;
     g.bossRef = null; g.bossActive = false;
     audio.setCombat(false);
     if (temp) {
-      // Portador temporal sin campaña: no hay mundo que seguir → título
+      // Portador del Eco sin campaña detrás: no hay mundo que seguir → título
       g.player = null;
       g.setState('title');
     } else {
@@ -466,7 +505,12 @@ export function startChallenge(g: Game, mode: 'oleadas' | 'jefe', boss?: string)
   menuOpen = false;
 
   const snap = snapshotCampaign(g);           // ANTES de tocar nada del mundo
-  if (!g.player) g.player = makeArenaPlayer();
+  // R8 4.3 — PORTADOR PROPIO SIEMPRE: la arena JAMÁS juega con el Portador
+  // de campaña (se desvalanceaba y arrastraba historia). Se aparta por
+  // REFERENCIA (su objeto no se muta: ni attrs, ni equipo, ni oro, ni XP) y
+  // se restaura al cerrar el reto. Juega el PORTADOR DEL ECO (plantilla fija).
+  const campaignPlayer = g.player ?? null;
+  g.player = makePortadorDelEco();
 
   // arena: época única presente, aterrizaje en el centro (findSafeTile corrige
   // si acaso); loadMap vacía enemigos/proyectiles y regenera suelo y minimapa
@@ -493,7 +537,7 @@ export function startChallenge(g: Game, mode: 'oleadas' | 'jefe', boss?: string)
     spawnQueue: [], spawnT: 0, spawnedTotal: 0,
     bossEnemy: null, bannerT: 0, bannerText: '',
     best: readBest(), newBest: false,
-    snap, playerRef: g.player,
+    snap, campaignPlayer, playerRef: g.player,
   };
   g.challengeRun = run;
 
@@ -520,10 +564,11 @@ export function endChallenge(g: Game, _victory: boolean): void {
   const run = g.challengeRun;
   g.challengeRun = null;
   menuOpen = false;
-  // Portador temporal: se retira (el título no necesita jugador y NUEVA
-  // PARTIDA/CONTINUAR crean el suyo). Solo tras usarlo, para que el HUD del
-  // panel de resultados pudiera leerlo hasta aquí.
-  if (run?.snap && !run.snap.fromCampaign) g.player = null;
+  // Portador del Eco: se retira si no hay campaña que devolver (el título no
+  // necesita jugador y NUEVA PARTIDA/CONTINUAR crean el suyo). Con campaña,
+  // restoreCampaign (en finish) ya recolocó el Portador de campaña intacto:
+  // el Eco portador —con su XP de la ronda— se descarta aquí de verdad.
+  if (run && !run.campaignPlayer) g.player = null;
   g.enemies = [];
   g.loadMap('lunaris', 25, 19); // punto del Santuario (mismo que respawn en campaña)
   if (run?.resave === 'rewrite') {
@@ -546,7 +591,7 @@ function finish(g: Game, run: ChallengeRun, victory: boolean): void {
   run.score = (run.wavesCleared ?? 0) + run.kills;
 
   // ==== 16-c (logros-stats): ratio de vida EN el momento del cierre (antes de
-  // que restoreCampaign devuelva la hp de campaña) para el logro Rondador ====
+  // que restoreCampaign recoloque el Portador de campaña) para el logro Rondador ====
   const hpRatioPre = g.player && g.player.maxHp > 0 ? g.player.hp / g.player.maxHp : 0;
 
   // récord de oleadas (el duelo no lleva récord: su trofeo es el logro)
@@ -569,21 +614,20 @@ function finish(g: Game, run: ChallengeRun, victory: boolean): void {
   // aviso de logro sobreviva al panel de resultados ====
   recordChallengeResult(g, run.mode, run.boss, victory, hpRatioPre, run.timeSec ?? 0);
 
-  // recompensa campañista: primer duelo ganado a CADA jefe, con Portador de
-  // campaña. Se aplica DESPUÉS de restaurar (la restauración devuelve las
-  // pociones exactas de antes del reto; aquí se suma la recompensa nueva).
-  // Si ganaste con el Portador temporal no se escribe el logro: el premio
-  // sigue disponible para tu campaña de verdad.
-  if (victory && run.mode === 'jefe' && run.snap?.fromCampaign && run.boss && g.player) {
+  // R8 4.3 — RECOMPENSA PROPIA del modo (NUNCA cruza a la campaña): la marca
+  // 'duelo:<jefe>' en 'ecos-desafio-logros' (el ✓ del menú). Antes se regalaba
+  // +1 poción al save de campaña al ganar el primer duelo con el Portador de
+  // campaña: eliminado — el desafío es un modo aparte. Lo persistente ya era
+  // del modo: récord de oleadas ('ecos-desafio-best'), top 3 de tiempos
+  // ('ecos-desafio-récords', recordChallengeResult arriba) y el logro Rondador.
+  run.newMark = false;
+  if (victory && run.mode === 'jefe' && run.boss) {
     const logros = readLogros();
     const key = `duelo:${run.boss}`;
     if (!logros.includes(key)) {
       logros.push(key);
       writeLogros(logros);
-      g.player.potions += 1;
-      audio.sfx('coin');
-      g.toast('Recompensa del Desafío: +1 poción', '#7ef0a0');
-      g.floatAt(g.player.x, g.player.y - 26, '+1 poción', '#7ef0a0', 8);
+      run.newMark = true;
     }
   }
 
@@ -610,8 +654,9 @@ export function drawChallengeOverlay(g: Game): void {
 
   if (run.mode === 'jefe') {
     // la barra del jefe ya la dibuja el motor (bossActive/bossRef): aquí solo
-    // el recordatorio del formato, justo bajo la barra
-    text(g, `DUELO 1v1 · una vida · sin pociones · ${fmtTime(run.timeSec ?? 0)}`, VIEW_W / 2, 40, 13, 'rgba(200,190,230,0.85)', 'center');
+    // el recordatorio del formato + el Portador del Eco (4.3), bajo la barra
+    const lv = g.player?.level ?? 8;
+    text(g, `Portador del Eco Nv ${lv} · DUELO 1v1 · una vida · sin pociones · ${fmtTime(run.timeSec ?? 0)}`, VIEW_W / 2, 40, 13, 'rgba(200,190,230,0.85)', 'center');
     return;
   }
 
@@ -619,7 +664,7 @@ export function drawChallengeOverlay(g: Game): void {
   const py = g.bossActive ? 54 : 6;
   const w = 320;
   const x = VIEW_W / 2 - w / 2;
-  panel(g, x, py, w, 46);
+  panel(g, x, py, w, 58);
   textShadow(g, `OLEADA ${Math.max(1, run.wave)}`, VIEW_W / 2, py + 7, 14, COL.gold, '#000', 'center', true);
   const record = run.best ?? 0;
   text(
@@ -627,6 +672,8 @@ export function drawChallengeOverlay(g: Game): void {
     `Enemigos: ${g.enemies.length + (run.spawnQueue?.length ?? 0)}   ·   PUNTOS: ${run.score}   ·   RÉCORD: ${record}`,
     VIEW_W / 2, py + 26, 14, COL.text, 'center',
   );
+  // R8 4.3: el modo SIEMPRE juega con su Portador propio — visible en HUD
+  text(g, `Portador del Eco · Nv ${g.player?.level ?? 8} (plantilla del Desafío, no tu campaña)`, VIEW_W / 2, py + 43, 12, 'rgba(200,190,230,0.8)', 'center');
 
   // cuenta atrás entre oleadas, grande y al centro
   if (run.betweenWaves > 0) {
@@ -667,7 +714,8 @@ function drawMenu(g: Game): void {
   textShadow(g, 'MODO DESAFÍO', VIEW_W / 2, y + 16, 18, COL.gold, '#000', 'center', true);
   text(g, 'La arena del Eco recuerda a los Portadores que cayeron de pie.', VIEW_W / 2, y + 44, 15, COL.dim, 'center');
   const best = readBest();
-  text(g, `Récord de oleadas: ${best > 0 ? String(best) : '—'}`, VIEW_W / 2, y + 64, 15, COL.goldSoft, 'center');
+  // R8 4.3: plantilla propia visible en el menú (Portador del Eco, nivel fijo)
+  text(g, `Récord de oleadas: ${best > 0 ? String(best) : '—'}   ·   Portador del Eco · Nv 8 fijo`, VIEW_W / 2, y + 64, 15, COL.goldSoft, 'center');
 
   button(g, 'OLEADAS · sobrevive sin fin', x + 60, y + 90, w - 120, 38, () => startChallenge(g, 'oleadas'), 12);
   const logros = readLogros();
@@ -676,7 +724,8 @@ function drawMenu(g: Game): void {
   button(g, `DUELO · Sirena Abisal${mark('sirena')}`, x + 60, y + 178, w - 120, 34, () => startChallenge(g, 'jefe', 'sirena'), 11, COL.boss);
   button(g, `DUELO · Gólem de Escarcha${mark('golem')}`, x + 60, y + 218, w - 120, 34, () => startChallenge(g, 'jefe', 'golem'), 11, COL.boss);
 
-  const nota = wrapText('El duelo es a una sola vida y sin pociones. Ganar por primera vez a cada jefe con tu Portador de campaña otorga +1 poción. Las coronas de la arena son ecos: se disuelven al salir.', 62);
+  // R8 4.3: sin recompensas de campaña — récords y coronas viven aparte
+  const nota = wrapText('Juegas con el Portador del Eco (Nv 8, plano, arma +2): tu campaña no entra en la arena ni recibe nada. Duelo: una vida, sin pociones. Récords y coronas del Desafío se guardan aparte.', 62);
   nota.forEach((l, i) => text(g, l, x + 34, y + 262 + i * 14, 13, COL.dim, 'left'));
   button(g, 'VOLVER (ESC)', x + w / 2 - 80, y + h - 42, 160, 30, () => { menuOpen = false; audio.sfx('uiOpen'); }, 10);
   if (g.keys.has('escape')) { menuOpen = false; audio.sfx('uiOpen'); }
@@ -695,8 +744,9 @@ function drawResults(g: Game, run: ChallengeRun): void {
 
   textShadow(g, win ? 'VICTORIA' : 'DERROTA', VIEW_W / 2, y + 18, 22, win ? COL.gold : '#e06878', '#000', 'center', true);
   const bossName = BOSS_INFO[run.boss ?? 'guardian']?.name ?? 'EL JEFE';
+  // R8 4.3: victoria = STATS DE RONDA, no narrativa — sin frases de historia
   const sub = run.mode === 'jefe'
-    ? (win ? `${bossName} ha caído ante tu canto` : `${bossName} sigue en pie... esta vez`)
+    ? (win ? `Duelo superado · ${fmtTime(run.timeSec ?? 0)}` : `${bossName} sigue en pie... esta vez`)
     : 'La Niebla se ha llevado la ronda';
   text(g, sub, VIEW_W / 2, y + 52, 15, COL.dim, 'center');
 
@@ -719,12 +769,12 @@ function drawResults(g: Game, run: ChallengeRun): void {
     textShadow(g, '¡NUEVO RÉCORD!', VIEW_W / 2, ly, 15, COL.gold, '#000', 'center', true);
     ly += 22;
   }
-  if (win && run.mode === 'jefe' && run.boss && readLogros().includes(`duelo:${run.boss}`)) {
-    text(g, 'Recompensa guardada en tu campaña: +1 poción', VIEW_W / 2, ly, 14, '#7ef0a0', 'center');
+  if (win && run.mode === 'jefe' && run.newMark) {
+    text(g, `Nueva corona: primer duelo ganado a ${bossName} (✓ en el menú)`, VIEW_W / 2, ly, 14, '#7ef0a0', 'center');
     ly += 20;
   }
   if (win && run.mode === 'jefe') {
-    text(g, 'Los jefes de campaña no recordarán esta derrota: la arena es otra época.', VIEW_W / 2, ly, 13, 'rgba(154,160,184,0.85)', 'center');
+    text(g, 'Sin historia aquí: la arena solo registra tiempo y coronas del modo.', VIEW_W / 2, ly, 13, 'rgba(154,160,184,0.85)', 'center');
   }
 
   button(g, 'CONTINUAR (ESC)', VIEW_W / 2 - 110, y + h - 46, 220, 34, () => endChallenge(g, win), 11);

@@ -271,6 +271,13 @@ export function button(
     if (ctx.fillStyle !== accent) ctx.fillStyle = accent;
     ctx.fillRect(x + 6, y + h - 4, w - 12, 2);
   }
+  refreshCursor(g);
+}
+
+/** R8-4 — refresco del cursor DOM compartido: widgets propios (pestañas/filas
+ * de menú en screens.ts) llaman addHit directamente y necesitan el mismo
+ * trato del cursor que button(). Misma memo por instancia, mismo resultado. */
+export function refreshCursor(g: Game): void {
   const want = g.uiHit.some(_isHover) ? 'pointer' : 'default';
   if (CURSOR_MEMO.get(g) !== want) {
     CURSOR_MEMO.set(g, want);

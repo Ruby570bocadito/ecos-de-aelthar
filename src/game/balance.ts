@@ -37,11 +37,11 @@
 //     memoria móvil SOSTIENE el voto ≥ +3 pese a las ventanas tranquilas de
 //     la vuelta al santuario; una muerte sola da +2 en ventanas posteriores
 //     y no alcanza el umbral de bajada)
-//   +1 si se bebieron ≥ 2 pociones en los últimos 60 s
+//   +1 si se bebieron ≥ 3 pociones en los últimos 60 s   (R8 4.2: antes 2)
 //   +1 si en la ventana hubo ≥ 3 s de combate y se recibió ≥ 40% de la vida
-//   -1 si hubo ≥ 3 s de combate y se recibió ≤ 10% de la vida
-//   -1 por cada combate flawless en los últimos 120 s (cap -2: con ≥2
-//     flawless la señal también se sostiene en ventanas sin combate)
+//   -1 si hubo ≥ 3 s de combate y se recibió ≤ 15% de la vida (R8 4.2: antes 10%)
+//   -1 por combates flawless en los últimos 120 s, CAP -1 (R8 4.2: antes -2:
+//     con ≥2 flawless la señal ya no sostiene sola la presión a la baja)
 //   -1 si nivel ≥ refZona+2 · +1 si nivel ≤ refZona-2
 // El nivel solo se mueve ±1 cuando las ÚLTIMAS 2 ventanas (HISTERESIS) votan
 // en el mismo sentido con fuerza suficiente: subir exige voto ≤ -2
@@ -58,12 +58,55 @@
 //   -2     Muy fácil     0.75   0.80   0.85
 //   -1     Fácil         0.88   0.90   0.93
 //    0     Normal        1.00   1.00   1.00
-//   +1     Difícil       1.15   1.10   1.08
-//   +2     Muy difícil   1.30   1.20   1.15
+//   +1     Difícil       1.20   1.14   1.08   (R8 4.2: antes 1.15/1.10)
+//   +2     Muy difícil   1.42   1.28   1.15   (R8 4.2: antes 1.30/1.20)
 // Curva suave y asimétrica a propósito: bajar alivia la supervivencia (hp)
 // más que el castigo (dmg); subir paga XP por debajo del riesgo asumido.
 // Los enemigos YA SPAWNEADOS conservan sus stats: el multiplicador se lee al
 // CONSTRUIR el enemigo (loadMap, cambio de época, minions de jefe).
+//
+// ---------------- R8 · EPIC 4 (balance-desafío) ----------------
+// 4.1 CRÍTICO — nueva API en este módulo (el número vivía hardcodeado en
+// engine.damageEnemy y lo pintaba screens.drawStats):
+//   ANTES  chance = min(40, 5 + des·2) %   · multiplicador ×2
+//          (Portador nuevo des 2 → 9 % · des 5 → 15 % · cap 40 %)
+//   AHORA  chance = min(25, 4 + des·0.7) % · multiplicador ×2.5 (CRIT_MULT)
+//          (des 2 → 5.4 % · des 5 → 7.5 % · des 10 → 11 % · cap 25 %)
+// Es decir: ~la mitad de críticos que antes, pero cada uno pega un 25 % más.
+// El jugo visual ya existente (hitStop 0.09, '¡CRÍTICO!', chispas doradas,
+// sfx 'crit') ahora acompaña un evento raro → se LEE más jugoso sin tocar
+// fx.ts. ENGANCHES exactos (1 línea cada uno, propietario: engine/screens):
+//   engine.ts · damageEnemy (antes: `if (Math.random() * 100 <
+//     Math.min(40, 5 + p.attrs.des * 2)) { final *= 2; crit = true; }`):
+//     if (Math.random() * 100 < critChance(p.attrs.des)) { final *= CRIT_MULT; crit = true; }
+//   screens.ts · línea 'Daño melé…' del panel de estado:
+//     `Crítico: ${Math.round(critChance(p.attrs.des))}%`
+//
+// 4.2 DIFICULTAD QUE RETA — tres palancas, early game intacto:
+// (a) CURVA DE AGRESIVIDAD por nivel del Portador (agresionPorNivel): los
+//     enemigos NORMALES ganan +2 % de hp y daño por nivel del Portador a
+//     partir del Nv 3, con tope +15 %. Nv 1-2 → ×1.00 (el arranque NO
+//     cambia); Nv 8 → +10 %; Nv 10+ → +15 %. Va DENTRO de enemyStatMult,
+//     así que hp/dmg quedan cableados SIN editar el motor (makeEnemy y
+//     damagePlayer ya llaman enemyStatMult). El rango de aggro NO está
+//     cableado: export aggroMult(g, etype?) para el enganche de 1 línea en
+//     update.ts (ver CONTRATO abajo).
+// (b) JEFES aparte: TIPOS_JEFE (guardian/sirena/golem/vult/coro/heraldo) NO
+//     recibe la curva en HP cuando makeEnemy pasa el tipo (enganche
+//     opcional: `enemyStatMult(this, type)`). El embudo de daño
+//     (damagePlayer) no conoce al atacante por diseño 12-c: ahí la curva se
+//     aplica a todo como YA hacía el multiplicador de mundo. Patrones y
+//     fases de jefe: intactos (esa es la tarea 2.4/7.1, no esta).
+// (c) AUTO más exigente (el jugador dejó de sentir peligro): para BAJAR el
+//     mundo ahora hacen falta ≥3 pociones en 60 s (antes 2), el tramo
+//     'recibiste poco daño' cuenta a partir del 15 % de vida (antes 10 %)
+//     y los combates flawless empujan como mucho -1 (antes cap -2). Subir
+//     sigue igual de alcanzable (voto ≤ -2 dos ventanas seguidas) y la
+//     válvula de seguridad se mantiene: 2 muertes en 2 min siguen bajando.
+//
+// MODO DESAFÍO: enemyStatMult y aggroMult siguen NEUTROS con
+// g.challengeRun (la arena escala por oleada en challenge.ts) y el panel
+// lo indica; el Portador del Eco del desafío no dispara el monitor.
 //
 // ---------------- MODO DESAFÍO ----------------
 // Si g.challengeRun existe, balanceTick NO actúa y enemyStatMult devuelve
@@ -135,6 +178,11 @@ const MEMORIA_POCION_S = 60;   // memoria móvil de pociones bebidas
 const COMBATE_MIN_S = 3;       // combate mínimo para valorar el daño recibido
 const FLAWLESS_MIN_S = 4;      // tramo mínimo de combate para certificar flawless
 const DEBOUNCE_MS = 1500;      // cadencia de guardado en localStorage
+// --- R8 4.2 (AUTO más exigente: al mundo le cuesta más bajar de nivel) ---
+const POCIONES_VOTO = 3;         // antes 2: beber 2 pociones ya no pide clemencia
+const VOTO_DANO_ALTO_PCT = 0.40; // (antes inline 0.4, sin cambio) daño ≥ 40% vida: +1
+const VOTO_DANO_BAJO_PCT = 0.15; // antes 0.10: más tramos cuentan como 'demasiado fácil'
+const FLAWLESS_CAP = 1;          // antes 2: jugar perfecto empuja menos a bajar
 
 const NIVEL_MIN = -2;
 const NIVEL_MAX = 2;
@@ -148,13 +196,15 @@ const ZONA_NIVEL_REF: Record<string, number> = {
 
 interface Mult { hp: number; dmg: number; xp: number }
 
-/** Tabla de multiplicadores (documentada en la cabecera). */
+/** Tabla de multiplicadores (documentada en la cabecera). +1/+2 más duros
+ *  desde R8 (4.2): el mundo por ENCIMA de Normal castiga más; Normal y por
+ *  debajo intactos para no romper el early game. */
 const MULTS: Record<number, Mult> = {
   [-2]: { hp: 0.75, dmg: 0.80, xp: 0.85 },
   [-1]: { hp: 0.88, dmg: 0.90, xp: 0.93 },
   [0]: { hp: 1.00, dmg: 1.00, xp: 1.00 },
-  [1]: { hp: 1.15, dmg: 1.10, xp: 1.08 },
-  [2]: { hp: 1.30, dmg: 1.20, xp: 1.15 },
+  [1]: { hp: 1.20, dmg: 1.14, xp: 1.08 },
+  [2]: { hp: 1.42, dmg: 1.28, xp: 1.15 },
 };
 
 /** Nombres en español de -2..+2 (índice 0 = nivel -2). */
@@ -173,6 +223,43 @@ function clampLevel(n: number): number {
 function multFor(level: number): Mult {
   return MULTS[clampLevel(level)];
 }
+
+// ---------------- R8 · 4.1 crítico (menos común, más jugoso) ----------------
+
+/** Multiplicador de daño de un crítico. ANTES ×2 (hardcodeado en
+ *  engine.damageEnemy). AHORA ×2.5: menos críticos (critChance), más jugo. */
+export const CRIT_MULT = 2.5;
+
+/** Probabilidad de crítico (%) en función de Destreza.
+ *  ANTES: `Math.min(40, 5 + des * 2)` — des 2 → 9 %, des 5 → 15 %, cap 40 %.
+ *  AHORA: `Math.min(25, 4 + des * 0.7)` — des 2 → 5.4 %, des 5 → 7.5 %,
+ *  des 10 → 11 %, cap 25 %. Sigue escalando con des (~+0.7 %/punto).
+ *  ENGANCHES (propietarios engine/screens, ver cabecera): engine.damageEnemy
+ *  y la línea 'Crítico:' del panel de estado en screens.ts. */
+export function critChance(des: number): number {
+  return Math.min(25, 4 + Math.max(0, des) * 0.7);
+}
+
+// ---------------- R8 · 4.2 curva de agresividad por nivel ----------------
+
+const AGRESION_NIVEL_BASE = 3;   // Nv 1-2 sin extra: el arranque queda intacto
+const AGRESION_POR_NIVEL = 0.02; // +2 % de hp/daño/aggro por nivel a partir del 3
+const AGRESION_TOPE = 1.15;      // tope +15 % (encargo 4.2: +10-15 % a mitad/final)
+
+/** Multiplicador de agresividad de los enemigos NORMALES según el nivel del
+ *  Portador: ×1.00 hasta Nv 3, +2 %/nivel, tope +15 %. Se aplica dentro de
+ *  enemyStatMult (hp/dmg ya cableados por contrato 12-c) y en aggroMult
+ *  (enganche documentado para update.ts). */
+export function agresionPorNivel(nivel: number): number {
+  const extra = Math.max(0, nivel - AGRESION_NIVEL_BASE) * AGRESION_POR_NIVEL;
+  return Math.min(AGRESION_TOPE, 1 + extra);
+}
+
+/** Tipos de JEFE: no reciben la curva de agresividad en HP (sus peleas tienen
+ *  fases y HP de diseño; patrones intactos). heraldo incluido por 16-a. */
+const TIPOS_JEFE: ReadonlySet<string> = new Set([
+  'guardian', 'sirena', 'golem', 'vult', 'coro', 'heraldo',
+]);
 
 // ---------------- estado persistido ----------------
 
@@ -305,16 +392,21 @@ function cerrarVentana(g: Game, t: number): void {
   const b = ensureLoaded();
 
   // ---- voto de la ventana ----
+  // R8 4.2 (AUTO reta más): con las mismas señales, ahora CUESTA MÁS que el
+  // mundo baje y es más fácil que suba: los flawless empujan como mucho -1
+  // (antes -2), beber pociones exige 3 en 60 s (antes 2) y el tramo
+  // 'recibiste poco daño' cuenta desde el 15 % de vida (antes 10 %). La
+  // válvula de seguridad se mantiene: 2 muertes en 2 min siguen bajando.
   let voto = 0;
   const muertes = mon.tMuertes.length;
   if (muertes >= 1) voto += 2; // morir pesa mucho (y la memoria lo sostiene)
   if (muertes >= 2) voto += 1; // morir mucho: voto ≥ +3 sostenido → baja
-  if (mon.tPociones.length >= 2) voto += 1;
+  if (mon.tPociones.length >= POCIONES_VOTO) voto += 1;
   const huboCombate = mon.winCombatT >= COMBATE_MIN_S;
   const pctVida = p.maxHp > 0 ? mon.winDmg / p.maxHp : 0;
-  if (huboCombate && pctVida >= 0.4) voto += 1;
-  if (huboCombate && pctVida <= 0.1) voto -= 1;
-  voto -= Math.min(2, mon.tFlawless.length);
+  if (huboCombate && pctVida >= VOTO_DANO_ALTO_PCT) voto += 1;
+  if (huboCombate && pctVida <= VOTO_DANO_BAJO_PCT) voto -= 1;
+  voto -= Math.min(FLAWLESS_CAP, mon.tFlawless.length);
   const ref = ZONA_NIVEL_REF[g.mapId] ?? 6;
   if (p.level >= ref + 2) voto -= 1;
   if (p.level <= ref - 2) voto += 1;
@@ -423,11 +515,37 @@ export function balanceTick(g: Game, dt: number): void {
 
 /** Multiplicadores actuales para un spawn de enemigo. Ver CONTRATO en la
  *  cabecera: hp en Game.makeEnemy, dmg en Game.damagePlayer, xp en
- *  Game.killEnemy. Neutro sin partida y en modo desafío. */
-export function enemyStatMult(g: Game): { hp: number; dmg: number; xp: number } {
+ *  Game.killEnemy. Neutro sin partida y en modo desafío.
+ *
+ *  R8 4.2: sobre la tabla de mundo se aplica la CURVA DE AGRESIVIDAD por
+ *  nivel del Portador (agresionPorNivel: +2 %/nivel desde Nv 3, tope +15 %).
+ *  Los tres puntos de integración del motor llaman `enemyStatMult(this)`,
+ *  así que hp/dmg suben SIN editar el motor. Si se pasa `etype` y es JEFE
+ *  (TIPOS_JEFE), la curva NO se aplica a esa lectura: HP de jefe de diseño
+ *  (enganche recomendado en makeEnemy: `enemyStatMult(this, type)`).
+ *  El funnel de daño (damagePlayer) no conoce al atacante: ahí la curva se
+ *  aplica a todo, igual que YA hacía el multiplicador de mundo 12-c. La XP
+ *  NO sube con la curva (más riesgo no regala más progresión). */
+export function enemyStatMult(g: Game, etype?: string): { hp: number; dmg: number; xp: number } {
   if (!g.player) return { hp: 1, dmg: 1, xp: 1 };     // sin partida activa
   if (g.challengeRun) return { hp: 1, dmg: 1, xp: 1 };// desafío: escala 12-a
-  return { ...multFor(ensureLoaded().level) };
+  const base = multFor(ensureLoaded().level);
+  if (etype && TIPOS_JEFE.has(etype)) return { ...base }; // jefe: HP de diseño
+  const agresion = agresionPorNivel(g.player.level);      // enemigos normales
+  return { hp: base.hp * agresion, dmg: base.dmg * agresion, xp: base.xp };
+}
+
+/** R8 4.2 — multiplicador del RANGO DE AGGRO para el enganche de update.ts
+ *  (1 línea, ver CONTRATO). Misma curva que hp/dmg: a mayor nivel del
+ *  Portador, los enemigos normales te detectan antes (hasta +15 %). Jefes y
+ *  desafío: neutro. ENGANCHE EXACTO en update.ts (~línea 889):
+ *    ANTES: const aggroR = def.aggroR * nightMult * (e.etype === 'guardian' ? (g.bossActive ? 99 : 1) : 1);
+ *    AHORA: const aggroR = def.aggroR * nightMult * aggroMult(g, e.etype) * (e.etype === 'guardian' ? (g.bossActive ? 99 : 1) : 1);
+ *  (+ import { aggroMult } from './balance') */
+export function aggroMult(g: Game, etype?: string): number {
+  if (!g.player || g.challengeRun) return 1;
+  if (etype && TIPOS_JEFE.has(etype)) return 1;
+  return agresionPorNivel(g.player.level);
 }
 
 // ---------------- panel (pestaña ESTADO de la pausa) ----------------
@@ -459,7 +577,12 @@ export function drawBalancePanel(
     b.auto ? COL.quest : COL.goldSoft, 'right');
 
   // galga de 5 niveles con nombres en español
-  const mult = multFor(b.level);
+  // R8 4.2: los efectos mostrados son los REALES que verá un spawn de
+  // enemigo normal: tabla de mundo × curva de agresividad por nivel del
+  // Portador. En desafío (enemyStatMult neutro) la fila lo indica.
+  const curva = g.challengeRun || !g.player ? 1 : agresionPorNivel(g.player.level);
+  const mult0 = multFor(b.level);
+  const mult = { hp: mult0.hp * curva, dmg: mult0.dmg * curva, xp: mult0.xp };
   const cellW = 84, gap = 4, gy = y + 24, gh = 16;
   let gx = x + 10;
   for (let i = 0; i < 5; i++) {
@@ -473,25 +596,33 @@ export function drawBalancePanel(
   // efectos actuales (contrato: hp/dmg/xp sobre ENEMY_DEFS)
   const pct = (v: number) =>
     v === 1 ? '+0%' : (v > 1 ? '+' : '-') + Math.round(Math.abs(v - 1) * 100) + '%';
-  text(g, `Vida ${pct(mult.hp)} · Daño ${pct(mult.dmg)} · XP ${pct(mult.xp)}`,
+  text(g, g.challengeRun
+    ? 'En el Desafío la presión la marcan las oleadas (no este panel)'
+    : `Vida ${pct(mult.hp)} · Daño ${pct(mult.dmg)} · XP ${pct(mult.xp)}`,
     gx + 10, gy + 2, 13, COL.dim);
 
   if (!readOnly) {
     // botones (funcionales vía uiHit global; el integrador solo llama esto)
     const by = y + 46, bh = 20;
+    const agg = curva > 1 ? ` · agresión +${Math.round((curva - 1) * 100)}%` : '';
     button(g, b.auto ? 'Modo: AUTO' : 'Modo: MANUAL', x + 10, by, 124, bh,
       () => setBalanceAuto(!b.auto), 11);
     button(g, '-', x + 138, by, 28, bh, () => nudgeBalanceLevel(-1), 11);
     button(g, '+', x + 170, by, 28, bh, () => nudgeBalanceLevel(1), 11);
     button(g, 'Restablecer', x + 202, by, 120, bh, () => resetBalance(), 10);
     text(g, b.auto
-      ? 'Se ajusta solo según tu rendimiento (y se guarda)'
-      : 'Fijado a mano: el mundo no cambiará solo',
+      ? `Se ajusta según tu rendimiento (y se guarda)${agg}`
+      : `Fijado a mano: no cambiará solo${agg}`,
       x + 332, by + 5, 13, COL.dim);
   } else {
-    text(g, b.auto
-      ? 'Ajuste automático: observa tu rendimiento y se guarda solo'
-      : 'Nivel fijado a mano (persistente entre sesiones)',
+    const agg = curva > 1
+      ? ` · agresión por tu nivel (Nv ${g.player?.level ?? 1}): +${Math.round((curva - 1) * 100)}%`
+      : '';
+    text(g, g.challengeRun
+      ? 'El Desafío no usa este panel: juega con el Portador del Eco'
+      : b.auto
+        ? `Ajuste automático: observa tu rendimiento y se guarda solo${agg}`
+        : `Nivel fijado a mano (persistente entre sesiones)${agg}`,
       x + 10, y + 45, 13, COL.dim);
   }
   return h;

@@ -4,17 +4,23 @@
 // Título (niebla en capas + notas flotantes), controles, intro,
 // pausa (Estado con "Velmora te observa", Diario con memorias y
 // misiones del Acto II), diálogo con retratos, muerte y final.
+// R8-4 (menús y usabilidad): título con más presencia y pie de
+// versión discreto; pausa reorganizada en HUB + 5 secciones visibles
+// (Estado/Equipo/Inventario/Diario/Opciones) con teclado y capas que
+// NUNCA cierran el menú entero; Equipo con comparación de stats;
+// Diario con la cadena de misión paso a paso; gasto de atributos con
+// confirmación y badges de puntos disponibles.
 // ============================================================
 
-import type { Game } from './engine';
-import { VIEW_W, VIEW_H, QUESTS, getSpr, playerMeleeDmg } from './engine';
+import type { Game, GState } from './engine';
+import { VIEW_W, VIEW_H, QUESTS, getSpr, playerMeleeDmg, playerSpellDmg } from './engine';
 import { ATTR_INFO, KEY_ITEMS, MEMORIES } from './data';
 import { dominantTone, TONE_LABEL } from './hooks';
-import { drawBalancePanel } from './balance'; // 12-c: dificultad (pestaña SISTEMA)
-import { drawArmorRow } from './armor'; // 14-b: armadura activa (pestaña ESTADO)
+import { drawBalancePanel, critChance } from './balance'; // 12-c: dificultad (pestaña SISTEMA) + R8-7 crítico
+import { drawArmorRow, ARMORS, armorActive, type ArmorDef } from './armor'; // 14-b: datos de corazas (solo lectura)
 import { drawPortrait } from './sprites';
 import { audio } from './audio';
-import { COL, text, textShadow, panel, bar, button, wrapText, addHit } from './ui';
+import { COL, text, textShadow, panel, bar, button, wrapText, addHit, refreshCursor } from './ui';
 import { drawSkyBackdrop } from './world/sky';
 import { openChallengeMenu, drawChallengeTitleUi, drawChallengeOverlay } from './challenge'; // 12-a (modo desafío)
 import { drawTitlePanels, openStatsPanel, openLogrosPanel } from './achievements'; // 16-c: Estadísticas y Logros
@@ -64,7 +70,11 @@ const KEY_ITEM_FLAGS: [string, string][] = [
 // números en letra para la pantalla final (restantes de 7)
 const NUM_ES = ['cero', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete'];
 
+// R8-4 — pie del título: una sola línea discreta con la versión
+const TITLE_FOOTER = 'v0.5.9 · Ecos de Aelthar';
+
 export function drawScreens(g: Game) {
+  installLayerGuard(g); // R8-4: capas de pausa — Esc cierra SOLO la capa activa
   if (g.state !== 'end') endArmed = false; // rearma la escalonada del final
   switch (g.state) {
     case 'title':
@@ -163,52 +173,68 @@ function drawTitle(g: Game) {
     drawNote(ctx, nx + 26, ny - 14, 1.7, `rgba(158,196,180,${na * 0.7})`, i % 2);
   }
 
-  // logo con brillo periódico
+  // logo con brillo periódico — R8-4: más presencia (tipografía mayor,
+  // subrayado dorado con remates de rombo y eco suave bajo el trazo)
   const bob = Math.sin(t * 1.4) * 3;
   const glow = Math.pow(Math.max(0, Math.sin(t * 0.7)), 14);
   if (glow > 0.02) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = glow * 0.55;
-    textShadow(g, 'AELTHAR', VIEW_W / 2, 110 + bob, 42, '#fff3c0', '#3a2a08', 'center', true);
+    textShadow(g, 'AELTHAR', VIEW_W / 2, 104 + bob, 52, '#fff3c0', '#3a2a08', 'center', true);
     ctx.restore();
   }
-  textShadow(g, 'ECOS DE', VIEW_W / 2, 78 + bob, 20, '#b0b8d0', '#000', 'center', true);
-  textShadow(g, 'AELTHAR', VIEW_W / 2, 110 + bob, 42, COL.gold, '#2a1a08', 'center', true);
+  textShadow(g, 'ECOS DE', VIEW_W / 2, 70 + bob, 22, '#b0b8d0', '#000', 'center', true);
+  textShadow(g, 'AELTHAR', VIEW_W / 2, 104 + bob, 52, COL.gold, '#2a1a08', 'center', true);
   ctx.fillStyle = COL.gold;
-  ctx.fillRect(VIEW_W / 2 - 180, 168, 360, 2);
-  text(g, 'RPG 2D de acción y exploración · Demo jugable · Acto II incluido', VIEW_W / 2, 180, 17, COL.dim, 'center');
+  ctx.fillRect(VIEW_W / 2 - 196, 170, 392, 3);
+  pixelDiamond(ctx, VIEW_W / 2 - 203, 171, COL.gold);
+  pixelDiamond(ctx, VIEW_W / 2 + 203, 171, COL.gold);
+  ctx.globalAlpha = 0.4;
+  ctx.fillStyle = COL.goldSoft;
+  ctx.fillRect(VIEW_W / 2 - 150, 176, 300, 1);
+  ctx.globalAlpha = 1;
+  text(g, 'RPG 2D de acción y exploración · Demo jugable · Acto II incluido', VIEW_W / 2, 186, 17, COL.dim, 'center');
 
   // botones (con brillo de hover). 16-c: menú ampliado — Estadísticas y
-  // Logros en una rejilla secundaria de 2 columnas (mismo lenguaje visual)
+  // Logros en una rejilla secundaria de 2 columnas (mismo lenguaje visual).
+  // R8-4: más aire entre botones (46 px de alto en los principales).
   const bx = VIEW_W / 2 - 130, bw = 260;
   const sw = (bw - 8) / 2; // ancho de los botones secundarios (2 columnas)
-  button(g, 'NUEVA PARTIDA', bx, 236, bw, 44, () => g.requestCreate(), 13);
-  hoverCorners(g, bx, 236, bw, 44);
+  button(g, 'NUEVA PARTIDA', bx, 238, bw, 46, () => g.requestCreate(), 13);
+  hoverCorners(g, bx, 238, bw, 46);
   if (g.hasSave()) {
-    button(g, 'CONTINUAR', bx, 290, bw, 44, () => g.continueGame(), 13);
-    hoverCorners(g, bx, 290, bw, 44);
-    button(g, 'CONTROLES', bx, 346, sw, 34, () => { g.setState('controls'); }, 9);
-    hoverCorners(g, bx, 346, sw, 34);
-    button(g, 'DESAFÍO', bx + sw + 8, 346, sw, 34, () => openChallengeMenu(), 9);
-    hoverCorners(g, bx + sw + 8, 346, sw, 34);
-    button(g, 'ESTADÍSTICAS', bx, 388, sw, 34, () => openStatsPanel(), 9);
-    hoverCorners(g, bx, 388, sw, 34);
-    button(g, 'LOGROS', bx + sw + 8, 388, sw, 34, () => openLogrosPanel(), 9);
-    hoverCorners(g, bx + sw + 8, 388, sw, 34);
+    button(g, 'CONTINUAR', bx, 294, bw, 46, () => g.continueGame(), 13);
+    hoverCorners(g, bx, 294, bw, 46);
+    button(g, 'CONTROLES', bx, 352, sw, 34, () => { g.setState('controls'); }, 9);
+    hoverCorners(g, bx, 352, sw, 34);
+    button(g, 'DESAFÍO', bx + sw + 8, 352, sw, 34, () => openChallengeMenu(), 9);
+    hoverCorners(g, bx + sw + 8, 352, sw, 34);
+    button(g, 'ESTADÍSTICAS', bx, 394, sw, 34, () => openStatsPanel(), 9);
+    hoverCorners(g, bx, 394, sw, 34);
+    button(g, 'LOGROS', bx + sw + 8, 394, sw, 34, () => openLogrosPanel(), 9);
+    hoverCorners(g, bx + sw + 8, 394, sw, 34);
   } else {
-    button(g, 'CONTROLES', bx, 290, sw, 34, () => { g.setState('controls'); }, 9);
-    hoverCorners(g, bx, 290, sw, 34);
-    button(g, 'DESAFÍO', bx + sw + 8, 290, sw, 34, () => openChallengeMenu(), 9);
-    hoverCorners(g, bx + sw + 8, 290, sw, 34);
-    button(g, 'ESTADÍSTICAS', bx, 332, sw, 34, () => openStatsPanel(), 9);
-    hoverCorners(g, bx, 332, sw, 34);
-    button(g, 'LOGROS', bx + sw + 8, 332, sw, 34, () => openLogrosPanel(), 9);
-    hoverCorners(g, bx + sw + 8, 332, sw, 34);
+    button(g, 'CONTROLES', bx, 294, sw, 34, () => { g.setState('controls'); }, 9);
+    hoverCorners(g, bx, 294, sw, 34);
+    button(g, 'DESAFÍO', bx + sw + 8, 294, sw, 34, () => openChallengeMenu(), 9);
+    hoverCorners(g, bx + sw + 8, 294, sw, 34);
+    button(g, 'ESTADÍSTICAS', bx, 336, sw, 34, () => openStatsPanel(), 9);
+    hoverCorners(g, bx, 336, sw, 34);
+    button(g, 'LOGROS', bx + sw + 8, 336, sw, 34, () => openLogrosPanel(), 9);
+    hoverCorners(g, bx + sw + 8, 336, sw, 34);
   }
 
-  text(g, 'Basado en el Documento de Diseño de @papito · 8 oct 2026', VIEW_W / 2, VIEW_H - 40, 15, 'rgba(154,160,184,0.8)', 'center');
-  text(g, 'v0.5.0 · Lunaris — Bosque — Cripta — Costa de Bruma — Merrow — Cumbres Heladas · Logros', VIEW_W / 2, VIEW_H - 20, 14, 'rgba(122,128,148,0.7)', 'center');
+  // R8-3.1: pie discreto con versión — fuera la línea del GDD y el listado
+  // largo de zonas (el jugador lo pidió explícitamente)
+  text(g, TITLE_FOOTER, VIEW_W / 2, VIEW_H - 26, 14, 'rgba(122,128,148,0.75)', 'center');
+}
+
+// R8-4 — remate pixel en rombo (5 filas, mismo lenguaje que ui.ts diamond)
+const DIAMOND_ROWS5 = [1, 3, 5, 3, 1];
+function pixelDiamond(ctx: CanvasRenderingContext2D, cx: number, cy: number, col: string) {
+  ctx.fillStyle = col;
+  for (let i = 0; i < 5; i++) ctx.fillRect(cx - (DIAMOND_ROWS5[i] >> 1), cy - 2 + i, DIAMOND_ROWS5[i], 1);
 }
 
 // helpers deterministas locales (evitan importar hash2 aquí)
@@ -322,193 +348,507 @@ function drawIntro(g: Game) {
   }
 }
 
-// ---------------- Pausa ----------------
+// ---------------- Pausa (R8-4 · hub + capas) ----------------
+//
+// Arquitectura de usabilidad R8-4 (3.2-3.5):
+//  · HUB de pausa: Reanudar / Estado / Equipo / Inventario / Diario /
+//    Opciones / Guardar y salir — cursor de teclado (↑↓ + E) y clic.
+//  · Cada sección abre una CAPA con las 5 pestañas SIEMPRE visibles arriba
+//    (clic o ←→ salta entre ellas sin volver a pasar por el hub) y la
+//    pestaña activa se ve clara (relleno dorado).
+//  · Esc/M dentro de una capa vuelve al HUB (nunca cierra todo el menú):
+//    engine.onKeyDown sigue cerrando la pausa con Esc (es un evento de
+//    teclado entre frames); installLayerGuard revierte ese cierre en el
+//    MISMO tick cuando hay capa abierta y la cierra solo a ella (3.4).
+//  · Anti-clic-fantasma R7 intacto: todo pasa por addHit (stamps de estado
+//    + pool de UiHit) y hub/capa no se dibujan en el mismo frame, así que
+//    no hay hits solapados entre capas.
 
-const TABS = ['ESTADO', 'EQUIPO', 'DIARIO', 'SISTEMA'];
+const SECTIONS = ['ESTADO', 'EQUIPO', 'INVENTARIO', 'DIARIO', 'OPCIONES'];
+const SEC_TITLES = ['ESTADO DEL PORTADOR', 'ARMA Y ARMADURA', 'INVENTARIO', 'DIARIO DEL PORTADOR', 'OPCIONES Y SISTEMA'];
+const SEC_ROWS = [5, 5, 0, 0, 0]; // filas seleccionables con ↑↓ por sección
+const HUB_ROWS = ['REANUDAR', 'ESTADO', 'EQUIPO', 'INVENTARIO', 'DIARIO', 'OPCIONES', 'GUARDAR Y SALIR'];
+
+// reputaciones de VELMORA — hoisted (antes: array literal nuevo por frame)
+const FACS: [string, string][] = [
+  ['guardianes', 'Guardianes del Canto'],
+  ['orden', 'Orden de Vesh'],
+  ['circulo', 'Círculo Verde'],
+  ['liga', 'Liga de Mercaderes'],
+];
+
+// números cortos para badges (evita String(n) por frame)
+const NUMSTR: string[] = [];
+for (let i = 0; i < 32; i++) NUMSTR.push(String(i));
+
+// estado del menú de pausa (patrón challenge.menuOpen): la sección elegida
+// PERSISTE entre aperturas — no perder el contexto al abrir/cerrar (3.2)
+let pauseSec = 0;           // sección activa (0..4)
+let pauseLayerOpen = false; // ¿capa de sección abierta sobre el hub?
+let hubSel = 1;             // cursor del hub (0..6; arranca en ESTADO)
+let rowSel = 0;             // cursor de filas dentro de la sección
+let spentConf = '';         // confirmación del último gasto de atributo (3.5)
+let spentConfT = -99;
+
+// ---- borde de tecla por frame (la pausa no navega por eventos) ----
+// engine.ts solo atiende Esc/M en pausa vía keydown; la navegación interna se
+// lee de g.keys contra la instantánea del frame anterior. keyEdge se llama
+// UNA vez por tecla y frame (readNavKeys) para no corromper el memo.
+const KEY_EDGE = new WeakMap<Game, Map<string, boolean>>();
+function keyEdge(g: Game, k: string): boolean {
+  let m = KEY_EDGE.get(g);
+  if (!m) { m = new Map(); KEY_EDGE.set(g, m); }
+  const held = g.keys.has(k);
+  const was = m.get(k) === true;
+  m.set(k, held);
+  return held && !was;
+}
+const NAV = { up: false, down: false, left: false, right: false, confirm: false };
+function readNavKeys(g: Game) {
+  NAV.up = keyEdge(g, 'arrowup') || keyEdge(g, 'w');
+  NAV.down = keyEdge(g, 'arrowdown') || keyEdge(g, 's');
+  NAV.left = keyEdge(g, 'arrowleft') || keyEdge(g, 'a');
+  NAV.right = keyEdge(g, 'arrowright') || keyEdge(g, 'd');
+  NAV.confirm = keyEdge(g, 'e') || keyEdge(g, 'enter');
+}
+
+// ---- guard de capas: Esc/M dentro de una capa vuelve al HUB (3.4) ----
+// Si hay capa abierta y el motor cambia pause→play por Esc/M, se revierte
+// sincrónicamente (mismo tick del evento: cero frames de juego de por
+// medio, sin parpadeo) y se cierra SOLO la capa. Encadena cualquier
+// onStateChange previo (hoy no hay; mañana, un integrador, también).
+const UI_HOOKED = new WeakSet<Game>();
+let prevUiState = '';
+function installLayerGuard(g: Game) {
+  if (UI_HOOKED.has(g)) return;
+  UI_HOOKED.add(g);
+  const prev = g.onStateChange;
+  g.onStateChange = (s: GState) => {
+    if (s === 'play' && prevUiState === 'pause' && pauseLayerOpen) {
+      pauseLayerOpen = false; // cierra SOLO la capa actual
+      audio.sfx('uiOpen');
+      g.setState('pause');    // revierte el cierre global del motor
+      return;
+    }
+    if (s !== 'pause') pauseLayerOpen = false; // pausa cerrada → capa fuera
+    prevUiState = s;
+    prev?.(s);
+  };
+}
+
+function openSection(i: number) {
+  pauseSec = i;
+  rowSel = 0;
+  hubSel = i + 1; // el hub recuerda la última sección (contexto)
+  pauseLayerOpen = true;
+  audio.sfx('uiOpen');
+}
+
+function hubAction(g: Game, i: number) {
+  if (i === 0) { audio.sfx('confirm'); g.setState('play'); }
+  else if (i >= 1 && i <= 5) openSection(i - 1);
+  else { g.save(); g.setState('title'); } // save() ya se blinda en desafío
+}
+
+// gasto de un punto de atributo (clic en '+' o tecla E) — 3.5
+function spendAttr(g: Game, i: number) {
+  const p = g.player;
+  if (!p || p.points <= 0 || i < 0 || i >= ATTR_INFO.length) return;
+  const at = ATTR_INFO[i];
+  p.attrs[at.id]++; p.points--;
+  spentConf = `+1 ${at.name} — ${at.desc}`;
+  spentConfT = g.globalT;
+  audioClick();
+}
 
 function drawPause(g: Game) {
+  if (!g.player) return;
   const ctx = g.ctx;
+  readNavKeys(g);
   ctx.fillStyle = 'rgba(4,5,12,0.78)';
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  const p = g.player!;
   const pw = 720, ph = 470;
-  const px = (VIEW_W - pw) / 2, py = (VIEW_H - ph) / 2;
+  const px = (VIEW_W - pw) / 2, py = Math.max(0, Math.round((VIEW_H - ph) / 2));
   panel(g, px, py, pw, ph);
+  if (pauseLayerOpen) drawPauseLayer(g, px, py, pw, ph);
+  else drawPauseHub(g, px, py, pw, ph);
+  refreshCursor(g);
+  text(g, pauseLayerOpen ? 'Esc vuelve a la pausa' : 'Esc para volver al juego',
+    VIEW_W / 2, Math.min(py + ph + 10, VIEW_H - 14), 15, COL.dim, 'center');
+}
+
+// ---- fila de menú reutilizable (panel + hover + selección por teclado) ----
+function menuRow(g: Game, label: string, x: number, y: number, w: number, h: number,
+  active: boolean, cb: () => void, size = 12): boolean {
+  const hover = addHit(g, x, y, w, h, cb);
+  const on = active || hover;
+  panel(g, x, y, w, h, on ? COL.gold : COL.panelBorder, on ? 'rgba(60,48,24,0.9)' : COL.panel);
+  textShadow(g, label, x + w / 2, y + h / 2 - size * 0.62, size, on ? COL.gold : COL.text, '#000', 'center', true);
+  return hover;
+}
+
+// badge dorado pulsante (puntos de atributo sin gastar — 3.5)
+function badge(g: Game, x: number, y: number, n: number) {
+  const ctx = g.ctx;
+  const bw = n >= 10 ? 22 : 16;
+  ctx.globalAlpha = 0.7 + Math.sin(g.globalT * 5) * 0.3;
+  ctx.fillStyle = COL.gold;
+  ctx.fillRect(x, y, bw, 15);
+  ctx.globalAlpha = 1;
+  text(g, NUMSTR[n] ?? String(n), x + bw / 2, y + 2, 11, '#1a1408', 'center', true);
+}
+
+// ---------------- Pausa · HUB ----------------
+
+function drawPauseHub(g: Game, px: number, py: number, pw: number, ph: number) {
+  const p = g.player!;
   textShadow(g, '— PAUSA —', VIEW_W / 2, py + 14, 14, COL.gold, '#000', 'center', true);
+  text(g, `${p.name} — Portador de nivel ${p.level}`, VIEW_W / 2, py + 38, 15, COL.dim, 'center');
 
-  // pestañas
-  let tx = px + 20;
-  for (let i = 0; i < TABS.length; i++) {
-    const tw = 140;
-    const selected = g.pauseTab === i;
-    const hover = addHit(g, tx, py + 44, tw, 30, () => { g.pauseTab = i as 0 | 1 | 2 | 3; });
-    panel(g, tx, py + 44, tw, 30, selected || hover ? COL.gold : COL.panelBorder, selected ? 'rgba(60,48,24,0.9)' : COL.panel);
-    text(g, TABS[i], tx + tw / 2, py + 52, 11, selected ? COL.gold : COL.dim, 'center', true);
-    tx += tw + 8;
+  if (NAV.up) { hubSel = (hubSel + HUB_ROWS.length - 1) % HUB_ROWS.length; audio.sfx('blip'); }
+  if (NAV.down) { hubSel = (hubSel + 1) % HUB_ROWS.length; audio.sfx('blip'); }
+  if (NAV.confirm) hubAction(g, hubSel);
+
+  const rx = px + 190, rw = 340;
+  for (let i = 0; i < HUB_ROWS.length; i++) {
+    const y = py + 64 + i * 46;
+    menuRow(g, HUB_ROWS[i], rx, y, rw, 38, hubSel === i, () => hubAction(g, i), 12);
+    if (hubSel === i) text(g, '▸', rx - 18, y + 12, 14, COL.gold, 'center', true);
+    if (i === 1 && p.points > 0) badge(g, rx + rw - 28, y + 11, p.points); // 3.5
   }
+  text(g, '↑↓ elegir · E / clic confirmar · Esc reanudar', px + 24, py + ph - 24, 13, COL.dim);
+  text(g, 'v0.5.9', px + pw - 24, py + ph - 24, 13, 'rgba(122,128,148,0.8)', 'right');
+}
 
-  const cx = px + 28, cy = py + 92;
+// ---------------- Pausa · capa de sección ----------------
 
-  if (g.pauseTab === 0) {
-    // ESTADO
-    text(g, `${p.name} — Portador nivel ${p.level}`, cx, cy, 20, COL.goldSoft);
-    bar(g, cx, cy + 28, 240, 8, p.xp / g.xpNext(p.level), COL.xp, '#241a30');
-    text(g, `XP ${Math.floor(p.xp)} / ${g.xpNext(p.level)}`, cx + 250, cy + 24, 15, COL.dim);
-    text(g, `Puntos de atributo: ${p.points}`, cx, cy + 46, 17, p.points > 0 ? '#ffe86a' : COL.dim);
-    let y = cy + 72;
-    for (const at of ATTR_INFO) {
-      text(g, at.name, cx, y, 16, COL.text);
-      text(g, `${p.attrs[at.id]}`, cx + 120, y, 16, COL.goldSoft);
-      text(g, at.desc, cx + 165, y + 2, 13, COL.dim);
-      if (p.points > 0) {
-        button(g, '+', cx + 396, y - 4, 30, 24, () => {
-          p.attrs[at.id]++; p.points--;
-          audioClick();
-        }, 12);
-      }
-      y += 26;
-    }
-    // stats derivados
-    const melee = playerMeleeDmg(p); // fuente única de verdad (motor)
-    const spell = 6 + p.attrs.int * 1.6 + p.level + p.weaponPlus * 1.5;
-    text(g, `Daño melé: ${Math.round(melee)}   Daño de Cantos: ${Math.round(spell)}   Crítico: ${Math.min(40, 5 + p.attrs.des * 2)}%`, cx, y + 6, 14, COL.dim);
-    text(g, `Vida: ${p.maxHp}   Reducción: ${Math.min(50, p.attrs.vig)}%   Resonancia máx: ${p.maxRes}`, cx, y + 24, 14, COL.dim);
+function drawPauseLayer(g: Game, px: number, py: number, pw: number, ph: number) {
+  const p = g.player!;
+  // teclado de capa: ←→ pestañas · ↑↓ filas · E confirmar
+  if (NAV.left) { pauseSec = (pauseSec + SECTIONS.length - 1) % SECTIONS.length; rowSel = 0; audio.sfx('blip'); }
+  if (NAV.right) { pauseSec = (pauseSec + 1) % SECTIONS.length; rowSel = 0; audio.sfx('blip'); }
+  const rows = SEC_ROWS[pauseSec];
+  if (rows > 0) {
+    if (NAV.up) { rowSel = (rowSel + rows - 1) % rows; audio.sfx('blip'); }
+    if (NAV.down) { rowSel = (rowSel + 1) % rows; audio.sfx('blip'); }
+  }
+  if (NAV.confirm && pauseSec === 0) spendAttr(g, rowSel);
 
-    // ---- VELMORA TE OBSERVA (reputaciones, tono y memorias) ----
-    const vy0 = y + 50;
-    ctx.strokeStyle = 'rgba(90,74,48,0.7)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(cx, vy0 - 8);
-    ctx.lineTo(px + pw - 28, vy0 - 8);
-    ctx.stroke();
-    text(g, '◆ VELMORA TE OBSERVA ◆', cx + 246, vy0, 13, COL.gold, 'center', true);
-    const dom = dominantTone(p);
-    const memCount = p.memories?.length ?? 0;
-    text(g, `Tono dominante: ${dom ? TONE_LABEL[dom] : 'Aún por definir'}`, cx, vy0 + 24, 15, '#c8b0e8');
-    text(g, `Memorias recuperadas: ${memCount}/${Object.keys(MEMORIES).length}`, cx + 340, vy0 + 24, 15, memCount > 0 ? COL.goldSoft : COL.dim);
-    const rep = p.repFacciones ?? {};
-    const FACS: [string, string][] = [
-      ['guardianes', 'Guardianes del Canto'],
-      ['orden', 'Orden de Vesh'],
-      ['circulo', 'Círculo Verde'],
-      ['liga', 'Liga de Mercaderes'],
-    ];
-    FACS.forEach(([id, label], i) => {
-      const fx = cx + (i % 2) * 336;
-      const fy = vy0 + 50 + Math.floor(i / 2) * 24;
-      const v = rep[id] ?? 0;
-      text(g, label, fx, fy, 15, COL.text);
-      const vc = v > 0 ? '#8ef0b0' : v < 0 ? '#ff7060' : COL.dim;
-      text(g, `${v > 0 ? '+' : ''}${v}`, fx + 300, fy, 15, vc, 'right');
+  // pestañas SIEMPRE visibles (3.2) con la activa en dorado
+  const tw = 134, gap = 5;
+  const tx0 = px + (pw - (SECTIONS.length * tw + (SECTIONS.length - 1) * gap)) / 2;
+  for (let i = 0; i < SECTIONS.length; i++) {
+    const tx = tx0 + i * (tw + gap), ty = py + 10;
+    const on = pauseSec === i;
+    const hover = addHit(g, tx, ty, tw, 28, () => {
+      if (pauseSec !== i) { pauseSec = i; rowSel = 0; audio.sfx('blip'); }
     });
-    // 14-b: armadura activa (fila compacta, contrato armor.ts)
-    drawArmorRow(g, cx, py + 440, pw - 56);
-  } else if (g.pauseTab === 1) {
-    // EQUIPO
-    text(g, 'ARMA', cx, cy, 16, COL.gold);
-    text(g, p.discipline === 'alba' ? 'Espada y escudo del Alba' : 'Báculo del Tejedor', cx + 100, cy, 18, COL.text);
-    text(g, `+${p.weaponPlus}`, cx + 380, cy, 18, COL.goldSoft);
-    text(g, 'CORONAS', cx, cy + 30, 16, COL.gold);
-    text(g, `${p.gold}`, cx + 100, cy + 30, 18, COL.text);
-    text(g, 'POCIONES', cx, cy + 58, 16, COL.gold);
-    text(g, `${p.potions}  (beber con F)`, cx + 100, cy + 58, 18, COL.text);
-    text(g, 'OBJETOS CLAVE', cx, cy + 96, 16, COL.gold);
-    let ky = cy + 120;
-    for (const [flag, id] of KEY_ITEM_FLAGS) {
-      if (!g.flags[flag]) continue;
-      const it = KEY_ITEMS[id];
-      if (!it) continue;
-      text(g, `◆ ${it.name}`, cx, ky, 16, id === 'fragment' ? COL.text : '#ffe9a0');
-      text(g, it.desc, cx + 16, ky + 17, 13, COL.dim);
-      ky += 34;
-    }
-    if (ky === cy + 120) { text(g, '(aún no llevas ninguno)', cx, ky, 15, COL.dim); ky += 22; }
-    text(g, 'FACCIÓN: Guardianes del Canto', cx, ky + 8, 16, COL.quest);
-    bar(g, cx, ky + 30, 200, 8, (p.repGuardianes + 100) / 200, '#4a8a5c', '#1a2a1c', COL.panelBorder);
-    text(g, `${p.repGuardianes >= 0 ? '+' : ''}${p.repGuardianes} / +100`, cx + 210, ky + 26, 15, COL.dim);
-    text(g, g.companion ? 'Compañera: Ilwen (Arquera Sylvar) — te cubre con su arco' : 'Compañeros: ninguno aún (Ilwen espera en el Bosque)', cx, ky + 56, 15, COL.dim);
-  } else if (g.pauseTab === 2) {
-    // DIARIO — misiones por acto (izquierda) + memorias del Portador (derecha)
-    text(g, 'CADENA PRINCIPAL · ACTO I', cx, cy, 15, COL.gold);
-    let y = cy + 22;
-    for (let i = 0; i < QUESTS.length; i++) {
-      // sub-cabecera del Acto II justo antes de q6 (leída de QUESTS, sin hardcodear nombres)
-      if (i === 5) {
-        y += 4;
-        text(g, '◆ ACTO II · LAS NOTAS PERDIDAS', cx, y, 14, g.questIdx >= 5 ? COL.quest : 'rgba(142,240,176,0.45)');
-        y += 20;
-      }
-      const q = QUESTS[i];
-      const done = i < g.questIdx;
-      const active = i === g.questIdx;
-      text(g, `${done ? '✔' : active ? '◆' : '·'} ${q.name}`, cx, y, 16, done ? '#6a8a6a' : active ? COL.quest : COL.dim);
-      y += 18;
-      if (active) {
-        const stepText = g.questProgressText() ?? q.steps[g.questStep];
-        for (const l of wrapText(stepText, 42)) { text(g, '   ' + l, cx, y, 14, COL.text); y += 15; }
-        y += 4;
-      } else if (ZONE_TEASERS[q.id] && i > g.questIdx) {
-        // rumor de zona nueva: solo mientras la misión siga en el futuro
-        text(g, `   ${ZONE_TEASERS[q.id]}`, cx, y, 13, 'rgba(154,160,184,0.75)');
-        y += 14;
-      }
-    }
-    text(g, `Ecos menores escuchados: ${g.takenEchoes.size}`, cx, py + ph - 52, 14, COL.dim);
-    text(g, `Enemigos derrotados: ${p.kills} · Muertes: ${p.deaths}`, cx, py + ph - 32, 14, COL.dim);
-
-    // ---- memorias del Portador (biblia: cada Eco devuelve un recuerdo) ----
-    // Con las 5 memorias del Acto II el reparto es fijo y compacto: máximo 3
-    // líneas de texto por recuerdo para que la columna nunca desborde el panel
-    // (el texto íntegro ya se muestra en el overlay de memoria al desbloquearla).
-    const mx0 = cx + 316;
-    text(g, 'MEMORIAS DEL PORTADOR', mx0, cy, 15, COL.gold);
-    let my = cy + 20;
-    const got = p.memories ?? [];
-    for (const mid of Object.keys(MEMORIES)) {
-      const m = MEMORIES[mid];
-      const unlocked = got.includes(mid);
-      text(g, unlocked ? m.title : '??? · Recuerdo perdido', mx0, my, 14, unlocked ? COL.goldSoft : COL.dim);
-      my += 15;
-      if (unlocked) {
-        const all = wrapText(m.text, 58);
-        const shown = all.slice(0, 3);
-        if (all.length > 3 && shown.length === 3) {
-          shown[2] = shown[2].replace(/[.,;:]?$/, '…');
-        }
-        shown.forEach((l, i) => text(g, l, mx0, my + i * 13, 13, COL.text));
-        my += shown.length * 13 + 3;
-      } else {
-        text(g, LOCKED_HINT[mid] ?? 'La Niebla aún oculta este recuerdo.', mx0, my, 13, 'rgba(154,160,184,0.75)');
-        my += 16;
-      }
-      // divisor sutil entre memorias
-      ctx.strokeStyle = 'rgba(90,74,48,0.45)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(mx0, my);
-      ctx.lineTo(mx0 + 330, my);
-      ctx.stroke();
-      my += 7;
-    }
-  } else {
-    // SISTEMA
-    text(g, 'VOLUMEN DE MÚSICA', cx, cy, 16, COL.text);
-    drawSlider(g, cx, cy + 26, 300, v => { audioSetMusic(g, v); }, g.musicVolUi);
-    text(g, 'VOLUMEN DE EFECTOS', cx, cy + 76, 16, COL.text);
-    drawSlider(g, cx, cy + 102, 300, v => { audioSetSfx(g, v); }, g.sfxVolUi);
-    text(g, '«La música adaptativa añade una capa de combate cuando', cx, cy + 150, 15, COL.dim);
-    text(g, 'los enemigos te ven, y cada región tiene su melodía.»', cx, cy + 168, 15, COL.dim);
-    // dificultad dinámica del mundo (12-c): AUTO por defecto, editable aquí
-    drawBalancePanel(g, cx, cy + 196, pw - 56);
-    button(g, 'GUARDAR Y SALIR AL TÍTULO', cx, py + ph - 96, 280, 40, () => {
-      g.save();
-      g.setState('title');
-    }, 11);
-    hoverCorners(g, cx, py + ph - 96, 280, 40);
-    text(g, '(el juego también autoguarda en Santuarios y al cambiar de zona)', cx, py + ph - 46, 14, COL.dim);
+    panel(g, tx, ty, tw, 28, on || hover ? COL.gold : COL.panelBorder, on ? 'rgba(60,48,24,0.9)' : COL.panel);
+    text(g, SECTIONS[i], tx + tw / 2, ty + 8, 10, on ? COL.gold : COL.dim, 'center', true);
+    if (i === 0 && p.points > 0) badge(g, tx + tw - 12, ty - 6, p.points); // 3.5
   }
-  text(g, 'Esc para volver al juego', VIEW_W / 2, py + ph + 10, 15, COL.dim, 'center');
+
+  const cx = px + 28, cy = py + 66;
+  text(g, SEC_TITLES[pauseSec], cx, py + 46, 13, COL.goldSoft, 'left', true);
+  text(g, '←→ pestañas · Esc volver', px + pw - 28, py + 47, 12, COL.dim, 'right');
+
+  switch (pauseSec) {
+    case 0: drawSecEstado(g, px, py, pw, cx, cy); break;
+    case 1: drawSecEquipo(g, px, py, pw, cx, cy); break;
+    case 2: drawSecInventario(g, cx, cy); break;
+    case 3: drawSecDiario(g, px, py, pw, ph, cx, cy); break;
+    default: drawSecOpciones(g, px, py, pw, cx, cy); break;
+  }
+}
+
+// ---------------- Sección ESTADO (3.5 · level-up claro) ----------------
+
+function drawSecEstado(g: Game, px: number, py: number, pw: number, cx: number, cy: number) {
+  const p = g.player!;
+  const ctx = g.ctx;
+  text(g, `${p.name} — Portador nivel ${p.level}`, cx, cy, 19, COL.goldSoft);
+  bar(g, cx, cy + 26, 240, 8, p.xp / g.xpNext(p.level), COL.xp, '#241a30');
+  text(g, `XP ${Math.floor(p.xp)} / ${g.xpNext(p.level)}`, cx + 250, cy + 22, 15, COL.dim);
+  // aviso de puntos disponibles (pulsa mientras haya sin gastar)
+  const ptsCol = p.points > 0 ? (Math.sin(g.globalT * 4) > 0 ? '#ffe86a' : '#d8b84a') : COL.dim;
+  text(g, `Puntos de atributo: ${p.points}`, cx, cy + 42, 16, ptsCol);
+  if (p.points > 0) text(g, '↑↓ elige · E gasta', cx + 226, cy + 44, 13, COL.gold);
+
+  // una línea por atributo explicando qué hace (datos de ATTR_INFO) — 3.5
+  const ay = cy + 68;
+  for (let i = 0; i < ATTR_INFO.length; i++) {
+    const at = ATTR_INFO[i];
+    const y = ay + i * 30;
+    const x0 = cx - 8, y0 = y - 7, w0 = pw - 56 + 16, h0 = 29;
+    const sel = rowSel === i;
+    const hov = g.mouse.x >= x0 && g.mouse.x <= x0 + w0 && g.mouse.y >= y0 && g.mouse.y <= y0 + h0;
+    if (sel || hov) { ctx.fillStyle = 'rgba(240,200,74,0.09)'; ctx.fillRect(x0, y0, w0, h0); }
+    // orden de registro: primero '+' (gana los clics dentro de la fila)
+    if (p.points > 0) button(g, '+', cx + 396, y - 3, 30, 24, () => spendAttr(g, i), 13);
+    addHit(g, x0, y0, w0, h0, () => { rowSel = i; });
+    if (sel) text(g, '▸', cx - 20, y + 1, 14, COL.gold, 'center', true);
+    text(g, at.name, cx, y, 16, sel || hov ? COL.goldSoft : COL.text);
+    text(g, `${p.attrs[at.id]}`, cx + 120, y, 16, COL.goldSoft);
+    text(g, at.desc, cx + 165, y + 2, 13, COL.dim); // una línea: qué hace
+  }
+
+  // confirmación del gasto (4 s) + stats derivados (verdad del motor)
+  const confY = ay + ATTR_INFO.length * 30 + 6;
+  if (g.globalT - spentConfT < 4) text(g, `✔ Gasto confirmado: ${spentConf}`, cx, confY, 14, COL.gold);
+  text(g, `Daño melé: ${Math.round(playerMeleeDmg(p))}   Daño de Cantos: ${Math.round(playerSpellDmg(p))}   Crítico: ${Math.round(critChance(p.attrs.des))}%`, cx, confY + 20, 14, COL.dim); // R8-7: valor real de critChance
+  text(g, `Vida: ${p.maxHp}   Reducción: ${Math.min(50, p.attrs.vig)}%   Resonancia máx: ${p.maxRes}`, cx, confY + 38, 14, COL.dim);
+
+  // ---- VELMORA TE OBSERVA (reputaciones, tono y memorias) ----
+  const vy0 = confY + 62;
+  ctx.strokeStyle = 'rgba(90,74,48,0.7)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cx, vy0 - 8);
+  ctx.lineTo(px + pw - 28, vy0 - 8);
+  ctx.stroke();
+  text(g, '◆ VELMORA TE OBSERVA ◆', cx + 246, vy0, 13, COL.gold, 'center', true);
+  const dom = dominantTone(p);
+  const memCount = p.memories?.length ?? 0;
+  text(g, `Tono dominante: ${dom ? TONE_LABEL[dom] : 'Aún por definir'}`, cx, vy0 + 24, 15, '#c8b0e8');
+  text(g, `Memorias recuperadas: ${memCount}/${Object.keys(MEMORIES).length}`, cx + 340, vy0 + 24, 15, memCount > 0 ? COL.goldSoft : COL.dim);
+  const rep = p.repFacciones ?? {};
+  FACS.forEach(([id, label], i) => {
+    const fx = cx + (i % 2) * 336;
+    const fy = vy0 + 50 + Math.floor(i / 2) * 24;
+    const v = rep[id] ?? 0;
+    text(g, label, fx, fy, 15, COL.text);
+    const vc = v > 0 ? '#8ef0b0' : v < 0 ? '#ff7060' : COL.dim;
+    text(g, `${v > 0 ? '+' : ''}${v}`, fx + 300, fy, 15, vc, 'right');
+  });
+  // 14-b: armadura activa (fila compacta, contrato armor.ts)
+  drawArmorRow(g, cx, py + 438, pw - 56);
+}
+
+// ---------------- Sección EQUIPO (3.3 · equipado intuitivo) ----------------
+
+function armorExtras(a: ArmorDef): string {
+  const ex: string[] = [];
+  if (a.staRegen) ex.push(`+${a.staRegen} vigor/s`);
+  if (a.slow) ex.push('−8% velocidad');
+  if (a.reflect) ex.push(`refleja ${Math.round(a.reflect * 100)}% melé`);
+  return ex.length ? ` · ${ex.join(' · ')}` : '';
+}
+
+function slotBox(g: Game, x: number, y: number, w: number, h: number, label: string, name: string, stat: string) {
+  panel(g, x, y, w, h, COL.panelBorder, 'rgba(16,18,30,0.9)');
+  text(g, label, x + 12, y + 8, 11, COL.gold, 'left', true);
+  text(g, name, x + 12, y + 26, 15, COL.goldSoft);
+  text(g, stat, x + 12, y + 50, 13, COL.dim);
+}
+
+function drawSecEquipo(g: Game, px: number, py: number, pw: number, cx: number, cy: number) {
+  const p = g.player!;
+  const ctx = g.ctx;
+  const act = armorActive(g);
+  const actRed = act?.red ?? 0;
+
+  // slots actuales arriba (3.3): arma y armadura en marcha
+  slotBox(g, cx, cy, 326, 78, 'ARMA ACTUAL',
+    `${p.discipline === 'alba' ? 'Espada y escudo del Alba' : 'Báculo del Tejedor'} +${p.weaponPlus}`,
+    `Daño melé ${Math.round(playerMeleeDmg(p))} · Daño de Cantos ${Math.round(playerSpellDmg(p))}`);
+  slotBox(g, cx + 338, cy, 326, 78, 'ARMADURA ACTUAL',
+    act?.name ?? 'Ninguna',
+    act ? `Daño recibido −${Math.round(actRed * 100)}%${armorExtras(act)}` : 'la forja de Toln vende corazas');
+
+  // CÓMO SE EQUIPA — la duda real del jugador, resuelta por escrito
+  const hint = wrapText('◆ Cómo se equipa: las corazas se equipan SOLAS — siempre llevas la de MAYOR defensa que poseas. Cómpralas (y mejora tu arma) en la forja de Toln, en Lunaris.', 88);
+  hint.forEach((l, i) => text(g, l, cx, cy + 88 + i * 15, 13, COL.goldSoft));
+
+  // mejora de arma (comparación con la siguiente)
+  text(g, 'MEJORA DE ARMA', cx, cy + 128, 11, COL.gold, 'left', true);
+  text(g, p.weaponPlus >= 5
+    ? 'Mejora máxima: +5 (Toln: «es lo que da de sí esta forja»)'
+    : `Siguiente: +${p.weaponPlus + 1} → +2,5 daño melé · ${30 + p.weaponPlus * 25} coronas · forja de Toln`,
+    cx + 130, cy + 128, 14, p.weaponPlus >= 5 ? COL.dim : '#ffe9a0');
+
+  // corazas del inventario con stats COMPARADAS (verde/rojo) — 3.3
+  text(g, 'CORAZAS', cx, cy + 152, 11, COL.gold, 'left', true);
+  text(g, '↑↓ o clic para comparar', px + pw - 28, cy + 152, 12, COL.dim, 'right');
+  const ry = cy + 170;
+  for (let i = 0; i < ARMORS.length; i++) {
+    const a = ARMORS[i];
+    const y = ry + i * 28;
+    const equipped = (act?.tier ?? 0) === a.tier;
+    const owned = !!g.flags[a.id];
+    const sel = rowSel === i;
+    const x0 = cx - 8, y0 = y - 6, w0 = pw - 56 + 16, h0 = 26;
+    const hov = g.mouse.x >= x0 && g.mouse.x <= x0 + w0 && g.mouse.y >= y0 && g.mouse.y <= y0 + h0;
+    if (sel || hov) { ctx.fillStyle = 'rgba(240,200,74,0.09)'; ctx.fillRect(x0, y0, w0, h0); }
+    addHit(g, x0, y0, w0, h0, () => { rowSel = i; });
+    if (sel) text(g, '▸', cx - 20, y, 14, COL.gold, 'center', true);
+    text(g, a.name, cx, y, 15, equipped ? COL.gold : sel || hov ? COL.goldSoft : COL.text);
+    text(g, `−${Math.round(a.red * 100)}%`, cx + 196, y, 15, COL.text);
+    // delta vs la equipada: verde si mejora, rojo si empeora
+    const d = Math.round((a.red - actRed) * 100);
+    if (d > 0) text(g, `+${d}% def`, cx + 248, y, 15, '#8ef0b0');
+    else if (d < 0) text(g, `${d}% def`, cx + 248, y, 15, '#ff7060');
+    else text(g, '=', cx + 256, y, 15, COL.dim);
+    if (equipped) text(g, '◆ EQUIPADA', px + pw - 40, y, 14, COL.gold, 'right');
+    else if (owned) text(g, 'comprada · en el baúl', px + pw - 40, y, 14, COL.dim, 'right');
+    else if (a.needFlag && !g.flags[a.needFlag]) text(g, `${a.cost} coronas · fin del Acto II`, px + pw - 40, y, 14, 'rgba(154,160,184,0.75)', 'right');
+    else text(g, `${a.cost} coronas · forja`, px + pw - 40, y, 14, COL.dim, 'right');
+  }
+
+  // detalle de la coraza seleccionada (siempre visible bajo la lista)
+  const a = ARMORS[Math.max(0, Math.min(rowSel, ARMORS.length - 1))];
+  const equipped = (act?.tier ?? 0) === a.tier;
+  const owned = !!g.flags[a.id];
+  const dy = ry + ARMORS.length * 28 + 8;
+  panel(g, cx - 8, dy, pw - 56 + 16, 60, COL.panelBorder);
+  wrapText(a.desc, 86).forEach((l, i) => text(g, l, cx + 6, dy + 8 + i * 14, 13, COL.text));
+  text(g, equipped
+    ? 'Tu coraza activa: la de mayor defensa que posees.'
+    : owned
+      ? 'Guardada en el baúl: se equipa sola la de mayor defensa.'
+      : a.needFlag && !g.flags[a.needFlag]
+        ? 'Toln solo la forja para quien ha oído el tercer canto hasta el final.'
+        : 'A la venta en la forja de Toln.',
+    cx + 6, dy + 40, 13, COL.quest);
+}
+
+// ---------------- Sección INVENTARIO (nueva · 3.2) ----------------
+
+function drawSecInventario(g: Game, cx: number, cy: number) {
+  const p = g.player!;
+  text(g, 'CONSUMIBLES', cx, cy, 11, COL.gold, 'left', true);
+  text(g, `Pociones de vida ×${p.potions}`, cx, cy + 22, 16, COL.text);
+  text(g, 'beber con F', cx + 320, cy + 24, 13, COL.dim);
+  const sen = Number(g.flags.sennuelos ?? 0);
+  text(g, `Señuelo de caza ×${sen}`, cx, cy + 44, 16, sen > 0 ? COL.text : COL.dim);
+  text(g, 'usar con 8 (atrae a los enemigos)', cx + 320, cy + 46, 13, COL.dim);
+  text(g, `Coronas: ${p.gold}`, cx, cy + 66, 16, '#ffe9a0');
+  text(g, 'la forja y la tienda de Lunaris aceptan', cx + 320, cy + 68, 13, COL.dim);
+
+  text(g, 'OBJETOS CLAVE', cx, cy + 98, 11, COL.gold, 'left', true);
+  let ky = cy + 120;
+  let any = false;
+  for (const [flag, id] of KEY_ITEM_FLAGS) {
+    if (!g.flags[flag]) continue;
+    const it = KEY_ITEMS[id];
+    if (!it) continue;
+    any = true;
+    text(g, `◆ ${it.name}`, cx, ky, 16, id === 'fragment' ? COL.text : '#ffe9a0');
+    text(g, it.desc, cx + 16, ky + 17, 13, COL.dim);
+    ky += 36;
+  }
+  if (!any) {
+    text(g, '(aún no llevas ninguno: los Ecos y la historia te darán objetos)', cx, ky, 14, COL.dim);
+    ky += 24;
+  }
+  text(g, g.companion
+    ? 'Compañera: Ilwen (Arquera Sylvar) — órdenes con T; te cubre con su arco'
+    : 'Compañeros: ninguno aún (Ilwen espera en el Bosque Susurrante)',
+    cx, ky + 12, 14, COL.dim);
+}
+
+// ---------------- Sección DIARIO (3.4 · cadena sin fugas) ----------------
+
+function drawSecDiario(g: Game, px: number, py: number, pw: number, ph: number, cx: number, cy: number) {
+  const p = g.player!;
+  // cabecera de la cadena: dónde estás (paso actual) y cuántas quedan
+  text(g, 'CADENA PRINCIPAL', cx, cy, 11, COL.gold, 'left', true);
+  text(g, `Misión ${Math.min(g.questIdx + 1, QUESTS.length)} de ${QUESTS.length}`, cx + 300, cy + 1, 13, COL.dim, 'right');
+  let y = cy + 22;
+  for (let i = 0; i < QUESTS.length; i++) {
+    // sub-cabecera del Acto II justo antes de q6 (leída de QUESTS)
+    if (i === 5) {
+      y += 4;
+      text(g, '◆ ACTO II · LAS NOTAS PERDIDAS', cx, y, 14, g.questIdx >= 5 ? COL.quest : 'rgba(142,240,176,0.45)');
+      y += 20;
+    }
+    const q = QUESTS[i];
+    const done = i < g.questIdx;
+    const active = i === g.questIdx;
+    text(g, `${done ? '✔' : active ? '◆' : '·'} ${q.name}`, cx, y, 16, done ? '#6a8a6a' : active ? COL.quest : COL.dim);
+    y += 18;
+    if (active) {
+      // CADENA de la misión activa: hechos ✔ · actual ▸ · lo que viene ·
+      for (let j = 0; j < q.steps.length; j++) {
+        const mark = j < g.questStep ? '✔' : j === g.questStep ? '▸' : '·';
+        const col = j < g.questStep ? '#6a8a6a' : j === g.questStep ? COL.text : 'rgba(154,160,184,0.7)';
+        let stText = q.steps[j];
+        if (j === g.questStep) {
+          const pt = g.questProgressText(); // contadores vivos del motor (q2)
+          if (pt) stText = pt;
+        }
+        const lines2 = wrapText(stText, 44);
+        for (let k = 0; k < lines2.length; k++) {
+          text(g, k === 0 ? `${mark} ${lines2[k]}` : `  ${lines2[k]}`, cx + 12, y, 14, col);
+          y += 14;
+        }
+      }
+      y += 4;
+      if (i + 1 < QUESTS.length) {
+        text(g, `Después: ${QUESTS[i + 1].name}`, cx + 12, y, 13, 'rgba(154,160,184,0.75)');
+        y += 15;
+      }
+    } else if (ZONE_TEASERS[q.id] && i > g.questIdx) {
+      // rumor de zona nueva: solo mientras la misión siga en el futuro
+      text(g, `   ${ZONE_TEASERS[q.id]}`, cx, y, 13, 'rgba(154,160,184,0.75)');
+      y += 14;
+    }
+  }
+  if (g.questIdx >= QUESTS.length) text(g, '✔ Cadena completa. Velmora vuelve a cantar.', cx, y + 2, 14, COL.gold);
+  text(g, `Ecos menores escuchados: ${g.takenEchoes.size}`, cx, py + ph - 52, 14, COL.dim);
+  text(g, `Enemigos derrotados: ${p.kills} · Muertes: ${p.deaths}`, cx, py + ph - 32, 14, COL.dim);
+
+  // ---- memorias del Portador (biblia: cada Eco devuelve un recuerdo) ----
+  // Máximo 3 líneas por recuerdo para que la columna nunca desborde.
+  const mx0 = cx + 316;
+  text(g, 'MEMORIAS DEL PORTADOR', mx0, cy, 11, COL.gold, 'left', true);
+  let my = cy + 20;
+  const got = p.memories ?? [];
+  for (const mid of Object.keys(MEMORIES)) {
+    const m = MEMORIES[mid];
+    const unlocked = got.includes(mid);
+    text(g, unlocked ? m.title : '??? · Recuerdo perdido', mx0, my, 14, unlocked ? COL.goldSoft : COL.dim);
+    my += 15;
+    if (unlocked) {
+      const all = wrapText(m.text, 58);
+      const shown = all.slice(0, 3);
+      if (all.length > 3 && shown.length === 3) {
+        shown[2] = shown[2].replace(/[.,;:]?$/, '…');
+      }
+      shown.forEach((l, i) => text(g, l, mx0, my + i * 13, 13, COL.text));
+      my += shown.length * 13 + 3;
+    } else {
+      text(g, LOCKED_HINT[mid] ?? 'La Niebla aún oculta este recuerdo.', mx0, my, 13, 'rgba(154,160,184,0.75)');
+      my += 16;
+    }
+    // divisor sutil entre memorias
+    g.ctx.strokeStyle = 'rgba(90,74,48,0.45)';
+    g.ctx.lineWidth = 1;
+    g.ctx.beginPath();
+    g.ctx.moveTo(mx0, my);
+    g.ctx.lineTo(mx0 + 330, my);
+    g.ctx.stroke();
+    my += 7;
+  }
+}
+
+// ---------------- Sección OPCIONES (antes SISTEMA) ----------------
+
+function drawSecOpciones(g: Game, px: number, py: number, pw: number, cx: number, cy: number) {
+  text(g, 'VOLUMEN DE MÚSICA', cx, cy, 16, COL.text);
+  drawSlider(g, cx, cy + 26, 300, v => { audioSetMusic(g, v); }, g.musicVolUi);
+  text(g, 'VOLUMEN DE EFECTOS', cx, cy + 76, 16, COL.text);
+  drawSlider(g, cx, cy + 102, 300, v => { audioSetSfx(g, v); }, g.sfxVolUi);
+  text(g, '(haz clic o arrastra sobre las barras)', cx + 320, cy + 104, 13, COL.dim);
+  text(g, '«La música adaptativa añade una capa de combate cuando', cx, cy + 150, 15, COL.dim);
+  text(g, 'los enemigos te ven, y cada región tiene su melodía.»', cx, cy + 168, 15, COL.dim);
+  // dificultad dinámica del mundo (12-c): AUTO por defecto, editable aquí
+  drawBalancePanel(g, cx, cy + 196, pw - 56);
+  button(g, 'GUARDAR Y SALIR AL TÍTULO', cx, py + 374, 280, 40, () => {
+    g.save();
+    g.setState('title');
+  }, 11);
+  hoverCorners(g, cx, py + 374, 280, 40);
+  text(g, '(el juego también autoguarda en Santuarios y al cambiar de zona)', cx, py + 424, 14, COL.dim);
 }
 
 function drawSlider(g: Game, x: number, y: number, w: number, cb: (v: number) => void, cur: number) {

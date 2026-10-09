@@ -1,46 +1,69 @@
 // ============================================================
-// ECOS DE AELTHAR — Cielo y ciclo día/noche (R1-A8 · v2 R4-A2)
+// ECOS DE AELTHAR — Cielo y ciclo día/noche (R1-A8 · v2 R4-A2 · v3 R8-8)
 // drawSkyBackdrop  : fondo de cielo completo (TITLE SCREEN y transiciones)
 // drawDayNightGrade: grading de dayT sobre el mundo (se dibuja antes del HUD)
-//                    + nubes v2 (cuerpos), banda de amanecer/anochecer,
-//                    estrellas fugaces raras y niebla de amanecer (lunaris)
-// drawCloudShadows : sombras en suelo de las nubes v2 (exteriores de día)
+//                    + nubes v3 (3 capas), banda de amanecer/anochecer,
+//                    Vía Láctea, titileo individual y estrella fugaz
+// drawCloudShadows : sombras en suelo de las nubes (exteriores de día)
 //
 // Todo determinista (hash2 + globalT/dayT), fillRect enteros y cachés
 // perezosas (patrones dither 2×2 / luna / nubes pre-pintadas) sin
-// allocations masivas por frame.
+// allocations por frame.
 //
-// NOVEDADES R4-A2 (aditivo, firmas intactas):
-//  1) NUBES V2 — 5-8 nubes únicas por mapa (semilla por mapId) con silueta
-//     lobulada multi-blob (3-6 blobs, prerender a canvas caché), que derivan
-//     con el VIENTO del mapa (dirección/velocidad por hash(mapId)) y hacen
-//     wrapper por los bordes del mapa. Los CUERPOS se pintan en
-//     drawDayNightGrade (encima de entidades, bajo el HUD — una nube alta
-//     tapa al jugador, no al revés) y las SOMBRAS en drawCloudShadows
-//     (capa suelo, bajo entidades) desplazadas 12-20 px (euclídeo) de la
-//     nube "virtual". Ambas comparten cloudPlanAt() → mismo estado.
-//  2) GRADING V2 — el mezclador Bayer cuantizado (5 saltos) se sustituye
-//     por interpolación continua rgba y la banda de transición se ensancha
-//     (TRANS_W 0.018 → 0.06): sin saltos de alpha entre etapas.
-//     + banda rosada-naranja tenue en los bordes horizontales durante
-//     dayT 0.20-0.30 y 0.65-0.75 (escalones de alpha, sin gradiente).
-//  3) ESTRELLA fugaz rara (≈1 por ~40 s de noche, trazo de ~7 px con fade,
-//     ventana temporal determinista por globalT). Las estrellas fijas viven
-//     en fx.ts (drawAmbient 'sky'), módulo INTOCABLE para este agente;
-//     drawDayNightGrade SÍ puede albergar la fugaz: corre en play/dialogue,
-//     sobre la iluminación y ANTES de drawAmbient('sky') (la fugaz queda
-//     bajo las estrellas fijas, sin conflicto visual).
-//  4) NIEBLA DE AMANECER — bandas horizontales bajas dithered (Bayer 2×2)
-//     solo en lunaris (valle) durante el alba, con deriva por tile.
+// —— NOVEDADES R8-8 (EPIC 5.1 + 5.2, aditivo, firmas export intactas) ——
 //
-// R5-O4 (optimización): ESTRELLAS pre-renderizadas a 3 canvas estáticos
-// (posiciones hash2 intactas; deriva/parallax por drawImage envuelto y
-// twinkle por alpha alternante de capa), plan de nubes con array
-// prealocado y memo por campos (cero strings/objetos por frame),
-// transitionAt con objeto reutilizado + memo, strings rgba de grading/
-// banda/niebla precalculados por escalón (fillStyle sin parsear),
-// bandas del backdrop escaladas a VIEW_H dinámico y MIST_BANDS como
-// fracción de VIEW_H.
+// NUBES V3 — TRES CAPAS con parallax real ligado al viento:
+//  · CAPA 0 ALTA : wisps finos alargados (2-4 lóbulos elípticos), viento
+//    ×1.7, parallax bajo (0.24/0.20 — muy lejos), alpha tenue. NO proyecta
+//    sombra en suelo (demasiado alta).
+//  · CAPA 1 MEDIA: cúmulos lobulados de la v2 (misma semilla → mismas
+//    formas por mapa), viento ×1.0, parallax 0.42/0.38, alpha plena.
+//  · CAPA 2 BAJA : panzas grandes y blandas, viento ×0.55, parallax alto
+//    (0.58/0.52 — cerca de cámara), alpha baja (tenues), sombra ancha.
+//  BORDES SUAVES (pixel-art): cada nube se HORNEA por (nube, capa, franja)
+//  con 4 tonos: halo dither Bayer 25% del tono base (borde que se disuelve),
+//  sombra de base, cuerpo y CANTO ILUMINADO hacia EL SOL — la cara al sol
+//  se desplaza según la etapa (este=+x al alba, oeste=-x al ocaso,
+//  cenit al mediodía — MISMA convención que lighting.ts) y toma el color
+//  de la franja (rosa amanecer / blanco mediodía / ámbar tarde).
+//  SOMBRA EN SUELO (5.1): silueta opaca + penumbra dither horneadas por
+//  nube; drawCloudShadows las pinta desplazadas abajo-derecha con alpha
+//  por capa. ENGANCHE YA VIVO en render.ts (línea ~173): entra en el pase
+//  agrupado del suelo (bajo entidades, con el filtro de época) — lighting
+//  NO necesita cambios (las sombras son atmósfera, no luz).
+//  DERIVA CONTINUA: dirección/velocidad base por hash(mapId) + VAIVÉN del
+//  VIENTO DEL MUNDO (weatherWindAt de weather.ts — el mismo viento que
+//  sienten lluvia/niebla/hierba) sumado como offset continuo
+//  (derivaBase·t + vientoActual·k, patrón fog de weather.ts: sin saltos).
+//
+// ESTRELLAS V3 — tres activos horneados UNA vez por tamaño de vista:
+//  · STAR_LAYERS (3 canvas): campo estático (posiciones hash2 intactas de
+//    R5-O4), deriva+parallax por drawImage envuelto.
+//  · VÍA LÁCTEA (5.2): ~240 motas diminutas (alpha 0.03-0.14) acumuladas
+//    alrededor de un eje SINUSOIDAL de 1 periodo — periódico ⇒ el envuelve
+//    horizontal no tiene costura — + polvo muy tenue de relleno. Horneada
+//    una vez, 4 drawImage con offset envuelto.
+//  · TITILEO INDIVIDUAL (5.2): tabla TWIN de 44 motas con fase/periodo
+//    propios (hash2 de su posición), 55% atraídas a la banda (densidad
+//    variable por zona), umbral de aparición por estrella (entran al
+//    atardecer, todas de noche) y DESTELLO DE COLOR en el pico del seno
+//    (azulada/cálida según su temperatura). ≤40 fillRect por frame.
+//  · ESTRELLA FUGAZ (conservada): estela mejorada — 7 eslabones que se
+//    afinan y enfrían (blanco → azul pálido) con fade sinusoidal.
+//  En el MUNDO la vía láctea + titileo corren dentro de drawDayNightGrade
+//  (bajo drawAmbient 'sky' de fx.ts, módulo intocado, que pinta después).
+//
+// ESCALADO por perfQuality() (R5-O1): presupuesto de nubes por capa,
+// sombras y motas de titileo según escalón (alta/media/baja). Los horneados
+// no dependen del escalón (el coste por frame vive en los draws).
+//
+// —— Historial ——
+//  R4-A2: nubes v2 multi-blob, grading continuo, fugaz, niebla de alba.
+//  R5-O4: estrellas pre-renderizadas, plan de nubes prealocado, strings
+//         rgba cacheados, bandas escaladas a VIEW_H dinámico.
+//  R8-8 : nubes en 3 capas con viento del mundo, halo dither + cara al sol,
+//         penumbra en sombras, vía láctea, titileo individual, fugaz v2,
+//         presupuestos por perfQuality.
 //
 // Calibración con el motor (update.ts / engine.ts / render.ts):
 //  - dayT avanza dt/240  → ciclo completo de 240 s.
@@ -54,6 +77,8 @@
 import type { Game } from '../engine';
 import { VIEW_W, VIEW_H } from '../consts';
 import { hash2, px } from './palette';
+import { weatherWindAt } from './weather'; // viento del mundo (lluvia/niebla/hierba)
+import { perfQuality } from '../perf';     // escalón adaptativo 0=alta · 1=media · 2=baja
 
 // ---------------- Tipos ----------------
 
@@ -286,7 +311,8 @@ function skyBandColorAt(band: number, dT: number, flatNight: boolean): string {
 //   (0,0)=0  (1,1)=¼  (1,0)=½  (0,1)=¾
 // Un color + máscara de 4 bits define qué celdas quedan opacas.
 // (R4-A2: la mezcla de tintes ya NO usa dither — interpolación continua —
-//  pero el patrón sigue sirviendo al halo lunar y a la niebla de amanecer.)
+//  pero el patrón sigue sirviendo al halo lunar, a la niebla de amanecer,
+//  a los HALOS de nube v3 y a la PENUMBRA de las sombras de suelo.)
 
 const ditherTiles = new Map<string, HTMLCanvasElement>();
 const ditherPatterns = new WeakMap<CanvasRenderingContext2D, Map<string, CanvasPattern>>();
@@ -330,14 +356,6 @@ function stepCircle(x: CanvasRenderingContext2D, cx: number, cy: number, r: numb
   }
 }
 
-/** Semicírculo SUPERIOR pixelado (canto iluminado de los lóbulos). */
-function stepCircleTop(x: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
-  for (let dy = -r; dy < -2; dy += 2) {
-    const half = Math.floor(Math.sqrt(Math.max(0, r * r - (dy + 1) * (dy + 1))) / 2) * 2;
-    x.fillRect(cx - half, cy + dy, half * 2, 2);
-  }
-}
-
 function buildMoon(): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = 120; c.height = 120;
@@ -370,32 +388,41 @@ function getMoon(): HTMLCanvasElement {
 }
 
 // ============================================================
-// NUBES V2 (R4-A2) — silueta lobulada multi-blob pre-pintada
-// ------------------------------------------------------------ 
-// Cada mapa genera 5-8 nubes ÚNICAS (semilla por mapId). La geometría
-// (3-6 blobs circulares escalonados + base plana) se prerenderiza UNA vez
-// por (nube, franja) a un canvas caché: el cuerpo con sus 3 tonos
-// (cloudLo/cloudBody/cloudHi) y una silueta opaca aparte para la sombra
-// de suelo (dibujada con globalAlpha → sin costuras por solape).
-// El VIENTO (dirección + velocidad) sale del hash del mapId y todas las
-// nubes derivan con él, envolviendo por el borde opuesto del mapa.
+// NUBES V3 (R8-8 · EPIC 5.1) — tres capas con parallax real
+// ------------------------------------------------------------
+// Cada capa se hornea por (nube, capa, franja) a un canvas caché:
+//   halo dither (borde suave) → sombra de base → cuerpo → canto al sol.
+// El VIENTO base sale del hash del mapId (dirección + velocidad) y cada
+// capa lo escala (alta rápida · baja lenta); encima, el VIENTO DEL MUNDO
+// (weatherWindAt — el mismo de lluvia/niebla/hierba) añade un vaivén
+// horizontal CONTINUO (offset = vientoActual·k, nunca viento·t: sin
+// teleports cuando el viento bascula). Todas envuelven por los bordes.
 // ============================================================
+
+interface CloudBlob { cx: number; cy: number; rx: number; ry: number }
 
 interface CloudGeom {
   w: number; h: number;                       // tamaño del canvas pre-pintado
   baseY: number;                              // línea plana de la base
-  blobs: { cx: number; cy: number; r: number }[];
+  blobs: CloudBlob[];
+  flat: boolean;                              // lleva banda plana (capas 1-2)
 }
 
 interface CloudState {
   x: number; y: number;                       // nube "virtual" (pantalla)
   w: number; h: number;                       // tamaño del canvas
   shX: number; shY: number;                   // sombra en suelo (desplazada)
+  layer: number;                              // 0 alta · 1 media · 2 baja
+  ci: number;                                 // índice de nube DENTRO de su capa
+  alpha: number;                              // alpha de cuerpo (× dayF al pintar)
 }
 
 const geomCache = new Map<string, CloudGeom>();
 const cloudBodyCache = new Map<string, HTMLCanvasElement>();
 const cloudShadowCache = new Map<string, HTMLCanvasElement>();
+
+/** Margen del canvas para que el halo dither no se recorte. */
+const CLOUD_PAD = 6;
 
 /** Semilla numérica estable a partir del mapId. */
 function seedFromMapId(mapId: string): number {
@@ -404,124 +431,238 @@ function seedFromMapId(mapId: string): number {
   return s;
 }
 
-/** Geometría lobulada de la nube i de un mapa (cacheada). */
-function cloudGeom(seed: number, i: number): CloudGeom {
-  const key = seed + '|' + i;
+/** Elipse pixelada por filas de 2 px (borde en escalones, NO arc liso). */
+function stepEllipse(x: CanvasRenderingContext2D, cx: number, cy: number, rx: number, ry: number): void {
+  if (rx <= 0 || ry <= 0) return;
+  for (let dy = -ry; dy < ry; dy += 2) {
+    const k = 1 - ((dy + 1) * (dy + 1)) / (ry * ry);
+    if (k <= 0) continue;
+    const half = Math.floor((rx * Math.sqrt(k)) / 2) * 2;
+    if (half <= 0) continue;
+    x.fillRect(cx - half, cy + dy, half * 2, 2);
+  }
+}
+
+/** Medio-arco SUPERIOR elíptico desplazable (canto iluminado hacia el sol). */
+function stepCapTop(x: CanvasRenderingContext2D, cx: number, cy: number, rx: number, ry: number): void {
+  if (rx <= 2 || ry <= 2) return;
+  for (let dy = -ry; dy < -1; dy += 2) {
+    const k = 1 - ((dy + 1) * (dy + 1)) / (ry * ry);
+    if (k <= 0) continue;
+    const half = Math.floor((rx * Math.sqrt(k)) / 2) * 2;
+    if (half <= 0) continue;
+    x.fillRect(cx - half, cy + dy, half * 2, 2);
+  }
+}
+
+// Cara al sol por franja (convención de lighting.ts: el sol nace por el
+// ESTE = +x y se pone por el OESTE = -x; cenit al mediodía): desplazamiento
+// del canto iluminado — amanecer rosa al este, mediodía blanco arriba,
+// tarde ámbar al oeste.
+const SUN_DX = [1, 0, -1, -1, 0];
+const SUN_DY = [1, -2, 1, -1, -1];
+
+/** Geometría lobulada de la nube j de la capa L (cacheada).
+ *  CAPA 1 replica EXACTAMENTE los hashes de la v2 → mismos cúmulos. */
+function cloudGeom(seed: number, j: number, layer: number): CloudGeom {
+  const key = seed + '|' + j + '|' + layer;
   const hit = geomCache.get(key);
   if (hit) return hit;
-  const s = seed * 16 + i;
-  const sc = 0.8 + hash2(s, 943) * 0.8;                        // escala 0.8..1.6
-  const nB = 3 + Math.floor(hash2(s, 947) * 4);                // 3..6 blobs
-  const w = Math.max(64, Math.round((80 + hash2(s, 949) * 120) * sc));
-  const blobs: { cx: number; cy: number; r: number }[] = [];
-  let maxR = 8;
-  for (let j = 0; j < nB; j++) {
-    const r = Math.max(8, Math.round((10 + hash2(s * 4 + j, 953) * 15) * sc));
-    if (r > maxR) maxR = r;
-    blobs.push({ cx: 0, cy: 0, r });
+  const s = seed * 16 + j;
+  const blobs: CloudBlob[] = [];
+  let w: number, maxRy = 3, flat = true;
+
+  if (layer === 0) {
+    // —— wisps: finos, alargados, escalables hacia lo alto ——
+    flat = false;
+    const sc = 0.55 + hash2(s, 943) * 0.35;                    // 0.55..0.9
+    const nB = 2 + Math.floor(hash2(s, 947) * 3);              // 2..4 lóbulos
+    w = Math.max(70, Math.round((120 + hash2(s, 949) * 90) * sc));
+    for (let b = 0; b < nB; b++) {
+      const rx = Math.max(10, Math.round((20 + hash2(s * 4 + b, 953) * 18) * sc));
+      const ry = Math.max(2, Math.round(rx * (0.22 + hash2(s * 4 + b, 955) * 0.14)));
+      if (ry > maxRy) maxRy = ry;
+      blobs.push({ cx: 0, cy: 0, rx, ry });
+    }
+  } else if (layer === 1) {
+    // —— cúmulos lobulados clásicos (herencia v2) ——
+    const sc = 0.8 + hash2(s, 943) * 0.8;                      // 0.8..1.6
+    const nB = 3 + Math.floor(hash2(s, 947) * 4);              // 3..6 blobs
+    w = Math.max(64, Math.round((80 + hash2(s, 949) * 120) * sc));
+    for (let b = 0; b < nB; b++) {
+      const r = Math.max(8, Math.round((10 + hash2(s * 4 + b, 953) * 15) * sc));
+      if (r > maxRy) maxRy = r;
+      blobs.push({ cx: 0, cy: 0, rx: r, ry: r });
+    }
+  } else {
+    // —— panzas bajas: grandes, redondas, blandas ——
+    const sc = 1.35 + hash2(s, 943) * 0.65;                    // 1.35..2.0
+    const nB = 3 + Math.floor(hash2(s, 947) * 2);              // 3..4 blobs
+    w = Math.max(90, Math.round((100 + hash2(s, 949) * 90) * sc));
+    for (let b = 0; b < nB; b++) {
+      const rx = Math.max(14, Math.round((20 + hash2(s * 4 + b, 953) * 16) * sc));
+      const ry = Math.max(10, Math.round(rx * (0.66 + hash2(s * 4 + b, 955) * 0.22)));
+      if (ry > maxRy) maxRy = ry;
+      blobs.push({ cx: 0, cy: 0, rx, ry });
+    }
   }
-  const baseY = 2 * maxR + 4;                                  // cabe el lóbulo más alto
-  for (let j = 0; j < nB; j++) {
-    const b = blobs[j];
-    const t = nB > 1 ? j / (nB - 1) : 0.5;                     // reparto horizontal
-    b.cx = Math.round(b.r + (w - 2 * b.r) * t);
-    b.cy = Math.round(baseY - b.r + (hash2(s * 4 + j, 957) - 0.5) * 5); // panzas casi alineadas
+
+  const baseY = 2 * maxRy + 4 + CLOUD_PAD;                     // cabe el lóbulo más alto + halo
+  for (let b = 0; b < blobs.length; b++) {
+    const bl = blobs[b];
+    const t = blobs.length > 1 ? b / (blobs.length - 1) : 0.5; // reparto horizontal
+    bl.cx = Math.round(CLOUD_PAD + bl.rx + (w - 2 * bl.rx) * t);
+    bl.cy = Math.round(baseY - bl.ry + (hash2(s * 4 + b, 957) - 0.5) * 5); // panzas casi alineadas
   }
-  const gm: CloudGeom = { w, h: baseY + 6, baseY, blobs };
+  const gm: CloudGeom = { w: w + CLOUD_PAD * 2, h: baseY + 8, baseY, blobs, flat };
   geomCache.set(key, gm);
   return gm;
 }
 
-/** Canvas pre-pintado del cuerpo de la nube (por franja del día). */
-function getCloudBody(seed: number, i: number, stIdx: number): HTMLCanvasElement {
-  const key = seed + '|' + i + '|' + stIdx;
+/** Canvas pre-pintado del cuerpo de la nube (por capa y franja del día).
+ *  4 tonos horneados: halo dither → sombra base → cuerpo → canto al sol. */
+function getCloudBody(seed: number, j: number, layer: number, stIdx: number): HTMLCanvasElement {
+  const key = seed + '|' + j + '|' + layer + '|' + stIdx;
   let c = cloudBodyCache.get(key);
   if (!c) {
-    if (cloudBodyCache.size > 120) cloudBodyCache.clear();     // techo de memoria
-    const gm = cloudGeom(seed, i);
+    if (cloudBodyCache.size > 200) cloudBodyCache.clear();     // techo de memoria
+    const gm = cloudGeom(seed, j, layer);
     const st = DAY_STAGES[stIdx];
     c = document.createElement('canvas');
     c.width = gm.w; c.height = gm.h;
     const cc = c.getContext('2d')!;
-    // 1) sombra de la base: blobs +3 px y banda plana baja (canto inferior)
-    cc.fillStyle = st.cloudLo;
-    for (const b of gm.blobs) stepCircle(cc, b.cx, b.cy + 3, b.r);
-    cc.fillRect(0, gm.baseY - 2, gm.w, 4);
-    // 2) cuerpo
-    cc.fillStyle = st.cloudBody;
-    for (const b of gm.blobs) stepCircle(cc, b.cx, b.cy, b.r);
-    cc.fillRect(0, gm.baseY - 8, gm.w, 8);
-    // 3) canto iluminado superior (solo si la franja tiene brillo)
+    const hx = SUN_DX[stIdx], hy = SUN_DY[stIdx];
+    // 0) HALO DITHER: el borde exterior se disuelve en el cielo (25% Bayer)
+    cc.fillStyle = ditherPattern(cc, layer === 0 ? st.cloudBody : st.cloudLo, 0b0001);
+    for (const b of gm.blobs) stepEllipse(cc, b.cx, b.cy, b.rx + 4, b.ry + 4);
+    if (gm.flat) {
+      // 1) sombra de la base: blobs +3/4 px y banda plana baja (canto inferior)
+      cc.fillStyle = st.cloudLo;
+      const dy = layer === 2 ? 4 : 3;
+      for (const b of gm.blobs) stepEllipse(cc, b.cx, b.cy + dy, b.rx, b.ry);
+      cc.fillRect(CLOUD_PAD, gm.baseY - 2, gm.w - CLOUD_PAD * 2, 4);
+      // 2) cuerpo
+      cc.fillStyle = st.cloudBody;
+      for (const b of gm.blobs) stepEllipse(cc, b.cx, b.cy, b.rx, b.ry);
+      cc.fillRect(CLOUD_PAD, gm.baseY - 8, gm.w - CLOUD_PAD * 2, 8);
+    } else {
+      // wisps: solo cuerpo (sin banda plana — flotan)
+      cc.fillStyle = st.cloudBody;
+      for (const b of gm.blobs) stepEllipse(cc, b.cx, b.cy, b.rx, b.ry);
+    }
+    // 3) CANTO ILUMINADO hacia EL SOL (color de la franja: rosa al alba,
+    //    blanco al mediodía, ámbar por la tarde — samplea la etapa actual)
     if (st.cloudHi) {
       cc.fillStyle = st.cloudHi;
-      for (const b of gm.blobs) stepCircleTop(cc, b.cx, b.cy - 1, Math.max(4, b.r - 2));
+      for (const b of gm.blobs) {
+        const rx = Math.max(3, b.rx - 2), ry = Math.max(2, b.ry - 1);
+        stepCapTop(cc, b.cx + Math.round(b.rx * 0.22) * hx, b.cy + hy, rx, ry);
+      }
     }
     cloudBodyCache.set(key, c);
   }
   return c;
 }
 
-/** Silueta opaca (para la sombra de suelo con alpha uniforme). */
-function getCloudShadow(seed: number, i: number): HTMLCanvasElement {
-  const key = seed + '|' + i;
+/** Silueta opaca + PENUMBRA dither (para la sombra de suelo con alpha
+ *  uniforme y borde blando). Solo capas 1-2 proyectan sombra. */
+function getCloudShadow(seed: number, j: number, layer: number): HTMLCanvasElement {
+  const key = seed + '|' + j + '|' + layer;
   let c = cloudShadowCache.get(key);
   if (!c) {
-    if (cloudShadowCache.size > 40) cloudShadowCache.clear();
-    const gm = cloudGeom(seed, i);
+    if (cloudShadowCache.size > 60) cloudShadowCache.clear();
+    const gm = cloudGeom(seed, j, layer);
     c = document.createElement('canvas');
     c.width = gm.w; c.height = gm.h;
     const cc = c.getContext('2d')!;
-    cc.fillStyle = '#000014';                                  // = rgba(0,0,20,…) de la v1
-    for (const b of gm.blobs) stepCircle(cc, b.cx, b.cy, b.r);
-    cc.fillRect(0, gm.baseY - 8, gm.w, 8);
+    cc.fillStyle = ditherPattern(cc, '#000014', 0b0011);       // penumbra 50%
+    for (const b of gm.blobs) stepEllipse(cc, b.cx, b.cy, b.rx + 4, b.ry + 4);
+    cc.fillStyle = '#000014';                                  // núcleo (= rgba(0,0,20,…) de la v1)
+    for (const b of gm.blobs) stepEllipse(cc, b.cx, b.cy, b.rx, b.ry);
+    if (gm.flat) cc.fillRect(CLOUD_PAD, gm.baseY - 8, gm.w - CLOUD_PAD * 2, 8);
     cloudShadowCache.set(key, c);
   }
   return c;
 }
 
+// —— Perfil por capa: [ALTA, MEDIA, BAJA] ——
+const L_WIND = [1.7, 1.0, 0.55];       // × viento base del mapa (alta rápida)
+const L_SWAY = [1.35, 1.0, 0.6];       // × viento del mundo (weatherWindAt)
+const L_PARX = [0.24, 0.42, 0.58];     // parallax camX (lejos → cerca)
+const L_PARY = [0.2, 0.38, 0.52];
+const L_ALPHA = [0.4, 0.62, 0.3];      // alpha del cuerpo (media = la v2)
+const L_SHAL = [0, 0.075, 0.055];      // alpha de sombra en suelo (0 = ninguna)
+const L_SHOFF = [0, 1, 1.5];           // × desplazamiento de la sombra
+// Presupuestos por escalón de perfQuality() (0 alta · 1 media · 2 baja):
+const CLOUD_CAP: readonly number[][] = [[4, 5, 3], [3, 4, 2], [0, 4, 0]];
+const SHADOW_CAP: readonly number[][] = [[0, 5, 3], [0, 4, 2], [0, 4, 0]];
+
 /** Memoización del plan (drawCloudShadows + drawDayNightGrade lo piden en el
  *  MISMO frame con los mismos argumentos → cero trabajo repetido).
  *  R5-O4: estados PREALOCADOS (se mutan in situ) y memo por campos —
  *  antes se construía un string-clave y un objeto CloudState por frame. */
-const PLAN_MAX = 8;
-const planArr: CloudState[] = Array.from({ length: PLAN_MAX }, () => ({ x: 0, y: 0, w: 0, h: 0, shX: 0, shY: 0 }));
+const PLAN_MAX = 12;
+const planArr: CloudState[] = Array.from({ length: PLAN_MAX }, () => (
+  { x: 0, y: 0, w: 0, h: 0, shX: 0, shY: 0, layer: 1, ci: 0, alpha: 0 }
+));
+const planStart = [0, 0, 0];           // índice global de la 1ª nube de cada capa
 let planMapId = '', planT = -1, planCX = -1, planCY = -1;
 
 /**
- * Estado determinista de la flota de nubes de un mapa.
- * VIENTO: dirección/velocidad por hash(mapId); cada nube tiene un factor
- * propio. Wrapper: las posiciones envuelven en X e Y (salen por un borde y
- * entran por el opuesto). La sombra queda a 12-20 px (euclídeo, hacia
- * abajo-derecha: sol arriba-izquierda) de la nube "virtual".
+ * Estado determinista de la flota de nubes de un mapa (3 CAPAS, 9-12 nubes).
+ * CAPA 0 alta (wisps finos y rápidos) · CAPA 1 media (lobuladas, la flota
+ * v2) · CAPA 2 baja (panzas tenues, grandes y lentas). VIENTO: dirección/
+ * velocidad por hash(mapId) escalado por capa + VAIVÉN del viento del mundo
+ * (weatherWindAt) como offset continuo. Wrapper: las posiciones envuelven
+ * en X e Y (salen por un borde y entran por el opuesto). La sombra queda
+ * desplazada hacia abajo-derecha (sol arriba-izquierda) según capa.
  */
 export function cloudPlanAt(mapId: string, globalT: number, camX: number, camY: number): CloudState[] {
   if (planMapId === mapId && planT === globalT && planCX === camX && planCY === camY) return planArr;
   planMapId = mapId; planT = globalT; planCX = camX; planCY = camY;
   const seed = seedFromMapId(mapId);
-  const n = 5 + Math.floor(hash2(seed, 901) * 4);              // 5..8 nubes por mapa
   const wAng = hash2(seed, 911) * TAU;                         // dirección del viento
   const wSpd = 7 + hash2(seed, 913) * 9;                       // 7..16 px/s
   const wX = Math.cos(wAng) * wSpd;
   const wY = Math.sin(wAng) * wSpd;
+  // VIENTO DEL MUNDO (−26..26 px/s): el mismo que dobla la lluvia y arrastra
+  // la niebla. Va como OFFSET continuo (velocidad·k), nunca ×t → sin saltos.
+  const wWorld = weatherWindAt(mapId, globalT);
   const M = 40;                                                // margen fuera de pantalla
-  planArr.length = n;                                          // ranuras prealocadas
-  for (let i = 0; i < n; i++) {
-    const s = seed * 16 + i;
-    const f = 0.75 + hash2(s, 931) * 0.5;                      // factor de viento por nube
-    const gm = cloudGeom(seed, i);
-    // wrapper: span = vista + 2*(nube + margen) → sale entera y entra entera
-    const spanX = VIEW_W + 2 * (gm.w + M);
-    const spanY = VIEW_H + 2 * (gm.h + M);
-    const bx = hash2(s, 933) * spanX;
-    const by = hash2(s, 937) * spanY;
-    const x = Math.round(mod(bx + wX * globalT * f - camX * 0.42, spanX) - (gm.w + M));
-    const y = Math.round(mod(by + wY * globalT * f - camY * 0.38, spanY) - (gm.h + M));
-    const off = 12 + hash2(s, 941) * 8;                        // 12..20 px (euclídeo)
-    const ox = Math.round(off * 0.6);                          // dirección (0.6, 0.8)
-    const oy = Math.round(off * 0.8);
-    const st = planArr[i];
-    st.x = x; st.y = y; st.w = gm.w; st.h = gm.h; st.shX = x + ox; st.shY = y + oy;
+  const L_BASE = [31, 0, 67];                                  // desacopla las capas (media = v2)
+  const L_NSEED = [901, 903, 907];                             // 3-4 altas · 4-5 medias · 2-3 bajas
+  let n = 0;
+  for (let L = 0; L < 3; L++) {
+    planStart[L] = n;
+    const nL = 3 + Math.floor(hash2(seed, L_NSEED[L]) * 2);
+    for (let j = 0; j < nL && n < PLAN_MAX; j++) {
+      const s = seed * 16 + L_BASE[L] + j;
+      const f = 0.75 + hash2(s, 931) * 0.5;                    // factor de viento por nube
+      const gm = cloudGeom(seed, j, L);
+      // wrapper: span = vista + 2*(nube + margen) → sale entera y entra entera
+      const spanX = VIEW_W + 2 * (gm.w + M);
+      const spanY = VIEW_H + 2 * (gm.h + M);
+      const bx = hash2(s, 933) * spanX;
+      const by = hash2(s, 937) * spanY;
+      const x = Math.round(mod(
+        bx + wX * L_WIND[L] * f * globalT + wWorld * L_SWAY[L] * f - camX * L_PARX[L],
+        spanX,
+      ) - (gm.w + M));
+      const y = Math.round(mod(
+        by + wY * L_WIND[L] * f * globalT - camY * L_PARY[L],
+        spanY,
+      ) - (gm.h + M));
+      const off = 12 + hash2(s, 941) * 8;                      // 12..20 px (euclídeo)
+      const ox = Math.round(off * 0.6 * L_SHOFF[L]);           // dirección (0.6, 0.8)
+      const oy = Math.round(off * 0.8 * L_SHOFF[L]);
+      const st = planArr[n];
+      st.x = x; st.y = y; st.w = gm.w; st.h = gm.h;
+      st.shX = x + ox; st.shY = y + oy;
+      st.layer = L; st.ci = j; st.alpha = L_ALPHA[L];
+      n++;
+    }
   }
+  planArr.length = n;                                          // ranuras prealocadas
   return planArr;
 }
 
@@ -533,22 +674,22 @@ function cloudDayFactor(dT: number): number {
   return 1;
 }
 
-/** Pinta el cuerpo de una nube, mezclando las dos franjas si hay transición. */
+/** Pinta el cuerpo de una nube v3, mezclando las dos franjas si hay transición. */
 function drawCloudBlend(
-  ctx: CanvasRenderingContext2D, seed: number, i: number,
-  x: number, y: number, siA: number, siB: number, m: number, alpha: number,
+  ctx: CanvasRenderingContext2D, seed: number, st: CloudState,
+  siA: number, siB: number, m: number, alpha: number,
 ): void {
   if (alpha <= 0.004) return;
   ctx.globalAlpha = alpha * (1 - m);
-  ctx.drawImage(getCloudBody(seed, i, siA), x, y);
+  ctx.drawImage(getCloudBody(seed, st.ci, st.layer, siA), st.x, st.y);
   if (m > 0.002) {
     ctx.globalAlpha = alpha * m;
-    ctx.drawImage(getCloudBody(seed, i, siB), x, y);
+    ctx.drawImage(getCloudBody(seed, st.ci, st.layer, siB), st.x, st.y);
   }
   ctx.globalAlpha = 1;
 }
 
-// ---------------- Estrella fugaz rara (R4-A2) ----------------
+// ---------------- Estrella fugaz (R4-A2 · estela v2 R8-8) ----------------
 // Ventana temporal determinista: cada SHOOT_PERIOD s de globalT hay a lo sumo
 // UNA estrella fugaz (instante, posición y dirección por hash de la ventana).
 // ~1 por ~40 s de noche. NOTA: las estrellas fijas viven en fx.ts
@@ -580,7 +721,8 @@ export function shootingStarAt(globalT: number): ShootStar | null {
   return SHOOT_RES;
 }
 
-/** Trazo de ~7 px: cabeza 2×2 + 3 colas de 2 px con fade sinusoidal. */
+/** Trazo v2 (R8-8): cabeza blanca + estela de 7 eslabones que se afinan y
+ *  enfrían (blanco → azul pálido) con fade sinusoidal de entrada/pico/salida. */
 function drawShootingStar(ctx: CanvasRenderingContext2D, globalT: number, gate: number): void {
   const s = shootingStarAt(globalT);
   if (!s || gate <= 0.01) return;
@@ -588,13 +730,15 @@ function drawShootingStar(ctx: CanvasRenderingContext2D, globalT: number, gate: 
   const len = Math.hypot(s.dx, s.dy);
   const ux = s.dx / len, uy = s.dy / len;
   const hx = s.x + s.dx * s.u, hy = s.y + s.dy * s.u;
-  const SEG = [0.85, 0.5, 0.28, 0.12];                         // alpha de cabeza→cola
-  for (let j = 0; j < 4; j++) {
-    const a = SEG[j] * fade * gate;
+  const SEG_A = [0.95, 0.68, 0.46, 0.3, 0.18, 0.1, 0.05];      // alpha cabeza→cola
+  const SEG_W = [2, 2, 1, 1, 1, 1, 1];                         // se afina hacia la cola
+  for (let j = 0; j < 7; j++) {
+    const a = SEG_A[j] * fade * gate;
     if (a <= 0.01) break;
     ctx.globalAlpha = a;
-    ctx.fillStyle = j === 0 ? '#f4f9ff' : '#cfe0ff';
-    ctx.fillRect(Math.round(hx - ux * 2.2 * j) - 1, Math.round(hy - uy * 2.2 * j) - 1, 2, 2);
+    ctx.fillStyle = j === 0 ? '#ffffff' : j < 3 ? '#e4eeff' : '#b9cdf2';
+    const d = j * 2.2;
+    ctx.fillRect(Math.round(hx - ux * d) - 1, Math.round(hy - uy * d) - 1, SEG_W[j], SEG_W[j]);
   }
   ctx.globalAlpha = 1;
 }
@@ -696,19 +840,25 @@ function drawDawnMist(ctx: CanvasRenderingContext2D, g: Game, dT: number): void 
 
 // ============================================================
 // 1) drawSkyBackdrop — cielo completo para TITLE SCREEN y transiciones
-//    Pinta: bandas de color INTERPOLADAS según franja del día, estrellas
-//    en 3 capas PRE-RENDERIZADAS (R5-O4), luna escalonada con halo
-//    dithered, estrella fugaz rara y nubes lobuladas v2 derivando.
+//    Pinta: bandas de color INTERPOLADAS según franja del día, VÍA LÁCTEA,
+//    estrellas en 3 capas PRE-RENDERIZADAS (R5-O4), titileo individual
+//    (R8-8), luna escalonada con halo dithered, estrella fugaz rara y
+//    nubes v3 en 3 capas derivando con el viento.
 // ============================================================
 
-// ---------------- Estrellas pre-renderizadas (R5-O4) ----------------
-// Las 70 estrellas fijas del backdrop (44 lejanas 1px + 26 cercanas 2px,
-// posiciones deterministas con hash2 INTACTAS) se pintan UNA vez a 3
-// canvas estáticos (la cercana partida en 2 sub-capas para alternar
-// fases) y por frame solo hay 12 drawImage con offset envuelto (deriva
-// + parallax, mismo signo que la v1). El twinkle por estrella se
-// sustituye por 3 capas de alpha alternantes + brillo base horneado por
-// estrella. Se reconstruyen si fitViewToWindow cambia VIEW_W/VIEW_H.
+// ---------------- Estrellas pre-renderizadas + VÍA LÁCTEA + titileo (R8-8) ----------------
+// Tres activos horneados UNA vez por tamaño de vista (invalidación por
+// starVW/starVH):  · STAR_LAYERS — 3 canvas estáticos (44 lejanas 1px +
+// 26 cercanas 2px, posiciones hash2 INTACTAS; twinkle de capa alternante).
+//  · milkyCv — banda de VÍA LÁCTEA: ~240 motas acumuladas alrededor de un
+//    eje sinusoidal de 1 periodo (periódico ⇒ envuelve horizontal sin
+//    costura) + polvo tenue de relleno; alpha bajo, sin gradiente.
+//  · TWIN — tabla de 44 motas de titileo INDIVIDUAL: fase/periodo por
+//    hash2 de su posición, 55% atraídas a la banda (densidad por zona),
+//    umbral de aparición por estrella (entran al atardecer) y destello
+//    de color (azulada/cálida) en el pico del seno.
+// Coste nocturno por frame: 4 drawImage (vía láctea) + 12 drawImage (capas)
+// + ≤40 fillRect (titileo, presupuesto por perfQuality). Cero allocations.
 
 interface StarLayer {
   cv: HTMLCanvasElement | null;
@@ -725,6 +875,96 @@ const STAR_LAYERS: StarLayer[] = [
   { cv: null, drift: 3.2, parX: 0.03,  parY: 0.016, base: 0.85, om: 0.7, ph: 4.2 },
 ];
 let starVW = 0, starVH = 0;          // VIEW con la que se construyeron
+
+interface TwinStar {
+  x: number; y: number; sz: number;  // posición estática + tamaño
+  warm: boolean;                     // temperatura del color base
+  flash: string | null;              // color del destello en el pico (o null)
+  sp: number; ph: number;            // periodo/fase propios (rad/s)
+  th: number;                        // umbral de nf para "salir" (0..0.5)
+  base: number;                      // brillo base 0.55..1
+}
+const TWIN: TwinStar[] = [];
+const TWIN_PAD = 40;                 // margen de envuelve de las motas
+// Presupuesto de motas animadas por escalón de calidad:
+const TWIN_BUDGET = [40, 28, 16];
+
+let milkyCv: HTMLCanvasElement | null = null;
+
+/** Hornea la banda de VÍA LÁCTEA: motas diminutas acumuladas en un eje
+ *  sinusoidal de 1 periodo por ancho (y(x+span)=y(x) ⇒ envuelve limpio)
+ *  con caída de densidad desde el eje + polvo general muy tenue. */
+function buildMilky(): HTMLCanvasElement {
+  const span = VIEW_W + 80;
+  const H = Math.max(120, Math.round(VIEW_H * 0.62));
+  const cv = document.createElement('canvas');
+  cv.width = span; cv.height = H;
+  const cc = cv.getContext('2d')!;
+  const A = H * 0.34;                    // amplitud del eje
+  const MID = H * 0.44;                  // centro medio de la banda
+  const HALF = H * 0.17;                 // semiancho de acumulación
+  for (let k = 0; k < 240; k++) {
+    const x = Math.floor(hash2(k * 3 + 2, 211) * span);
+    const ax = MID + Math.sin((x / span) * TAU) * A;
+    // distancia al eje triangular (2 hashes) → densidad hacia el centro
+    const d = (hash2(k * 5 + 3, 223) + hash2(k * 7 + 5, 227) - 1) * HALF;
+    const y = Math.round(ax + d);
+    if (y < 0 || y >= H) continue;
+    const fall = 1 - Math.abs(d) / (HALF * 1.15);
+    const a = (0.05 + hash2(k * 11 + 7, 229) * 0.09) * Math.max(0.15, fall);
+    cc.globalAlpha = a;
+    cc.fillStyle = hash2(k * 13 + 9, 233) > 0.82 ? '#efe6f2' : '#ccd6ec';
+    cc.fillRect(x, y, 1, 1);
+    if (hash2(k * 17 + 11, 239) > 0.93) {                    // mota brillante suelta
+      cc.globalAlpha = Math.min(1, a * 1.5);
+      cc.fillStyle = '#e8eeff';
+      cc.fillRect(x, y, 2, 1);
+    }
+  }
+  // polvo de relleno (pega la banda al resto del cielo, alpha muy bajo)
+  for (let k = 0; k < 90; k++) {
+    const x = Math.floor(hash2(k * 19 + 13, 241) * span);
+    const y = Math.floor(hash2(k * 23 + 17, 251) * H);
+    cc.globalAlpha = 0.03 + hash2(k * 29 + 19, 257) * 0.03;
+    cc.fillStyle = '#c4cee4';
+    cc.fillRect(x, y, 1, 1);
+  }
+  cc.globalAlpha = 1;
+  return cv;
+}
+
+/** Tabla de motas de TITILEO INDIVIDUAL (fase/periodo/umbral por hash2). */
+function buildTwinklers(): void {
+  TWIN.length = 0;
+  const span = VIEW_W + TWIN_PAD * 2;
+  const bandH = Math.max(80, Math.round(VIEW_H * 0.66));
+  const A = bandH * 0.34, MID = bandH * 0.44, HALF = bandH * 0.2;
+  for (let k = 0; k < 44; k++) {
+    const x = Math.round(TWIN_PAD + hash2(k * 7 + 3, 271) * (span - TWIN_PAD * 2));
+    const inBand = hash2(k * 11 + 5, 277) < 0.55;            // densidad por zona
+    let y: number;
+    if (inBand) {
+      const ax = MID + Math.sin((x / span) * TAU) * A;
+      y = Math.round(ax + (hash2(k * 13 + 7, 281) + hash2(k * 17 + 9, 283) - 1) * HALF);
+    } else {
+      y = Math.round(Math.pow(hash2(k * 13 + 7, 281), 1.3) * bandH); // más denso al cenit
+    }
+    if (y < 0) y = 0; else if (y >= bandH) y = bandH - 1;
+    const h = hash2(k * 19 + 11, 293);
+    const warm = h > 0.76;
+    const flash = hash2(k * 23 + 13, 307) > 0.7 ? (warm ? '#ffd9a0' : '#a9c8ff') : null;
+    TWIN.push({
+      x, y,
+      sz: h > 0.78 ? 2 : 1,
+      warm,
+      flash,
+      sp: 0.7 + hash2(k * 29 + 17, 311) * 1.9,               // periodo 3.3..9 s
+      ph: hash2(k * 31 + 19, 313) * TAU,
+      th: hash2(k * 37 + 23, 317) * 0.5,                     // salen progresivamente
+      base: 0.55 + hash2(k * 41 + 29, 331) * 0.45,
+    });
+  }
+}
 
 function buildStarLayers(): void {
   starVW = VIEW_W; starVH = VIEW_H;
@@ -766,6 +1006,29 @@ function buildStarLayers(): void {
     }
     STAR_LAYERS[L].cv = cv;
   }
+  milkyCv = buildMilky();
+  buildTwinklers();
+}
+
+/** Invalidación perezosa de los activos estelares (cambia VIEW → re-hornea). */
+function ensureStarAssets(): void {
+  if (STAR_LAYERS[0].cv && starVW === VIEW_W && starVH === VIEW_H) return;
+  buildStarLayers();
+}
+
+/** Vía Láctea: 4 drawImage con offset envuelto (deriva lenta + parallax). */
+function drawMilky(ctx: CanvasRenderingContext2D, t: number, camX: number, camY: number, a: number): void {
+  const cv = milkyCv;
+  if (!cv || a <= 0.012) return;
+  const W = cv.width, H = cv.height;
+  const offX = mod(t * 1.1 + camX * 0.014, W);
+  const offY = mod(camY * 0.012, H);
+  ctx.globalAlpha = a;
+  ctx.drawImage(cv, offX - W, offY - H);
+  ctx.drawImage(cv, offX, offY - H);
+  ctx.drawImage(cv, offX - W, offY);
+  ctx.drawImage(cv, offX, offY);
+  ctx.globalAlpha = 1;
 }
 
 /** Dibuja las 3 capas con offset envuelto (deriva + parallax) y alpha
@@ -783,6 +1046,34 @@ function drawStarLayers(ctx: CanvasRenderingContext2D, t: number, camX: number, 
     ctx.drawImage(cv, offX, offY - H);
     ctx.drawImage(cv, offX - W, offY);
     ctx.drawImage(cv, offX, offY);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/**
+ * Titileo INDIVIDUAL (R8-8): cada mota oscila con su propio seno
+ * (fase/periodo por hash2), aparece al cruzar su umbral de noche
+ * (gate) y las que tienen `flash` lanzan una cruz de color en el pico.
+ * ≤budget fillRect, cero allocations (colores constantes).
+ */
+function drawTwinklers(ctx: CanvasRenderingContext2D, t: number, nf: number, budget: number): void {
+  const n = Math.min(TWIN.length, budget);
+  for (let i = 0; i < n; i++) {
+    const s = TWIN[i];
+    const gate = (nf - s.th) * 3.2;
+    if (gate <= 0) continue;                   // aún no "sale" esta estrella
+    const tw = Math.sin(t * s.sp + s.ph);
+    const a = nf * Math.min(1, gate) * s.base * (0.42 + 0.58 * tw * tw);
+    if (a < 0.03) continue;
+    ctx.globalAlpha = a > 1 ? 1 : a;
+    ctx.fillStyle = s.warm ? '#ffe9c8' : '#dce4ff';
+    ctx.fillRect(s.x, s.y, s.sz, s.sz);
+    if (s.flash !== null && tw > 0.86) {       // destello de color en el pico
+      ctx.globalAlpha = Math.min(1, a * 1.5);
+      ctx.fillStyle = s.flash;
+      ctx.fillRect(s.x - 1, s.y, s.sz + 2, 1);
+      ctx.fillRect(s.x, s.y - 1, s.sz, s.sz + 2);
+    }
   }
   ctx.globalAlpha = 1;
 }
@@ -822,11 +1113,13 @@ export function drawSkyBackdrop(ctx: CanvasRenderingContext2D, g: Game): void {
   const siB = tr ? tr.b : si;
   const mx = tr ? tr.m : 0;
 
-  // ---- estrellas: 3 capas pre-renderizadas (R5-O4): deriva + parallax
-  //      por drawImage envuelto y twinkle por alpha alternante de capa ----
+  // ---- cielo nocturno: VÍA LÁCTEA (detrás) → capas de estrellas →
+  //      titileo individual → fugaz → luna (todos pre-horneados) ----
   if (nf > 0.03) {
-    if (!STAR_LAYERS[0].cv || starVW !== VIEW_W || starVH !== VIEW_H) buildStarLayers();
+    ensureStarAssets();
+    drawMilky(ctx, t, camX, camY, Math.min(1, (nf - 0.1) * 2) * 0.9);
     drawStarLayers(ctx, t, camX, camY, nf);
+    drawTwinklers(ctx, t, nf, TWIN_BUDGET[perfQuality()]);
 
     // ---- estrella fugaz rara (comparte ventana temporal con el mundo) ----
     if (nf > 0.55) drawShootingStar(ctx, t, Math.min(1, (nf - 0.55) / 0.25));
@@ -841,14 +1134,13 @@ export function drawSkyBackdrop(ctx: CanvasRenderingContext2D, g: Game): void {
     }
   }
 
-  // ---- nubes lobuladas v2 derivando (4 en el backdrop, colores de franja) ----
+  // ---- nubes v3: flota unificada de 3 capas (semilla 'titulo'), en orden
+  //      de capa (alta → media → baja) con alpha propio por capa ----
   const tSeed = seedFromMapId('titulo');
-  for (let i = 0; i < 4; i++) {
-    const spd = 4 + hash2(i * 11 + 3, 61) * 5;                    // 4..9 px/s
-    const spanX = VIEW_W + 360;
-    const x0 = Math.round(mod(hash2(i * 13 + 5, 63) * spanX + t * spd - camX * 0.06, spanX) - 180);
-    const y0 = Math.round(18 + hash2(i * 17 + 7, 67) * 150);
-    drawCloudBlend(ctx, tSeed, i, x0, y0, siA, siB, mx, 1);
+  const plan = cloudPlanAt('titulo', t, camX, camY);
+  for (let i = 0; i < plan.length; i++) {
+    const st = plan[i];
+    drawCloudBlend(ctx, tSeed, st, siA, siB, mx, Math.min(1, st.alpha * 1.7));
   }
 }
 
@@ -856,10 +1148,10 @@ export function drawSkyBackdrop(ctx: CanvasRenderingContext2D, g: Game): void {
 // 2) drawDayNightGrade — capa de grading sobre el mundo (antes del HUD)
 //    R4-A2: tinte CONTINUO por franjas interpoladas (sin saltos Bayer),
 //    banda rosada-naranja en bordes horizontales (dayT 0.20-0.30/0.65-0.75),
-//    niebla de amanecer en lunaris, CUERPOS de las nubes v2 (las sombras
-//    van en drawCloudShadows, capa suelo) y estrella fugaz nocturna.
-//    En 'pasado' calienta +10%; en 'presente' desatura simulado (azul-gris).
-//    En la cripta: no-op.
+//    niebla de amanecer en lunaris, CUERPOS de las nubes v3 (las sombras
+//    van en drawCloudShadows, capa suelo), VÍA LÁCTEA + titileo nocturno
+//    y estrella fugaz. En 'pasado' calienta +10%; en 'presente' desatura
+//    simulado (azul-gris). En la cripta: no-op.
 // ============================================================
 
 export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void {
@@ -883,7 +1175,9 @@ export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void 
   // ---- 3) niebla de amanecer (bandas dithered bajas, solo valle) ----
   drawDawnMist(ctx, g, dT);
 
-  // ---- 4) nubes v2: cuerpos sobre entidades (exterior de día) ----
+  // ---- 4) nubes v3: cuerpos sobre entidades (exterior de día), en orden
+  //      de capa (alta → media → baja), alpha por capa y presupuesto por
+  //      perfQuality (en calidad baja solo sobrevive la capa media). ----
   const dayF = cloudDayFactor(dT);
   if (dayF > 0.004) {
     const plan = cloudPlanAt(g.mapId, g.globalT, g.camX, g.camY);
@@ -893,14 +1187,26 @@ export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void 
     const siA = tr ? tr.a : si;
     const siB = tr ? tr.b : si;
     const mx = tr ? tr.m : 0;
+    const cap = CLOUD_CAP[perfQuality()];
     for (let i = 0; i < plan.length; i++) {
-      drawCloudBlend(ctx, seed, i, plan[i].x, plan[i].y, siA, siB, mx, 0.6 * dayF);
+      const st = plan[i];
+      if (i - planStart[st.layer] >= cap[st.layer]) continue;
+      drawCloudBlend(ctx, seed, st, siA, siB, mx, st.alpha * dayF);
     }
   }
 
-  // ---- 5) estrella fugaz rara (noche cerrada, ventana determinista) ----
+  // ---- 4b) noche: VÍA LÁCTEA + TITILEO individual (alpha × nf; corre
+  //      ANTES de drawAmbient 'sky' de fx.ts, que pinta encima en render).
+  //      Densidad crece con la profundidad de la noche (umbral por mota). ----
   const dayLight = Math.max(0.1, Math.sin(dT * TAU) * 1.25 + 0.25);
   const nf = 1 - Math.min(1, dayLight);
+  if (nf > 0.14) {
+    ensureStarAssets();
+    drawMilky(ctx, g.globalT, g.camX, g.camY, Math.min(1, (nf - 0.14) / 0.32) * 0.5);
+    drawTwinklers(ctx, g.globalT, nf, TWIN_BUDGET[perfQuality()]);
+  }
+
+  // ---- 5) estrella fugaz rara (noche cerrada, ventana determinista) ----
   if (nf > 0.55) drawShootingStar(ctx, g.globalT, Math.min(1, (nf - 0.55) / 0.25));
 
   // ---- 6) lavado de época ----
@@ -916,11 +1222,15 @@ export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void 
 }
 
 // ============================================================
-// 3) drawCloudShadows — sombras en suelo de las NUBES V2, SOLO exterior
+// 3) drawCloudShadows — sombras en suelo de las NUBES v3, SOLO exterior
 //    de día. Misma flota determinista que pinta los cuerpos en
-//    drawDayNightGrade (cloudPlanAt): cada sombra es la silueta opaca de
-//    su nube desplazada 12-20 px (euclídeo) hacia abajo-derecha, dibujada
-//    con globalAlpha uniforme (canvas opaco → sin costuras por solape).
+//    drawDayNightGrade (cloudPlanAt): cada sombra es la silueta opaca +
+//    penumbra dither de su nube, desplazada hacia abajo-derecha (sol
+//    arriba-izquierda; las bajas, más cerca, desplazan más), con alpha
+//    POR CAPA (media 0.075 · baja 0.055 · alta no proyecta) y presupuesto
+//    por perfQuality. ENGANCHE: render.ts la llama en el pase agrupado
+//    del suelo (bajo entidades, recibe el filtro de época) — no requiere
+//    cambios en lighting.ts (es atmósfera, no luz).
 // ============================================================
 
 export function drawCloudShadows(ctx: CanvasRenderingContext2D, g: Game): void {
@@ -931,9 +1241,14 @@ export function drawCloudShadows(ctx: CanvasRenderingContext2D, g: Game): void {
 
   const plan = cloudPlanAt(g.mapId, g.globalT, g.camX, g.camY);
   const seed = seedFromMapId(g.mapId);
-  ctx.globalAlpha = 0.07 * dayF;                             // = v1 rgba(0,0,20,0.07)
+  const cap = SHADOW_CAP[perfQuality()];
   for (let i = 0; i < plan.length; i++) {
-    ctx.drawImage(getCloudShadow(seed, i), plan[i].shX, plan[i].shY);
+    const st = plan[i];
+    const shA = L_SHAL[st.layer];
+    if (shA <= 0) continue;                                  // la capa alta no sombrea
+    if (i - planStart[st.layer] >= cap[st.layer]) continue;  // presupuesto de calidad
+    ctx.globalAlpha = shA * dayF;
+    ctx.drawImage(getCloudShadow(seed, st.ci, st.layer), st.shX, st.shY);
   }
   ctx.globalAlpha = 1;
 }

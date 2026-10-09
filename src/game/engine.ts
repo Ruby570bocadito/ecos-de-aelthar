@@ -12,6 +12,7 @@ export { VIEW_W, VIEW_H, ZOOM, fitViewToWindow };
 import type {
   Player, Enemy, Npc, Companion, MapId, Epoch, Projectile, Particle, FloatText,
   Toast, Shockwave, TeleGraph, SaveData, DialogueNode, DialogueOption, Dir, Element, StatsData,
+  ChestDef,
 } from './types';
 import { MAPS, mapRows, tileAt } from './maps';
 import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
@@ -33,7 +34,7 @@ import { buildMinimapV2 } from './world/minimap';
 import { handleCustomAction, recordDialogueTone } from './hooks';
 import { challengeTick, onChallengeDeath, type ChallengeRun } from './challenge';
 import { skillTick, skillCdMult, setSkillCdDecay } from './skilltree';
-import { balanceTick, enemyStatMult } from './balance';
+import { balanceTick, enemyStatMult, critChance, CRIT_MULT } from './balance';
 import { worldTick, worldInteract } from './worldlife';
 import { timeTick, beginEpochShift } from './timeskip';
 import { defaultStats, sanitizeStats, statsTick, achievementTick } from './achievements'; // 16-c: estadísticas + logros
@@ -84,6 +85,22 @@ export const BOSS_DEFEAT_FLAG: Record<string, string> = {
 // Recortar las más viejas mantiene el coste de update/render acotado.
 const MAX_PARTICLES = 400;
 const MAX_FLOATS = 64;
+
+// ---- Ronda 8 · bugs del motor (R8-1.3 / R8-1.4 / R8-1.6 / R8-1.7) ----
+// Tiles altos ('t' árbol frondoso / 'p' pino): sprites que se dibujan POR
+// ENCIMA de entidades/props — un cofre o un enemigo spawneado sobre ellos
+// nace "dentro del árbol". Los valida el motor al cargar el mapa.
+const TALL_CHARS = new Set<string>(['t', 'p']);
+// R8-1.4 (evento del primer poder): topes duros del anillo de evento. El
+// despertar del primer Eco convoca una respuesta de la Niebla ACOTADA: máximo
+// de unidades, separación mínima entre ellas y con el Portador, y guard de
+// una-sola-vez persistido en flags (ver spawnEventRing).
+const EVENT_RING_MAX = 6;      // tope duro de enemigos por evento de historia
+const EVENT_RING_MIN_GAP = 34; // px (~2 tiles) entre unidades del anillo
+const MAX_MAP_ENEMIES = 40;    // tope de población viva total tras un evento
+// R8-1.3: los cofres se validan UNA vez por objeto/sesión (WeakSet — no toca
+// types.ts ni maps.ts; el ajuste de posición lo leen render e interacción).
+const validatedChests = new WeakSet<ChestDef>();
 
 // R6-V10 (calidad adaptativa): tope de ancho de vista en BAJA sostenida.
 // El coste de drawGame escala con VIEW_W×VIEW_H: recortar el ancho extra que
@@ -212,6 +229,11 @@ export class Game {
   private perfLastTick = -1;  // performance.now() del tick anterior (hueco >1 s → tramo roto)
   private perfLowSince = -1;  // inicio del tramo continuo en calidad baja (-1 = fuera de baja)
   private perfCapOn = false;  // true = el tope LOWQ_VIEW_MAX_W está aplicado ahora mismo
+
+  // R8-1.7/R8-1.6: throttles de feedback (globalT del último aviso) — evitan
+  // spamear mensajes mientras el Portador insiste contra la barrera/puerta.
+  private barrierMsgAt = -99;   // último aviso de barrera de época (niebla/puente)
+  private cryptGateMsgAt = -99; // último aviso de "la Cripta solo cede a su puerta"
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -433,6 +455,9 @@ export class Game {
     }
     const p = d.player;
     const maxHp = p.maxHp;
+    // R8-1.1: habilidad DERIVADA del estado persistente — se calcula UNA vez y
+    // se usa tanto en el Portador restaurado como en la época de entrada.
+    const hasEchoDerived = p.hasEcho === true || !!d.flags.fragmentTouched;
     this.player = {
       kind: 'player', name: p.name, discipline: p.discipline,
       x: d.x, y: d.y, w: 10, h: 8, vx: 0, vy: 0, dir: 'down',
@@ -443,7 +468,13 @@ export class Game {
       gold: p.gold, weaponPlus: p.weaponPlus, potions: p.potions, cds: [0, 0, 0, 0],
       iframes: 0, parryT: 0, parryFx: 0, attackT: 0, combo: 0,
       chargeT: 0, charging: false, rollT: 0, lastHitT: 0,
-      hasEcho: p.hasEcho, kills: p.kills, deaths: p.deaths,
+      // R8-1.1: la habilidad se DERIVA del estado persistente. hasEcho vive en
+      // el player (volatile); flags.fragmentTouched es la marca que SIEMPRE se
+      // escribe al ganarla (mismo evento) y viaja en el save. Saves antiguos
+      // sin el campo hasEcho (o restauraciones parciales) recuperan aquí la
+      // habilidad desde el flag — nunca se pierde al reentrar.
+      hasEcho: hasEchoDerived,
+      kills: p.kills, deaths: p.deaths,
       repGuardianes: p.repGuardianes, playTime: p.playTime,
       tones: p.tones ?? { empatico: 0, pragmatico: 0, sarcastico: 0, amenazante: 0 },
       memories: p.memories ?? [],
@@ -456,7 +487,9 @@ export class Game {
     this.deadGolds = d.deadGolds ?? [];
     // ==== 16-c (logros-stats): restore tolerante (saves antiguos sin stats) ====
     this.stats = sanitizeStats(d.stats);
-    this.epoch = d.epoch === 'pasado' && p.hasEcho ? 'pasado' : 'presente';
+    // R8-1.1: la época de entrada usa el mismo flag derivado (saves sin
+    // hasEcho no descartan el viaje guardado).
+    this.epoch = d.epoch === 'pasado' && hasEchoDerived ? 'pasado' : 'presente';
     this.companion = d.companion ? this.makeCompanion() : null;
     // ==== 16-b: restaura la orden táctica del compañero (saves viejos sin el
     // campo → undefined = 'seguir', el comportamiento de siempre) ====
@@ -499,7 +532,9 @@ export class Game {
         hp: p.hp, maxHp: p.maxHp, sta: p.sta, maxSta: p.maxSta, res: p.res,
         attrs: { ...p.attrs }, points: p.points,
         gold: p.gold, weaponPlus: p.weaponPlus, potions: p.potions,
-        hasEcho: p.hasEcho, kills: p.kills, deaths: p.deaths,
+        // R8-1.1: espejo defensivo — aunque hasEcho se perdiera en memoria,
+        // el flag persistente lo reflota en el guardado.
+        hasEcho: p.hasEcho || !!this.flags.fragmentTouched, kills: p.kills, deaths: p.deaths,
         repGuardianes: p.repGuardianes, playTime: p.playTime,
         tones: p.tones, memories: p.memories, repFacciones: p.repFacciones,
       },
@@ -534,6 +569,9 @@ export class Game {
     this.map = MAPS[id];
     this.rows = mapRows(this.map);
     this.buildGround();
+    // R8-1.3: spawn de cofres saneado — tile destino y vecindad inmediata
+    // libres de tiles altos/sólidos en la(s) época(s) donde el cofre existe.
+    this.validateChests();
     if (this.player) {
       // defensa anti-softlock: nunca aterrizar sobre un tile sólido ni dentro
       // de una zona de salida del destino (provocaba el bucle cripta↔bosque)
@@ -582,8 +620,65 @@ export class Game {
     if (id === 'aldea' && this.questIdx === 7 && this.questStep === 0) this.questAdvance();
     if (id === 'cumbres' && this.questIdx === 8 && this.questStep === 0) this.questAdvance();
     if (!this.flags[`visited_${id}`]) this.flags[`visited_${id}`] = true;
+    // R8-1.1: rearma de la habilidad derivado del flag persistente. Cualquier
+    // ruta de (re)entrada al mapa (continueGame, respawn, viaje, fade) pasa por
+    // aquí: si el Portador llega sin hasEcho pero el Fragmento ya fue tocado
+    // (flag persistido en el save), la habilidad se recupera — nunca depende
+    // de variables volátiles de mapa.
+    if (this.player && this.flags.fragmentTouched && !this.player.hasEcho) {
+      this.player.hasEcho = true;
+      this.toast('El Fragmento de Eco vuelve a resonar contigo (Q)', '#c8b0e8');
+    }
     this.mapTitleT = 2.6;
     this.updateCamera(true);
+  }
+
+  /**
+   * R8-1.3 · Spawn de cofres validado. Causa raíz del bug: los cofres viven
+   * en maps.ts con coordenadas fijas, y la dispersión determinista de pinos
+   * ('p'/'t') puede caer SOBRE el cofre o en su vecindad — el cofre nacía
+   * dentro/detrás de la copa (verificado: bosque b2 @(52,38) nacía EN un pino;
+   * lunaris l4, bosque b1/b3/b4/b5 con troncos pegados). El dibujo y la
+   * interacción leen g.map.chests, así que la corrección del motor es mover el
+   * cofre UNA vez (por objeto, WeakSet) al hueco libre más cercano: tile no
+   * sólido y sin tiles altos en el propio tile ni en los 8 vecinos, en la(s)
+   * época(s) donde el cofre existe. Determinista (búsqueda por anillos).
+   */
+  private validateChests(): void {
+    for (const ch of this.map.chests) {
+      if (validatedChests.has(ch)) continue;
+      validatedChests.add(ch);
+      const eps: Epoch[] = ch.needPast
+        ? ['pasado']
+        : this.map.epochDiffs.length ? ['presente', 'pasado'] : ['presente'];
+      const badSpot = (x: number, y: number): boolean => {
+        for (const ep of eps) {
+          if (SOLID_CHARS.has(tileAt(this.map, this.rows, x, y, ep))) return true;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              if (TALL_CHARS.has(tileAt(this.map, this.rows, x + dx, y + dy, ep))) return true;
+            }
+          }
+        }
+        return false;
+      };
+      if (!badSpot(ch.x, ch.y)) continue; // sitio correcto: no se toca
+      for (let r = 1; r <= 3; r++) {
+        let moved = false;
+        for (let dy = -r; dy <= r && !moved; dy++) {
+          for (let dx = -r; dx <= r && !moved; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            const nx = ch.x + dx, ny = ch.y + dy;
+            // no sacarlo al anillo de bosque del borde ni fuera de mapa
+            if (nx < 1 || ny < 1 || nx >= this.map.w - 1 || ny >= this.map.h - 1) continue;
+            if (badSpot(nx, ny)) continue;
+            ch.x = nx; ch.y = ny;
+            moved = true;
+          }
+        }
+        if (moved) break;
+      }
+    }
   }
 
   buildGround() {
@@ -643,7 +738,76 @@ export class Game {
       if (s.needPresent && this.epoch !== 'presente') continue;
       const defFlag = BOSS_DEFEAT_FLAG[s.type];
       if (defFlag && this.flags[defFlag]) continue; // jefes derrotados no renacen
-      this.enemies.push(this.makeEnemy(s.type, s.x * TILE + 8, s.y * TILE + 8, s.patrol ?? 2, s.zone));
+      // R8-1.4 (spawn saneado en el motor): un spawn sobre tile sólido/alto
+      // nacía ENCALLADO dentro del árbol (verificado: bosque lobo @(44,34) y
+      // esqueleto @(30,16) caen sobre 'p') — se desplaza al hueco libre más
+      // cercano; sin hueco, no nace (nunca apelotonado ni dentro de muro).
+      let sx = s.x, sy = s.y;
+      if (this.tileSolidAt(sx * TILE + 8, sy * TILE + 8)) {
+        const fix = this.findFreeSpotNear(sx, sy);
+        if (!fix) continue;
+        sx = fix[0]; sy = fix[1];
+      }
+      this.enemies.push(this.makeEnemy(s.type, sx * TILE + 8, sy * TILE + 8, s.patrol ?? 2, s.zone));
+    }
+  }
+
+  /** R8-1.4: tile transitable más cercano (anillos r≤2) para rescatar spawns. */
+  private findFreeSpotNear(tx: number, ty: number): [number, number] | null {
+    for (let r = 1; r <= 2; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const nx = tx + dx, ny = ty + dy;
+          if (nx < 0 || ny < 0 || nx >= this.map.w || ny >= this.map.h) continue;
+          if (this.tileSolidAt(nx * TILE + 8, ny * TILE + 8)) continue;
+          return [nx, ny];
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * R8-1.4 · Spawn de EVENTO de historia acotado (lo dispara el despertar del
+   * primer Eco). Contrato anti-bug del enjambre circular reportado:
+   *   1) SOLO UNA VEZ por partida — guard persistido en flags[flag] (viaja en
+   *      el save), fijado al entrar (idempotente ante re-entradas).
+   *   2) TOPE DURO — min(count, EVENT_RING_MAX, hueco hasta MAX_MAP_ENEMIES).
+   *   3) ESPACIADO — anillo suelto a radio fijo (ángulo áureo determinista),
+   *      nunca a <2 tiles del Portador ni a <EVENT_RING_MIN_GAP de otro
+   *      enemigo; candidatos sin sitio válido se OMITEN (no se apilan).
+   * Las unidades nacen sin aggro y con spawnGuard: la Niebla se reúne,
+   * no embosca (el evento es narrativo, no una trampa).
+   */
+  private spawnEventRing(type: Enemy['etype'], count: number, flag: string): void {
+    if (this.flags[flag]) return; // guard de evento ya disparado (persistente)
+    this.flags[flag] = true;
+    const p = this.player;
+    if (!p) return;
+    const alive = this.enemies.reduce((n, e) => (e.dead ? n : n + 1), 0);
+    const n = Math.min(count, EVENT_RING_MAX, Math.max(0, MAX_MAP_ENEMIES - alive));
+    let placed = 0;
+    for (let i = 0; i < n; i++) {
+      const a = i * 2.399963;                    // ángulo áureo: reparto sin simetría rígida
+      const x = p.x + Math.cos(a) * 3.5 * TILE;
+      const y = p.y + Math.sin(a) * 3.5 * TILE;
+      if (this.tileSolidAt(x, y) || !this.boxFree(x, y, 12, 10)) continue;
+      if (Math.hypot(x - p.x, y - p.y) < 2 * TILE) continue; // nunca encima del Portador
+      let spaced = true;
+      for (const e of this.enemies) {
+        if (!e.dead && Math.hypot(e.x - x, e.y - y) < EVENT_RING_MIN_GAP) { spaced = false; break; }
+      }
+      if (!spaced) continue;
+      const s = this.makeEnemy(type, x, y, 1, 'evento');
+      s.aggro = false;
+      s.spawnGuard = 1.5;                        // cortesía: no aggro inmediato
+      this.enemies.push(s);
+      placed++;
+    }
+    if (placed > 0) {
+      this.burst(p.x, p.y - 6, '#c8b0e8', 14, 60);
+      this.toast('La Niebla responde al despertar del Eco...', '#c8b0e8');
     }
   }
 
@@ -857,8 +1021,18 @@ export class Game {
     // de verdad, sin tocar update.ts. Los enemigos y la compañera no pesan.
     if (e === this.player && this.flags.armor_3) { dx *= ARMOR_HEAVY_SPEED; dy *= ARMOR_HEAVY_SPEED; }
     const wasX = e.x, wasY = e.y;
-    if (dx !== 0 && this.boxFree(e.x + dx, e.y, e.w, e.h)) e.x += dx;
-    if (dy !== 0 && this.boxFree(e.x, e.y + dy, e.w, e.h)) e.y += dy;
+    // R8-1.7: registrar ejes RECHAZADOS para el feedback de barrera de época
+    // (solo Portador, evaluación O(1); el coste extra son 2 comparaciones).
+    let blockedX = false, blockedY = false;
+    if (dx !== 0) { if (this.boxFree(e.x + dx, e.y, e.w, e.h)) e.x += dx; else blockedX = true; }
+    if (dy !== 0) { if (this.boxFree(e.x, e.y + dy, e.w, e.h)) e.y += dy; else blockedY = true; }
+    // R8-1.7: muro de hierba tras el puente = barrera de época ('n' Niebla
+    // Muda, 'x' pilares del puente roto…): al chocar, mensaje claro y
+    // throttled (el ARTE de la barrera vive en sprites.ts/world — ajeno;
+    // aquí se arregla la lógica de bloqueo + feedback).
+    if ((blockedX || blockedY) && e === this.player && this.state === 'play') {
+      this.epochBarrierFeedback(e.x + (blockedX ? Math.sign(dx) : 0), e.y + (blockedY ? Math.sign(dy) : 0));
+    }
     // ==== 16-c (logros-stats): distancia andada del Portador. moveEntity es la
     // ÚNICA puerta del movimiento (caminar, rodar, hielo, empujones): se cuenta
     // solo el desplazamiento REALMENTE aplicado (aprox. por tiles al mostrar).
@@ -1150,18 +1324,27 @@ export class Game {
         audio.sfx('quest'); this.toast('Nueva misión: Dos Voces más Fuertes', '#8ef0b0');
         break;
       case action === 'fragment_touched':
+        // R8-1.4: guard de evento YA disparado. El onEnd del nodo 'voz_fragment'
+        // se re-dispara en cada avance/relectura del Fragmento: sin guard
+        // repetía sfx/ráfaga/toast y podía RE-AVANZAR q3 (skip de misión).
+        if (this.flags.fragmentTouched) break;
         this.flags.fragmentTouched = true;
         p.hasEcho = true;
         audio.sfx('echo');
         this.burst(p.x, p.y - 8, '#ffe9a0', 24, 80);
         if (this.questIdx === 2) this.questAdvance();
         this.toast('Resonancia despierta: pulsa Q para alternar entre presente y pasado', '#ffe9a0');
+        // R8-1.4: el "embate" de la Niebla al despertar el primer Eco — anillo
+        // ACOTADO (tope 3), espaciado ≥2 tiles, nunca encima del Portador y UNA
+        // sola vez por partida (spawnEventRing: guard persistente + topes).
+        this.spawnEventRing('sombra', 3, 'embatePrimerEco');
         break;
       case action === 'eco_taken':
         this.flags.ecoVoz = true;
         p.points += 1; p.repGuardianes += 10;
         p.hp = p.maxHp;
         if (this.questIdx === 3 && this.questStep === 2) this.questAdvance();
+        this.grantEchoXp(); // R8-4.4
         this.toast('Eco de la Voz recuperado: +1 punto de habilidad, +10 reputación', '#ffe9a0');
         break;
       case action === 'eco_mareas_taken':
@@ -1170,6 +1353,7 @@ export class Game {
         p.hp = p.maxHp;
         if (this.questIdx === 6 && this.questStep === 2) this.questAdvance();
         this.applyAction('memory_mem_faro');
+        this.grantEchoXp(); // R8-4.4
         this.toast('Eco de las Mareas recuperado: +1 punto de habilidad, +10 reputación', '#ffe9a0');
         break;
       case action === 'eco_cumbres_taken':
@@ -1178,6 +1362,7 @@ export class Game {
         p.hp = p.maxHp;
         if (this.questIdx === 8 && this.questStep === 2) this.questAdvance();
         this.applyAction('memory_mem_invierno');
+        this.grantEchoXp(); // R8-4.4
         this.toast('Eco de las Cumbres recuperado: +1 punto de habilidad, +10 reputación', '#ffe9a0');
         break;
       case action === 'fragment':
@@ -1344,8 +1529,55 @@ export class Game {
   }
 
   fadeTo(to: MapId, tx: number, ty: number) {
+    // R8-1.6: la Cripta SOLO se entra por su puerta. La zona de salida
+    // bosque→cripta (x8..12, y2..3) es más ancha que la puerta del recinto
+    // (x9..11, y4) — reporte: "se entra por el LADO". fadeTo es la ÚNICA puerta
+    // por la que pasa toda transición (update, santuario, hooks): el blindaje
+    // vive aquí y SOLO aplica al paso A PIE (Portador dentro de la zona de
+    // salida); el Viajar del santuario desde bosque (fuera de la zona) queda
+    // intacto. Se exigen las columnas de la puerta en la fila interior que
+    // toca al dintel; cualquier otro tile de la zona se ignora con feedback
+    // claro y throttle (fadeDir queda intacto → sin fundido fantasma).
+    if (this.mapId === 'bosque' && to === 'cripta' && this.player) {
+      const ptx = Math.floor(this.player.x / TILE), pty = Math.floor(this.player.y / TILE);
+      if (this.inExitZone(ptx, pty) && !(ptx >= 9 && ptx <= 11 && (pty === 2 || pty === 3))) {
+        if (this.globalT - this.cryptGateMsgAt >= 4) {
+          this.cryptGateMsgAt = this.globalT;
+          this.floatAt(this.player.x, this.player.y - 24, 'La Cripta solo cede a su puerta', '#c8b0e8', 7);
+          audio.sfx('error');
+        }
+        return;
+      }
+    }
     this.pendingMap = { to, tx, ty };
     this.fadeDir = 1;
+  }
+
+  /**
+   * R8-1.7 · Feedback al chocar contra una BARRERA DE ÉPOCA: tile sólido en la
+   * época actual pero transitable en la opuesta (Niebla Muda 'n', puente roto
+   * 'x', diffs equivalentes). El muro normal (sólido en ambas) NO dice nada:
+   * early-out barato. Throttle 5 s por globalT — cero allocations en régimen.
+   */
+  private epochBarrierFeedback(nx: number, ny: number): void {
+    if (this.globalT - this.barrierMsgAt < 5) return;
+    const tx = Math.floor(nx / TILE), ty = Math.floor(ny / TILE);
+    const chNow = tileAt(this.map, this.rows, tx, ty, this.epoch);
+    if (!SOLID_CHARS.has(chNow)) return;
+    const other: Epoch = this.epoch === 'presente' ? 'pasado' : 'presente';
+    if (SOLID_CHARS.has(tileAt(this.map, this.rows, tx, ty, other))) return; // muro normal
+    this.barrierMsgAt = this.globalT;
+    const msg = chNow === 'n'
+      ? 'La Niebla Muda devora los nombres: solo el ayer la disipa (Q)'
+      : chNow === 'x'
+        ? 'El río se llevó el paso: en el ayer el puente seguía en pie (Q)'
+        : 'El tiempo bloquea el paso: alterna de época con Q';
+    if (this.player) {
+      this.floatAt(this.player.x, this.player.y - 24, msg, '#c8b0e8', 7);
+      this.burst(nx, ny - 6, chNow === 'n' ? '#d8e8e4' : '#c8b0e8', 6, 26);
+    }
+    this.toast(msg, '#c8b0e8');
+    audio.sfx('error');
   }
 
   // ---------------- Mensajes ----------------
@@ -1840,7 +2072,7 @@ export class Game {
     let final = dmg;
     let crit = false;
     const p = this.player!;
-    if (Math.random() * 100 < Math.min(40, 5 + p.attrs.des * 2)) { final *= 2; crit = true; }
+    if (Math.random() * 100 < critChance(p.attrs.des)) { final *= CRIT_MULT; crit = true; } // R8-7: menos críticos, más jugosos
     if (def.weakTo !== 'ninguno' && element === def.weakTo) final *= 1.5;
     if (e.ai === 'aturdido' && e.etype === 'guardian') final *= 1.5;
     final = Math.max(1, Math.round(final));
@@ -2009,6 +2241,22 @@ export class Game {
       p.gold += 60;
       this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción, +60 coronas', '#f0c84a');
     }
+  }
+
+  /**
+   * R8-4.4 · XP por Eco de la historia (la progresión no se estanca): cada uno
+   * de los 3 Ecos (Voz, Mareas, Cumbres) enseña +50% del xpNext del nivel
+   * actual (banda 40-60% del encargo). gainXp gestiona los level-ups en cadena
+   * (sus propios toasts/notify); aquí solo el float/toast del aprendizaje.
+   * Fuera del modo desafío (los Ecos de historia no existen en la arena).
+   */
+  private grantEchoXp(): void {
+    const p = this.player;
+    if (!p || this.challengeRun) return;
+    const xp = Math.round(this.xpNext(p.level) * 0.5);
+    this.gainXp(xp);
+    this.floatAt(p.x, p.y - 30, `El Eco te enseña: +${xp} XP`, '#ffe9a0', 8);
+    this.toast(`El Eco te enseña: +${xp} XP`, '#ffe9a0');
   }
 
   gainXp(xp: number) {
