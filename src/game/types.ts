@@ -71,7 +71,7 @@ export interface ExitDef {
   label?: string;
 }
 
-export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'fragment2' | 'altarEcho' | 'sign' | 'gate' | 'wreck' | 'faro' | 'lamp' | 'plaque' | 'remains' | 'altarMinor' | 'woodsign' | 'waypost' | 'verdad'; // R13: +fragment2 · R10-6: +lore (plaque/remains/altarMinor/woodsign/waypost) · R14: +verdad (la verdad que se devuelve a su lugar)
+export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'fragment2' | 'altarEcho' | 'sign' | 'gate' | 'wreck' | 'faro' | 'lamp' | 'plaque' | 'remains' | 'altarMinor' | 'woodsign' | 'waypost' | 'verdad' | 'campana' | 'hoguera'; // R13: +fragment2 · R10-6: +lore (plaque/remains/altarMinor/woodsign/waypost) · R14: +verdad · R15: +campana (la plaza suena) y hoguera (el descanso del caminante)
 
 export interface PropDef {
   id: string; kind: PropKind; x: number; y: number;

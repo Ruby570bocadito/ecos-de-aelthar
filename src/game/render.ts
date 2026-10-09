@@ -401,6 +401,7 @@ function drawProps(g: Game, sx: (n: number) => number, sy: (n: number) => number
       case 'sanctuary': case 'forge': case 'fragment': case 'fragment2':
       case 'altarEcho': case 'sign': case 'gate': case 'verdad':
       case 'plaque': case 'remains': case 'altarMinor': case 'woodsign': case 'waypost': // R10-6: lore
+      case 'campana': case 'hoguera': // R15: interactivos de plaza/camino
         // R13: 'fragment2' (la Cuna) se dibuja con el sprite del Fragmento original
         // R14: 'verdad' se dibuja con el sprite del altar (el estante/la placa
         // de cada distrito) — el acabado lo da la ronda visual.

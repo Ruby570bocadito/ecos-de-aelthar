@@ -1311,6 +1311,236 @@ function drawWaypost(): void {
   }
 }
 
+// ============================================================
+// R15 · CAMPANA DE LA PLAZA — poste de madera + travesaño + campana
+// de bronce que OSCILA al tañerla (E). La memoria del vaivén es
+// transitoria (no serializa): engine.ringBell llama a noteBellRing
+// con globalT y aquí se dibuja un seno amortiguado de 4 s.
+// ============================================================
+const _bellRing = new Map<string, number>();
+export function noteBellRing(id: string, t: number): void {
+  _bellRing.set(id, t);
+  if (_bellRing.size > 8) { // higiene: nunca más de 8 campanas recordadas
+    const k0 = _bellRing.keys().next().value;
+    if (k0 !== undefined) _bellRing.delete(k0);
+  }
+}
+function drawCampana(): void {
+  if (offscreen(60)) return;
+  PROP_SHADOW(_ctx!, _ox, _oy + 6 * ZOOM, 12, 3.5);
+  // poste central con veta + travesaño con zapatas
+  P(-1, -18, 2, 24, PAL.woodDark);
+  P(-1, -18, 1, 24, PAL.woodMid);
+  P(-8, -18, 16, 2, PAL.wood);
+  P(-8, -18, 16, 1, PAL.woodLight);
+  P(-8, -16, 1, 2, PAL.woodDark); P(7, -16, 1, 2, PAL.woodDark);
+  // tornapunta diagonal (la madera que aguanta el bronce)
+  P(1, -13, 1, 1, PAL.woodDark); P(2, -12, 1, 1, PAL.woodDark); P(3, -11, 1, 1, PAL.woodDark);
+  // vaivén amortiguado: e^(-1.6·dt) · sin(13·dt) · 3.4 px
+  const rt = _bellRing.get(_pid);
+  let swing = 0;
+  if (rt !== undefined) {
+    const dtb = _t - rt;
+    if (dtb < 4) swing = Math.exp(-1.6 * dtb) * Math.sin(dtb * 13) * 3.4;
+    else _bellRing.delete(_pid);
+  }
+  const bx = swing;
+  // campana de bronce: perfil de copa en 4 tramos + badajo
+  P(-4 + bx * 0.5, -16, 8, 2, '#8a6428');        // asa/hombro
+  P(-5 + bx * 0.8, -14, 10, 3, '#a87c30');
+  P(-6 + bx, -11, 12, 4, '#c89040');
+  P(-6 + bx, -11, 2, 4, '#e8bc60');              // cara iluminada
+  P(4 + bx, -11, 2, 4, '#8a6428');               // cara en sombra
+  P(-7 + bx, -7, 14, 2, '#b8842c');              // boca
+  P(-7 + bx, -7, 14, 1, '#e8bc60');
+  P(bx * 1.1, -7, 2, 2, '#6a4a20');              // badajo
+  P(-1, -16, 1, 3, PAL.ropeDark);                // cuerda del badajo
+  // tilinte animado del bronce (destello que corre por la boca)
+  PA(3 + bx, -9, 1, 1, '#fff3c0', 0.4 + Math.sin(_t * 6) * 0.35);
+  if (swing !== 0) {
+    // ondas de sonido pixel (arcos a ambos lados, alpha por amplitud)
+    const k = Math.min(1, Math.abs(swing) / 3.4);
+    const x2 = _ctx!;
+    x2.strokeStyle = `rgba(255,233,160,${0.35 * k})`;
+    x2.lineWidth = ZOOM;
+    x2.beginPath();
+    x2.ellipse(_ox + Math.round(-9 - k * 2) * ZOOM, _oy + Math.round(-9) * ZOOM, 3 * ZOOM, 4 * ZOOM, 0, -0.7, 0.7);
+    x2.stroke();
+    x2.beginPath();
+    x2.ellipse(_ox + Math.round(9 + k * 2) * ZOOM, _oy + Math.round(-9) * ZOOM, 3 * ZOOM, 4 * ZOOM, 0, Math.PI - 0.7, Math.PI + 0.7);
+    x2.stroke();
+  }
+  // hierba alta al pie (el pueblo no poda junto a la campana)
+  P(-9, 4, 1, 2, PAL.grassBlade); P(9, 5, 1, 2, PAL.grassBlade); P(7, 4, 1, 1, PAL.grassBlade);
+}
+
+// ============================================================
+// R15 · HOGUERA DE CAMINO — anillo de piedras + leños en tipí.
+// APAGADA: leños crudos, musgo, una brizna. ENCENDIDA (flag del
+// prop, persiste en save): brasas latientes + llama de 3 lenguas
+// animada + chispas + humo + halo cálido que de noche se ve de
+// lejos (el descanso del caminante).
+// ============================================================
+let _plit = false; // flag del prop actual (g.flags[_pid]) — la fija drawPropV2
+function drawHoguera(): void {
+  if (offscreen(50)) return;
+  PROP_SHADOW(_ctx!, _ox, _oy + 4 * ZOOM, 10, 3, 0.24);
+  // anillo de 8 piedras (hash: tamaño y tono por piedra)
+  for (let i = 0; i < 8; i++) {
+    const ang = (i / 8) * Math.PI * 2;
+    const rx = Math.round(Math.cos(ang) * 5.4);
+    const ry = Math.round(Math.sin(ang) * 3.2);
+    const sz = 2 + (h2(_tx * 7 + i, _ty * 5 + i * 3) > 0.6 ? 1 : 0);
+    P(rx - sz / 2, ry - sz / 2 + 2, sz, sz, h2(_tx + i, _ty + i * 7) > 0.5 ? PAL.stone : PAL.stoneDark);
+    if (h2(_tx * 3 + i, _ty * 9) > 0.72) P(rx, ry + 1, 1, 1, PAL.stoneHi); // brillo de luna
+  }
+  // interior (tierra pisada / brasas)
+  if (!_plit) {
+    P(-3, 0, 6, 3, '#4a4038');
+    P(-4, 2, 8, 2, '#3e3630');
+    // leños crudos en tipi (2 cruzados) con musgo
+    P(-4, 1, 8, 2, PAL.wood);
+    P(-4, 1, 8, 1, PAL.woodLight);
+    P(-2, -2, 2, 4, PAL.woodMid);
+    P(1, -3, 2, 5, PAL.woodDark);
+    P(-3, 2, 2, 1, PAL_PROP.moss);
+    P(2, 3, 1, 1, PAL.grassBlade);
+  } else {
+    // brasas latientes (latido por seno, determinista)
+    const pulse = 0.65 + Math.sin(_t * 3.1) * 0.25;
+    P(-3, 1, 6, 2, '#5a2a18');
+    PA(-2, 1, 4, 1, PAL_PROP.ember1, pulse);
+    PA(0, 2, 2, 1, PAL_PROP.emberCore, pulse * 0.9);
+    // leños ennegrecidos
+    P(-4, 0, 8, 2, '#2e2620');
+    P(-4, 0, 8, 1, '#3a302a');
+    P(-2, -3, 2, 4, '#26201c');
+    P(1, -4, 2, 5, '#322a24');
+    // LLAMA: 3 lenguas apiladas que vibran (senos desfasados)
+    const f1 = 7 + Math.sin(_t * 9) * 1.6;         // central
+    const f2 = 5 + Math.sin(_t * 11 + 1.3) * 1.3;  // izquierda
+    const f3 = 4 + Math.sin(_t * 8 + 2.6) * 1.2;   // derecha
+    PA(-2, -2 - f3 * 0.25, 3, f3 * 0.9, PAL_PROP.flame1, 0.85);
+    PA(0, -2 - f2 * 0.3, 3, f2, PAL_PROP.flame1, 0.9);
+    PA(-1, -3 - f1 * 0.5, 3, f1 * 0.8, PAL_PROP.flame2, 0.95);
+    PA(-1, -3 - f1 * 0.72, 2, f1 * 0.55, PAL_PROP.flame3, 0.9);
+    PA(-1, -2 - f1 * 0.3, 2, f1 * 0.4, '#ffffff', 0.35 + Math.sin(_t * 13) * 0.2);
+    // chispas ascendentes (2, hash por paso de tiempo)
+    for (let s = 0; s < 2; s++) {
+      const stp = Math.floor(_t * 3 + s * 2.7) % 5;
+      const sy2 = -6 - stp * 3 - s * 2;
+      const sx2 = (h2(Math.floor(_t * 3) + s, 41) - 0.5) * 6;
+      PA(sx2, sy2, 1, 1, PAL_PROP.spark, Math.max(0, 0.8 - stp * 0.16));
+    }
+    // humo tenue
+    const smo = (Math.floor(_t * 2) % 6);
+    PA((h2(Math.floor(_t * 2), 43) - 0.5) * 5, -12 - smo * 2.4, 2, 2, PAL_PROP.smoke, 0.16 - smo * 0.022);
+    // halo cálido: más generoso de noche (se ve desde lejos)
+    ELL(0, -4, 22 + _nf * 12, 16 + _nf * 9, '#ff9040', 0.10 + _nf * 0.16);
+    ELL(0, -4, 12 + _nf * 6, 9 + _nf * 5, '#ffb050', 0.12 + _nf * 0.14);
+  }
+}
+
+// ============================================================
+// R15 · LIBRERÍA DE LORE DETERMINISTA — texto para los props que
+// ahora son interactivos (placas/carteles/mojones/restos). Mismo
+// espíritu que los ecos menores: frases cortas, evocadoras, sin
+// exponer la trama. Elección por hash(id, kind) con sesgo local:
+// ~45% de las veces sale una línea ESCRITA PARA ESE MAPA.
+// ============================================================
+
+/** hash corto de un id de prop (estable entre sesiones) */
+function idHash(id: string): number {
+  let s = 0;
+  for (let i = 0; i < id.length; i++) s = (s * 31 + id.charCodeAt(i)) | 0;
+  return Math.abs(s);
+}
+
+const LORE_LINES: Record<'plaque' | 'woodsign' | 'waypost' | 'remains', string[]> = {
+  plaque: [
+    '«AQUÍ ESTUVO —» El resto de la placa es una cicatriz de cincel. Alguien quiso que el nombre se perdiera antes que la piedra.',
+    'Una placa de la vieja administración del Canto: los tributos se pagaban en notas sostenidas, nunca en coronas.',
+    '«QUE TU VOZ NO CALLE.» Debajo, otra mano añadió: «ni aunque te la callen».',
+    'La piedra lee mejor de lo que escribe: bajo la inscripción, surcos finos donde alguien pasó el dedo mil veces.',
+    'Placa conmemorativa del último solsticio cantado. La fecha quedó a medias, como una nota que no se atrevió a resolver.',
+    'Un escudo de la Orden de Vesh, raspado con paciencia de hormiga. La letra pequeña del decreto aún se distingue: «por el bien del silencio».',
+    '«MEMORIA DE LAS AGUAS» — nombra un río que ya no recuerda su propio cauce.',
+    'La placa está escrita en dos idiomas: el de antes del Canto y el de después. Solo coinciden en una palabra: «vuelve».',
+  ],
+  woodsign: [
+    '«ALDEA — 1 legua.» La flecha fue corregida tres veces. La niebla no respeta los atajos.',
+    '«NO CANTAR AL ANOCHECER.» Alguien lo tachó y escribió debajo: «canta bajito, entonces».',
+    'El cartel ofrece setas, caricuras y protection contra la niebla. Ninguna de las tres ofertas sobrevivió al invierno.',
+    '«SE BUSCAN OÍDOS FINOS — pregunta por la Guarda.» La madera está mojada, pero la tinta no se rinde.',
+    'Un mapa raspado a mano: el valle, el bosque, la costa… y un trazo más pequeño que dice «tú estás aquí, todavía».',
+    '«SI OYES TU NOMBRE EN LA NIEBLA, NO ES TU NOMBRE.» Clavado con dos clavos torcidos y mucha fe.',
+    'La lista de precios de la taberna de Merrow, medio borrada. La única columna intacta es la de «canciones — gratis».',
+  ],
+  waypost: [
+    'El mojón señala tres caminos y calla el cuarto, que no está en ningún mapa y va a todas partes.',
+    'Marcas de conteo en la piedra: alguien midió los días aquí, y un día se llevó la cuenta consigo.',
+    '«NORTE: LA CIUDADELA. SUR: EL MAR. ESTE: LO QUE FUE. OESTE: LO QUE NO HA SIDO.» El grabador tenía sentido del humor o mucho miedo.',
+    'El musgo crece más grueso en la cara norte: el mojón lleva tanto tiempo quieto que hasta la piedra se ha hecho raíz.',
+    'Ampollas de cera de tres velas distintas: tres viajeros pidieron aquí su suerte, y la piedra guardó las tres.',
+    '«QUE EL CANTO TE ACOMPAÑE» — la bendición de los caminantes viejos, antes de que bendecir costara impuestos.',
+  ],
+  remains: [
+    'Armadura vencida, bien apilada: alguien la dejó aquí con orden, como quien se cambia de ropa y no piensa volver por ella.',
+    'Los restos de un estandarte de la Orden. El emblema de Vesh quedó hacia abajo: el viento tiene opiniones.',
+    'Un carro roto que aún huele a clavel seco. Las mercancías se dispersaron; ninguna era de las que se pelean.',
+    'Huesos pequeños, ordenados en círculo. Los niños de antes jugaban a «el Coro» aquí. Nadie recuerda las reglas, pero sí el silencio al final.',
+    'La rueda de un carro y media silla: lo demás siguió de viaje sin ellos. La niebla no devuelve fletes.',
+    'Un yelmo con una mella de hacha limpia y antigua. Dentro, anidado, un nido de hace años: las aves también vencen.',
+    'Restos de una fogata de campaña y una cuchara de estaño. Lo último que alguien tuvo antes de la niebla fue sopa.',
+  ],
+};
+
+// sabor por mapa (~2-3 líneas escritas para cada uno; salen ~45% de
+// las veces — el resto, las genéricas, para que no se quemen pronto)
+const LORE_BY_MAP: Record<string, Partial<Record<'plaque' | 'woodsign' | 'waypost' | 'remains', string[]>>> = {
+  lunaris: {
+    plaque: ['«AQUÍ DESPERTÓ EL PORTADOR.» La piedra es nueva; la mano que la talló, temblorosa. ¿Fue tú?'],
+    woodsign: ['«AL VALLE LE FALTA UNA CASA Y SOBRA UN SILENCIO.» Debajo, en carbón: «y una nana que nadie termina».', '«EL POZO DA NOMBRES, NO AGUA.» Alguien lo probó y dejó la nota como advertencia y como agradecimiento.'],
+    waypost: ['«LA ALDEA, AL ESTE.» La flecha está rehecha con ramitas atadas: alguien quiso que ni la niebla la borre.'],
+    remains: ['Un roble caído, podado por la Niebla hasta la médula. Debajo crecen flores que no deberían saber de estaciones.'],
+  },
+  bosque: {
+    plaque: ['Placa del SANTUARIO CAÍDO: «aquí se ensayó el Canto por última vez con público». El público era de hojas.'],
+    woodsign: ['«EL SANTUARIO QUIEBRA, EL BOSQUE NO.» Debajo: «deja una nota si bajas; el bosque las colecciona».'],
+    waypost: ['Mojón de los guardabosques: tres muescas nuevas y una vieja. La vieja es la que señala a casa.'],
+    remains: ['Restos de un arco de censo del Círculo Verde. La cuerda es raíz ahora, pero aún tensa.'],
+  },
+  costa: {
+    plaque: ['Placa del faro: «POR CADA VUELTA, UNA NOTA. POR CADA NOTA, UN BARCO EN CASA». El engranaje sigue pidiendo aceite y disculpas.'],
+    woodsign: ['«LA MADRE DEL MAR NO DA LO QUE PIDE: DA LO QUE CANTAS.» Sobre esa advertencia alguien garabateó: «canta bonito».'],
+    waypost: ['Mojón de pescadores con redes colgadas a secar. Cada red tiene un nombre anudado. Ninguno contesta.'],
+    remains: ['Media barca varada, bautizada «CONTRICIÓN». La otra mitad sigue en algún lugar deseando llegar.'],
+  },
+  cumbres: {
+    plaque: ['Placa del mirador: «DESDE AQUÍ SE OYE EL SILENCIO DE ARRIBA». Los montañeros antiguos lo llamaban dios; los nuevos, costumbre.'],
+    woodsign: ['«LA CUEVA DE LAS TRES VELAS: ENTRA LO QUE SOBRA Y SALE LO QUE FALTA.» La madera está helada, la tinta no.'],
+    waypost: ['El mojón tiene la cara norte pulida por la ventisca: los viajeros se refugiaban detrás y la piedra guarda la forma de sus mochilas.'],
+    remains: ['Una trineo vacío y una cuerda perfectamente enrollada. En las cumbres, ordenarse así es una despedida.'],
+  },
+  aldea: {
+    plaque: ['Placa de la plaza: «MERROW — NOMBRE GUARDADO». Antes decía otro nombre; la aldea prefirió empezar de cero.'],
+    woodsign: ['«TABERNA DE MERROW: LA PRIMERA RONDA LA PAGA EL QUE VUELVE.» Nunca se ha pagado dos veces el mismo día.'],
+    waypost: ['Mojón del huerto: «AL CEMENTERIO POR EL SUR, A LOS RECUERDOS POR CUALQUIER LADO».'],
+    remains: ['Un espantapájaros retirado, con su camisa doblada encima. El huerto lo echa de menos: los cuervos también, pero por otras razones.'],
+  },
+};
+
+/** Texto de lore determinista para un prop interactivo (R15).
+ *  Estable entre sesiones: hash(id, kind) — nunca Math.random. */
+export function loreTextFor(kind: 'plaque' | 'woodsign' | 'waypost' | 'remains', mapId: string, id: string): string {
+  const ih = idHash(id);
+  const local = LORE_BY_MAP[mapId]?.[kind];
+  const useLocal = local && local.length > 0 && hash2(ih, 3) < 0.9; // sesgo local fuerte
+  const pool = useLocal ? local! : LORE_LINES[kind];
+  const i = Math.floor(hash2(ih, kind.length * 7 + 1) * pool.length);
+  return pool[i] ?? pool[0];
+}
+
 // ---------------- Entrada principal ----------------
 
 /**
@@ -1336,6 +1566,7 @@ export function drawPropV2(
   _nf = nightFactor(g.dayT); // v3: factor noche para sombras largas (gate)
   _pid = id ?? '';
   _mid = g.mapId; // v4: variantes por mapa (perchas de pescado en costa)
+  _plit = g.flags[_pid] === true; // R15: hoguera encendida (flag persistente)
   ctx.save();
   try {
     switch (kind) {
@@ -1345,12 +1576,17 @@ export function drawPropV2(
       case 'altarEcho': drawAltarEcho(g); break;
       case 'sign': drawSign(selected); break;
       case 'gate': drawGate(); break;
-      // —— v5 (R10-6): lore ambiental — no interactúan, no bloquean ——
+      // —— v5 (R10-6): lore ambiental — no bloquean ——
+      // —— R15: interactúan (leer/orar/tañer/encender) vía nearestInteract ——
       case 'plaque': drawPlaque(); break;
       case 'remains': drawRemains(); break;
       case 'altarMinor': drawAltarMinor(); break;
       case 'woodsign': drawWoodsign(); break;
       case 'waypost': drawWaypost(); break;
+      // —— R15: interactivos de plaza/camino (campana oscilante + hoguera
+      //    con llama/chispas/halo nocturno) ——
+      case 'campana': drawCampana(); break;
+      case 'hoguera': drawHoguera(); break;
       default: break; // kinds desconocidos: no-op seguro
     }
     // v3: contorno de selección para todos los kinds (tras el prop,
@@ -1391,7 +1627,7 @@ export function drawPropV2(
 //   cualquier mapa menor de 16 tiles: los recintos cerrados no llevan
 //   lore de intemperie).
 
-export type LorePropKind = 'plaque' | 'remains' | 'altarMinor' | 'woodsign' | 'waypost';
+export type LorePropKind = 'plaque' | 'remains' | 'altarMinor' | 'woodsign' | 'waypost' | 'campana' | 'hoguera'; // R15: +campana (la plaza suena) +hoguera (el descanso del caminante)
 
 export interface LorePropDef {
   id: string;
@@ -1587,6 +1823,72 @@ export function lorePropsForMap(m: LoreMapShape): LorePropDef[] {
     for (let i = 0; i < kept.length; i++) kept[i].id = `lore_${m.id}_${i}`; // ids únicos
     out.length = 0;
     for (const d of kept) out.push(d);
+  }
+
+  // —— R15 · interactivos de plaza y camino ——————————————————————
+  // La CAMPANA (aldea/lunaris: los pueblos la tañen) y la HOGUERA de
+  // camino (todo exterior grande: el descanso del caminante). Se
+  // colocan en tiles libres lejos de todo prop ya puesto, con sesgo
+  // hacia camino/plaza. Interactuables vía engine.nearestInteract.
+  const wantBell = m.id === 'aldea' || m.id === 'lunaris';
+  const wantFire = m.w >= 20 && m.h >= 20 && !m.id.startsWith('interior');
+  if (wantBell || wantFire) {
+    const farFrom = (x: number, y: number, list: number[], r: number): boolean => {
+      for (const k2 of list) {
+        const dx2 = (k2 % m.w) - x;
+        const dy2 = Math.floor(k2 / m.w) - y;
+        if (dx2 * dx2 + dy2 * dy2 <= r * r) return false;
+      }
+      return true;
+    };
+    const cands: { x: number; y: number; road: boolean }[] = [];
+    for (let y = 3; y < m.h - 3; y++) {
+      for (let x = 3; x < m.w - 3; x++) {
+        const key = y * m.w + x;
+        if (busy.has(key) || !farFrom(x, y, placedKeys, 2)) continue;
+        const chP = rows[y][x];
+        const dq = hasPast ? diff.get(key) : undefined;
+        const chQ = dq !== undefined ? dq : chP;
+        if (!loreOkTile(chP) && !loreOkTile(chQ)) continue;
+        const road = rows[y][x - 1] === '=' || rows[y][x + 1] === '=' ||
+          (rows[y - 1] !== undefined && rows[y - 1][x] === '=') || (rows[y + 1] !== undefined && rows[y + 1][x] === '=');
+        cands.push({ x, y, road });
+      }
+    }
+    const pickBest = (): { x: number; y: number; road: boolean } | null => {
+      if (cands.length === 0) return null;
+      const roadC = cands.filter((c) => c.road);
+      const pool = roadC.length > 0 ? roadC : cands;
+      let best = pool[0];
+      let bestH = -1;
+      for (const c of pool) {
+        const hh = h2(c.x * 17 + seed, c.y * 29 + seed * 3 + 2);
+        if (hh > bestH) { bestH = hh; best = c; }
+      }
+      return best;
+    };
+    if (wantBell) {
+      const b = pickBest();
+      if (b) {
+        out.push({ id: `campana_${m.id}`, kind: 'campana', x: b.x, y: b.y });
+        busy.add(b.y * m.w + b.x);
+        placedKeys.push(b.y * m.w + b.x);
+        const bi = cands.indexOf(b);
+        if (bi >= 0) cands.splice(bi, 1);
+      }
+    }
+    if (wantFire) {
+      const pool = cands.filter((c) => farFrom(c.x, c.y, placedKeys, 2));
+      if (pool.length > 0) {
+        let best = pool[0];
+        let bestH = -1;
+        for (const c of pool) {
+          const hh = h2(c.x * 23 + seed * 5, c.y * 13 + seed + 7);
+          if (hh > bestH) { bestH = hh; best = c; }
+        }
+        out.push({ id: `hoguera_${m.id}`, kind: 'hoguera', x: best.x, y: best.y });
+      }
+    }
   }
   return out;
 }

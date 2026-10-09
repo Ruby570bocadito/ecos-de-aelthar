@@ -49,7 +49,8 @@ import {
   ARMORS, ARMOR_HEAVY_SPEED, armorActive, armorActiveId, armorDefFor, armorReduction, armorTick,
 } from './armor';
 import { initPerf, perfFrame, drawPerfOverlay, togglePerfOverlay, perfQuality } from './perf'; // R5-O1: supervisión · R6-V10: consume perfQuality
-import { lorePropsForMap } from './world/props'; // R10-6: lore en el mundo
+import { lorePropsForMap, loreTextFor, noteBellRing } from './world/props'; // R10-6: lore en el mundo · R15: texto de lore + campana
+import { resetCinematic } from './cinematic'; // R15: prólogo animado saltable
 
 // R10-6 · siembra de props de lore (placas/restos/altares/carteles/mojones):
 // determinista, nunca sobre sólidos. FUNCIÓN con guard — NO a nivel de módulo:
@@ -464,7 +465,17 @@ export class Game {
     this.dayT = 0.15;
     this.setState('intro');
     this.introIdx = 0;
+    resetCinematic(); // R15: la cinemática arranca desde su primer frame
     audio.playTrack('title');
+  }
+
+  /** R15 · avanza la cinemática de intro una escena (E/espacio/clic/
+   *  auto-avance). El salto total vive en ESC (onKeyDown) y en el botón
+   *  «SALTAR ▸» dibujado por la propia cinemática. */
+  advanceIntro() {
+    this.introIdx++;
+    audio.sfx('blip');
+    if (this.introIdx >= 3) this.startPlay();
   }
 
   startPlay() {
@@ -1256,6 +1267,18 @@ export class Game {
       else if (pr.kind === 'altarEcho') consider(px, py, 'altar', 'Altar del Eco', () => this.tryTakeEco(), 30);
       else if (pr.kind === 'sign') consider(px, py, 'sign', 'Leer cartel', () => this.readSign(pr.label ?? ''), 28);
       else if (pr.kind === 'lamp' && !this.flags[pr.id]) consider(px, py, 'lamp', 'Encender el Farol del Recuerdo', () => this.lightLamp(pr.id), 28);
+      // —— R15 «El Prólogo Viviente»: los 118 props de lore de R10-6 eran
+      //    decorativos; ahora se leen/examinan/oran. Texto determinista por
+      //    (kind, mapa, id) desde world/props.loreTextFor ——
+      else if (pr.kind === 'plaque') consider(px, py, 'lore', 'Leer la placa', () => this.readSign(loreTextFor('plaque', this.mapId, pr.id)), 26);
+      else if (pr.kind === 'woodsign') consider(px, py, 'lore', 'Leer el cartel de madera', () => this.readSign(loreTextFor('woodsign', this.mapId, pr.id)), 26);
+      else if (pr.kind === 'waypost') consider(px, py, 'lore', 'Consultar el mojón', () => this.readSign(loreTextFor('waypost', this.mapId, pr.id)), 26);
+      else if (pr.kind === 'remains') consider(px, py, 'lore', 'Examinar los restos', () => this.readSign(loreTextFor('remains', this.mapId, pr.id)), 24);
+      else if (pr.kind === 'altarMinor') consider(px, py, 'altarmin', 'Orar al altar menor', () => this.prayAltarMinor(pr.id, px, py), 26);
+      // —— R15: nuevos objetos interactuables de aldea/camino ——
+      else if (pr.kind === 'campana') consider(px, py, 'campana', 'Tañer la campana', () => this.ringBell(pr.id, px, py), 28);
+      else if (pr.kind === 'hoguera' && !this.flags[pr.id]) consider(px, py, 'hoguera', 'Encender la hoguera', () => this.lightFire(pr.id, px, py), 26);
+      else if (pr.kind === 'hoguera') consider(px, py, 'hoguera', 'Calentarte junto al fuego', () => this.warmFire(px, py), 26);
     }
     for (const ec of this.map.echoes) {
       if (this.takenEchoes.has(ec.id)) continue;
@@ -1313,6 +1336,55 @@ export class Game {
     } else {
       this.toast('El farol se enciende: un recuerdo de Merrow regresa', '#ffe9a0');
     }
+  }
+
+  // —— R15 «El Prólogo Viviente» · interacciones nuevas ————————
+
+  /** Orar a un altar menor (props de lore R10-6): UNA vez por altar
+   *  (flag persistente en save), +10 resolución y una calma antigua. */
+  prayAltarMinor(id: string, px: number, py: number) {
+    if (this.flags['oracion_' + id]) {
+      this.toast('El altar ya escuchó tu oración. Seguiría escuchando, pero la piedra es pudorosa.', '#9aa0b8');
+      return;
+    }
+    this.flags['oracion_' + id] = true;
+    if (this.player) {
+      this.player.res = Math.min(this.player.maxRes, this.player.res + 10);
+      this.floatAt(px, py - 16, '+10 resolución', '#ffe9a0', 5);
+    }
+    audio.sfx('holy');
+    this.burst(px, py - 8, '#ffe9a0', 12, 50);
+    this.toast('Oras al altar menor: una calma antigua te acompaña (+10 resolución).', '#ffe9a0');
+  }
+
+  /** Tañer la campana de la plaza (R15): repite (cosmético) y deja la
+   *  campana oscilando en el render. La memoria del vaivén vive en
+   *  world/props (transitoria, no serializa). */
+  ringBell(id: string, px: number, py: number) {
+    noteBellRing(id, this.globalT);
+    audio.sfx('song');
+    this.burst(px, py - 20, '#ffe9a0', 10, 40);
+    this.toast('La campana tañe: el valle entero oye que sigues aquí.', '#ffe9a0');
+  }
+
+  /** Encender una hoguera de camino (R15): UNA vez (flag persistente).
+   *  Arde de ahí en adelante — y de noche se la ve desde lejos. */
+  lightFire(id: string, px: number, py: number) {
+    this.flags[id] = true;
+    audio.sfx('fire');
+    this.burst(px, py - 4, '#ffb050', 16, 60);
+    this.toast('La hoguera cobija: descansarás mejor cerca de su luz.', '#ffb050');
+  }
+
+  /** Calentarse junto a una hoguera ya encendida (R15): +8 vida,
+   *  repetible — el fuego no guarda rencor ni contabilidad. */
+  warmFire(px: number, py: number) {
+    if (this.player) {
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + 8);
+      this.floatAt(px, py - 16, '+8', '#ffb050');
+    }
+    audio.sfx('fire');
+    this.burst(px, py - 6, '#ffb050', 8, 40);
   }
 
   tryTakeEco() {
@@ -1901,11 +1973,10 @@ export class Game {
     if (this.state === 'title') {
       if (k === 'enter' || k === 'e' || k === ' ') { /* botones por click; enter = nueva partida */ }
     } else if (this.state === 'intro') {
-      if (k === 'e' || k === ' ' || k === 'enter') {
-        this.introIdx++;
-        audio.sfx('blip');
-        if (this.introIdx >= 3) this.startPlay();
-      }
+      // R15: ESC salta TODA la cinemática (petición explícita: «que se pueda
+      // saltar»); E/espacio/enter avanzan escena a escena vía advanceIntro.
+      if (k === 'escape') { this.introIdx = 99; this.startPlay(); audio.sfx('blip'); }
+      else if (k === 'e' || k === ' ' || k === 'enter') this.advanceIntro();
     } else if (this.state === 'dialogue') {
       if (k === 'e' || k === ' ' || k === 'enter') this.advanceDialogue();
       else if (k === 'arrowup' || k === 'w') { if (this.dlgNode?.options) { this.dlgSel = (this.dlgSel + this.dlgNode.options.length - 1) % this.dlgNode.options.length; audio.sfx('blip'); } }
@@ -1992,7 +2063,7 @@ export class Game {
     if (e.button !== 0) return;
     this.mouse.down = true;
     if (this.state === 'dialogue') this.advanceDialogue();
-    else if (this.state === 'intro') { this.introIdx++; if (this.introIdx >= 3) this.startPlay(); else audio.sfx('blip'); }
+    else if (this.state === 'intro') this.advanceIntro(); // R15: el botón SALTAR vive en uiHit (arriba) y ya cortó con return
     else if (this.state === 'end') this.setState('title');
     else if (this.state === 'play') this.startAttack();
   };

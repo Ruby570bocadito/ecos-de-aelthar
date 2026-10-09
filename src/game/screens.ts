@@ -22,6 +22,7 @@ import { drawPortrait } from './sprites';
 import { audio } from './audio';
 import { COL, text, textShadow, panel, bar, button, wrapText, addHit, refreshCursor } from './ui';
 import { drawSkyBackdrop } from './world/sky';
+import { drawCinematic } from './cinematic'; // R15: prólogo animado saltable
 import { openChallengeMenu, drawChallengeTitleUi, drawChallengeOverlay } from './challenge'; // 12-a (modo desafío)
 import { drawTitlePanels, openStatsPanel, openLogrosPanel } from './achievements'; // 16-c: Estadísticas y Logros
 
@@ -71,7 +72,7 @@ const KEY_ITEM_FLAGS: [string, string][] = [
 const NUM_ES = ['cero', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete'];
 
 // R8-4 — pie del título: una sola línea discreta con la versión
-const TITLE_FOOTER = 'v0.5.9 · Ecos de Aelthar';
+const TITLE_FOOTER = 'v0.6.1 · Ecos de Aelthar'; // R15: prólogo viviente
 
 export function drawScreens(g: Game) {
   installLayerGuard(g); // R8-4: capas de pausa — Esc cierra SOLO la capa activa
@@ -314,38 +315,16 @@ function drawControls(g: Game) {
   if (g.keys.has('escape')) g.setState('title');
 }
 
-// ---------------- Intro ----------------
+// ---------------- Intro (R15: cinemática animada) ----------------
+// Las 3 diapositivas estáticas (INTRO_SLIDES se conservan arriba como
+// fuente canónica de los rótulos) dejaron paso a un PRÓLOGO ANIMADO:
+// personajes que interactúan sobre la historia del comienzo, letterbox,
+// grano, subtítulos y SALTO por ESC / botón / E. Todo vive en
+// cinematic.ts; aquí solo delegamos (el estado y el avance siguen en
+// engine.advanceIntro — mismo contrato, nueva piel).
 
 function drawIntro(g: Game) {
-  const ctx = g.ctx;
-  ctx.fillStyle = '#06070f';
-  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  // motas de polvo doradas flotando (atmósfera de memoria)
-  for (let i = 0; i < 24; i++) {
-    const x = hashT(i, 11) * VIEW_W;
-    const y = (hashT(i, 13) * VIEW_H + g.globalT * (4 + hashT(i, 5) * 5)) % VIEW_H;
-    ctx.globalAlpha = 0.12 + Math.abs(Math.sin(g.globalT + i)) * 0.2;
-    ctx.fillStyle = '#ffe9a0';
-    ctx.fillRect(x, y, 2, 2);
-  }
-  ctx.globalAlpha = 1;
-  const slide = INTRO_SLIDES[Math.min(g.introIdx, INTRO_SLIDES.length - 1)];
-  const a = 0.75 + Math.sin(g.globalT * 2) * 0.25;
-  ctx.globalAlpha = a;
-  textShadow(g, slide.title, VIEW_W / 2, 150, 18, COL.goldSoft, '#000', 'center', true);
-  ctx.fillStyle = COL.gold;
-  ctx.fillRect(VIEW_W / 2 - 60, 190, 120, 2);
-  const lines = wrapText(slide.lines, 52);
-  lines.forEach((l, i) => text(g, l, VIEW_W / 2, 226 + i * 26, 20, COL.text, 'center'));
-  ctx.globalAlpha = 1;
-  // puntos de progreso
-  for (let i = 0; i < INTRO_SLIDES.length; i++) {
-    ctx.fillStyle = i === g.introIdx ? COL.gold : 'rgba(255,255,255,0.2)';
-    ctx.fillRect(VIEW_W / 2 - 24 + i * 18, 400, 10, 4);
-  }
-  if (Math.sin(g.globalT * 4) > -0.2) {
-    text(g, 'E ▸', VIEW_W - 80, VIEW_H - 50, 16, COL.dim, 'center');
-  }
+  drawCinematic(g);
 }
 
 // ---------------- Pausa (R8-4 · hub + capas) ----------------

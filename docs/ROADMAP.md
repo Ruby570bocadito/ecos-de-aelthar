@@ -145,3 +145,22 @@ commit → merge a main → push. QA de solo lectura en cada ronda.
 > (Naia), Consejo con la póstuma completa, muralla que canta, hook
 > acto5R14Hook + watcher idempotente; smokes acto2/4/5 al contrato R14
 > (18 misiones, 13 mapas). tsc 0 + 13/13 smokes verdes. Gancho R15.
+> **Ronda visual R15-v «El Prólogo Viviente»** (paralela a la biblia — la R15
+> narrativa «El Silencio de Arriba» queda pendiente de su gancho): la intro de
+> 3 diapositivas estáticas se sustituye por una CINEMÁTICA ANIMADA SALTABLE
+> (src/game/cinematic.ts): 3 escenas pixel-art procedurales con personajes que
+> interactúan sobre la historia del comienzo — Aelthar tejiendo el mundo con
+> hilos de nota (los 5 pueblos se encienden), la Orden de Vesh trepando al
+> golpe y el Canto rompiéndose en 7 Ecos con la Niebla devorando el valle, y
+> el Portador despertando en Lunaris (tumbado→arrodillado→en pie) con Brisa
+> orbitando — con letterbox, grano de película, subtítulos, stingers de audio
+> y salto total por ESC/botón «SALTAR ▸»/E (auto-avance incluido). Además:
+> los 118 props de lore de R10-6 dejan de ser decorativos (placas/carteles/
+> mojones/restos se leen; los altares menores se oran: +10 resolución, 1 vez)
+> con librería de lore determinista por mapa (world/props.loreTextFor), y
+> llegan 2 objetos interactuables nuevos sembrados por mapa: la CAMPANA de la
+> plaza (aldea/lunaris — oscila al tañerla) y la HOGUERA de camino (exteriores
+> ≥20×20 — se enciende 1 vez, arde con llama/chispas/halo nocturno y cura +8
+> al calentarse). Smoke nuevo: scripts/smoke_r15_prologo.mts (23/23 verde);
+> tsc 0 errores + build verde + E2E verificado en navegador (title→creación→
+> cinemática→skip ESC→juego→ataque). package-lock: npm install regenerado.
