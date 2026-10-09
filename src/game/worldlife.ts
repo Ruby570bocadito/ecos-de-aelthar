@@ -72,7 +72,7 @@
 
 import type { Game } from './engine';
 import { VIEW_W, VIEW_H, ZOOM } from './engine';
-import type { Npc, ToneKind, Enemy } from './types';
+import type { Npc, ToneKind, Enemy, MapId } from './types';
 import { TILE, SOLID_CHARS } from './sprites';
 import { tileAt } from './maps';
 import { isNight } from './update'; // solo lectura (propiedad del agente 3-b)
@@ -146,6 +146,19 @@ interface WLState {
   r10Forced: R10Kind | null;  // clase fijada por dev/smoke
   find: { active: boolean; map: string; x: number; y: number; t: number; tw: number }; // hallazgo
   pack: { t: number; refs: (Enemy | null)[] }; // manada viva (máx 5 refs)
+  // R11-4c: rutinas de NPCs (caminar/trabajar/dormir) — estado por Game
+  r11: { armedMap: string; npcCount: number; mem: Map<string, NpcMem> };
+}
+
+// R11-4c: memoria de rutina por NPC (se crea UNA vez al armar, cero allocs/frame)
+interface NpcMem {
+  wx: number; wy: number;   // ancla de trabajo (px, con nudge a tile transitable)
+  cx: number; cy: number;   // ancla de casa (px)
+  hx: number; hy: number;   // spawn original (px) — referencia
+  phase: number;            // fase determinista por nid (hash)
+  mode: number;             // 0 camino · 1 trabajo · 2 duerme · 3 guardia
+  wait: number;             // pausa anti-atasco (s)
+  flip: boolean;            // alterna prioridad de eje al chocar
 }
 
 const STATES = new WeakMap<Game, WLState>();
@@ -161,6 +174,7 @@ function stateFor(g: Game): WLState {
       r10Next: 70 + hash2(911, 337) * 50, r10Count: 0, r10Forced: null, // primer evento: 70-120 s (hash)
       find: { active: false, map: '', x: 0, y: 0, t: 0, tw: 0 },
       pack: { t: 0, refs: [null, null, null, null, null] },
+      r11: { armedMap: '', npcCount: -1, mem: new Map() },
     };
     STATES.set(g, s);
   }
@@ -941,6 +955,7 @@ export function worldTick(g: Game, dt: number): void {
   tickRumors(g, st);
   tickEvents(g, dt, st);
   tickR10(g, dt, st); // R10-4: manadas, hallazgos, fenómenos y viajeros con lore
+  tickR11(g, dt, st); // R11-4c: rutinas caminar/trabajar/duerme de NPCs
 }
 
 // ---------------- Micro-interacciones (worldInteract) ----------------
@@ -1259,6 +1274,24 @@ export function drawWorldLife(g: Game, sx?: (n: number) => number, sy?: (n: numb
       }
     }
   }
+
+  // R11-4c: NPCs dormidos — zZ pulsante (la pose agachada real es hook de render:
+  // enganche documentado en la cabecera R11-4c). Determinista, cero allocs.
+  if (MOODS.size > 0) {
+    const minDay = g.dayT * 1440;
+    const prevFont = ctx.font;
+    ctx.font = 'bold 7px monospace';
+    for (let zi = 0; zi < g.npcs.length; zi++) {
+      const zn = g.npcs[zi];
+      if (MOODS.get(zn.nid) !== 2) continue;
+      ctx.globalAlpha = 0.45 + 0.3 * Math.sin(minDay * 0.35 + zn.x * 0.7);
+      ctx.fillStyle = '#c8d8f0';
+      ctx.fillText('z', ox(zn.x + 5), oy(zn.y - 11));
+      ctx.fillText('Z', ox(zn.x + 9), oy(zn.y - 16));
+      ctx.globalAlpha = 1;
+    }
+    ctx.font = prevFont;
+  }
 }
 
 // ---------------- Utilidades dev/smoke ----------------
@@ -1319,5 +1352,244 @@ export function __wlResetAll(): void {
   for (let i = 0; i < POOL_CAP; i++) POOL[i].active = false;
   kindCount[0] = 0; kindCount[1] = 0; kindCount[2] = 0; kindCount[3] = 0;
   liveCount = 0;
+  MOODS.clear(); // R11-4c: moods de rutina fuera
   // WeakMap no se itera: cada smoke usa su propia instancia de Game
+}
+// ============================================================
+// R11-4c · RUTINAS DE NPCs (EPIC 7.3: caminan / trabajan / duermen)
+// ------------------------------------------------------------
+// Hora del mundo: minuteOfDay = g.dayT * 1440 (convención de
+// world/lighting.ts; g.dayT avanza en update.ts). Ventanas:
+//   06:00-12:00 'camino'  — caminan a su puesto (lentos, 26 px/s).
+//   12:00-19:00 'trabajo' — micro-oscilación ±1 px + partícula ocasional
+//                           determinista (frontera de tramo de reloj).
+//   19:00-06:00 'duerme'  — vuelven a su ancla de noche y duermen (zZ
+//                           en drawWorldLife; la pose agachada real es un
+//                           hook de render — enganche documentado).
+// EXPANSIÓN (costa/aldea/cumbres): de noche NO vagan (peligro) —
+// guardia en el puesto ('guardia'). En combate: todos 'guardia'.
+// Transiciones SIEMPRE caminando: pasos por eje con sondas
+// tileSolidAt, pausa anti-atasco y alternancia de eje. Cero
+// teletransporte. Determinismo: fase por hash del nid (sin
+// Math.random), cero allocations por frame (memoria creada una vez
+// en ensureR11). Los NPCs NO se serializan (spawnNpcs los recrea en
+// cada loadMap): cero migración de saves.
+// ============================================================
+
+/** Def de NPC nuevo R11 (ids EXACTOS: R11-5 escribió sus diálogos). */
+export interface NpcR11Def {
+  id: string;
+  name: string;
+  map: MapId;
+  x: number; y: number;                    // spawn (tile)
+  sprite: string;                          // sprite humanoid existente
+  anclaTrabajo: { x: number; y: number };  // tiles
+  anclaCasa: { x: number; y: number };     // tiles
+  paleta: string;                          // tinte/metadata de rutina
+}
+
+/**
+ * Los 5 NPCs nuevos (NO renombrar: talkTo(n.nid) nativo y las claves
+ * vela_intro/tejado_intro/ceniza_intro/niebla_intro/toldero_intro de
+ * dialogues_r11 dependen de estos nids exactos).
+ */
+export const NPCS_R11: readonly NpcR11Def[] = [
+  { id: 'vela', name: 'Vela, la Sabia de la Vela', map: 'costa',
+    x: 9, y: 17, sprite: 'maelis',
+    anclaTrabajo: { x: 9, y: 17 }, anclaCasa: { x: 7, y: 15 },
+    paleta: '#e8d8a8' }, // cerca del faro (mara la farera @ 7,19)
+  { id: 'tejado', name: 'Tejado, el Carpintero', map: 'aldea',
+    x: 25, y: 19, sprite: 'toln',
+    anclaTrabajo: { x: 25, y: 19 }, anclaCasa: { x: 27, y: 17 },
+    paleta: '#c8a878' }, // plaza de Merrow (mera @ 22,16)
+  { id: 'ceniza', name: 'Ceniza, Monje de Ceniza', map: 'bosque',
+    x: 39, y: 27, sprite: 'doran',
+    anclaTrabajo: { x: 39, y: 27 }, anclaCasa: { x: 37, y: 28 },
+    paleta: '#a8a0b0' }, // santuario de la Ruina Antigua (38,26)
+  { id: 'niebla', name: 'Niebla, la Pescadora', map: 'costa',
+    x: 24, y: 34, sprite: 'nimue',
+    anclaTrabajo: { x: 24, y: 34 }, anclaCasa: { x: 22, y: 32 },
+    paleta: '#98b8c8' }, // orilla de arena sobre la línea de marea
+  { id: 'toldero', name: 'Toldero, el Mercador', map: 'cumbres',
+    x: 55, y: 31, sprite: 'corvin',
+    anclaTrabajo: { x: 55, y: 31 }, anclaCasa: { x: 54, y: 29 },
+    paleta: '#c8b090' }, // campamento de cumbres (franja x52..61)
+];
+
+/** Mapas de expansión: de noche NO vagan (peligro) — guardia en puesto. */
+const EXP_NIGHT = new Set<string>(['costa', 'aldea', 'cumbres']);
+
+// Mood vigente por nid (una Game por página; Map.set sobre clave existente
+// no alloca). Lo leen __wlNpcMood y el zZ de drawWorldLife. 0 camino ·
+// 1 trabajo · 2 duerme · 3 guardia.
+const MOODS = new Map<string, number>();
+
+/** Hash determinista por nid (sin Math.random) → 0..1. */
+function nidHash(nid: string): number {
+  let a = nid.length * 131 + 7;
+  for (let i = 0; i < nid.length; i++) a = (a * 31 + nid.charCodeAt(i)) | 0;
+  return (a >>> 0) / 4294967296;
+}
+
+/** Tile transitable más cercano (sonda determinista, radio ≤2). */
+function walkNear(g: Game, tx: number, ty: number): { x: number; y: number } {
+  if (!g.tileSolidAt(tx * TILE + 8, ty * TILE + 8)) return { x: tx, y: ty };
+  const OX = [0, 0, -1, 1, -1, 1, -1, 1, 0, 0, -2, 2];
+  const OY = [-1, 1, 0, 0, -1, -1, 1, 1, -2, 2, 0, 0];
+  for (let i = 0; i < OX.length; i++) {
+    const nx = tx + OX[i], ny = ty + OY[i];
+    if (nx < 0 || ny < 0 || nx >= g.map.w || ny >= g.map.h) continue;
+    if (!g.tileSolidAt(nx * TILE + 8, ny * TILE + 8)) return { x: nx, y: ny };
+  }
+  return { x: tx, y: ty }; // sin mejor sitio: se queda (hará de guardia)
+}
+
+/**
+ * R11-4c: spawnea los NPCs nuevos del mapa y arma sus rutinas (y las de
+ * los NPCs de superficie existentes). IDEMPOTENTE y O(1) si nada cambió
+ * (comparación mapa+conteo — spawnNpcs reconstruye g.npcs en cada
+ * loadMap y esto lo repone solo). El orquestador puede llamarla tras
+ * loadMap; worldTick la invoca en modo perezoso, así funciona AUNQUE el
+ * orquestador no cablee nada.
+ */
+export function __wlArmR11(g: Game): void {
+  const st = stateFor(g);
+  st.r11.armedMap = ''; // fuerza re-armado completo
+  ensureR11(g, st);
+}
+
+function ensureR11(g: Game, st: WLState): void {
+  if (st.r11.armedMap === g.map.id && st.r11.npcCount === g.npcs.length) return;
+  st.r11.armedMap = g.map.id;
+  st.r11.mem.clear();
+  MOODS.clear();
+  // 1) NPCs nuevos de ESTE mapa que falten (misma forma literal que
+  //    spawnNpcs del engine; w/h/sprite coherentes para render y diálogo).
+  for (let i = 0; i < NPCS_R11.length; i++) {
+    const d = NPCS_R11[i];
+    if (d.map !== g.map.id) continue;
+    let there = false;
+    for (let j = 0; j < g.npcs.length; j++) if (g.npcs[j].nid === d.id) { there = true; break; }
+    if (there) continue;
+    g.npcs.push({
+      kind: 'npc', nid: d.id, dispName: d.name,
+      x: d.x * TILE + 8, y: d.y * TILE + 8, w: 10, h: 8,
+      vx: 0, vy: 0, dir: 'down', hp: 1, maxHp: 1, sprite: d.sprite,
+      anim: nidHash(d.id) * 9, moving: false,
+    });
+  }
+  st.r11.npcCount = g.npcs.length;
+  if (!SPAWN_OK.has(g.map.id)) return; // cripta/arena: sin rutinas de vida
+  // 2) memoria de rutina por NPC (anclas con nudge a tile transitable)
+  for (let j = 0; j < g.npcs.length; j++) {
+    const n = g.npcs[j];
+    const def = NPCS_R11.find((d) => d.id === n.nid); // solo al armar: OK
+    const homeTx = Math.round((n.x - 8) / TILE), homeTy = Math.round((n.y - 8) / TILE);
+    const w = def ? walkNear(g, def.anclaTrabajo.x, def.anclaTrabajo.y)
+                  : walkNear(g, homeTx, homeTy);
+    let c: { x: number; y: number };
+    if (def) {
+      c = walkNear(g, def.anclaCasa.x, def.anclaCasa.y);
+    } else {
+      // NPCs existentes: casa = puesto + offset determinista por hash
+      const h1 = nidHash(n.nid), h2 = nidHash(n.nid + '~casa');
+      const ox = h1 < 0.25 ? -2 : h1 < 0.5 ? 2 : 0;
+      const oy = h2 < 0.5 ? 1 : -1;
+      c = walkNear(g, w.x + ox, w.y + oy);
+    }
+    st.r11.mem.set(n.nid, {
+      wx: w.x * TILE + 8, wy: w.y * TILE + 8,
+      cx: c.x * TILE + 8, cy: c.y * TILE + 8,
+      hx: n.x, hy: n.y,
+      phase: nidHash(n.nid) * 6.283,
+      mode: 1, wait: 0, flip: false,
+    });
+    MOODS.set(n.nid, 1); // 'trabajo' hasta el primer tick
+  }
+}
+
+/** Paso caminado por eje con sonda de solidez (sin teletransporte). */
+function stepTo(g: Game, n: Npc, tx: number, ty: number, dt: number, mem: NpcMem): boolean {
+  const dx = tx - n.x, dy = ty - n.y;
+  if (dx * dx + dy * dy < 4) return true; // ya en el ancla
+  if (mem.wait > 0) { mem.wait -= dt; return false; }
+  const step = Math.min(26 * dt, 3); // lentos y con paso acotado
+  const firstX = mem.flip ? Math.abs(dy) > Math.abs(dx) : Math.abs(dx) >= Math.abs(dy);
+  let moved = false;
+  for (let a = 0; a < 2 && !moved; a++) {
+    const horiz = a === 0 ? firstX : !firstX;
+    const d = horiz ? dx : dy;
+    if (Math.abs(d) < 1) continue;
+    const s = d > 0 ? step : -step;
+    if (horiz) {
+      const nx = n.x + s;
+      if (!g.tileSolidAt(nx + (s > 0 ? 5 : -5), n.y)) {
+        n.x = nx; n.dir = s > 0 ? 'right' : 'left'; moved = true;
+      }
+    } else {
+      const ny = n.y + s;
+      if (!g.tileSolidAt(n.x, ny + (s > 0 ? 4 : -4))) {
+        n.y = ny; n.dir = s > 0 ? 'down' : 'up'; moved = true;
+      }
+    }
+  }
+  if (moved) {
+    n.moving = true;
+    n.anim += dt * 7; // el motor no anima NPCs: avanzamos la fase aquí
+    n.vx = 0; n.vy = 0;
+  } else {
+    n.moving = false;
+    mem.wait = 0.4;         // pausa anti-atasco determinista
+    mem.flip = !mem.flip;   // alterna prioridad de eje
+  }
+  return false;
+}
+
+/** Tick de rutinas R11-4c (llamado desde worldTick; O(npcs) ≈ 5-9). */
+function tickR11(g: Game, dt: number, st: WLState): void {
+  if (!SPAWN_OK.has(g.map.id)) { if (MOODS.size > 0) MOODS.clear(); return; }
+  ensureR11(g, st);
+  const minute = g.dayT * 1440;
+  const camino = minute >= 360 && minute < 720;
+  const trabajo = minute >= 720 && minute < 1140;
+  const noche = !camino && !trabajo;
+  const combat = combatActive(g);
+  const guardiaNoche = noche && EXP_NIGHT.has(g.map.id); // expansión: no vagan
+  for (let i = 0; i < g.npcs.length; i++) {
+    const n = g.npcs[i];
+    const mem = st.r11.mem.get(n.nid);
+    if (!mem) continue;
+    let mode: number;
+    if (combat || guardiaNoche) {
+      mode = 3; // guardia: quieto donde esté (o en su puesto)
+      n.moving = false; n.vx = 0; n.vy = 0;
+    } else {
+      const tx = noche ? mem.cx : mem.wx;
+      const ty = noche ? mem.cy : mem.wy;
+      mode = noche ? 2 : camino ? 0 : 1;
+      if (stepTo(g, n, tx, ty, dt, mem)) {
+        // llegó: trabajo = oscilar; casa de noche = dormir
+        n.moving = false; n.vx = 0; n.vy = 0;
+        if (mode === 1) {
+          n.y = ty + Math.sin(st.clock * 2.4 + mem.phase); // micro-oscilación
+          const t7 = st.clock + mem.phase;                  // tramo de 7 s
+          if (Math.floor(t7 / 7) !== Math.floor((t7 - dt) / 7) && (Math.floor(t7 / 7) & 1) === 0) {
+            g.burst(n.x, n.y - 10, '#d8c890', 3, 26);       // partícula ocasional
+          }
+        }
+      }
+    }
+    mem.mode = mode;
+    MOODS.set(n.nid, mode);
+  }
+}
+
+/**
+ * R11-4c: estado de rutina de un NPC ('camino' | 'trabajo' | 'duerme' |
+ * 'guardia') o null si no tiene rutina armada (nid desconocido).
+ */
+export function __wlNpcMood(nid: string): 'trabajo' | 'camino' | 'duerme' | 'guardia' | null {
+  const m = MOODS.get(nid);
+  if (m === undefined) return null;
+  return m === 0 ? 'camino' : m === 1 ? 'trabajo' : m === 2 ? 'duerme' : 'guardia';
 }

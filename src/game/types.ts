@@ -10,7 +10,7 @@ export type MapId = 'lunaris' | 'bosque' | 'cripta' | 'costa' | 'aldea' | 'cumbr
 export type Epoch = 'presente' | 'pasado';
 export type TrackName = 'village' | 'forest' | 'crypt' | 'boss' | 'title' | 'costa' | 'aldea' | 'cumbres';
 
-export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian' | 'neumo' | 'espectro' | 'arpi' | 'sirena' | 'golem' | 'vult' | 'coro' | 'ecodesg' | 'satiro' | 'heraldo' | 'sepulcro'; // 16-a: jefe final del Acto IV · R10-9: mini-jefe de la cripta
+export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian' | 'neumo' | 'espectro' | 'arpi' | 'sirena' | 'golem' | 'vult' | 'coro' | 'ecodesg' | 'satiro' | 'heraldo' | 'sepulcro' | 'nodriza' | 'cazador' | 'espantapajaros' | 'coro_mini' | 'centinela' | 'ahogado_r11'; // 16-a: jefe final del Acto IV · R10-9: mini-jefe de la cripta · R11-1/2: 5 mini-jefes de expansión + esbirro de la Nodriza
 export type Element = 'fuego' | 'hielo' | 'rayo' | 'sombra' | 'sagrado' | 'ninguno';
 export type StatusKind = 'quemado' | 'congelado' | 'aturdido' | 'marcado';
 

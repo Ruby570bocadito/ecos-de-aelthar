@@ -11,6 +11,8 @@ import { MEMORIES } from './data';
 import { ACTO3_ELITE } from './data';
 import { ACTO4_BOSS, ACTO4_FIN_BASE, ACTO4_FIN_JEFES } from './data';
 import { audio } from './audio';
+import { startStoryScene } from './actors/storyscenes'; // R11-6: escenas de historia (autocontenidas, sin ciclos)
+import { playStorySting } from './audio'; // R11-8: stinger por tipo de escena
 
 const TONES: ToneKind[] = ['empatico', 'pragmatico', 'sarcastico', 'amenazante'];
 
@@ -432,6 +434,14 @@ export function handleCustomAction(g: Game, action: string): boolean {
     g.closeDialogue();
     g.flags.acto4SalaAbierta = true;
     g.loadMap('cripta', 19, 24); // aterrizaje del santuario (findSafeTile interno)
+    // R11-6 · escena de historia: el umbral de niebla del Acto IV (el color se
+    // apaga de fondo a primer plano) ANTES de que el heraldo despierte. Una
+    // sola vez por partida (flag persistida — la re-invocación no la repite).
+    if (!g.flags.acto4IntroVista) {
+      g.flags.acto4IntroVista = true;
+      playStorySting('acto');
+      startStoryScene('acto4_inicio');
+    }
     if (!g.flags.heraldoDerrotado) {
       const altar = g.map.props.find(pr => pr.id === 'altar_c');
       const ax = (altar ? altar.x : 19) * 16 + 8;      // TILE=16, constante del proyecto
@@ -502,6 +512,13 @@ export function handleCustomAction(g: Game, action: string): boolean {
       if (g.questIdx === 15 && g.questStep === 0) g.questAdvance(); // paso 0→1 (invitación final)
     }
     g.dynNodes['acto4_epilogo_canto'] = acto4FinNode(g);
+    // R11-6 · EL ÚLTIMO CANTO: el árbol del Eco abre sus anillos de crecimiento
+    // (cierre animado de la historia; una sola vez por partida, flag persistida).
+    if (!g.flags.ecoDespiertoVisto) {
+      g.flags.ecoDespiertoVisto = true;
+      playStorySting('despertar');
+      startStoryScene('eco_despierto');
+    }
     return true;
   }
 

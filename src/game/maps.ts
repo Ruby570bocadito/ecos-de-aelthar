@@ -11,6 +11,7 @@
 import type { MapDef, MapId, EpochDiff, Epoch } from './types';
 import { EXPANSION_MAPS } from './maps_expansion';
 import { INTERIOR_MAPS, INTERIOR_MAP_IDS } from './maps_interiores'; // R10-5: interiores de casas
+import { SPAWNS_R11, MINIBOSS_DEFS } from './actors/minibosses'; // R11: 5 mini-jefes (deps type-only: sin ciclo)
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -645,6 +646,17 @@ const INTERIOR_MAPS_BY_ID: Partial<Record<MapId, MapDef>> = {
   [INTERIOR_MAP_IDS.taberna]: INTERIOR_MAPS.taberna,
 };
 export const MAPS: Record<MapId, MapDef> = { ...BASE_MAPS, ...EXPANSION_MAPS, ...INTERIOR_MAPS_BY_ID } as Record<MapId, MapDef>;
+
+// R11 · 5 mini-jefes de expansión (7.1): push de spawns tras el ensamblaje
+// (patrón SPAWN_SEPULCRO_R10 — zone PROPIA por def, NUNCA 'boss': el watcher
+// genérico resuelve el PRIMER zone==='boss' y rompería al Guardián/Sirena/Gólem).
+// Idempotente: el some() evita duplicados si el módulo se re-evalúa (HMR).
+for (const s of SPAWNS_R11) {
+  const mbDef = MINIBOSS_DEFS[s.type as unknown as string];
+  if (!mbDef) continue;
+  const m = MAPS[mbDef.map];
+  if (m && !m.spawns.some(t => t.zone === s.zone)) m.spawns.push(s);
+}
 
 // Rellena filas cortas por seguridad
 export function mapRows(m: MapDef): string[] {

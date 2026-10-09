@@ -5,6 +5,10 @@
 
 import type { QuestDef, DialogueNode, DialogueOption, EnemyType, Element, ToneKind, SpawnDef } from './types';
 import { INTERIOR_NPC_DIALOGUES } from './maps_interiores'; // R10-5: diálogos de interiores
+// R11 · EPIC 7: mini-jefes (7.1) + esbirro + diálogos de historia (7.3)
+import { minibossEnemyDefs } from './actors/minibosses'; // type-only deps: sin ciclo runtime
+import { AHOGADO_DEF_R11 } from './actors/minibossai';   // ciclo benigno (lee ENEMY_DEFS solo en funciones)
+import { installDialoguesR11, getDialogueR11 } from './dialogues_r11'; // assign solo DENTRO de install (idempotente)
 
 // ---------------- Misiones (cadena principal de la demo) ----------------
 
@@ -2138,4 +2142,28 @@ export const SPAWN_SEPULCRO_R10: SpawnDef = {
 export const SEPULCRO_BOTIN = { potions: 1, gold: 50 } as const;
 
 // ═══════ FIN DEL BLOQUE R10-9 ═══════
+
+// ═══════════════════════════════════════════════════════════════════════
+// R11 · EPIC 7 — registro de mini-jefes + esbirro + diálogos de historia
+// (patrón ENEMY_DEFS_R10A: makeEnemy/damageEnemy/killEnemy leen ENEMY_DEFS
+// en runtime → ven los etypes nuevos en cuanto este módulo termina de cargar)
+// ═══════════════════════════════════════════════════════════════════════
+Object.assign(ENEMY_DEFS, minibossEnemyDefs());
+Object.assign(ENEMY_DEFS, { ahogado_r11: AHOGADO_DEF_R11 });
+
+// Diálogos R11 (5 NPCs nuevos: vela/tejado/ceniza/niebla/toldero + 3 variantes
+// de historia para brisa/mara/heraldo) — Object.assign idempotente con guard.
+installDialoguesR11();
+
+// Tercera capa del envoltorio de getDialogue (patrón 13-a → 16-a → R11):
+// captura la función VIGENTE y reasigna el binding. getDialogueR11 resuelve
+// SOLO sus claves; null → delega en la cadena previa INTACTA (regresión 0).
+const GET_DIALOGUE_PRE_R11 = getDialogue;
+// @ts-expect-error R11: reasignación deliberada del binding de función (capa R11)
+getDialogue = (nid: string, ctx: DialogueCtx): string => {
+  const r = getDialogueR11(nid, ctx);
+  return r !== null ? r : GET_DIALOGUE_PRE_R11(nid, ctx);
+};
+
+// ═══════ FIN DEL BLOQUE R11 ═══════
 

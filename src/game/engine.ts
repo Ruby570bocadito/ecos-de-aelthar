@@ -19,6 +19,12 @@ import { ARENA_MAP_ID } from './maps_expansion'; // 17-d: la arena no entra en v
 import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
 import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
 import { audio, playSpellCast, playSpellImpact, playNightAmbience, playHowlDistant, playBossRoarVariant, playLeverPull, playDoorOpen } from './audio';
+import { playMinibossRoar, playStorySting } from './audio'; // R11: rugido de mini-jefes (4 variantes) + stingers de escena
+import { MINIBOSS_DEFS, MINIBOSS_FLAGS } from './actors/minibosses'; // R11: datos de los 5 mini-jefes (deps type-only, sin ciclo)
+import { gateSolid } from './world/gates'; // R11-7: solidez de las puertas de historia
+import { startStoryScene } from './actors/storyscenes'; // R11-6: disparos de las escenas de historia
+import { storySceneActive, skipStoryScene } from './actors/storyscenes'; // R11-6: skip con E
+import { introSceneActive, skipIntroScene } from './actors/introscene'; // R11-3: skip con cualquier tecla
 import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue, SENNUEL } from './data';
 import { updateGame, cryptDoorOpen, cryptLeverTryActivateNear } from './update';
 // Ronda 2 · Terror: disolución al morir + stinger de pavor + resets de la intro/FX del jefe
@@ -396,7 +402,7 @@ export class Game {
         if (this.hitStop > 0) { this.hitStop -= dt; dt *= 0.12; }
         if (this.slowmoT > 0) { this.slowmoT -= dt; dt *= 0.35; }
         this.globalT += dt;
-        if (this.state === 'play' || this.state === 'dialogue') this.update(dt);
+        if (this.state === 'play' || this.state === 'dialogue' || (this.state === 'intro' && introSceneActive())) this.update(dt); // R11-9c fix: la cinemática de inicio corre en estado 'intro' (antes t=0 congelado → pantalla negra)
         drawGame(this);
         perfFrame(this, dt); drawPerfOverlay(this); // R5-O1: muestreo + overlay 1×/frame, tras update+draw
         this.perfViewTick(); // R6-V10: histéresis del tope de vista en baja sostenida
@@ -873,8 +879,8 @@ export class Game {
     const hp = Math.max(1, Math.round(d.hp * bm.hp));
     return {
       kind: 'enemy', etype: type, x, y,
-      w: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' ? 22 : 12,
-      h: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' ? 16 : 10,
+      w: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' || (type as string) in MINIBOSS_FLAGS ? 22 : 12,
+      h: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' || (type as string) in MINIBOSS_FLAGS ? 16 : 10,
       vx: 0, vy: 0, dir: 'down', hp, maxHp: hp, sprite: d.sprite, anim: Math.random() * 9, moving: false,
       ai: 'patrulla', aiT: Math.random() * 2, homeX: x, homeY: y, patrolAngle: Math.random() * Math.PI * 2,
       aggro: false, windup: 0, atkCd: Math.random(), sta: d.breakBar ?? 0, maxSta: d.breakBar ?? 0,
@@ -1034,6 +1040,10 @@ export class Game {
     // R10-3: la puerta del puzzle ('D') es sólida DINÁMICA — abierta cuando
     // todas las palancas del mapa están activadas (flags 'cripta_lever_*')
     if (ch === 'D') return !cryptDoorOpen(this);
+    // R11-7 · puertas de historia: el rect de un gate CERRADO es sólido para
+    // el Portador (cláusula de escape interior en gateSolid → nunca atrapa;
+    // antiStuck del motor libera el caso límite de save dentro del rect).
+    if (gateSolid(this, this.mapId, px, py)) return true;
     return SOLID_CHARS.has(ch);
   }
 
@@ -1520,6 +1530,12 @@ export class Game {
           `Reputación Guardianes: ${p.repGuardianes >= 0 ? '+' : ''}${p.repGuardianes} · Muertes: ${p.deaths}\n` +
           `Tiempo de juego: ${mins}m ${secs}s · Época favorita: la que tú elijas`;
         // el mismo cierre sirve de final del Acto I (questIdx<9) o del Acto II
+        // R11-6 · escena de cierre ANTES del panel de stats (la que corresponda
+        // al acto en curso; el mundo queda congelado bajo la cinemática)
+        if (!this.challengeRun) {
+          playStorySting('acto');
+          startStoryScene(this.questIdx >= 14 ? 'acto3_fin' : this.questIdx >= 9 ? 'acto2_fin' : 'acto1_fin');
+        }
         if (this.questIdx >= 9) this.toast('Fin del Acto II', '#ffe9a0');
         this.save();
         this.setState('end');
@@ -1571,6 +1587,14 @@ export class Game {
       // q4→q5 con texto hardcodeado); si el clamp ya está en la última misión,
       // no repite el aviso
       if (this.questIdx !== prev) this.toast(`Nueva misión: ${QUESTS[this.questIdx].name}`, '#8ef0b0');
+      // R11-6 · escenas de historia en los CRUCES de acto (presentación pura:
+      // el mundo queda congelado mientras corren; saltables con E tras 1.5 s).
+      // Acto I cierra al partir hacia la Costa (q→5); el Acto III al umbral de
+      // la Cripta (q→14). Fuera del modo desafío (la arena no tiene historia).
+      if (!this.challengeRun && this.questIdx !== prev) {
+        if (this.questIdx === 5) { playStorySting('acto'); startStoryScene('acto1_fin'); }
+        else if (this.questIdx === 14) { playStorySting('acto'); startStoryScene('acto3_fin'); }
+      }
     }
     audio.sfx('quest');
   }
@@ -1821,6 +1845,14 @@ export class Game {
     const isDomInput = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
     if (!isDomInput && [' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
     if (e.repeat) return;
+    // R11-3/R11-6 · skips de cinemáticas: la intro de inicio consume CUALQUIER
+    // tecla (tras su guard interno de 1.5 s); las escenas de historia saltan
+    // con E/espacio/enter. La tecla NO llega al mundo (early return, keys limpio).
+    if (introSceneActive()) { skipIntroScene(); return; }
+    if (storySceneActive()) {
+      if (k === 'e' || k === ' ' || k === 'enter') skipStoryScene();
+      return;
+    }
     this.keys.add(k);
     audio.resume();
     if (!isDomInput && k === 'f3') { e.preventDefault(); togglePerfOverlay(); } // R5-O1: F3 alterna el overlay (k ya en minúsculas)
@@ -2420,6 +2452,10 @@ export class Game {
       p.gold += 80;
       this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción, +80 coronas', '#f0c84a');
       if (this.questIdx === 14 && this.questStep === 1) this.questAdvance();
+      // R11-6 · escena de historia: el heraldo vencido (la capa queda vacía y
+      // sigue ondeando; la nota asciende y se rompe en motas). Presentacional:
+      // el botín/flags ya están fijados ARRIBA — la escena no bloquea nada.
+      if (!this.challengeRun) { playStorySting('derrota'); startStoryScene('heraldo_vencido'); }
     } else if (e.etype === 'sepulcro') {
       // R10-9 · EL SEPULCRO (mini-jefe de la antesala): rama propia al estilo
       // coro — flag (no renace), música cripta restaurada, botín generoso.
@@ -2437,6 +2473,26 @@ export class Game {
       p.potions += 1;
       p.gold += 50;
       this.floatAt(e.x, e.y - 34, 'Botín del Guarda: +1 poción, +50 coronas', '#f0c84a');
+    } else if (MINIBOSS_FLAGS[e.etype]) {
+      // R11 · mini-jefes de expansión (7.1): flag PROPIA por etype (coro_mini
+      // ≠ 'coro' de historia — la rama se consulta DESPUÉS de las jefaturas
+      // canónicas y ANTES de cualquier 'boss' genérico), memoria de jefe HP
+      // del mapa limpiada, música del mapa restaurada y botín del def.
+      this.flags[MINIBOSS_FLAGS[e.etype]] = true;
+      delete this.flags['bossHp_' + this.mapId];
+      delete this.flags['bossHpWho_' + this.mapId];
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack(this.map.music);
+      this.shake = 6;
+      playMinibossRoar((e.etype.charCodeAt(0) + e.x) | 0);
+      const mb = MINIBOSS_DEFS[e.etype];
+      if (mb) {
+        this.toast(`${mb.name} cae. ${mb.intro}`, '#b8a0f0');
+        if (mb.botin.potions) p.potions += mb.botin.potions;
+        if (mb.botin.gold) p.gold += mb.botin.gold;
+        this.floatAt(e.x, e.y - 34, `Botín: +${mb.botin.potions ?? 0} poción, +${mb.botin.gold ?? 0} coronas`, '#f0c84a');
+      }
     }
     // ==== 17-a (qa): el duelo entra en pausa dramática EN EL MISMO golpe que
     // cae al jefe — challengeTick solo corría en el update siguiente y el

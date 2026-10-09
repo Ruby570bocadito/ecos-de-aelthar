@@ -38,6 +38,14 @@ import type { MinimapTarget } from './world/minimap';
 // Ronda 2 · Terror: overlay de pavor, presentación del jefe, FX de fases y frames nuevos
 import { drawHorrorOverlay, getHorrorShake } from './actors/horror';
 import { drawBossIntro } from './actors/bossintro';
+// R11 · EPIC 7: gates (7.6), escenas de historia (7.4) y cinemática de inicio (7.2)
+import { drawGateFx } from './world/gates'; // R11-7: FX de las puertas de historia (world-space)
+import { drawStoryScene, storySceneActive, setStoryBackdropFn } from './actors/storyscenes'; // R11-6: escenas animadas + inyección del backdrop
+import { drawIntroScene, introSceneActive } from './actors/introscene'; // R11-3: cinemática por disciplina
+import { drawStoryBackdrop } from './actors/storyart'; // R11-9: arte de fondos
+// R11-6 ↔ R11-9: inyección ÚNICA del backdrop (ambos módulos hoja, sin ciclos;
+// a nivel de módulo = una sola vez, antes del primer frame).
+setStoryBackdropFn(drawStoryBackdrop);
 import { drawBossFx } from './actors/bossfx';
 import { wolfFrameAI, guardianFrame } from './actors/enemies';
 import type { GuardianState } from './actors/enemies';
@@ -104,6 +112,12 @@ export function drawGame(g: Game) {
   const dtF = fxFrame(g); // dt de dibujado + decaimiento seguro del shake
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, VIEW_W, VIEW_H);
+
+  // R11 · cinemática de inicio (R11-3) + escenas de historia (R11-6): a pantalla
+  // completa SOBRE cualquier estado (el update congela el mundo debajo; los
+  // skips viven en onKeyDown del motor). Early return: nada más dibuja.
+  if (introSceneActive()) { drawIntroScene(ctx, VIEW_W, VIEW_H); return; }
+  if (storySceneActive()) { drawStoryScene(ctx, VIEW_W, VIEW_H); return; }
 
   if (g.state === 'title' || g.state === 'controls') {
     drawScreens(g);
@@ -314,6 +328,10 @@ function drawWorld(g: Game) {
   // terror ambiental (Ronda 2): viñeta cardiaca + susurros junto a sombras +
   // ojos en la niebla del bosque nocturno (después de la luz, antes del HUD)
   drawHorrorOverlay(ctx, g);
+
+  // R11-7 · puertas de historia: niebla/sello/raíces/marea del gate activo en
+  // world-space (culling por vista dentro del módulo; cero coste sin gates).
+  drawGateFx(ctx, g, { x: camX, y: camY });
 
   // textos flotantes (después de la luz: siempre legibles)
   drawFloats(g, sx, sy);

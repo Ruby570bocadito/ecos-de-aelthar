@@ -252,7 +252,7 @@ console.log('\n=== 4) q16 · Epílogo: ramas por reputación, pago, memoria UNA 
   // post-epílogo: Brisa sirve el nodo de despedida con end_demo
   g.closeDialogue();
   routeBrisa();
-  if (g.dlgKey === 'acto4_epilogo_stay' && (g.dlgNode?.options ?? []).some(o => o.action === 'end_demo')) ok('post-epílogo: despedida con opción de terminar el viaje (end_demo)');
+  if (g.dlgKey === 'brisa_r11_ultimo' && (g.dlgNode?.options ?? []).some(o => o.action === 'end_demo')) ok('post-epílogo: despedida R11 (brisa_r11_ultimo) con opción de terminar el viaje (end_demo)');
   else bad(`post-epílogo: dlgKey=${g.dlgKey}`);
 }
 

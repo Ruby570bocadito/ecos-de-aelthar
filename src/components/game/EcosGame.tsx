@@ -7,6 +7,8 @@ import { audio } from '@/game/audio';
 // buildHumanoid genera los 24 frames procedurales (16×18 por héroe) y PALS
 // trae las paletas hero_alba / hero_tejedor. Ningún archivo ajeno se modifica.
 import { buildHumanoid, type HumanPal } from '@/game/actors/humanoid';
+import { startIntroScene } from '@/game/actors/introscene'; // R11-3: cinemática de inicio por disciplina
+import { playIntroSceneTone } from '@/game/audio'; // R11-8: tono de la cinemática (alba/tejedor)
 import { PALS } from '@/game/actors/palettes';
 import {
   Flame, Heart, Megaphone, MoveHorizontal, Music, Shield, Snowflake, Sunrise,
@@ -361,6 +363,12 @@ export default function EcosGame() {
     audio.sfx('confirm'); // R8-5: jugo al despertar (por-evento; newGame no suena)
     setNeedsClick(false);
     g.newGame(nameRef.current.trim() || 'Portador', discRef.current);
+    // R11-3 · cinemática de inicio por disciplina (alba: el amanecer de la
+    // portadora · tejedor: el telar cósmico). Corre SOBRE el estado 'intro'
+    // del motor (las 3 láminas de texto siguen después — secuencia completa);
+    // cualquier tecla la salta tras su guard de 1.5 s y el mundo queda helado.
+    startIntroScene(discRef.current);
+    playIntroSceneTone(discRef.current);
     setShowCreate(false);
   }, []);
 

@@ -34,6 +34,13 @@ import { interaccionTick, companionOrdersMove, lureActive, sennoChase } from './
 import { perfQuality } from './perf'; // R6-V10: escalón de calidad adaptativa (0=alta · 1=media · 2=baja)
 import { nightAggroMul } from './world/lighting'; // R9-2: curva suave de agresión nocturna
 import { isInteriorMap } from './maps_interiores'; // R10-5: ambientes de interiores
+// R11 · EPIC 7: mini-jefes (7.1/7.2), escenas de historia (7.4), gates (7.6)
+import { MB_PATTERN_OF, updateMiniboss } from './actors/minibossai'; // R11-2: IA por patrón
+import { MINIBOSS_DEFS, MINIBOSS_FLAGS } from './actors/minibosses'; // R11-1b: datos congelados
+import { storySceneActive, updateStoryScene } from './actors/storyscenes'; // R11-6: escenas animadas
+import { introSceneActive, updateIntroScene } from './actors/introscene'; // R11-3: cinemática de inicio
+import { gateBlockedAt, gatePushOut } from './world/gates'; // R11-7: puertas de historia
+import { playMinibossRoar, setSceneMusicMuffled } from './audio'; // R11-8: audio de escenas/jefes
 import { SPELL_CAST_TIME, SPELL_IMPACT_TIME, SPELL_RESIDUE_TIME } from './actors/spells'; // R9-4: ventanas de FX
 import { hash2 } from './world/palette'; // R10-3: hash determinista de los pinchos (módulo hoja, sin ciclos)
 
@@ -214,6 +221,11 @@ function updateCombatFx(g: Game): void {
 }
 
 export function updateGame(g: Game, dt: number) {
+  // R11 · cinemática de inicio (R11-3) + escenas de historia (R11-6): congelan
+  // el mundo entero (el render sigue pintando el frame debajo; música en muffle).
+  if (introSceneActive()) { setSceneMusicMuffled(true); updateIntroScene(dt); return; }
+  if (storySceneActive()) { setSceneMusicMuffled(true); updateStoryScene(dt); return; }
+  setSceneMusicMuffled(false); // idempotente R11-8 (abre el filtro si estaba mufflado)
   // cosmética siempre
   if (g.state === 'dialogue' && g.dlgNode) g.dlgCharT += dt * 45;
   g.mapTitleT = Math.max(0, g.mapTitleT - dt);
@@ -634,6 +646,35 @@ export function updateGame(g: Game, dt: number) {
     }
   }
 
+  // R11 · 5 MINI-JEFES de expansión (7.1): watcher por zone PROPIA (NUNCA
+  // 'boss', igual que el Sepulcro). Acto II en adelante (questIdx >= 5); el
+  // Espantapájaros SOLO despierta de noche (def.night). Radio 190 estándar.
+  if (g.state === 'play' && !g.bossActive && g.questIdx >= 5) {
+    const mbSpawn = g.map.spawns.find(s => (s.type as string) in MINIBOSS_FLAGS && !g.flags[MINIBOSS_FLAGS[s.type as string]]);
+    if (mbSpawn) {
+      const mini = g.enemies.find(e => e.etype === mbSpawn.type);
+      if (mini && dist2(p.x, p.y, mini.x, mini.y) < 190 * 190) {
+        const mbDef = MINIBOSS_DEFS[mini.etype];
+        if (!mbDef?.night || isNight(g)) {
+          g.bossRef = mini;
+          g.bossActive = true;
+          audio.playTrack('boss');
+          dreadInit();
+          dreadStinger('boss');
+          startBossIntro(g);
+          playMinibossRoar((mini.etype.charCodeAt(0) + mini.x) | 0);
+          g.toast(mbDef ? `${mbDef.name}: ${mbDef.intro}` : 'Algo antiguo despierta', '#b8a0f0');
+          g.burst(mini.x, mini.y - 6, '#8a7aa8', 12, 56);
+        }
+      }
+    }
+  }
+
+  // R11-7 · puertas de historia: empujón de cortesía + toast/sfx (1×/frame,
+  // cooldown propio de gates.ts; la solidez real vive en tileSolidAt → engine).
+  const gateHit = gateBlockedAt(g, g.mapId, p.x, p.y);
+  if (gateHit) gatePushOut(g, gateHit);
+
   // 14-a: jefes opcionales (Vult en Cumbres de noche · El Coro Roto en la
   // Cripta post-Acto III) — spawn + activación de barra al estilo del bloque
   // anterior. Barato: el watcher filtra primero por mapa.
@@ -1024,6 +1065,11 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
   // Acto II: decae la fase intangible y delega en el cerebro propio si lo maneja
   if (e.invulT !== undefined && e.invulT > 0) e.invulT -= dt;
   if (EXPANSION_TYPES.has(e.etype) && expansionTick(g, e, dt, def)) return;
+  // R11-2 · 5 MINI-JEFES (7.1): cerebro por patrón al estilo expansionTick —
+  // maneja aggro/windup/golpe completo y hace return (el común no corre).
+  // coro_mini resuelve el patrón 'coro' (etype ≠ jefe de historia 'coro').
+  const mbPat = MB_PATTERN_OF[e.etype];
+  if (mbPat) { updateMiniboss(g, e, dt, mbPat); return; }
 
   const d2 = dist2(e.x, e.y, p.x, p.y);
   const nightMult = curNightMult; // R5-O10: isNight memoizado 1×/frame en updateGame

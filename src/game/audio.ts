@@ -226,6 +226,34 @@ const CRYPT_DRONE: readonly { f: number; type: OscType; g: number }[] = [
 // sexta menor abajo) — entrelazadas suenan a coro de bestias, no a eco.
 const PACK_RATIO: readonly number[] = [1, 1.189, 0.891];
 
+// ============================================================
+// R11-8 · constantes de cinemática de inicio, stingers de historia,
+// gates y trabajos de NPC (épicas 7.1-7.6). Hoisted a módulo: cero
+// allocations por disparo (misma política R7-O2/R10-7).
+// ============================================================
+
+// 'alba': acorde de amanecer que ASCIENDE (A3-C#4-E4-A4 entran escalonadas)
+const INTRO_ALBA: readonly number[] = [220, 277.18, 329.63, 440];
+// 'tejedor': hilo del arpegio — la lanzadera sube y baja por la trama
+// (D4 A4 F#4 D5 A4 F#5 D5 A5), entrelazado como hilos tejidos.
+const INTRO_WEAVE: readonly number[] = [293.66, 440, 369.99, 587.33, 440, 739.99, 587.33, 880];
+// 'derrota': campana ROTA — parciales inarmónicos sin tonal común,
+// desafinados a propósito (×1, ×1.02, ×2.88, ×4.1 de La3).
+const STING_DERROTA: readonly { f: number; d: number; g: number }[] = [
+  { f: 220, d: 1.6, g: 0.085 },   // fundamental (con batido de 221.5)
+  { f: 224.4, d: 1.25, g: 0.06 }, // parcial desafinado
+  { f: 633.6, d: 1.0, g: 0.042 }, // inarmónico agudo
+  { f: 902, d: 0.7, g: 0.028 },   // inarmónico alto
+];
+// 'despertar': coro que arranca en UNÍSONO (La3) y se abre a estas notas
+const STING_DESPERTAR: readonly { f: number; g: number }[] = [
+  { f: 220, g: 0.06 }, { f: 277.18, g: 0.045 }, { f: 329.63, g: 0.042 }, { f: 440, g: 0.034 },
+];
+// Muffle de escena: lowpass insertado ENTRE musicGain y master.
+// OPEN ≈ sin filtro audible; LOW = sensación de "detrás del cristal".
+const SCENE_MUFFLE_OPEN = 16000;
+const SCENE_MUFFLE_LOW = 780;
+
 export class AudioEngine {
   ctx: AudioContext | null = null;
   master!: GainNode;
@@ -287,6 +315,19 @@ export class AudioEngine {
   private interiorStep = 0;
   private packN = 0;
   private lineN = 0;
+
+  // ---- R11-8 · estado de escenas: stingers de historia, muffle de música ----
+  // stingUntil: por kind de stinger, el ctx.currentTime hasta el que SUENA
+  // (idempotencia "mientras suena"; 3 claves fijas, nunca crece).
+  // sceneMuffleOn + muffleFilter/muffleCtx: lowpass del bus de música — se
+  // inserta UNA vez (perezoso) entre musicGain y master y luego solo se funde
+  // su frecuencia (idempotente; muffleCtx guarda por si el ctx se recreara,
+  // mismo patrón que noiseBufCtx). workN: contador determinista de trabajos.
+  private stingUntil = new Map<string, number>();
+  private sceneMuffleOn = false;
+  private muffleFilter: BiquadFilterNode | null = null;
+  private muffleCtx: AudioContext | null = null;
+  private workN = 0;
 
   musicVol = 0.7;
   sfxVol = 0.8;
@@ -1430,6 +1471,336 @@ export class AudioEngine {
     this.sTone(f, f * 1.02, 0.055, 'triangle', 0.045);          // nota 1
     this.sTone(f * 1.335, f * 1.335, 0.075, 'triangle', 0.04, 0.07); // nota 2 ↑
   }
+
+  // ============================================================
+  // R11-8 · CINEMÁTICA DE INICIO, STINGERS DE HISTORIA, MINI-JEFES,
+  // GATES Y TRABAJOS DE NPC (épicas 7.1-7.6). Mismos patrones del
+  // archivo: helpers existentes (sTone/sNoise/sSongTone/tone/rl),
+  // sin Math.random (det01 + contadores), volúmenes conservadores.
+  // Las EXPORT playIntroSceneTone / playStorySting / playMinibossRoar /
+  // playGateDenied / playGateOpen / playWorkSfx / setSceneMusicMuffled
+  // (al final del archivo) son envoltorios delgados sobre el singleton.
+  // ============================================================
+
+  // ---- 1) Stinger de cinemática de INICIO (~4 s, con swell).            ----
+  // ----    'alba': acorde cálido que asciende (cuerdas sintéticas de     ----
+  // ----    ataque lento, doble voz detuned) + campana de amanecer.       ----
+  // ----    'tejedor': arpegio de hilos plucked con ecos tejidos y        ----
+  // ----    shimmer agudo MUY tenue. Rate-limit propio de 0.8 s.          ----
+  introSceneTone(disc: 'alba' | 'tejedor') {
+    this.init();
+    if (!this.ctx || !this.rl('introTone', 0.8)) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    if (disc === 'alba') {
+      // Cuerdas: cada nota del acorde entra 0.5 s después que la anterior
+      // (el acorde "asciende"), doble voz detuned ±4 cents = calor de cuerda.
+      // tone() da el swell: ataque lento + decaimiento exponencial largo.
+      for (let i = 0; i < INTRO_ALBA.length; i++) {
+        const f = INTRO_ALBA[i];
+        const t0 = t + i * 0.5;
+        this.tone(f * 0.9977, t0, 2.5 - i * 0.2, 'sawtooth', 0.042, this.sfxGain, 1.0 + i * 0.1);
+        this.tone(f * 1.0023, t0, 2.5 - i * 0.2, 'sawtooth', 0.042, this.sfxGain, 1.0 + i * 0.1);
+      }
+      // Ancla grave del amanecer + primera luz (ruido COMPARTIDO, barrido ↑)
+      this.tone(110, t, 3.6, 'sine', 0.06, this.sfxGain, 1.4);
+      this.sNoise(1.8, 6000, 0.018, 'highpass', 1.6, 8200);
+      // Campana de amanecer: fundamental + parcial inarmónico + eco que muere
+      this.sTone(1760, 1760, 1.8, 'sine', 0.05, 2.1);
+      this.sTone(4850, 4850, 0.9, 'sine', 0.016, 2.12);
+      this.sTone(1760, 1760, 1.0, 'sine', 0.018, 3.0);
+    } else {
+      // Hilos plucked entrelazados (la lanzadera sube y baja), con "hilo que
+      // vuelve" (eco re-disparado, patrón echoFind) y shimmer tenue detuned.
+      for (let i = 0; i < INTRO_WEAVE.length; i++) {
+        const f = INTRO_WEAVE[i];
+        const d = i * 0.22;
+        this.sTone(f, f * 0.996, 0.3, 'triangle', 0.085, d); // pluck
+        this.sNoise(0.02, 2600, 0.018, 'highpass', d);       // roce de fibra
+        this.sTone(f, f, 0.22, 'sine', 0.026, d + 0.9);      // hilo que vuelve
+      }
+      // Ancla grave del telar + shimmer agudo tenue (2 sines detuned, lento)
+      this.tone(98, t, 2.8, 'sine', 0.05, this.sfxGain, 0.8);
+      this.tone(2960, t + 0.2, 2.6, 'sine', 0.014, this.sfxGain, 1.0);
+      this.tone(2985, t + 0.2, 2.6, 'sine', 0.011, this.sfxGain, 1.0);
+    }
+  }
+
+  // ---- 2) Stinger de escena de historia. IDEMPOTENTE POR KIND MIENTRAS  ----
+  // ----    SUENA: stingUntil guarda el instante de fin por kind (3       ----
+  // ----    claves fijas) y repetir antes de acabar es no-op seguro.     ----
+  storySting(kind: 'acto' | 'derrota' | 'despertar') {
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const until = this.stingUntil.get(kind);
+    if (until !== undefined && now < until) return; // sigue sonando → no-op
+    if (!this.rl('storySting:' + kind, 0.05)) return; // cinturón anti-spam
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    switch (kind) {
+      case 'acto': {
+        // Doble quinta descendente grave (D3→G2 y D2→G1, la nota CAE una
+        // quinta al morir) con REVERB LARGA: las voces alimentan una cadena
+        // delay+feedback lowpass (misma receta que howlDistant, cola más
+        // oscura). Cadena POR LLAMADA a propósito (ver sPing R7-O2).
+        const g = ctx.createGain();
+        g.gain.value = 1;
+        g.connect(this.sfxGain);
+        const dl = ctx.createDelay(0.6); dl.delayTime.value = 0.27;
+        const fb = ctx.createGain(); fb.gain.value = 0.52;
+        const dk = ctx.createBiquadFilter();
+        dk.type = 'lowpass'; dk.frequency.value = 750;
+        const wet = ctx.createGain(); wet.gain.value = 0.42;
+        g.connect(dl); dl.connect(dk); dk.connect(fb); fb.connect(dl);
+        dl.connect(wet); wet.connect(this.sfxGain);
+        // voz local: quinta descendente conectada al bus (seco + reverb)
+        const fifth = (f0: number, f1: number, t0: number, dur: number, gain: number) => {
+          const o = ctx.createOscillator();
+          o.type = 'sawtooth';
+          o.frequency.setValueAtTime(f0, t0);
+          o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+          const eg = ctx.createGain();
+          eg.gain.setValueAtTime(0.0001, t0);
+          eg.gain.linearRampToValueAtTime(gain, t0 + 0.02);
+          eg.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+          o.connect(eg); eg.connect(g);
+          o.start(t0); o.stop(t0 + dur + 0.05);
+        };
+        fifth(146.83, 98, t, 0.55, 0.15);            // D3 → G2
+        fifth(73.42, 49, t + 0.6, 0.75, 0.13);       // D2 → G1 (respuesta)
+        fifth(110, 73.42, t + 0.02, 0.5, 0.05);      // polvo de quinta media
+        this.sTone(49, 30, 1.0, 'sine', 0.12, 0.62);  // sub de la respuesta
+        this.sNoise(0.5, 420, 0.06, 'lowpass', 0, 110); // aire de piedra
+        this.stingUntil.set(kind, t + 2.7);
+        break;
+      }
+      case 'derrota': {
+        // Impacto sordo + campana ROTA: parciales inarmónicos (tabla
+        // STING_DERROTA) que se descolgan — cada uno arranca un pelín más
+        // tarde y muere antes; desafinación INTENCIONAL, sin tonal común.
+        this.sTone(100, 32, 0.5, 'sine', 0.19, 0);
+        this.sTone(200, 64, 0.2, 'triangle', 0.07, 0);
+        this.sNoise(0.3, 380, 0.13, 'lowpass', 0, 110);
+        for (let i = 0; i < STING_DERROTA.length; i++) {
+          const p = STING_DERROTA[i];
+          const d = 0.14 + i * 0.07;
+          this.sTone(p.f, p.f * 0.995, p.d, 'sine', p.g, d);
+          if (i === 0) this.sTone(221.5, 221.5, p.d * 0.8, 'sine', p.g * 0.35, d); // batido (rota)
+        }
+        this.stingUntil.set(kind, t + 2.2);
+        break;
+      }
+      case 'despertar': {
+        // Coro sintético: 4 voces arrancan EN UNÍSONO (La3) y se abren
+        // lentamente a su nota del acorde (detune progresivo → despiertan).
+        // Ataque lento = coro que respira. 4 osc + 4 gain, desechables.
+        for (let i = 0; i < STING_DESPERTAR.length; i++) {
+          const v = STING_DESPERTAR[i];
+          const o = ctx.createOscillator();
+          o.type = i === 2 ? 'triangle' : 'sine';
+          o.frequency.setValueAtTime(220, t);
+          o.frequency.exponentialRampToValueAtTime(v.f, t + 1.8); // se abre
+          const g = ctx.createGain();
+          g.gain.setValueAtTime(0.0001, t);
+          g.gain.linearRampToValueAtTime(v.g, t + 0.9 + i * 0.1);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + 3.0);
+          o.connect(g); g.connect(this.sfxGain);
+          o.start(t); o.stop(t + 3.1);
+        }
+        this.sNoise(2.4, 5200, 0.014, 'highpass', 0.3, 7200); // aire del alba
+        this.stingUntil.set(kind, t + 3.3);
+        break;
+      }
+    }
+  }
+
+  // ---- 3) Rugido de MINI-JEFE: 4 variantes DETERMINISTAS por seed       ----
+  // ----    (patrón bossRoarVariant, con OTRAS sales de hash para no      ----
+  // ----    clonar al jefe), MÁS CORTAS Y BRUTAS (≤ ~0.55 s, ataque       ----
+  // ----    inmediato, sin meseta). Rate-limit propio de 0.25 s.          ----
+  minibossRoar(seed: number) {
+    this.init();
+    if (!this.ctx || !this.rl('minibossRoarV', 0.25)) return;
+    const s = Math.trunc(seed) || 0;
+    const v = Math.abs(s) % 4;
+    const m = 0.9 + det01(s * 13 + 5) * 0.16;
+    switch (v) {
+      case 0: // ladrido seco: barrido rápido + aire que se corta
+        this.sTone(160 * m, 72, 0.26, 'sawtooth', 0.15);
+        this.sTone(80 * m, 40, 0.3, 'square', 0.06);
+        this.sNoise(0.18, 420 * m, 0.08, 'lowpass', 0, 130);
+        break;
+      case 1: { // gruño doble pulsado + cierre sub (compacto)
+        for (let i = 0; i < 2; i++) {
+          const d = i * 0.13;
+          this.sTone(120 * m * (1 - i * 0.12), 55, 0.12, 'square', 0.14 - i * 0.04, d);
+          this.sNoise(0.1, 350, 0.06, 'lowpass', d, 150);
+        }
+        this.sTone(52, 30, 0.22, 'sine', 0.11, 0.26);
+        break;
+      }
+      case 2: // chillido rasgado: agudo áspero + formante
+        this.sTone(310 * m, 150, 0.2, 'square', 0.11);
+        this.sTone(155 * m, 80, 0.22, 'sawtooth', 0.07);
+        this.sNoise(0.16, 1900 * m, 0.05, 'bandpass', 0, 700);
+        break;
+      default: // bramido con sub doble (grave pero CORTO)
+        this.sTone(84 * m, 38, 0.34, 'sawtooth', 0.14);
+        this.sTone(42, 26, 0.4, 'sine', 0.11, 0.02);
+        this.sNoise(0.24, 240 * m, 0.07, 'lowpass', 0.02, 90);
+        break;
+    }
+  }
+
+  // ---- 4) Rechazo del gate: DOS tonos en segunda mayor SUSPENDIDA que   ----
+  // ----    NUNCA llegan a resolverse — el segundo intenta subir hacia la ----
+  // ----    nota de resolución, se queda CORTO y vuelve; ambos se apagan  ----
+  // ----    sin cadencia. Aire tenue alrededor. Volumen bajo, ~1.4 s.     ----
+  gateDenied() {
+    this.init();
+    if (!this.ctx || !this.rl('gateDenied', 0.5)) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    // voz base (La3): muere cayendo un pelín, SIN resolver
+    const o1 = ctx.createOscillator();
+    o1.type = 'sine';
+    o1.frequency.setValueAtTime(220, t);
+    o1.frequency.exponentialRampToValueAtTime(214, t + 1.0);
+    const g1 = ctx.createGain();
+    g1.gain.setValueAtTime(0.0001, t);
+    g1.gain.linearRampToValueAtTime(0.085, t + 0.09);
+    g1.gain.setValueAtTime(0.085, t + 0.7);
+    g1.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
+    o1.connect(g1); g1.connect(this.sfxGain);
+    o1.start(t); o1.stop(t + 1.25);
+    // voz suspendida (Si3): intenta subir hacia Do4, SE QUEDA CORTA (258 Hz)
+    // y vuelve a Si3 — la segunda mayor queda en el aire, sin cadencia.
+    const o2 = ctx.createOscillator();
+    o2.type = 'sine';
+    o2.frequency.setValueAtTime(246.94, t + 0.06);
+    o2.frequency.exponentialRampToValueAtTime(258, t + 0.5);     // intento
+    o2.frequency.setValueAtTime(258, t + 0.62);                  // se detiene
+    o2.frequency.exponentialRampToValueAtTime(246.94, t + 1.0);  // vuelve
+    const g2 = ctx.createGain();
+    g2.gain.setValueAtTime(0.0001, t + 0.06);
+    g2.gain.linearRampToValueAtTime(0.065, t + 0.2);
+    g2.gain.setValueAtTime(0.065, t + 0.7);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t + 1.35);
+    o2.connect(g2); g2.connect(this.sfxGain);
+    o2.start(t + 0.06); o2.stop(t + 1.4);
+    // aire (respiración de la puerta que no cede; ruido COMPARTIDO)
+    this.sNoise(1.3, 4800, 0.02, 'bandpass', 0.1, 6200);
+  }
+
+  // ---- 5) Apertura del gate: DISOLUCIÓN — glissando suave hacia arriba   ----
+  // ----    que se deshace por capas (el parcial se apaga antes que la    ----
+  // ----    raíz) + campana en la cima que se apaga sola. ~3 s, volumen   ----
+  // ----    moderado.                                                     ----
+  gateOpen() {
+    this.init();
+    if (!this.ctx || !this.rl('gateOpen', 0.6)) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    // Glissando raíz: 196 → 784 Hz (dos octavas), se disuelve al subir.
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(196, t);
+    o.frequency.exponentialRampToValueAtTime(784, t + 1.5);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.1, t + 0.18);
+    g.gain.setValueAtTime(0.1, t + 1.0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.55);
+    o.connect(g); g.connect(this.sfxGain);
+    o.start(t); o.stop(t + 1.6);
+    // Parcial de octava: sube con el glissando pero se APAGA antes (el
+    // brillo se queda atrás mientras la raíz sigue subiendo).
+    const o2 = ctx.createOscillator();
+    o2.type = 'triangle';
+    o2.frequency.setValueAtTime(392, t);
+    o2.frequency.exponentialRampToValueAtTime(1568, t + 1.5);
+    const g2 = ctx.createGain();
+    g2.gain.setValueAtTime(0.0001, t);
+    g2.gain.linearRampToValueAtTime(0.045, t + 0.14);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.95);
+    o2.connect(g2); g2.connect(this.sfxGain);
+    o2.start(t); o2.stop(t + 1.0);
+    // Aire de piedra en movimiento (ruido COMPARTIDO, barrido grave)
+    this.sNoise(1.2, 240, 0.06, 'lowpass', 0.12, 90);
+    // Campana que se apaga: brillo en la cima, decae solo + eco residual
+    this.sTone(1568, 1568, 1.6, 'sine', 0.06, 1.25);
+    this.sTone(4325, 4325, 0.8, 'sine', 0.018, 1.27); // parcial inarmónico
+    this.sTone(1568, 1568, 0.9, 'sine', 0.02, 2.05);  // eco que se apaga
+  }
+
+  // ---- 6) Trabajo de NPC (MUY discreto: picos 0.024..0.05 pre-buses —    ----
+  // ----    el "de cerca" lo decide el orquestador). Throttle interno     ----
+  // ----    DETERMINISTA: ≤ 1 disparo por 700 ms POR KIND (clave propia   ----
+  // ----    en rl()). Variación por contador workN, sin Math.random.      ----
+  workSfx(kind: 'martillo' | 'remo' | 'barre' | 'rezar') {
+    this.init();
+    if (!this.ctx || !this.rl('work:' + kind, 0.7)) return;
+    const n = this.workN++;
+    const m = 0.97 + det01(n * 3 + 7) * 0.06; // micro-afinación determinista
+    switch (kind) {
+      case 'martillo': // golpe corto + resonancia de madera
+        this.sNoise(0.03, 2100 * m, 0.05, 'bandpass', 0, 1200);  // click del metal
+        this.sTone(190 * m, 120, 0.09, 'square', 0.05);          // cuerpo
+        this.sTone(240 * m, 235 * m, 0.3, 'sine', 0.024, 0.01);  // caja que resona
+        break;
+      case 'remo': { // agua + madera: la remada ALTERNA determinísticamente
+        const pull = (n & 1) === 0;
+        this.sNoise(0.32, pull ? 1100 : 850, 0.042, 'lowpass', 0, pull ? 320 : 380);
+        this.sTone(150 * m, 96, 0.12, 'triangle', 0.028);        // palada
+        this.sTone(520 * m, 700 * m, 0.05, 'sine', 0.014, 0.22); // goteo del remo
+        break;
+      }
+      case 'barre': // frotación rítmica: 3 pasadas de escoba sobre piedra
+        for (let i = 0; i < 3; i++) {
+          this.sNoise(0.11, 700 - i * 140, 0.03, 'bandpass', i * 0.16, 320);
+        }
+        break;
+      case 'rezar': // murmullo tonal: canto bajo con vibrato suave
+        this.sSongTone(118 + det01(n * 5 + 11) * 14, 0.7, 0.026, 0, 4.5);
+        break;
+    }
+  }
+
+  // ---- 7) Muffle de música para cinemáticas/escenas. Inserta (UNA vez,  ----
+  // ----    perezoso) un lowpass ENTRE musicGain y master y funde su     ----
+  // ----    frecuencia. TODA la música procedural pasa por musicGain     ----
+  // ----    (secuenciador, kick, tambor de tensión) → un solo filtro     ----
+  // ----    apaga TODO el bus sin tocar nodos activos. SFX/ambiente      ----
+  // ----    (sfxGain) NO se tocan. IDEMPOTENTE y NUNCA crash sin ctx o   ----
+  // ----    sin música: si el bus aún no existe, queda como estado pedido ----
+  // ----    y el primer encendido posterior lo cablea.                   ----
+  sceneMusicMuffled(on: boolean) {
+    if (on === this.sceneMuffleOn) return; // idempotente → no-op seguro
+    this.init();
+    if (!this.ctx || !this.musicGain || !this.master) return; // sin audio: no-op
+    this.sceneMuffleOn = on;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    if (!this.muffleFilter || this.muffleCtx !== ctx) {
+      // Inserta el filtro SOLO la primera vez (o si el ctx se recreara):
+      // musicGain deja de ir directo a master y pasa por el lowpass.
+      const f = ctx.createBiquadFilter();
+      f.type = 'lowpass';
+      f.frequency.value = SCENE_MUFFLE_OPEN;
+      f.Q.value = 0.4;
+      this.musicGain.disconnect();
+      this.musicGain.connect(f);
+      f.connect(this.master);
+      this.muffleFilter = f;
+      this.muffleCtx = ctx;
+    }
+    // Crossfade de frecuencia (0.9 s) — reversible y sin clicks.
+    const fr = this.muffleFilter.frequency;
+    fr.cancelScheduledValues(now);
+    fr.setValueAtTime(Math.max(40, fr.value), now);
+    fr.linearRampToValueAtTime(on ? SCENE_MUFFLE_LOW : SCENE_MUFFLE_OPEN, now + 0.9);
+  }
 }
 
 export const audio = new AudioEngine();
@@ -1522,3 +1893,57 @@ export function playInteriorAmbience(on: boolean): void { audio.interiorAmbience
  *  discretas con leve variación determinista. Cablear al pintar cada línea
  *  de diálogo del viajero (evento aleatorio de encuentro). */
 export function playTravelerLine(): void { audio.travelerLine(); }
+
+// ============================================================
+// R11-8 · API EXPORT para el orquestador (envoltorios delgados sobre
+// el singleton `audio`). Nombres EXACTOS pactados para el cableado.
+// ============================================================
+
+/** Stinger de cinemática de INICIO (épica 7.1): 'alba' = acorde ascendente
+ *  cálido (cuerdas sintéticas de ataque lento + campana de amanecer, ~4 s
+ *  con swell); 'tejedor' = arpegio de hilos plucked con ecos tejidos y
+ *  shimmer agudo tenue (~3 s). Cablear al ARRANCAR la cinemática de inicio
+ *  del disco elegido (una sola vez por partida). */
+export function playIntroSceneTone(disc: 'alba' | 'tejedor'): void { audio.introSceneTone(disc); }
+
+/** Stinger de escena de historia (épica 7.3): 'acto' = doble quinta
+ *  descendente grave con reverb larga; 'derrota' = impacto sordo + campana
+ *  rota (desafinación intencional); 'despertar' = coro sintético que se
+ *  abre desde un tono base con detune progresivo. IDEMPOTENTE POR KIND
+ *  MIENTRAS SUENA: repetir antes de que acabe es no-op (llamadas por frame
+ *  seguras). Cablear al disparar cada escena/batalla de historia. */
+export function playStorySting(kind: 'acto' | 'derrota' | 'despertar'): void { audio.storySting(kind); }
+
+/** Rugido de MINI-JEFE (épica 7.2): 4 variantes DETERMINISTAS según seed
+ *  (patrón playBossRoarVariant con otras sales de hash), más cortas y
+ *  brutas (≤ ~0.55 s). Cablear en la intro/aggro del mini-jefe pasando el
+ *  seed de la entidad (p.ej. miniboss.id o hash de sala). */
+export function playMinibossRoar(seed: number): void { audio.minibossRoar(seed); }
+
+/** Rechazo del gate (épica 7.4): dos tonos en segunda mayor suspendida que
+ *  NUNCA llegan a resolverse (el segundo intenta subir, se queda corto y
+ *  vuelve) + aire. Cablear cuando la puerta/gate RECHAZA la entrada
+ *  (condición no cumplida). */
+export function playGateDenied(): void { audio.gateDenied(); }
+
+/** Apertura del gate (épica 7.4): disolución — glissando suave hacia arriba
+ *  que se deshace por capas + campana que se apaga (~3 s). Cablear cuando
+ *  la puerta/gate SE ABRE (una vez por apertura). */
+export function playGateOpen(): void { audio.gateOpen(); }
+
+/** Trabajo de NPC (épica 7.6, MUY discreto — picos 0.024..0.05): 'martillo'
+ *  = golpe corto con resonancia de madera, 'remo' = agua + palada (alterna
+ *  determinista), 'barre' = frotación rítmica de 3 pasadas, 'rezar' =
+ *  murmullo tonal con vibrato. Throttle interno determinista: ≤ 1 por
+ *  700 ms POR KIND. Cablear en el bucle de NPCs trabajadores SOLO cuando
+ *  está en pantalla (el "de cerca" lo decide el orquestador). */
+export function playWorkSfx(kind: 'martillo' | 'remo' | 'barre' | 'rezar'): void { audio.workSfx(kind); }
+
+/** Muffle de música para cinemáticas/escenas (épicas 7.1/7.3): funde la
+ *  frecuencia de un lowpass insertado ENTRE musicGain y master (toda la
+ *  música procedural pasa por ese bus; SFX/ambiente intactos). IDEMPOTENTE:
+ *  seguro de llamar CADA FRAME (p.ej.
+ *  setSceneMusicMuffled(hayCinematica || hayEscenaHistoria);). NUNCA crash
+ *  sin ctx/música: sin audio queda como estado pedido y el primer
+ *  encendido posterior cablea el filtro. */
+export function setSceneMusicMuffled(on: boolean): void { audio.sceneMusicMuffled(on); }

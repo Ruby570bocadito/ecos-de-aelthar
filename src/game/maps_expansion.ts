@@ -501,7 +501,7 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
     id: 'costa',
     name: 'Costa de Bruma',
     subtitle: 'Donde el mar guarda las notas · Zona 10–16',
-    w: 52, h: 40,
+    w: 64, h: 40,  // R11-fix: w desfasado (52) dejaba el naufragio x51..58 INaccesible
     rows: buildCosta(),
     epochDiffs: costaDiffs,
     music: 'costa',
@@ -553,7 +553,7 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
     id: 'aldea',
     name: 'Aldea de Merrow',
     subtitle: 'La que la Niebla borró · Zona 12–16',
-    w: 44, h: 34,
+    w: 44, h: 44,  // R11-fix: h desfasada (34) dejaba huerto/cementerio y34..43 INaccesibles
     rows: buildAldea(),
     epochDiffs: aldeaDiffs,
     music: 'aldea',
@@ -599,7 +599,7 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
     id: 'cumbres',
     name: 'Cumbres Heladas',
     subtitle: 'El frío que aprendió a escuchar · Zona 14–20',
-    w: 50, h: 42,
+    w: 66, h: 42,  // R11-fix: w desfasado (50) dejaba campamento/mirador x52..61 INaccesibles
     rows: buildCumbres(),
     epochDiffs: cumbresDiffs,
     music: 'cumbres',
