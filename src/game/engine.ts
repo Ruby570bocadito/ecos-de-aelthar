@@ -39,6 +39,7 @@ import { balanceTick, enemyStatMult, critChance, CRIT_MULT } from './balance';
 import { worldTick, worldInteract } from './worldlife';
 import { timeTick, beginEpochShift } from './timeskip';
 import { acto5Tick, estrenarCuna } from './acto5'; // R13 «La carta»: ritmo del Aún + estrena (solo en la Cuna)
+import { acto5TickR14 } from './acto5b'; // R14 «La Ciudadela»: la muralla que canta (solo en la Ciudadela)
 import { defaultStats, sanitizeStats, statsTick, achievementTick } from './achievements'; // 16-c: estadísticas + logros
 import {
   cycleCompanionMode, useSenno, registerCorpse16b, bossSennoLoot16b, companionInterpose,
@@ -315,6 +316,7 @@ export class Game {
     worldTick(this, dt);     // fauna, rumores y eventos del mundo (13-b)
     timeTick(this, dt);      // inmersión del viaje temporal (13-c)
     acto5Tick(this, dt);     // R13: compás del Aún — sale temprano fuera de la Cuna
+    acto5TickR14(this, dt);  // R14: la muralla que canta — sale temprano fuera de la Ciudadela
     armorTick(this, dt);     // 14-b: pasiva de la Malla del Alba (+vigor/s)
     // ==== 16-c (logros-stats): tiempoJugado + memorias + logros (O(1), early-out) ====
     statsTick(this, dt);
@@ -669,6 +671,10 @@ export class Game {
     // patrón Acto II: si el jugador baja antes de aceptar, avanza al volver a
     // repetir la bajada).
     if (id === 'cuna' && this.questIdx === 16 && this.questStep === 1) this.questAdvance();
+    // R14: pisar la Ciudadela completa la entrada de q18 (idempotente por
+    // estado, patrón Acto II / R13: si el Portador entra antes de aceptar,
+    // el watcher de acto5b repara el orden al volver a aceptar).
+    if (id === 'ciudadela' && this.questIdx === 17 && this.questStep === 1) this.questAdvance();
     if (!this.flags[`visited_${id}`]) this.flags[`visited_${id}`] = true;
     // R8-1.1: rearma de la habilidad derivado del flag persistente. Cualquier
     // ruta de (re)entrada al mapa (continueGame, respawn, viaje, fade) pasa por
@@ -1216,6 +1222,10 @@ export class Game {
       else if (pr.kind === 'fragment') consider(px, py, 'frag', 'Fragmento de Eco', () => this.openDialogue('voz_fragment'), 30);
       // R13: el SEGUNDO Fragmento (la Cuna) — su propio diálogo y su flag
       else if (pr.kind === 'fragment2') consider(px, py, 'frag', 'Fragmento de la Cuna', () => this.openDialogue('voz_fragmento2'), 30);
+      // R14 «La Ciudadela»: las verdades que se devuelven (label = nodo de diálogo)
+      else if (pr.kind === 'verdad') consider(px, py, 'verdad', 'Devolver la verdad', () => this.openDialogue(pr.label ?? 'verdad_bib'), 30);
+      // R14: las cadenas del silencio (la guardia de cada distrito; la opción mala vive aquí)
+      else if (pr.kind === 'gate') consider(px, py, 'gate', 'La cadena del silencio', () => this.openDialogue(pr.label ?? 'cadena_bib'), 26);
       else if (pr.kind === 'altarEcho') consider(px, py, 'altar', 'Altar del Eco', () => this.tryTakeEco(), 30);
       else if (pr.kind === 'sign') consider(px, py, 'sign', 'Leer cartel', () => this.readSign(pr.label ?? ''), 28);
       else if (pr.kind === 'lamp' && !this.flags[pr.id]) consider(px, py, 'lamp', 'Encender el Farol del Recuerdo', () => this.lightLamp(pr.id), 28);

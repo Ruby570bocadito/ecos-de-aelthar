@@ -441,6 +441,34 @@ export function interaccionInteract16b(g: Game): boolean {
 // ============================================================
 
 const RUMOR_LINES_16B: Record<MapId, string[]> = {
+  ciudadela: [
+    'La Ciudadela de Vesh: tu nombre ya está escrito en la muralla, junto al de todos los que subieron. No preguntes quién lo escribió.',
+    'Los lanceros llevan trescientos años de guardia. Pregúntales por qué vigilan: la pregunta no les duele, les da ternura.',
+    'Las murallas cantan los pasos de quien entra. Es la única bienvenida que esta ciudad recuerda dar.',
+    'La Niebla nunca entró aquí. No hay nada que comer: los ayeres se los comió la espera.',
+    'Tres verdades duermen en tres distritos. Devuélvelas y las cadenas caerán sin una sola espada.',
+    'La sala de los nombres tiene faroles que se encienden con nombres dichos en voz alta. Queda uno que nadie ha dicho nunca.',
+    'La Lanza descansa en el archivo. No está guardada: está esperando permiso.',
+    'El Consejo no ha salido de la antecámara en tres siglos. Esperan a alguien que devuelva lo que la Orden guardó.',
+    'Dicen que el primer Portador aún camina por aquí. Dicen que la espera lo hizo vecino.',
+    'Si fuerzas una cadena, la Orden lo sabrá. Los vecinos con lanza también tienen memoria.',
+  ],
+  biblioteca: [
+    'Los estantes de la Biblioteca guardan lo que la espera no pudo comer.',
+    'El Libro del Primer Eco lleva trescientas entradas iguales. Ninguna menciona una salida.',
+  ],
+  nombres: [
+    'Cada farol de la sala lleva el nombre de un Portador que no volvió.',
+    'La cantora canta los nombres de todos menos uno. Adivina cuál.',
+  ],
+  archivo: [
+    'El archivo duplica todo: por cada verdad guardada, una cadena.',
+    'La orden póstuma de Vesh tiene dos mitades. El mundo solo conoció una.',
+  ],
+  antecamara: [
+    'La silla de Vesh está vacía desde la noche del deicidio. Nadie la ha ocupado.',
+    'La puerta del norte lleva tres cadenas nuevas. El aire que pasa por debajo corta los nombres.',
+  ],
   lunaris: [
     'Dicen que la Niebla respeta las canciones de cuna. Por algo los niños dormían.',
     'El pozo de la plaza fue el primero en quedarse sin nombre.',

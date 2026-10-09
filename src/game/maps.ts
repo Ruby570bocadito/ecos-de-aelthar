@@ -7,6 +7,7 @@
 import type { MapDef, MapId, EpochDiff, Epoch } from './types';
 import { EXPANSION_MAPS } from './maps_expansion';
 import { ACTO5_MAPS } from './maps_acto5'; // R13 «La carta»: La Cuna del Canto (Acto V fase 1)
+import { ACTO5_MAPS_R14 } from './maps_acto5b'; // R14 «La Ciudadela»: la ciudad-fortaleza y sus salas (Acto V fase 2)
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -414,7 +415,7 @@ const BASE_MAPS: Record<'lunaris' | 'bosque' | 'cripta', MapDef> = {
 
 // Mundo completo: mapa base + expansión del Acto II (Costa, Aldea, Cumbres)
 // + Acto V fase 1 (La Cuna del Canto, R13)
-export const MAPS: Record<MapId, MapDef> = { ...BASE_MAPS, ...EXPANSION_MAPS, ...ACTO5_MAPS };
+export const MAPS: Record<MapId, MapDef> = { ...BASE_MAPS, ...EXPANSION_MAPS, ...ACTO5_MAPS, ...ACTO5_MAPS_R14 };
 
 /**
  * R13 · Épocas de un mapa, en orden [base, alternativa]. Convención histórica

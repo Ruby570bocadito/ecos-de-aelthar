@@ -10,7 +10,8 @@ import type { DialogueNode, DialogueOption, Player, ToneKind } from './types';
 import { MEMORIES } from './data';
 import { ACTO3_ELITE } from './data';
 import { ACTO4_BOSS, ACTO4_FIN_BASE, ACTO4_FIN_JEFES } from './data';
-import { audio } from './audio';
+import { audio } from './audio'; // R14: los hooks del Acto V usan sfx (coin/quest/echo)
+import { acto5R14Hook } from './acto5b'; // R14 «La Ciudadela»: el hook del Acto V fase 2
 
 const TONES: ToneKind[] = ['empatico', 'pragmatico', 'sarcastico', 'amenazante'];
 
@@ -510,6 +511,9 @@ export function handleCustomAction(g: Game, action: string): boolean {
   // pasos que el motor no avanza (fragmento + estrena en cualquier orden,
   // reparación de saves a medio aceptar). O(1) fuera del estado del acto.
   acto5CatchUp(g);
+  // R14 «La Ciudadela»: watcher idempotente + acciones del Acto V fase 2.
+  // Devuelve true si la acción era del acto (q18/verdades/cadenas/Naia/Consejo).
+  if (acto5R14Hook(g, action)) return true;
 
   // accept_q17: la Guarda lee la carta de Vesh — acepta q17 (índice 16).
   // La conversación MISMA completa el paso 0 (patrón accept_q6), así que el

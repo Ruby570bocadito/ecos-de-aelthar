@@ -13,7 +13,8 @@
 export type Dir = 'down' | 'up' | 'left' | 'right';
 export interface Vec { x: number; y: number }
 
-export type MapId = 'lunaris' | 'bosque' | 'cripta' | 'costa' | 'aldea' | 'cumbres' | 'cuna'; // R13: +cuna
+export type MapId = 'lunaris' | 'bosque' | 'cripta' | 'costa' | 'aldea' | 'cumbres' | 'cuna'
+  | 'ciudadela' | 'biblioteca' | 'nombres' | 'archivo' | 'antecamara'; // R13: +cuna · R14: +La Ciudadela y sus salas
 export type Epoch = 'presente' | 'pasado' | 'aun'; // R13: +aun (solo mapas baseEpoch 'aun')
 export type TrackName = 'village' | 'forest' | 'crypt' | 'boss' | 'title' | 'costa' | 'aldea' | 'cumbres';
 
@@ -70,7 +71,7 @@ export interface ExitDef {
   label?: string;
 }
 
-export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'fragment2' | 'altarEcho' | 'sign' | 'gate' | 'wreck' | 'faro' | 'lamp'; // R13: +fragment2
+export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'fragment2' | 'altarEcho' | 'sign' | 'gate' | 'wreck' | 'faro' | 'lamp' | 'verdad'; // R13: +fragment2 · R14: +verdad (la verdad que se devuelve a su lugar)
 
 export interface PropDef {
   id: string; kind: PropKind; x: number; y: number;

@@ -391,9 +391,11 @@ function drawProps(g: Game, sx: (n: number) => number, sy: (n: number) => number
     //  · props de la expansión (wreck/faro/lamp) → drawExpansionProp
     switch (pr.kind) {
       case 'sanctuary': case 'forge': case 'fragment': case 'fragment2':
-      case 'altarEcho': case 'sign': case 'gate':
+      case 'altarEcho': case 'sign': case 'gate': case 'verdad':
         // R13: 'fragment2' (la Cuna) se dibuja con el sprite del Fragmento original
-        drawPropV2(g.ctx, pr.kind === 'fragment2' ? 'fragment' : pr.kind, px, py, g, selected, pr.id);
+        // R14: 'verdad' se dibuja con el sprite del altar (el estante/la placa
+        // de cada distrito) — el acabado lo da la ronda visual.
+        drawPropV2(g.ctx, pr.kind === 'fragment2' ? 'fragment' : pr.kind === 'verdad' ? 'altarEcho' : pr.kind, px, py, g, selected, pr.id);
         break;
       case 'wreck': case 'faro': case 'lamp':
         // Acto II: props de la expansión (nave naufragada, faro, faroles de Merrow)

@@ -2113,3 +2113,298 @@ function getDialogueActo5(nid: string, ctx: DialogueCtx): string {
 getDialogue = getDialogueActo5;
 
 // ═══════ FIN DEL BLOQUE R13 ═══════
+
+// ═══════ R14 (agente acto5b) — BLOQUE AÑADIDO ═══════
+// ACTO V · «El Segundo Canto», fase 2 «La Ciudadela» (q18). Todo lo anterior
+// queda INTACTO. Este bloque SOLO AÑADE (mismo patrón R13):
+//   1) la misión q18 al final del array QUESTS (push),
+//   2) objetivos de la Brújula para el índice 17,
+//   3) 17 nodos de diálogo (Object.assign sobre DIALOGUES),
+//   4) la CUARTA capa del envoltorio de getDialogue (13-a → 16-a → R7-V5
+//      → R13 → R14): captura la función vigente y delega toda ruta que
+//      no sea del Acto V fase 2 (regresión 0).
+// Canon: docs/history.md §711 (distritos y verdades), §720 (la póstuma
+// completa), §734 (Naia y el catecismo de los faroles).
+// Handlers en acto5b.ts vía acto5R14Hook (hooks.ts la llama).
+// ============================================================
+
+// ---------------- Misión del Acto V fase 2 (append) ----------------
+
+QUESTS.push(
+  {
+    id: 'q18', name: 'La Ciudadela',
+    steps: [
+      'Habla con la Guarda del Primer Canto: la Orden abrió sus puertas',
+      'Entra en la Ciudadela de Vesh (la antecámara oeste de la Cripta)',
+      'Devuelve las tres verdades: la Biblioteca, la Sala de los Nombres y el Archivo de la Lanza',
+      'Sube a la Antecámara y escucha al Consejo de la Orden',
+    ],
+  },
+);
+
+// ---------------- Brújula de Ecos: objetivos de q18 (índice 17) ----------------
+
+QUEST_COMPASS[17] = [
+  { npc: 'guarda' },
+  { prop: 'sign_ci0', map: 'ciudadela' },  // la entrada: el cartel de bienvenida
+  { prop: 'estante_bib', map: 'ciudadela' }, // la primera verdad; los carteles guían las otras
+  { npc: 'consejo' },
+];
+
+// ---------------- Nodos de diálogo del Acto V fase 2 ----------------
+
+const D_ACTO5B: Record<string, DialogueNode> = {
+  // ----- La Guarda abre la subida (tras el pago de q17) -----
+  acto5_guarda_ciud: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: '(aprieta la lanza contra el pecho, como se abrazan las buenas noticias) Portador... mientras estrenabais el primer día, algo RESONÓ en la piedra de la Sala. La Orden lo oyó desde trescientos años de distancia. Por primera vez desde la noche del deicidio, la Ciudadela abrió sus puertas: la antecámara del oeste está despejada, y detrás hay una subida que ninguno de los tuyos hizo de vuelta. (se le quiebra un poco la voz) Todos los que oyeron el primer Eco subieron. Ninguno volvió. Ve tú — y vuelve: rompe el numerador. Di a los de la Orden que la Guarda del Primer Canto sostiene dos puertas y las dos siguen en pie.',
+    onEnd: 'accept_q18',
+    options: [
+      { text: '(Subir: la antecámara oeste aguarda — rompe la estadística)', tone: 'empatico' },
+      { text: 'Volveré, Guarda. Los que subieron no tuvieron a quién volverles: yo sí.', tone: 'pragmatico' },
+      { text: 'Trescientos años esperando permiso para devolver una lanza. La burocracia divina no tiene rival.', tone: 'sarcastico' },
+    ],
+  },
+  acto5_guarda_ciud2: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: 'La antecámara oeste está abierta, Portador, y la subida es tuya. Los de la Orden esperan tres verdades y trescientos años de silencio: devuélvelas sin una sola espada y baja la guardia que nadie supo bajar. Yo sostengo esta puerta y la de abajo. Dos puertas, una Guarda — y ahora, también, un Portador que vuelve.',
+    options: [
+      { text: 'Dos puertas y una Guarda: la Orden aprendió el oficio contigo.', tone: 'empatico' },
+      { text: 'Guardo el puesto. Tú guarda las puertas.', tone: 'sarcastico' },
+    ],
+  },
+  // ----- El Guardián de la Puerta (la entrada de la Ciudadela) -----
+  porteroc_1: {
+    name: 'El Guardián de la Puerta', portrait: 'kael',
+    text: '(baja la lanza, despacio, como se baja un saludo que se creía perdido) ...Un Portador. ENTRANDO. (parpadea tres veces) Perdona: el oficio me enseñó a abrir a los que subían y a no mirar la puerta después. Trescientos años. (se compone) Escucha, Portador: esta ciudad tiene tres distritos con tres cadenas, y cada cadena guarda una verdad que la Orden no supo devolver. La Biblioteca, al noroeste. El Archivo de la Lanza, al noreste. La Sala de los Nombres, al suroeste. Devuelve cada verdad a su lugar y las cadenas caerán solas. Y si prefieres forzarlas... (no termina la frase) ...la Orden también recordaría eso. El Consejo espera en la Antecámara, al norte: con las tres verdades, su puerta se abre.',
+    options: [
+      { text: 'Devolveré las tres. Sin una sola espada, como pide tu muralla.', tone: 'empatico' },
+      { text: 'Tres distritos, tres cadenas, un Consejo. Empezaré por la Biblioteca.', tone: 'pragmatico' },
+      { text: 'Trescientos años sin mirar la puerta y aún abres bonito. Oficio de familia.', tone: 'sarcastico' },
+    ],
+  },
+  porteroc_2: {
+    name: 'El Guardián de la Puerta', portrait: 'kael',
+    text: '(mira la puerta, esta vez mirándola) Las cadenas descansan en el suelo y la ciudad respira distinto: los lanceros recuerdan por qué vigilan, y la muralla canta tu paso como canta el de nadie más. (cierra el puño con suavidad) El Consejo te espera en la Antecámara, Portador. Trescientos años es mucho para una disculpa: no les hagas esperar ni un minuto más.',
+    options: [
+      { text: 'Voy con el Consejo. Esta ciudad ya canta mejor.', tone: 'empatico' },
+      { text: 'Una disculpa de tres siglos. Que no se les haga larga otra vez.', tone: 'sarcastico' },
+    ],
+  },
+  // ----- Los lanceros: vecinos con lanza (pre/post verdad) -----
+  lancero_tum: {
+    name: 'Lancero Tum', portrait: 'kael',
+    text: '(acomoda la lanza sinConvicción) ¿Otro que sube? Pasa, pasa: la Biblioteca está en el patio, con su cadena al fondo. (se encoge de hombros) ¿Por qué vigilamos? Ni idea, vecino. Mi abuela vigilaba, mi padre vigiló, y la orden no pregunta dos veces. Dicen que la cadena guarda una verdad... yo solo sé que nadie me la contó dos veces. Si la sabes, dila donde corresponde: el estante del patio está escuchando.',
+    options: [
+      { text: 'Iré al estante. Tu guardia merece un motivo, Tum.', tone: 'empatico' },
+      { text: 'Un estante que escucha. Vale más que trescientos años de pregunta.', tone: 'pragmatico' },
+      { text: 'Guardias sin motivo y murallas que cantan. El barrio necesita un sindicato.', tone: 'sarcastico' },
+    ],
+  },
+  lancero_tum_post: {
+    name: 'Lancero Tum', portrait: 'kael',
+    text: '(sostiene la lanza DERECHA, por primera vez en trescientos años de familia) ...Lo oímos todo, vecino. El libro volvió a su estante y la guardia se sintió... de qué color se siente un motivo, ¿eh? (ríe, asombrado de sí mismo) Vigilar para proteger: ESO era. Mi abuela lo sabía y nadie se lo dijo dos veces. Gracias, Portador. La Biblioteca abre por tu mano.',
+    options: [
+      { text: 'Vigila con orgullo, Tum. El motivo ya es tuyo.', tone: 'empatico' },
+      { text: 'Una lanza derecha y un motivo. Mejora más que una espada nueva.', tone: 'sarcastico' },
+    ],
+  },
+  lancero_sayo: {
+    name: 'Lancera Sayo', portrait: 'kael',
+    text: '(pule la punta de la lanza con un trapo viejo) El Archivo está al fondo, con su cadena. ¿La verdad que guarda? Los viejos decían que la orden póstuma del Gran Inquisidor... pero la segunda mitad se la comió el tiempo o la esperanza, según con quién hables. (mira la cadena) Yo cumplo porque cumplir es lo que queda cuando se olvida el porqué. Si encuentras el porqué, dilo alto: la piedra de aquí también aprende.',
+    options: [
+      { text: 'Encontraré la mitad que falta, Sayo. Prometido.', tone: 'empatico' },
+      { text: 'El porqué pesa menos que la lanza. Iré a por él.', tone: 'pragmatico' },
+      { text: 'Pulas la lanza o el porqué, pero no los dos: el metal se celoso.', tone: 'sarcastico' },
+    ],
+  },
+  lancero_sayo_post: {
+    name: 'Lancera Sayo', portrait: 'kael',
+    text: '(guarda el trapo: ya no hay nada que pulir, todo brilla) La orden completa... «devuélvele el silencio, no el mundo». (lo repite despacio, probándose el peso) Trescientos años guardando un PERMISO, y nosotros con la lanza al hombro sin saber que era un encargo de entrega. (te mira) El Consejo no va a creer lo que le vas a llevar. Ve: yo vigilo la puerta con más gusto que nunca.',
+    options: [
+      { text: 'El permiso llega a su dueño, Sayo. Todo en orden.', tone: 'empatico' },
+      { text: 'Un encargo de entrega con tres siglos de retraso. La ruta más larga del mundo.', tone: 'sarcastico' },
+    ],
+  },
+  lancero_brume: {
+    name: 'Lancero Brume', portrait: 'kael',
+    text: '(apoya la lanza en la pared: no la suelta, pero la descansa) La Sala de los Nombres está al fondo, vecino. Faroles apagados, nombres por decir. (baja la voz) Trescientos años y la sala tiene más silencio que la Cripta. Hay una cantora ahí dentro que ya no sabe a quién canta. Si sabes nombres... dlos en voz alta. Los faroles escuchan mejor que nosotros.',
+    options: [
+      { text: 'Los diré, Brume. Todos los que quepan en una voz.', tone: 'empatico' },
+      { text: 'Faroles que escuchan y un patio que responde. Voy.', tone: 'pragmatico' },
+      { text: 'Un lancero que descansa la lanza y una sala que espera nombres. Voy medio camino.', tone: 'sarcastico' },
+    ],
+  },
+  lancero_brume_post: {
+    name: 'Lancero Brume', portrait: 'kael',
+    text: '(no tiene la lanza en la mano: la sostiene el MURALLA, apoyada a su lado) ...Los faroles están encendidos, vecino. TODOS. Hasta el que nadie sabía que faltaba. (se limpia la cara con la manga) Mi abuela cantaba los nombres cada noche. Yo no sabía que eran NOMBRES: pensaba que era la lluvia. Gracias. La sala canta y yo... yo también sé por qué espero.',
+    options: [
+      { text: 'Canta con ellos, Brume. La sala es tuya otra vez.', tone: 'empatico' },
+      { text: 'La lluvia que eran nombres. Y ahora son los dos. Bien.', tone: 'pragmatico' },
+    ],
+  },
+  // ----- LAS TRES VERDADES (las escenas de devolución) -----
+  verdad_bib: {
+    name: 'El Libro del Primer Eco', portrait: 'wisp',
+    text: '(el registro de la Orden, tomo primero, sobre el pedestal del patio: trescientas entradas con la misma línea, escritas con manos distintas) «Hoy subió otro. Le dimos techo, lanza y una guardia. No le dijimos que la Ciudadela no tiene salida, porque nadie nos dijo que la pregunta existía.» (la última página está en blanco: esperó trescientos años una despedida que nadie escribió) El estante de la Biblioteca está abierto al otro lado de la cadena: el libro RECONOCE a quien lo devuelve.',
+    options: [
+      { text: '(Devolver el Libro del Primer Eco a su estante)', action: 'acto5_verdad1' },
+      { text: 'Leerlo entero antes. Las despedidas no se aplazan otra vez.', tone: 'pragmatico' },
+    ],
+  },
+  verdad_nom: {
+    name: 'El Muro de los Nombres', portrait: 'wisp',
+    text: '(cada placa de la muralla lleva un nombre, y debajo, la fecha en que subió y un hueco donde iba la fecha en que volvió) Todos los que oyeron el primer Eco. Todos los que subieron. Ninguno volvió — y tu nombre ya está aquí, en una placa nueva, con su hueco abierto. (los faroles de la Sala de los Nombres esperan al otro lado de la cadena: el catecismo manda que se enciendan con nombres dichos en voz alta) Devuelve la verdad: di los nombres. Todos. Que la sala vuelva a saber quién espera.',
+    options: [
+      { text: '(Decir los nombres en voz alta, uno a uno)', action: 'acto5_verdad2' },
+      { text: 'Empezar por el mío. Un Portador que lee su propia placa.', tone: 'sarcastico' },
+    ],
+  },
+  verdad_arc: {
+    name: 'El Pergamino de la Lanza', portrait: 'wisp',
+    text: '(el archivo del patio guarda el pergamino póstumo de Vesh, el Gran Inquisidor: la orden que el mundo citó a medias) «Si alguien reúne el Canto, baja y sé su última nota...» — y la mitad que el tiempo no se comió, cosida al dorso en la misma letra: «...y si el Canto vuelve a necesitar lanza, recuerda que la lanza sorda era mía: devuélvele el silencio, no el mundo.» (la Orden no esperaba para matar otra vez: esperaba PERMISO PARA DEVOLVER. Trescientos años sin encontrar a quién.) El archivo interior está al otro lado de la cadena.',
+    options: [
+      { text: '(Colocar la orden completa en el archivo de la Lanza)', action: 'acto5_verdad3' },
+      { text: 'Leerla dos veces. Una para creerla, otra para poder decirla.', tone: 'empatico' },
+    ],
+  },
+  voz_lanza: {
+    name: 'La Lanza Sorda', portrait: 'wisp',
+    text: '(la lanza que mató al dios descansa sobre dos soportes de piedra, sorda como el día que la forjaron los Durn: no responde al Canto, no responde a nada) No está guardada. Está ESPERANDO. El permiso que pide su archivo ya llegó: lo traes tú, cosido a tres verdades devueltas. (un zumbido casi inaudible, como una cuerda que alguien afina muy lejos) Cuando el Consejo hable, ella sabrá qué hacer. Las lanzas sordas entienden de silencios: es su idioma natal.',
+    options: [
+      { text: '(Dejar que descanse: su permiso llega en camino)', tone: 'empatico' },
+      { text: 'Una lanza con permiso de devolución pendiente. El equipaje más pesado del mundo.', tone: 'sarcastico' },
+    ],
+  },
+  // ----- LAS CADENAS (la guardia de cada distrito; la opción mala vive aquí) -----
+  cadena_cerrada_bib: {
+    name: 'La cadena del silencio', portrait: 'wisp',
+    text: '(una cadena de eslabones finos cruza la puerta de la Biblioteca. No tiene candado: tiene UNA CONDICIÓN, y la conoce toda la ciudad) La cadena canta bajito, como canta la muralla: una verdad por eslabón. Devuelve la verdad de la Biblioteca — el Libro del Primer Eco, sobre el pedestal del patio — y la cadena caerá sola. O la fuerzas: la verdad volverá igual, pero la piedra tendrá el recuerdo del crujido. La Orden recuerda a quien devuelve. También recuerda a quien rompe.',
+    options: [
+      { text: '(Forzar la cadena: la Orden lo recordará)', action: 'acto5_forzar1' },
+      { text: '(Retroceder: primero, la verdad)', tone: 'pragmatico' },
+    ],
+  },
+  cadena_cerrada_nom: {
+    name: 'La cadena del silencio', portrait: 'wisp',
+    text: '(la cadena cruza la puerta de la Sala de los Nombres, y los eslabones zumban con nombres a medias) La condición es la de siempre: la verdad de los Nombres — di los nombres en el muro del patio, en voz alta, como manda el catecismo de los faroles — y la cadena descenderá. También puedes forzarla. Los faroles encenderán igual... pero los vecinos con lanza sabrán cómo se abrió la sala donde duermen sus abuelas.',
+    options: [
+      { text: '(Forzar la cadena: la Orden lo recordará)', action: 'acto5_forzar2' },
+      { text: '(Retroceder: primero, los nombres)', tone: 'pragmatico' },
+    ],
+  },
+  cadena_cerrada_arc: {
+    name: 'La cadena del silencio', portrait: 'wisp',
+    text: '(la cadena cruza la puerta del Archivo de la Lanza: eslabones finos, tres siglos sin un rasguño) Devuelve la verdad del Archivo — la orden póstuma de Vesh, completa, en el pergamino del patio — y la cadena caerá sin una espada. O la fuerzas: la Lanza dormirá igual... pero el Consejo sabrá que su archivo se abrió a patadas, y los lanceros que vigilan su recuerdan.',
+    options: [
+      { text: '(Forzar la cadena: la Orden lo recordará)', action: 'acto5_forzar3' },
+      { text: '(Retroceder: primero, la orden)', tone: 'pragmatico' },
+    ],
+  },
+  cadena_consejo: {
+    name: 'La cadena del Consejo', portrait: 'wisp',
+    text: '(la puerta de la Antecámara lleva una cadena de tres eslabones: uno por verdad, ninguno más) Esta cadena no tiene la opción de las otras. El Consejo de la Orden no se fuerza: trescientos años esperando una disculpa con forma de verdades devueltas. La Biblioteca, la Sala de los Nombres, el Archivo de la Lanza. Cuando las tres vuelvan a su lugar, esta cadena se quitará sola y la puerta del norte quedará abierta.',
+    options: [
+      { text: 'Entendido: tres verdades, tres distritos. Voy.', tone: 'pragmatico' },
+    ],
+  },
+  cadena_abierta: {
+    name: 'La cadena descansada', portrait: 'wisp',
+    text: '(la cadena descansa enrollada al pie de la puerta, como un perro viejo al sol) Su trabajo terminó: la verdad que guardaba volvió a su lugar, y una cadena que no tiene nada que guardar descansa. La puerta está abierta. Entra despacio: lo que se espera trescientos años también se asusta.',
+    options: [
+      { text: '(Entrar despacio)', tone: 'empatico' },
+    ],
+  },
+  // ----- NAIA (biblia §734: el catecismo de los faroles) -----
+  naia_antes: {
+    name: 'Una cantora de la Orden', portrait: 'ilwen',
+    text: '(una mujer joven recorre la sala de faroles apagados con una libreta. Canta bajito: son NOMBRES — uno por farol, todos menos uno) ...Adal, portador del segundo Eco... Berem, portador del tercero... (se detiene ante un farol apagado y relee la libreta) ...¿Y este? (pasapáginas: nada) Hay un farol sin nombre. Lo recorro cada noche y la libreta no lo sabe. (te mira: tiene el cansancio antiguo de quien espera sin saber que espera) Si sabes nombres, dlos: los faroles escuchan. Es el catecismo. Yo ya di todos los de la libreta... menos el de este. No sé cuál es. Es como si alguien me lo hubiera... quitado. (suspira) Tampoco sé el mío, pero eso es otra cosa. Se me habrá quedado en alguna parte.',
+    options: [
+      { text: '(Decir en voz alta: «Naia») — el nombre de la hermana de Ilwen', action: 'acto5_naia' },
+      { text: '¿Y si el farol sin nombre lleva TU nombre, cantora?', tone: 'pragmatico' },
+      { text: 'Una libreta que se come un nombre y una cantora sin el suyo. Qué casualidad tan redonda.', tone: 'sarcastico' },
+    ],
+  },
+  naia_despues: {
+    name: 'Naia', portrait: 'ilwen',
+    text: '(los faroles de la sala cantan juntos, encendidos todos; la mujer se sostiene del muro) Naia. Mi nombre es NAIA. (ríe y llora al mismo tiempo) Lo canté tanto para otros que el mío se me quedó en la garganta... y tú lo dijiste por mí. (recoge la libreta: en la última página, con mano nueva, escribe: «Naia, cantora. Vuelvo.») Mi hermano busca a su hermana desde hace años y no sabía el nombre que buscar. Ilwen, del Bosque: cuando baje el Canto, dile que la libreta ya tiene dueña y el farol ya tiene nombre. Gracias, Portador. Por nombrar: es sostener.',
+    options: [
+      { text: 'Ilwen sabrá. Los faroles del Bosque también cantan, ahora.', tone: 'empatico' },
+      { text: 'Una libreta con dueña, un farol con nombre. Dos deudas menos.', tone: 'pragmatico' },
+      { text: 'Hermana de Ilwen y no se te da bien ausentarte sin decir. Familiar.', tone: 'sarcastico' },
+    ],
+  },
+  // ----- EL CONSEJO (la confesión de la Orden + la póstuma completa §720) -----
+  consejo_1: {
+    name: 'El Consejo de la Orden', portrait: 'kael',
+    text: '(tres lanceros viejos alrededor de una mesa de piedra; una cuarta silla, al centro, vacía desde hace trescientos años: la de Vesh) ...Volviste. (el del centro se levanta despacio) Portador, escucha la confesión que esta sala guardó trescientos años: Vesh no dejó la carta por amor ni por estrategia. La dejó porque LO SABÍA. Su Lanza solo era capaz de matar aquello que canta — y al matar al dios, hizo lo único que un silencio teme: enseñarle que se puede. La orden póstuma completa, que el mundo citó a medias: «si alguien reúne el Canto, baja y sé su última nota... y si el Canto vuelve a necesitar lanza, recuerda que la lanza sorda era mía: devuélvele el silencio, no el mundo.» (el Consejo entero se inclina) No esperábamos para matar otra vez, Portador. Esperábamos PERMISO PARA DEVOLVER LA LANZA. Trescientos años sin encontrar a quién. Y has vuelto: el primero que volvió.',
+    onEnd: 'acto5_consejo',
+    options: [
+      { text: 'El permiso llega a su hora, Consejo. La lanza volverá al silencio.', tone: 'empatico' },
+      { text: 'Tres verdades, trescientos años, un permiso. La entrega más larga de la historia. Vamos.', tone: 'pragmatico' },
+      { text: 'Un Consejo que esperó un permiso sin saber si habría correo. Y llegó: yo.', tone: 'sarcastico' },
+    ],
+  },
+  consejo_1_sangre: {
+    name: 'El Consejo de la Orden', portrait: 'kael',
+    text: '(tres lanceros viejos alrededor de una mesa de piedra; una cuarta silla vacía desde hace trescientos años: la de Vesh. Los tres miran las cadenas rotas como se mira una cicatriz reciente) Volviste... y las cadenas descansan en el suelo, Portador. No como descansan las cadenas que terminan su trabajo: como descansan las que alguien ARRANCÓ. (el del centro se levanta despacio) La confesión que guardamos te la damos igual: Vesh lo sabía. La orden completa: «si alguien reúne el Canto, baja y sé su última nota... y si el Canto vuelve a necesitar lanza, recuerda que la lanza sorda era mía: devuélvele el silencio, no el mundo.» Esperábamos permiso para devolver la Lanza — trescientos años sin encontrar a quién. (no se inclinan: inclinan la cabeza, justo lo justo) Eres el primero que volvió. Nos hubiera gustado que volviera sin romper nada. Las verdades están en su sitio: eso nadie lo quita. El crujido, tampoco.',
+    onEnd: 'acto5_consejo',
+    options: [
+      { text: 'Fue el camino corto. Las verdades llegaron: contad lo demás conmigo.', tone: 'empatico' },
+      { text: 'Las cadenas ceden o se rinden. Yo elegí ceder. Seguimos.', tone: 'pragmatico' },
+      { text: 'Un Consejo que pesa crujidos junto a verdades. Contabilidad de espera.', tone: 'sarcastico' },
+    ],
+  },
+  consejo_post: {
+    name: 'El Consejo de la Orden', portrait: 'kael',
+    text: '(la lanza sorda descansa ya sobre la mesa del Consejo, junto a la silla vacía de Vesh: en su sitio, no en su tumba) La subida continúa, Portador. Tras esta sala hay una puerta del norte con tres cadenas nuevas: al otro lado espera el Silencio de Arriba, la meseta donde el aire corta los nombres por la mitad. Allí la Lanza pedirá su permiso. (el del centro te alcanza una poción de las arcas) Aprende a pelear sin anunciarte antes de cruzar: en el Silencio, el que dice su nombre lo reparte. Y cuando cruces... recuerda a los que subieron. Esta vez, alguien espera que vuelvas. Nosotros también.',
+    options: [
+      { text: 'Volveré. Esta ciudad ya sabe recibir a los que vuelven.', tone: 'empatico' },
+      { text: 'El Silencio de Arriba. Que el aire aprenda a respetar mi nombre.', tone: 'pragmatico' },
+      { text: 'Una poción, tres cadenas y un silencio con fama. Mi tipo de ruta.', tone: 'sarcastico' },
+    ],
+  },
+};
+// Los nodos previos quedan intactos: este assign SOLO añade claves nuevas.
+Object.assign(DIALOGUES, D_ACTO5B);
+
+// ---------------- Cuarta capa del envoltorio de getDialogue ----------------
+/**
+ * R14: captura la función VIGENTE (cadena 13-a → 16-a → R7-V5 → R13) y
+ * reasigna el binding exportado. Solo intercepta los NPCs del Acto V fase 2;
+ * toda otra ruta delega tal cual (regresión 0).
+ *  · guarda: q17 pagado sin q18 → la OFERTA de la subida; q18 → el post.
+ *  · porteroc / lanceros / naia / consejo: rutas por estado del acto.
+ *  · las cadenas: cerrada (oferta) vs abierta (la cadena descansa).
+ */
+const GET_DIALOGUE_PRE_R14 = getDialogue;
+
+function getDialogueR14(nid: string, ctx: DialogueCtx): string {
+  const f = ctx.flags;
+  const q = ctx.questIdx;
+  if (nid === 'guarda') {
+    if (f.acto5Fase1 && !f.q18) return 'acto5_guarda_ciud';      // la oferta (tras el pago de q17)
+    if (q === 17 || f.q18) return 'acto5_guarda_ciud2';          // ya abrió: la Guarda espera
+  }
+  if (nid === 'porteroc') return (f.ciudV1 && f.ciudV2 && f.ciudV3) ? 'porteroc_2' : 'porteroc_1';
+  if (nid === 'tum') return f.ciudV1 ? 'lancero_tum_post' : 'lancero_tum';
+  if (nid === 'sayo') return f.ciudV3 ? 'lancero_sayo_post' : 'lancero_sayo';
+  if (nid === 'brume') return f.ciudV2 ? 'lancero_brume_post' : 'lancero_brume';
+  if (nid === 'naia') return f.naiaNombre ? 'naia_despues' : 'naia_antes';
+  if (nid === 'consejo') {
+    if (f.acto5Paid18) return 'consejo_post';
+    return f.ciudSangre ? 'consejo_1_sangre' : 'consejo_1';
+  }
+  if (nid === 'cadena_bib') return f.ciudV1 ? 'cadena_abierta' : 'cadena_cerrada_bib';
+  if (nid === 'cadena_nom') return f.ciudV2 ? 'cadena_abierta' : 'cadena_cerrada_nom';
+  if (nid === 'cadena_arc') return f.ciudV3 ? 'cadena_abierta' : 'cadena_cerrada_arc';
+  if (nid === 'cadena_consejo') return f.ciudConsejo ? 'cadena_abierta' : 'cadena_consejo';
+  return GET_DIALOGUE_PRE_R14(nid, ctx);
+}
+// @ts-expect-error R14: reasignación deliberada del binding de función (capa
+// del Acto V fase 2 sobre la cadena vigente). El binding exportado es vivo:
+// engine.talkTo resuelve SIEMPRE por aquí, y toda ruta no-R14 delega en la
+// función anterior intacta.
+getDialogue = getDialogueR14;
+
+// ═══════ FIN DEL BLOQUE R14 ═══════

@@ -18,15 +18,15 @@ const warn = (m: string) => { console.log('  ⚠ ' + m); warns++; };
 const ok = (m: string) => console.log('  ✓ ' + m);
 
 console.log('=== 1) MISIONES (cadena principal) ===');
-if (QUESTS.length === 17) ok(`QUESTS.length = ${QUESTS.length} (q1..q17, Acto V fase 1 incluido)`);
-else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 17`);
+if (QUESTS.length === 18) ok(`QUESTS.length = ${QUESTS.length} (q1..q18, Acto V fase 2 incluido)`);
+else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 18`);
 QUESTS.forEach((q, i) => {
   if (!q.id || !q.name || !q.steps?.length) bad(`QUESTS[${i}] (${q.id}) incompleta`);
   else if (q.steps.some(s => !s)) bad(`QUESTS[${i}] (${q.id}) tiene un paso vacío`);
 });
 const ids = QUESTS.map(q => q.id);
 if (new Set(ids).size !== ids.length) bad('ids de misión duplicados');
-if (QUESTS.length === 17) ok('sin huecos: ' + ids.join(','));
+if (QUESTS.length === 18) ok('sin huecos: ' + ids.join(','));
 
 console.log('\n=== 2) ENEMY_DEFS (10 tipos) ===');
 const TYPES: (keyof typeof ENEMY_DEFS)[] = ['lobo', 'esqueleto', 'sombra', 'guardian', 'neumo', 'espectro', 'arpi', 'sirena', 'golem', 'heraldo']; // heraldo: jefe final del Acto IV (16-a)
@@ -63,7 +63,10 @@ const HOOKS_EXACT = new Set(['eco_taken_mem', 'mara_met', 'mara_gift', 'mera_eco
   'accept_q14', 'acto4_toln', 'acto4_cam_mera', 'acto4_cam_ivo', 'accept_q15',
   'acto4_guarda', 'acto4_subir', 'acto4_report', 'accept_q16', 'acto4_epilogo',
   // Acto V fase 1 (R13): handlers en hooks.handleCustomAction + watcher acto5CatchUp
-  'accept_q17', 'acto5_bajar', 'acto5_fragmento', 'acto5_report']);
+  'accept_q17', 'acto5_bajar', 'acto5_fragmento', 'acto5_report',
+  // Acto V fase 2 (R14): handlers en acto5b.acto5R14Hook (wired vía hooks.handleCustomAction)
+  'accept_q18', 'acto5_verdad1', 'acto5_verdad2', 'acto5_verdad3',
+  'acto5_forzar1', 'acto5_forzar2', 'acto5_forzar3', 'acto5_naia', 'acto5_consejo']);
 const HOOKS_PREFIX = ['memory_', 'rep_', 'flag_'];
 const ENGINE_PREFIX = ['armor_']; // 14-b: armor_N → engine.applyAction (case action.startsWith('armor_'))
 const actionHandled = (a: string) =>
@@ -103,7 +106,7 @@ ok('SKILLS: 4 habilidades por disciplina');
 
 console.log('\n=== 5) MAPAS: filas w×h correctas ===');
 const MAP_IDS = Object.keys(MAPS) as MapId[];
-if (MAP_IDS.length === 8) ok(`MAPS tiene 8 mapas: ${MAP_IDS.join(', ')}`); // 6 campaña + arena (12-a) + cuna (R13)
+if (MAP_IDS.length === 13) ok(`MAPS tiene 13 mapas: ${MAP_IDS.join(', ')}`); // 6 campaña + arena (12-a) + cuna (R13) + ciudadela y 4 salas (R14)
 else bad(`MAPS tiene ${MAP_IDS.length} mapas`);
 for (const id of MAP_IDS) {
   const m = MAPS[id];

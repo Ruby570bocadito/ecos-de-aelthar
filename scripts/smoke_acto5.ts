@@ -150,8 +150,8 @@ console.log('=== 1) ESTRUCTURA: mapa cuna, q17, brújula, carta, fragmento2, esc
   const q17 = QUESTS.find(q => q.id === 'q17');
   if (q17 && q17.steps.length === 4) ok(`q17 '${q17.name}': 4 pasos (carta → Cuna → Fragmento+estrena → informe)`);
   else bad('q17 ausente o con pasos incompletos');
-  if (QUESTS.length === 17) ok(`QUESTS.length = ${QUESTS.length} (q1..q17, Acto V fase 1 incluido)`);
-  else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 17`);
+  if (QUESTS.length === 18) ok(`QUESTS.length = ${QUESTS.length} (q1..q18, Acto V fases 1+2 incluidas)`);
+  else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 18 (R14 añadió q18)`);
   if (QUEST_COMPASS[16] && QUEST_COMPASS[16].length === 4) ok('brújula 16: objetivos de q17 definidos');
   else bad('brújula de q17 incompleta');
   if (KEY_ITEMS['laCartaVesh' as keyof typeof KEY_ITEMS]) ok('KEY_ITEM laCartaVesh definido (el gancho material)');
@@ -303,8 +303,10 @@ console.log('\n=== 4) CADENA q17: carta → aceptar → bajar → informe → pa
   act(g, 'acto5_report'); // anti-doble-pago
   if (g.player!.gold === goldPre + 150) ok('anti-doble-pago q17: repetir el informe no paga dos veces');
   else bad('acto5_report pagó dos veces');
-  if (route('guarda', 16, 3, { q17: true, acto5Fase1: true, cunaFragmento: true, cunaEstrenada: true }) === 'acto5_guarda_post')
-    ok('post-pago: la Guarda apunta al norte (gancho R14 «La Ciudadela»)');
+  // R14: tras el pago la 4ª capa rutea a la OFERTA de la Ciudadela (acto5_guarda_ciud);
+  // acto5_guarda_post (el gancho pasivo del norte) queda bajo la capa para saves raros.
+  if (route('guarda', 16, 3, { q17: true, acto5Fase1: true, cunaFragmento: true, cunaEstrenada: true }) === 'acto5_guarda_ciud')
+    ok('post-pago: la Guarda OFRECE la Ciudadela (gancho R14 activo)');
   else bad('ruta post-pago rota');
 }
 
