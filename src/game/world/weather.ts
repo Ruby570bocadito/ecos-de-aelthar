@@ -55,18 +55,47 @@
 // R5-O4 (optimización): alloc con cursor rotatorio (O(1) amortizado),
 // contadores vivos por familia (sin recontar el pool 20×/s), CAP de
 // lluvia por calidad (RAIN_CAP), early-out barato en mapas sin clima
-// propio (costa/aldea/cumbres ya no heredan partículas de cripta),
+// propio (la ALDEA sigue sin clima propio y no hereda partículas),
 // memo de 1 entrada para índice/viento (update + los 2 draws piden lo
 // mismo por frame) y SHAFT_X como fracción de VIEW_W (vista dinámica).
+//
+// R7-V3 (CLIMA DE LA EXPANSIÓN — despacho por g.mapId; render.ts intacto):
+// mapId SÍ llega a updateWeather/drawWeatherWorld/drawWeatherSky vía g.
+//   · COSTA — bruma marina BAJA que avanza con vaivén determinista: tira de
+//     bruma HORNEADA 1 vez (blobs radiales con wrap seamless, densidad según
+//     perfQuality) con invalidación por VIEW/escalón (patrón horror.ts) y
+//     2-3 drawImage por frame (capas con escala/velocidad/alpha crecientes).
+//     La deriva usa weatherWindAt (mismo viento que el resto del clima) y el
+//     vaivén son 2 senos de baja frecuencia. Fallback sin DOM: drawFogLayers.
+//   · CUMBRES — nieve con intensidad POR RACHAS (curva racha-calma con 2
+//     senos de baja frecuencia inconmensurables, memoizada 1×/frame) y
+//     VENTISCA horizontal en ráfagas: los copos derivan casi horizontales y
+//     se alargan; con gust>0.22 se añaden trazos de ventisca 'lighter' en la
+//     capa cielo. Densidad/velocidad/trazos escalan con Q_SCALE [1,0.6,0.35].
+//   · ALDEA — sin clima propio (early-out intacto): su perfil es de LUZ
+//     (charcos de ventanas/faroles + amanecer progresivo, en lighting.ts).
+//   · Los destellos de sol en el agua de la costa siguen siendo de water.ts
+//     (glints de render.ts + PAL.sparkle): aquí NO se duplican.
+//   · Determinismo total (hash2/senos, cero Math.random), cero allocations
+//     por frame (pool + bakes reutilizados) y firmas export intactas.
 // ============================================================
 
 import type { Game } from '../engine';
 import { VIEW_W, VIEW_H, ZOOM } from '../consts';
 import { hash2 } from './palette';
+import { perfQuality } from '../perf';
 
 /** hash2 normalizado al rango completo [0,1) (convenio R4: ×2). */
 function h2(x: number, y: number): number {
   return hash2(x, y) * 2;
+}
+
+// R7-V3: escalado de los FX nuevos de la expansión por calidad
+// (nieve/ventisca/bruma: densidad y recuentos ×[1, 0.6, 0.35], como
+// Q_SCALE de horror.ts R6-V5).
+const Q_SCALE = [1, 0.6, 0.35] as const;
+function qMul(): number {
+  return Q_SCALE[perfQuality()];
 }
 
 // ---------------- Modo de lluvia (opcional) ----------------
@@ -156,6 +185,42 @@ function rainAmpAt(mapId: string, globalT: number): number {
   return u * u * (3 - 2 * u);
 }
 
+// ---------------- Racha de cumbres (R7-V3) ----------------
+// Curva de viento DETERMINISTA con estructura racha-calma: dos senos de
+// baja frecuencia inconmensurables (13 s y 8.1 s) modulan un envolvente
+// 0..1; por encima de 0.55 de envolvente entra la racha (smoothstep hasta
+// plena a ~0.8). La DIRECCIÓN de la ventisca bascula con un seno lento
+// (47 s) — sin saltos visibles porque la deriva nace y muere con la racha.
+const GUST_T1 = 13, GUST_T2 = 8.1, GUST_DIR_T = 47;
+let mgT = -1, mgVal = 0, mgDir = 1;
+
+/** 0..1: intensidad de la racha en el instante t (memoizada 1 entrada,
+ *  mismo contrato que idxAt/windAt: update + draws piden lo mismo). */
+function gustAt(t: number): number {
+  if (t === mgT) return mgVal;
+  mgT = t;
+  const raw = 0.5 + 0.31 * Math.sin((t * TAU) / GUST_T1) + 0.19 * Math.sin((t * TAU) / GUST_T2 + 1.7);
+  let u = (raw - 0.55) / 0.25;
+  u = u < 0 ? 0 : u > 1 ? 1 : u;
+  mgVal = u * u * (3 - 2 * u);
+  mgDir = Math.sin((t * TAU) / GUST_DIR_T) >= 0 ? 1 : -1;
+  return mgVal;
+}
+
+// cinemática de la nieve del frame (la fijan updateWeather o los draws via
+// cumbresSnowKin — memoizada por gustAt/windAt, coste real 1×/frame)
+let curGust = 0, curSnowVx = 0, curSnowVy = 0;
+
+/** Fija curGust/curSnowVx/curSnowVy para cumbres: en calma los copos caen
+ *  con brisa ligera; en racha la deriva horizontal domina (ventisca). */
+function cumbresSnowKin(t: number): void {
+  const gust = gustAt(t);
+  const wind = windAt('cumbres', t);
+  curGust = gust;
+  curSnowVx = mgDir * (14 + 150 * gust) + wind * 0.5;
+  curSnowVy = 20 * (1 - 0.72 * gust);
+}
+
 // ---------------- Tipos internos ----------------
 
 const P_PETAL = 0;   // lunaris: pétalos (pasado)
@@ -168,6 +233,7 @@ const P_SPLASH = 6;  // salpicón 2-3 px (1 frame) + ripple mínimo
 const P_SPARK = 7;   // cripta: chispa de vela
 const P_WISP = 8;    // cripta: voluta de bruma fría
 const P_DUST = 9;    // cripta v2: micro-polvo flotando cerca de luces
+const P_SNOW = 10;   // cumbres (R7-V3): copo de nieve con rachas
 
 const CAP = 200;     // presupuesto total de partículas del clima (v2: +60 para lluvia/polvo)
 const MARGIN = 48;   // margen de vida fuera de vista (px de mundo 1×)
@@ -479,6 +545,20 @@ function spawnDust(g: Game, k: number): void {
   s.size = 1;
 }
 
+/** Copo de nieve de cumbres (R7-V3): entra por arriba; la cinemática de la
+ *  racha (deriva horizontal + caída amortiguada) se aplica POR FRAME en la
+ *  integración con curSnowVx/Vy — el copo siempre obedece al viento vivo. */
+function spawnSnow(g: Game, k: number): void {
+  const s = alloc(); if (!s) return;
+  s.active = true; s.kind = P_SNOW;
+  s.x = _wx0 - 10 + h2(k, 141) * (_wx1 - _wx0 + 20);
+  s.y = _wy0 - 6 - h2(k, 149) * 10;
+  s.vx = 0; s.vy = 0;                    // cinemática por frame (racha viva)
+  s.t = 0; s.maxT = 8 + h2(k, 151) * 5;
+  s.seed = h2(k, 157); s.seedI = (k * 23 + 37) | 0;
+  s.size = h2(k, 163) < 0.3 ? 2 : 1;
+}
+
 /**
  * Un tick de spawn = 1/20 s. Toda la aleatoriedad sale de
  * hash2(tick, const): determinista y estable entre frames.
@@ -519,6 +599,16 @@ function spawnTick(g: Game, k: number): void {
       // gota ocasional legado solo cuando NO llueve
       if (hash2(k * 13 + 6, 97) < 0.014 * (1 - curRainAmp)) spawnDrop(g, k, 0);
     }
+  } else if (g.mapId === 'cumbres') {
+    // R7-V3: nieve SIEMPRE + ráfaga que la intensifica (racha-calma).
+    // En calma cae suave; en racha el viento la tumba horizontal.
+    const q = qMul();
+    const gust = gustAt(g.globalT);
+    if (hash2(k * 13 + 10, 137) < (0.10 + 0.34 * gust) * q) spawnSnow(g, k);
+    if (gust > 0.5 && hash2(k * 13 + 11, 139) < 0.1 * q) spawnSnow(g, k * 5 + 3);
+  } else if (g.mapId === 'costa') {
+    // R7-V3: la bruma marina NO vive en el pool (tira horneada en el draw);
+    // el mapa queda registrado en hasWeather para el viento/índice del frame.
   } else {
     // cripta: chispas de vela + volutas de bruma fría + micro-polvo
     const mod = 0.7 + 0.6 * curIdx;      // [0.70..1.30]
@@ -545,9 +635,13 @@ function fireflyStep(s: WSlot, g: Game, dt: number): void {
   s.vy += (s.tvy - s.vy) * k2;
 }
 
-/** ¿Mapa con clima propio? (R5-O4: el resto hace early-out barato). */
+/** ¿Mapa con clima propio? (R5-O4: el resto hace early-out barato).
+ *  R7-V3: la expansión gana clima en costa (bruma marina) y cumbres
+ *  (nieve/ventisca); la ALDEA sigue SIN clima propio (su perfil es de
+ *  luz, en lighting.ts) y no hereda partículas de cripta. */
 function hasWeather(mapId: string): boolean {
-  return mapId === 'lunaris' || mapId === 'bosque' || mapId === 'cripta';
+  return mapId === 'lunaris' || mapId === 'bosque' || mapId === 'cripta'
+    || mapId === 'costa' || mapId === 'cumbres';
 }
 
 /**
@@ -569,6 +663,7 @@ export function updateWeather(g: Game, dt: number): void {
   curIdx = idxAt(g.mapId, g.globalT);
   curWind = windAt(g.mapId, g.globalT);
   curRainAmp = weatherMode === 'rain' ? 1 : rainAmpAt(g.mapId, g.globalT);
+  if (g.mapId === 'cumbres') cumbresSnowKin(g.globalT); // R7-V3: racha viva 1×/frame
 
   // límites de vista en coords de mundo 1× (+ margen de vida)
   const wx0 = g.camX / ZOOM, wy0 = g.camY / ZOOM;
@@ -610,6 +705,13 @@ export function updateWeather(g: Game, dt: number): void {
         // flotación determinista (senos lentos) + deriva del viento
         s.vx = Math.cos(s.t * 0.45 + s.seed * 9) * 3.2 + curWind * 0.12;
         s.vy = -1.6 + Math.sin(s.t * 0.3 + s.seed * 7) * 1.4;
+        s.x += s.vx * dt; s.y += s.vy * dt;
+        break;
+      case P_SNOW:
+        // R7-V3 (cumbres): cinemática de la RACHA viva — deriva horizontal
+        // (mgDir + gust), caída amortiguada y vaivén propio por copo.
+        s.vx = curSnowVx * (0.55 + 0.9 * s.seed) + Math.sin(s.t * 1.2 + s.seed * 9) * 6;
+        s.vy = curSnowVy * (0.7 + 0.6 * s.seed);
         s.x += s.vx * dt; s.y += s.vy * dt;
         break;
       default:

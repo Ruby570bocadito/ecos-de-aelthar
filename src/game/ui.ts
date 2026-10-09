@@ -2,6 +2,9 @@
 // ECOS DE AELTHAR — Helpers de UI para canvas
 // R5-O9: cachés de strings de fuente, de estado de canvas y de wrapText
 // (ver notas junto a cada caché). Firmas y aspecto píxel-iguales.
+// R7-O3: pool de UiHit (cero objetos por frame), cursor DOM solo al cambiar,
+// predicado de hover hoisted, strings de FASE constantes y guards de estado
+// en barV2/skillIcon/diamond/counterDots. Aspecto píxel-igual.
 // ============================================================
 
 import type { UiHit } from './engine';
@@ -191,29 +194,70 @@ export function bar(
  * van rellenos con `color` y el resto, apagados. Determinista y sin
  * estado: pensado para HUD/pantallas futuras (agente 10-a).
  */
+// R7-O3 — color apagado hoisted (string constante, antes literal en el bucle)
+const DOT_OFF = 'rgba(154,160,184,0.35)';
+
 export function counterDots(
   g: Game, x: number, y: number, total: number, done: number, color = COL.gold, pitch = 6,
 ) {
   const ctx = g.ctx;
   const filled = Math.max(0, Math.min(total, Math.floor(done)));
-  for (let i = 0; i < total; i++) {
-    ctx.fillStyle = i < filled ? color : 'rgba(154,160,184,0.35)';
-    ctx.fillRect(x + i * pitch, y, 2, 2);
-  }
+  // R7-O3 — dos pasadas agrupadas por fillStyle: los puntos son rects de 2×2
+  // en x DISJUNTAS, así que pintar apagados primero y rellenos después produce
+  // el MISMO píxel (2 asignaciones de estado en vez de `total`).
+  if (ctx.fillStyle !== DOT_OFF) ctx.fillStyle = DOT_OFF;
+  for (let i = filled; i < total; i++) ctx.fillRect(x + i * pitch, y, 2, 2);
+  if (ctx.fillStyle !== color) ctx.fillStyle = color;
+  for (let i = 0; i < filled; i++) ctx.fillRect(x + i * pitch, y, 2, 2);
 }
+
+// R7-O3 — pool de UiHit por Game: addHit se llama ~10-20 veces por frame en
+// pantallas con menús (título/pausa/diálogo/árbol/desafío) y cada llamada
+// alocaba un objeto nuevo. Los slots del pool se REESCRIBEN COMPLETOS en cada
+// reuse (mismos 7 campos) y clearHits — que corre 1×/frame al inicio de
+// drawGame (render.ts) — reinicia el cursor. El motor consume los hits solo
+// entre frames (onMouseDown) sin retener referencias, así que reutilizar el
+// objeto es indistinguible. Pool POR INSTANCIA (WeakMap): dos Games nunca
+// comparten slots. Un `g.uiHit.length = 0` a mitad de frame (challenge/
+// achievements) no toca el cursor: los addHit siguientes toman slots nuevos
+// y el pool queda acotado al máximo secuencial entre clearHits.
+type HitPool = { slots: UiHit[]; n: number };
+const HIT_POOLS = new WeakMap<object, HitPool>();
 
 export function clearHits(g: Game) {
   g.uiHit = [];
+  const pool = HIT_POOLS.get(g);
+  if (pool) pool.n = 0;
 }
 
 export function addHit(g: Game, x: number, y: number, w: number, h: number, cb: () => void) {
+  let pool = HIT_POOLS.get(g);
+  if (!pool) { pool = { slots: [], n: 0 }; HIT_POOLS.set(g, pool); }
   const hover = g.mouse.x >= x && g.mouse.x <= x + w && g.mouse.y >= y && g.mouse.y <= y + h;
   // stamp anti-fantasma: el hit recuerda el estado en que se dibujó; el motor
   // solo lo honra si el estado NO ha cambiado (evita reabrir menús en la frame
   // de una transición o con uiHit residual de otra instancia muerta)
-  g.uiHit.push({ x, y, w, h, cb, hover, state: g.state });
+  let hit: UiHit;
+  if (pool.n < pool.slots.length) {
+    hit = pool.slots[pool.n];
+    hit.x = x; hit.y = y; hit.w = w; hit.h = h;
+    hit.cb = cb; hit.hover = hover; hit.state = g.state;
+  } else {
+    hit = { x, y, w, h, cb, hover, state: g.state };
+    pool.slots.push(hit);
+  }
+  pool.n++;
+  g.uiHit.push(hit);
   return hover;
 }
+
+// R7-O3 — predicado de hover hoisted (antes: 1 closure nueva por button por
+// frame dentro de .some) y memo de cursor POR INSTANCIA: la escritura
+// canvas.style.cursor es un baixeo DOM que se hacía 6-8 veces por frame con el
+// MISMO valor; ahora solo escribe cuando cambia. Único escritor del cursor en
+// todo src/ (verificado con grep), así que la memo no puede quedarse vieja.
+function _isHover(h: UiHit): boolean { return h.hover === true; }
+const CURSOR_MEMO = new WeakMap<object, string>();
 
 export function button(
   g: Game, label: string, x: number, y: number, w: number, h: number,
@@ -224,10 +268,14 @@ export function button(
   panel(g, x, y, w, h, hover ? accent : COL.panelBorder, hover ? 'rgba(40,34,20,0.95)' : COL.panel);
   textShadow(g, label, x + w / 2, y + h / 2 - size * 0.62, size, hover ? accent : COL.text, '#000', 'center', true);
   if (hover) {
-    ctx.fillStyle = accent;
+    if (ctx.fillStyle !== accent) ctx.fillStyle = accent;
     ctx.fillRect(x + 6, y + h - 4, w - 12, 2);
   }
-  g.canvas.style.cursor = g.uiHit.some(h2 => h2.hover) ? 'pointer' : 'default';
+  const want = g.uiHit.some(_isHover) ? 'pointer' : 'default';
+  if (CURSOR_MEMO.get(g) !== want) {
+    CURSOR_MEMO.set(g, want);
+    g.canvas.style.cursor = want;
+  }
 }
 
 // ============================================================
@@ -249,6 +297,8 @@ const bossSlide = new WeakMap<object, Map<string, V2Boss>>();
 const PHASE_COLOR = ['#7ee8ff', '#ffd24a', '#ff5a4a']; // = GUARDIAN_PHASE_GLOW (actors/enemies.ts)
 const PHASE_MARKS = [0.6, 0.3]; // fronteras de fase del jefe → 3 segmentos
 const BOSS_W = 420;
+// R7-O3 — 'FASE n/3' precomputado (ph se satura a [1,3] antes de indexar)
+const FASE_TXT = ['FASE 1/3', 'FASE 2/3', 'FASE 3/3'];
 
 /** Clave numérica estable de celda para v2Delay (coordenadas HUD < 2048). */
 function v2Key(x: number, y: number, w: number): number {
@@ -257,13 +307,15 @@ function v2Key(x: number, y: number, w: number): number {
 
 /** Rombito pixel de 5 filas centrado en (cx, cy). */
 function diamond(ctx: CanvasRenderingContext2D, cx: number, cy: number, col: string) {
-  const rows = [1, 3, 5, 3, 1];
-  ctx.fillStyle = col;
+  // R7-O3 — rows hoisted fuera del bucle era una tabla nueva por llamada
+  const rows = DIAMOND_ROWS;
+  if (ctx.fillStyle !== col) ctx.fillStyle = col;
   for (let i = 0; i < 5; i++) {
     const rw = rows[i];
     ctx.fillRect(cx - (rw >> 1), cy - 2 + i, rw, 1);
   }
 }
+const DIAMOND_ROWS = [1, 3, 5, 3, 1];
 
 /**
  * Barra v2 con marco doble, brillo/sombra, muescas, glow y retardo de daño.
@@ -319,32 +371,32 @@ export function barV2(
   const ghostW = ghost > p + 0.001 ? Math.round(ghost * innerW) : 0;
 
   // fondo
-  ctx.fillStyle = bg;
+  if (ctx.fillStyle !== bg) ctx.fillStyle = bg;
   ctx.fillRect(px, py, pw, ph);
 
   // capa fantasma blanca tenue (valor anterior con retardo)
   if (ghostW > 0) {
     ctx.globalAlpha = prevAlpha * 0.42;
-    ctx.fillStyle = '#ffffff';
+    if (ctx.fillStyle !== '#ffffff') ctx.fillStyle = '#ffffff';
     ctx.fillRect(px + 1, py + 1, ghostW, innerH);
   }
 
   // fill actual + highlight superior 1px + sombra inferior 1px
   if (fw > 0) {
-    ctx.fillStyle = color;
+    if (ctx.fillStyle !== color) ctx.fillStyle = color;
     ctx.fillRect(px + 1, py + 1, fw, innerH);
     ctx.globalAlpha = prevAlpha * 0.38;
-    ctx.fillStyle = '#ffffff';
+    if (ctx.fillStyle !== '#ffffff') ctx.fillStyle = '#ffffff';
     ctx.fillRect(px + 1, py + 1, fw, 1);
     ctx.globalAlpha = prevAlpha * 0.32;
-    ctx.fillStyle = '#000000';
+    if (ctx.fillStyle !== '#000000') ctx.fillStyle = '#000000';
     ctx.fillRect(px + 1, py + ph - 2, fw, 1);
   }
 
   // muescas de segmento: línea oscura de 1px cada N px (dentro del marco)
   if (opts && opts.segment && opts.segment >= 4) {
     ctx.globalAlpha = prevAlpha * 0.4;
-    ctx.fillStyle = '#000000';
+    if (ctx.fillStyle !== '#000000') ctx.fillStyle = '#000000';
     for (let sx = px + opts.segment; sx <= px + pw - 2; sx += opts.segment) {
       ctx.fillRect(sx, py + 1, 1, innerH);
     }
@@ -352,16 +404,16 @@ export function barV2(
 
   // marco: exterior oscuro 1px + interior claro 1px
   ctx.globalAlpha = prevAlpha;
-  ctx.strokeStyle = '#000000';
-  ctx.lineWidth = 1;
+  if (ctx.strokeStyle !== '#000000') ctx.strokeStyle = '#000000';
+  if (ctx.lineWidth !== 1) ctx.lineWidth = 1;
   ctx.strokeRect(px + 0.5, py + 0.5, pw - 1, ph - 1);
-  ctx.strokeStyle = '#ffffff';
+  if (ctx.strokeStyle !== '#ffffff') ctx.strokeStyle = '#ffffff';
   ctx.globalAlpha = prevAlpha * 0.16;
   ctx.strokeRect(px + 1.5, py + 1.5, pw - 3, ph - 3);
 
   // glow pulsante: borde interior claro que respira (sin(g.globalT))
   if (opts && opts.glow) {
-    ctx.strokeStyle = COL.goldSoft;
+    if (ctx.strokeStyle !== COL.goldSoft) ctx.strokeStyle = COL.goldSoft;
     ctx.globalAlpha = prevAlpha * (0.3 + 0.28 * Math.sin(g.globalT * 5.2));
     ctx.strokeRect(px + 1.5, py + 1.5, pw - 3, ph - 3);
   }
@@ -405,12 +457,13 @@ export function skillIcon(
   const prevAlpha = ctx.globalAlpha;
 
   // fondo (deja vacía la esquina recortada)
-  ctx.fillStyle = COL.panel;
+  if (ctx.fillStyle !== COL.panel) ctx.fillStyle = COL.panel;
   ctx.fillRect(px, py, ps - cut, ps);
   ctx.fillRect(px + ps - cut, py, cut, ps - cut);
 
   // marco 1 px con escalón en la esquina recortada
-  ctx.fillStyle = selected ? COL.gold : cd > 0 ? '#3a3448' : COL.panelBorder;
+  const marco = selected ? COL.gold : cd > 0 ? '#3a3448' : COL.panelBorder;
+  if (ctx.fillStyle !== marco) ctx.fillStyle = marco;
   ctx.fillRect(px, py, ps - cut, 1);                        // arriba
   ctx.fillRect(px, py, 1, ps);                              // izquierda
   ctx.fillRect(px, py + ps - 1, ps, 1);                     // abajo
@@ -427,9 +480,9 @@ export function skillIcon(
     const ih = ps - 2;
     const oh = Math.round(cd * ih);
     const fy = py + 1 + (ih - oh);
-    ctx.fillStyle = 'rgba(8,8,18,0.72)';
+    if (ctx.fillStyle !== 'rgba(8,8,18,0.72)') ctx.fillStyle = 'rgba(8,8,18,0.72)';
     ctx.fillRect(px + 1, fy, ps - 2, oh);
-    ctx.fillStyle = '#cfe8ff'; // frente del barrido
+    if (ctx.fillStyle !== '#cfe8ff') ctx.fillStyle = '#cfe8ff'; // frente del barrido
     ctx.fillRect(px + 1, fy, ps - 2, 1);
   }
 
@@ -508,9 +561,9 @@ export function bossBarV2(g: Game, name: string, hpPct: number, staPct: number, 
   // marcas de frontera de fase (60% y 30% → 3 segmentos)
   for (let i = 0; i < PHASE_MARKS.length; i++) {
     const mx = bx + Math.round(BOSS_W * PHASE_MARKS[i]);
-    ctx.fillStyle = '#0a0a14';
+    if (ctx.fillStyle !== '#0a0a14') ctx.fillStyle = '#0a0a14';
     ctx.fillRect(mx, by + 1, 1, 11);
-    ctx.fillStyle = 'rgba(255,255,255,0.30)';
+    if (ctx.fillStyle !== 'rgba(255,255,255,0.30)') ctx.fillStyle = 'rgba(255,255,255,0.30)';
     ctx.fillRect(mx + 1, by + 1, 1, 11);
   }
 
@@ -520,8 +573,9 @@ export function bossBarV2(g: Game, name: string, hpPct: number, staPct: number, 
   barV2(g, bx, staY, BOSS_W, 4, staPct, '#7ee8ff', '#12303a', { glow: low });
   text(g, 'QUIEBRE', bx + BOSS_W + 22, staY - 2, 11, low ? '#cfeaff' : '#7ee8ff');
 
-  // indicador de fase (izquierda)
-  text(g, `FASE ${ph}/3`, bx - 22, by + 2, 12, col, 'right');
+  // indicador de fase (izquierda) — R7-O3: los 3 strings son const de módulo
+  // (antes: 1 template literal por frame durante TODO el combate de jefe)
+  text(g, FASE_TXT[ph - 1], bx - 22, by + 2, 12, col, 'right');
 
   ctx.globalAlpha = 1;
 }

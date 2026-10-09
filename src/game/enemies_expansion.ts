@@ -60,7 +60,7 @@ import { addShake, addFlash, requestSlowmo, stepKnockback } from './fxcore';
 // getPortadorVel devuelve la velocidad real del Portador medida por update.ts.
 // isNight (14-a): la activación nocturna de Vult usa el MISMO criterio que
 // el motor (noche = dayT>0.7 || <0.08) para no duplicar la definición.
-import { getPortadorVel, isNight } from './update';
+import { getPortadorVel } from './update'; // R7-O1: binding 'isNight' retirado (muerto: isNightG es la copia local)
 // MAPS (14-a): SOLO LECTURA-MUTACIÓN de las tablas de spawns en carga para
 // activar los 2 enemigos nuevos de mapa SIN tocar maps*.ts (congelados esta
 // ronda): push de SpawnDef sobre los arrays ya existentes de MAPS.
@@ -90,8 +90,14 @@ puestarSpawns14a();
 
 // ---------------- utilidades ----------------
 
-function dist(ax: number, ay: number, bx: number, by: number): number {
-  return Math.hypot(bx - ax, by - ay);
+/**
+ * R7-O1: distancia² — la IA solo COMPARA distancias (aggro/bandas/gatillos);
+ * el sqrt se paga SOLO al normalizar una dirección (moveDir) o cuando el
+ * valor real hace falta (dashes, velocidad del orbe del sátiro).
+ */
+function dist2(ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay;
+  return dx * dx + dy * dy;
 }
 
 function isNightG(g: Game): boolean {
@@ -100,12 +106,26 @@ function isNightG(g: Game): boolean {
 
 /** Mueve hacia (dx,dy) normalizado con colisión de tiles y fija dir/moving. */
 function moveDir(g: Game, e: Enemy, dx: number, dy: number, spd: number, dt: number): void {
-  const l = Math.hypot(dx, dy);
+  // R7-O1: sqrt en vez de hypot (mismo criterio que update.ts en R5-O10;
+  // diferencia ≤1 ulp en la dirección normalizada, imperceptible).
+  const l = Math.sqrt(dx * dx + dy * dy);
   if (l < 1e-4) { e.moving = false; return; }
   g.moveEntity(e, (dx / l) * spd * dt, (dy / l) * spd * dt);
   e.moving = true;
   if (Math.abs(dx) > 0.01) e.dir = dx > 0 ? 'right' : 'left';
 }
+
+// ---------------- R7-O1: tablas hoisted (cero literales de array en rutas calientes) ----------------
+const NEUMO_OFFS_AGONIA = [-0.2618, 0, 0.2618]; // abanico ±15° del escupitajo agónico (<35% hp)
+const NEUMO_OFFS_UNO = [0];
+const SIRENA_TP_RADII = [135, 120, 150, 128, 142]; // teleportSirena: radios de reaparición
+const SIRENA_TP_JIT = [0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2]; // teleportSirena: jitter angular
+const VENT_SPOTS = new Float64Array(8); // ventisca: scratch de 4 puntos ×2 (se consume al momento)
+const GOLEM_ACTOS_F2 = ['slam', 'embiste', 'lanza'] as const;
+const GOLEM_LANZA_OFF = [-0.13, 0.13];
+const VULT_CICLO = ['rafaga', 'embiste', 'salto'] as const;
+const VULT_ACECHO_D = [55, 42, 68, 30, 80]; // distancias de reaparición del MODO ACECHO
+const ECODESG_BLINK_D = [42, 34, 52, 26]; // distancias de parpadeo al flanco
 
 // ---------------- memoria por enemigo (WeakMap: no persiste) ----------------
 
@@ -242,7 +262,8 @@ function commonTick(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
   // aggro (idempotente: si el motor ya lo fijó, no-op)
   if (p && !e.aggro && g.state === 'play') {
     const nightMult = isNightG(g) ? 1.3 : 1;
-    if (dist(e.x, e.y, p.x, p.y) < def.aggroR * nightMult) {
+    const rr = def.aggroR * nightMult;
+    if (dist2(e.x, e.y, p.x, p.y) < rr * rr) {
       e.aggro = true;
       // 14-a: los jefes nuevos NO pitan (sus cerebros disparan banner+sfx propio,
       // misma técnica que sirena/golem)
@@ -306,7 +327,8 @@ function contactHit(g: Game, e: Enemy, def: EnemyDef, m: ExpMem): void {
   if (m.dashHit) return;
   const p = g.player;
   if (!p) return;
-  if (dist(e.x, e.y, p.x, p.y) < 8 + e.w / 2 + 4) {
+  const rr = 12 + e.w / 2; // 8 + e.w/2 + 4 — R7-O1: comparado en d²
+  if (dist2(e.x, e.y, p.x, p.y) < rr * rr) {
     m.dashHit = true;
     // damagePlayer gestiona i-frames y parada perfecta (que aturde al atacante)
     g.damagePlayer(def.dmg, e.x, e.y);
@@ -328,10 +350,10 @@ function tickNeumo(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boo
   const st = e.subT ?? 0; // timer auxiliar (commonTick lo incrementa)
   const p = g.player;
   if (!p) { idleFloat(g, e, dt); return true; }
-  const d = dist(e.x, e.y, p.x, p.y);
+  const d2 = dist2(e.x, e.y, p.x, p.y);
 
   // huida por proximidad: el Portador a <40 px lo espanta 1.5 s
-  if (e.aggro && e.ai !== 'huye' && e.ai !== 'carga' && d < 40) {
+  if (e.aggro && e.ai !== 'huye' && e.ai !== 'carga' && d2 < 1600) {
     e.ai = 'huye';
     e.aiT = 1.5;
   }
@@ -351,7 +373,7 @@ function tickNeumo(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boo
         e.aiT = 1.5 + Math.random() * 1.5;
         e.patrolAngle = Math.random() * Math.PI * 2;
       }
-      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 60;
+      const far = dist2(e.x, e.y, e.homeX, e.homeY) > 3600;
       const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
       const drift = Math.sin(st * 2) * 8;
       const tx = Math.cos(ang) * 20 + Math.cos(ang + Math.PI / 2) * drift * 0.4;
@@ -365,11 +387,11 @@ function tickNeumo(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boo
     case 'persigue':
     case 'recupera': {
       if (!e.aggro) { e.ai = 'patrulla'; break; }
-      if (d > def.aggroR * 2.6) { e.aggro = false; e.ai = 'patrulla'; break; }
+      if (d2 > (def.aggroR * 2.6) * (def.aggroR * 2.6)) { e.aggro = false; e.ai = 'patrulla'; break; }
       // banda de flotación 90-130 px
       const ang = Math.atan2(p.y - e.y, p.x - e.x);
-      if (d < 80) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), def.speed, dt);
-      else if (d > 140) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
+      if (d2 < 6400) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), def.speed, dt);
+      else if (d2 > 19600) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
       else {
         // deriva lateral sinusoidal (subT)
         const tang = ang + Math.PI / 2;
@@ -383,7 +405,7 @@ function tickNeumo(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boo
         e.ai = 'persigue';
       }
       // disparo telegrafiado
-      if (e.atkCd <= 0 && d < def.atkR) {
+      if (e.atkCd <= 0 && d2 < def.atkR * def.atkR) {
         e.ai = 'carga';
         e.windup = def.windup; // 0.7: el motor dibuja '!' por windup>0 en 'carga'
       }
@@ -399,8 +421,9 @@ function tickNeumo(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boo
         const dx = p.x - e.x, dy = p.y - 4 - e.y;
         const base = Math.atan2(dy, dx);
         const agoniza = e.hp < e.maxHp * 0.35;
-        const offs = agoniza ? [-0.2618, 0, 0.2618] : [0];
-        for (const off of offs) {
+        const offs = agoniza ? NEUMO_OFFS_AGONIA : NEUMO_OFFS_UNO; // R7-O1: hoisted
+        for (let oi = 0; oi < offs.length; oi++) {
+          const off = offs[oi];
           g.projectiles.push({
             x: e.x, y: e.y - 2, vx: Math.cos(base + off) * 120, vy: Math.sin(base + off) * 120, t: 1.8,
             dmg: def.dmg, element: 'ninguno', from: 'enemy', sprite: 'orb', radius: 5, pierce: 0,
@@ -429,7 +452,7 @@ function tickEspectro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): 
   if (commonTick(g, e, dt, def, m)) return true;
   const p = g.player;
   if (!p) { idleFloat(g, e, dt); return true; }
-  const d = dist(e.x, e.y, p.x, p.y);
+  const d2 = dist2(e.x, e.y, p.x, p.y);
 
   // DESVANECERSE bajo los golpes: invulnerable 0.9 s en bruma
   // (el integrador cablea invulT en damageEnemy; aquí lo fijamos y decaemos)
@@ -462,7 +485,7 @@ function tickEspectro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): 
         e.patrolAngle = Math.random() * Math.PI * 2;
         if (Math.random() < 0.45) { m.pauseT = 1 + Math.random(); break; }
       }
-      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 60;
+      const far = dist2(e.x, e.y, e.homeX, e.homeY) > 3600;
       const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
       moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.45, dt);
       if (e.aggro) e.ai = 'persigue';
@@ -470,13 +493,13 @@ function tickEspectro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): 
     }
     case 'persigue': {
       if (!e.aggro) { e.ai = 'patrulla'; break; }
-      if (d > def.aggroR * 2.4) { e.aggro = false; e.ai = 'patrulla'; break; }
+      if (d2 > (def.aggroR * 2.4) * (def.aggroR * 2.4)) { e.aggro = false; e.ai = 'patrulla'; break; }
       // flota persiguiendo lento (colisión de tiles normal)
-      if (d > 18) moveDir(g, e, p.x - e.x, p.y - e.y, def.speed, dt);
+      if (d2 > 324) moveDir(g, e, p.x - e.x, p.y - e.y, def.speed, dt);
       else e.moving = false;
       e.dir = p.x > e.x ? 'right' : 'left';
       // arremetida desde la bruma
-      if (e.atkCd <= 0 && d < 58) {
+      if (e.atkCd <= 0 && d2 < 3364) {
         e.ai = 'carga';
         e.windup = def.windup; // 0.5
       }
@@ -487,7 +510,7 @@ function tickEspectro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): 
       e.moving = false;
       e.dir = p.x > e.x ? 'right' : 'left';
       if (e.windup <= 0) {
-        const l = Math.max(1, d);
+        const l = Math.max(1, Math.sqrt(d2)); // R7-O1: sqrt perezoso solo al normalizar
         m.dashDx = (p.x - e.x) / l;
         m.dashDy = (p.y - 4 - e.y) / l;
         m.dashHit = false;
@@ -534,7 +557,7 @@ function tickArpi(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
   const st = e.subT ?? 0; // acumulador del picado (commonTick lo incrementa)
   const p = g.player;
   if (!p) { idleFloat(g, e, dt); return true; }
-  const d = dist(e.x, e.y, p.x, p.y);
+  const d2 = dist2(e.x, e.y, p.x, p.y);
 
   // frágil: herida grave → huida errática volando
   if (e.aggro && e.ai !== 'huye' && e.hp < e.maxHp * 0.3) {
@@ -556,7 +579,7 @@ function tickArpi(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
         e.aiT = 1.2 + Math.random() * 1.6;
         e.patrolAngle = Math.random() * Math.PI * 2;
       }
-      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 70;
+      const far = dist2(e.x, e.y, e.homeX, e.homeY) > 4900;
       const wob = Math.sin(st * 3) * 0.4;
       const base = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
       moveDir(g, e, Math.cos(base + wob), Math.sin(base + wob), def.speed * 0.55, dt);
@@ -565,12 +588,17 @@ function tickArpi(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
     }
     case 'persigue': {
       if (!e.aggro) { e.ai = 'patrulla'; break; }
-      if (d > def.aggroR * 2.4) { e.aggro = false; e.ai = 'patrulla'; break; }
+      if (d2 > (def.aggroR * 2.4) * (def.aggroR * 2.4)) { e.aggro = false; e.ai = 'patrulla'; break; }
       // órbita a ~75 px: tangencial + corrección radial
       if (m.orbitDir === undefined) m.orbitDir = e.patrolAngle > Math.PI ? -1 : 1;
       if (Math.random() < 0.002) m.orbitDir *= -1;
       const ang = Math.atan2(e.y - p.y, e.x - p.x); // del Portador a mí
-      const corr = Math.max(-1, Math.min(1, (d - 75) / 26));
+      // R7-O1: corr = clamp((d-75)/26, -1, 1) — sqrt perezoso SOLO en la banda
+      // (d≤49 ⇒ corr=-1 · d≥101 ⇒ corr=1, idéntico al clamp)
+      let corr: number;
+      if (d2 >= 10201) corr = 1;
+      else if (d2 <= 2401) corr = -1;
+      else corr = (Math.sqrt(d2) - 75) / 26;
       const tang = ang + (Math.PI / 2) * m.orbitDir;
       const vx = Math.cos(tang) * def.speed - Math.cos(ang) * corr * def.speed * 0.95;
       const vy = Math.sin(tang) * def.speed - Math.sin(ang) * corr * def.speed * 0.95;
@@ -582,7 +610,7 @@ function tickArpi(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
       // asalto al instante (los windup de 0.35 s hacen que los picados
       // caigan casi a la vez sobre el Portador).
       const packT = g.globalT - lastDiveT;
-      if ((st >= 2.5 || packT < 0.4) && d < 150 && d > 30) {
+      if ((st >= 2.5 || packT < 0.4) && d2 < 22500 && d2 > 900) {
         e.subT = 0;
         lastDiveT = g.globalT;
         e.ai = 'carga';
@@ -596,7 +624,7 @@ function tickArpi(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
       e.dir = p.x > e.x ? 'right' : 'left';
       if (e.windup <= 0) {
         // dash hacia la posición actual del Portador (240 px/s, 0.45 s)
-        const l = Math.max(1, d);
+        const l = Math.max(1, Math.sqrt(d2)); // R7-O1: sqrt perezoso
         m.dashDx = (p.x - e.x) / l;
         m.dashDy = (p.y - 4 - e.y) / l;
         m.dashHit = false;
@@ -686,7 +714,13 @@ function summonNeumo(g: Game, e: Enemy, fase: number, m: ExpMem): void {
   // 'zone' no se guarda en Enemy: contamos todos los neumos vivos
   // (solo existen los suyos, junto a la jefa)
   const cap = fase === 3 ? 3 : 2;
-  const vivos = g.enemies.filter(o => !o.dead && o.etype === 'neumo').length;
+  // R7-O1: recuento indexado (antes .filter().length → array+closure por llamada)
+  const es = g.enemies;
+  let vivos = 0;
+  for (let i = 0; i < es.length; i++) {
+    const o = es[i];
+    if (!o.dead && o.etype === 'neumo') vivos++;
+  }
   if (vivos >= cap) { e.sumT = 4; return; }
   for (let i = 0; i < 12; i++) {
     const a = (i / 12) * Math.PI * 2 + e.patrolAngle;
@@ -714,11 +748,11 @@ function teleportSirena(g: Game, e: Enemy, p: Player, m: ExpMem): void {
   audio.sfx('whoosh');
   e.invulT = 0.6; // sumergida: intocable un instante
   const baseAng = Math.atan2(e.y - p.y, e.x - p.x) + Math.PI; // lado opuesto
-  const radii = [135, 120, 150, 128, 142];
-  const jit = [0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2];
-  for (const rr of radii) {
-    for (const j of jit) {
-      const a = baseAng + j;
+  // R7-O1: tablas hoisted + bucles indexados (antes arrays literales + for-of)
+  for (let ri = 0; ri < SIRENA_TP_RADII.length; ri++) {
+    const rr = SIRENA_TP_RADII[ri];
+    for (let ji = 0; ji < SIRENA_TP_JIT.length; ji++) {
+      const a = baseAng + SIRENA_TP_JIT[ji];
       const x = p.x + Math.cos(a) * rr, y = p.y + Math.sin(a) * rr;
       if (!g.tileSolidAt(x, y)) {
         e.x = x;
@@ -738,7 +772,7 @@ function tickSirena(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
   if (commonTick(g, e, dt, def, m)) return true;
   const p = g.player;
   if (!p) { idleFloat(g, e, dt); return true; }
-  const d = dist(e.x, e.y, p.x, p.y);
+  const d2 = dist2(e.x, e.y, p.x, p.y);
 
   // ---- banner de la jefa (misma técnica que guardianBrain) ----
   if (e.aggro && !g.flags.sirenaIntro) {
@@ -777,7 +811,7 @@ function tickSirena(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
         e.aiT = 2 + Math.random() * 2;
         e.patrolAngle = Math.random() * Math.PI * 2;
       }
-      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 50;
+      const far = dist2(e.x, e.y, e.homeX, e.homeY) > 2500;
       const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
       moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.4, dt);
       if (e.aggro) e.ai = 'persigue';
@@ -789,9 +823,10 @@ function tickSirena(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
       let minD = 90, maxD = 140;
       if (e.phase === 2) { minD = 100; maxD = 150; }
       if (e.phase === 3) { minD = 60; maxD = 100; }
+      const minD2 = minD * minD, maxD2 = maxD * maxD; // R7-O1: bandas comparadas en d²
       const ang = Math.atan2(p.y - e.y, p.x - e.x);
-      if (d > maxD) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
-      else if (d < minD) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), def.speed, dt);
+      if (d2 > maxD2) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
+      else if (d2 < minD2) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), def.speed, dt);
       else {
         // MAREA BAJA (9-a): entre salvas strafea en arco orbital elegante
         // alrededor del Portador (fase 2 amplia y serena, fase 3 cerrada)
@@ -847,7 +882,7 @@ function tickSirena(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
 
   // ---- distancia mínima (9-a): el Portador nunca la pega — retroceso
   //      suave si se cuela bajo su guardia (salvo mientras telegrafía) ----
-  if (e.aggro && e.ai !== 'carga' && d < 50) {
+  if (e.aggro && e.ai !== 'carga' && d2 < 2500) {
     moveDir(g, e, e.x - p.x, e.y - p.y, def.speed * 0.85, dt);
   }
 
@@ -892,16 +927,18 @@ function tickSirena(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
 function ventisca(g: Game, e: Enemy, p: Player, def: EnemyDef): void {
   audio.sfx('gust'); // no-op seguro si el sfx no existe aún
   audio.sfx('ice');
-  const spots: [number, number][] = [
-    [p.x - 9, p.y], [p.x + 9, p.y],
-  ];
   // posición futura: la velocidad real la mide update.ts (getPortadorVel);
   // tope de 60 px para no telegrafiar fuera del alcance del dash
   const pv = getPortadorVel();
   const fx = p.x + Math.max(-60, Math.min(60, pv.x * 0.5));
   const fy = p.y + Math.max(-60, Math.min(60, pv.y * 0.5));
-  spots.push([fx - 9, fy - 4], [fx + 9, fy + 4]);
-  for (const [sx, sy] of spots) {
+  // R7-O1: scratch de módulo en vez del array de tuplas por llamada (mismo orden)
+  VENT_SPOTS[0] = p.x - 9; VENT_SPOTS[1] = p.y;
+  VENT_SPOTS[2] = p.x + 9; VENT_SPOTS[3] = p.y;
+  VENT_SPOTS[4] = fx - 9;  VENT_SPOTS[5] = fy - 4;
+  VENT_SPOTS[6] = fx + 9;  VENT_SPOTS[7] = fy + 4;
+  for (let k = 0; k < 4; k++) {
+    const sx = VENT_SPOTS[k * 2], sy = VENT_SPOTS[k * 2 + 1];
     // el daño en área lo aplican los telegraphs al explotar (el motor
     // gestiona i-frames/parada; los 4 puntos nunca apilan daño)
     g.telegraphs.push({ x: sx, y: sy, r: 22, t: 0.85, maxT: 0.85, dmg: def.dmg, kind: 'aro' });
@@ -916,7 +953,7 @@ function tickGolem(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boo
   if (commonTick(g, e, dt, def, m)) return true;
   const p = g.player;
   if (!p) { idleFloat(g, e, dt); return true; }
-  const d = dist(e.x, e.y, p.x, p.y);
+  const d2 = dist2(e.x, e.y, p.x, p.y);
 
   // ---- banner del jefe ----
   if (e.aggro && !g.flags.golemIntro) {
@@ -1005,7 +1042,7 @@ function tickGolem(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boo
         e.aiT = 2.5 + Math.random() * 2.5;
         e.patrolAngle = Math.random() * Math.PI * 2;
       }
-      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 40;
+      const far = dist2(e.x, e.y, e.homeX, e.homeY) > 1600;
       const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
       moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.4, dt);
       if (e.aggro) e.ai = 'persigue';
@@ -1013,16 +1050,16 @@ function tickGolem(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boo
     }
     case 'persigue': {
       if (!e.aggro) { e.ai = 'patrulla'; break; }
-      if (d > def.aggroR * 2.4) { e.aggro = false; e.ai = 'patrulla'; break; }
-      if (d > def.atkR * 0.8) moveDir(g, e, p.x - e.x, p.y - e.y, def.speed, dt);
+      if (d2 > (def.aggroR * 2.4) * (def.aggroR * 2.4)) { e.aggro = false; e.ai = 'patrulla'; break; }
+      if (d2 > (def.atkR * 0.8) * (def.atkR * 0.8)) moveDir(g, e, p.x - e.x, p.y - e.y, def.speed, dt);
       else e.moving = false;
       e.dir = p.x > e.x ? 'right' : 'left';
-      if (e.atkCd <= 0 && d < def.aggroR) {
+      if (e.atkCd <= 0 && d2 < def.aggroR * def.aggroR) {
         // elegir acción: slam/lanza (fase 1) · slam/embiste/lanza (fase 2)
         m.actIdx = (m.actIdx ?? 0) + 1;
         m.act = e.phase === 1
           ? (m.actIdx % 2 === 1 ? 'slam' : 'lanza')
-          : (['slam', 'embiste', 'lanza'] as const)[m.actIdx % 3];
+          : GOLEM_ACTOS_F2[m.actIdx % 3]; // R7-O1: hoisted
         e.ai = 'carga';
         e.windup = m.act === 'embiste' ? 0.7 : def.windup; // 0.9 el slam/lanza
         e.telegraphKind = m.act === 'slam' ? 'slam' : 'salva';
@@ -1047,7 +1084,8 @@ function tickGolem(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boo
         if (m.act === 'lanza') {
           // 2 cristales 'shard' en arco hacia el Portador
           const a = Math.atan2(p.y - 4 - e.y, p.x - e.x);
-          for (const off of [-0.13, 0.13]) {
+          for (let oi = 0; oi < GOLEM_LANZA_OFF.length; oi++) { // R7-O1: hoisted + indexado
+            const off = GOLEM_LANZA_OFF[oi];
             g.projectiles.push({
               x: e.x, y: e.y - 6, vx: Math.cos(a + off) * 150, vy: Math.sin(a + off) * 150,
               t: 1.7, dmg: 12, element: 'hielo', from: 'enemy', sprite: 'shard', radius: 5, pierce: 0,
@@ -1059,7 +1097,7 @@ function tickGolem(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boo
           e.aiT = 0.5;
         } else if (m.act === 'embiste') {
           // embestida en línea hacia el Portador
-          const l = Math.max(1, d);
+          const l = Math.max(1, Math.sqrt(d2)); // R7-O1: sqrt perezoso
           m.dashDx = (p.x - e.x) / l;
           m.dashDy = (p.y - e.y) / l;
           m.dashHit = false;
@@ -1203,7 +1241,8 @@ function acechoVult(g: Game, e: Enemy, p: Player, m: ExpMem): void {
   e.invulT = 0.9; // entre las páginas de su mapa
   // reaparece MÁS ALLÁ del Portador (a su espalda respecto a Vult)
   const ang = Math.atan2(p.y - e.y, p.x - e.x);
-  for (const dd of [55, 42, 68, 30, 80]) {
+  for (let di = 0; di < VULT_ACECHO_D.length; di++) { // R7-O1: hoisted + indexado
+    const dd = VULT_ACECHO_D[di];
     const x = p.x + Math.cos(ang) * dd, y = p.y + Math.sin(ang) * dd;
     if (!g.tileSolidAt(x, y)) { e.x = x; e.y = y; break; }
   }
@@ -1219,7 +1258,7 @@ function tickVult(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
   if (commonTick(g, e, dt, def, m)) return true;
   const p = g.player;
   if (!p) { idleFloat(g, e, dt); return true; }
-  const d = dist(e.x, e.y, p.x, p.y);
+  const d2 = dist2(e.x, e.y, p.x, p.y);
 
   // ---- banner del jefe (misma técnica que sirena/golem) ----
   if (e.aggro && !g.flags.vultIntro) {
@@ -1260,7 +1299,7 @@ function tickVult(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
     case 'patrulla': {
       e.aiT -= dt;
       if (e.aiT <= 0) { e.aiT = 2 + Math.random() * 2; e.patrolAngle = Math.random() * Math.PI * 2; }
-      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 50;
+      const far = dist2(e.x, e.y, e.homeX, e.homeY) > 2500;
       const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
       moveDir(g, e, Math.cos(ang), Math.sin(ang), spd * 0.4, dt);
       if (e.aggro) e.ai = 'persigue';
@@ -1270,11 +1309,11 @@ function tickVult(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
       if (!e.aggro) { e.ai = 'patrulla'; break; }
       // banda de cazador: 70-120 px
       const ang = Math.atan2(p.y - e.y, p.x - e.x);
-      if (d > 120) moveDir(g, e, Math.cos(ang), Math.sin(ang), spd, dt);
-      else if (d < 70) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), spd, dt);
+      if (d2 > 14400) moveDir(g, e, Math.cos(ang), Math.sin(ang), spd, dt);
+      else if (d2 < 4900) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), spd, dt);
       e.dir = p.x > e.x ? 'right' : 'left';
       if (e.atkCd <= 0) {
-        if (d < def.atkR + 10) {
+        if (d2 < (def.atkR + 10) * (def.atkR + 10)) {
           // TAJO en arco (melé): el 'aro' del telegraph explota al expirar
           e.ai = 'carga';
           m.vAct = 'tajo';
@@ -1283,9 +1322,8 @@ function tickVult(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
           g.telegraphs.push({ x: e.x, y: e.y, r: 34, t: 0.35, maxT: 0.35, dmg: 12, kind: 'aro' });
         } else {
           // ciclo de cazador: rafaga → embiste → salto
-          const ciclo: Array<'rafaga' | 'embiste' | 'salto'> = ['rafaga', 'embiste', 'salto'];
           m.vIdx = ((m.vIdx ?? -1) + 1) % 3;
-          m.vAct = ciclo[m.vIdx];
+          m.vAct = VULT_CICLO[m.vIdx]; // R7-O1: hoisted (antes array literal por ataque)
           e.ai = 'carga';
           if (m.vAct === 'rafaga') {
             e.windup = 0.5;
@@ -1455,7 +1493,7 @@ function tickCoro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
   if (commonTick(g, e, dt, def, m)) return true;
   const p = g.player;
   if (!p) { idleFloat(g, e, dt); return true; }
-  const d = dist(e.x, e.y, p.x, p.y);
+  const d2 = dist2(e.x, e.y, p.x, p.y);
   const maskIdx = m.maskIdx ?? 1;
 
   // ---- banner del jefe ----
@@ -1475,7 +1513,7 @@ function tickCoro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
       // flota junto al altar
       e.aiT -= dt;
       if (e.aiT <= 0) { e.aiT = 2 + Math.random() * 2; e.patrolAngle = Math.random() * Math.PI * 2; }
-      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 44;
+      const far = dist2(e.x, e.y, e.homeX, e.homeY) > 1936;
       const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
       moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.35, dt);
       if (e.aggro) e.ai = 'persigue';
@@ -1485,8 +1523,8 @@ function tickCoro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
       if (!e.aggro) { e.ai = 'patrulla'; break; }
       // coro lento: banda 100-170 (fuera de melé, dentro de su canto)
       const ang = Math.atan2(p.y - e.y, p.x - e.x);
-      if (d > 170) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
-      else if (d < 100) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), def.speed, dt);
+      if (d2 > 28900) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
+      else if (d2 < 10000) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), def.speed, dt);
       else {
         if (m.orbitDir === undefined) m.orbitDir = 1;
         if (Math.random() < 0.002) m.orbitDir *= -1;
@@ -1553,13 +1591,13 @@ function tickEcodesg(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): b
   if (commonTick(g, e, dt, def, m)) return true;
   const p = g.player;
   if (!p) { idleFloat(g, e, dt); return true; }
-  const d = dist(e.x, e.y, p.x, p.y);
+  const d2 = dist2(e.x, e.y, p.x, p.y);
 
   switch (e.ai) {
     case 'patrulla': {
       e.aiT -= dt;
       if (e.aiT <= 0) { e.aiT = 1.5 + Math.random() * 1.5; e.patrolAngle = Math.random() * Math.PI * 2; }
-      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 40;
+      const far = dist2(e.x, e.y, e.homeX, e.homeY) > 1600;
       const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
       moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.35, dt);
       if (e.aggro) e.ai = 'persigue';
@@ -1568,15 +1606,16 @@ function tickEcodesg(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): b
     case 'persigue': {
       if (!e.aggro) { e.ai = 'patrulla'; break; }
       const ang = Math.atan2(p.y - e.y, p.x - e.x);
-      if (d > 90) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
+      if (d2 > 8100) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
       e.dir = p.x > e.x ? 'right' : 'left';
-      if (e.atkCd <= 0 && d < 135) {
+      if (e.atkCd <= 0 && d2 < 18225) {
         // PARPADEO al flanco (la bruma destella ANTES: es la telegrafía)
         m.blinkSide = (m.blinkSide ?? 1) * -1;
         const fa = ang + (Math.PI / 2) * (m.blinkSide ?? 1);
         g.burst(e.x, e.y, '#b48fff', 12, 70);
         audio.sfx('whoosh');
-        for (const dd of [42, 34, 52, 26]) {
+        for (let di = 0; di < ECODESG_BLINK_D.length; di++) { // R7-O1: hoisted + indexado
+          const dd = ECODESG_BLINK_D[di];
           const x = p.x + Math.cos(fa) * dd, y = p.y + Math.sin(fa) * dd;
           if (!g.tileSolidAt(x, y)) { e.x = x; e.y = y; break; }
         }
@@ -1629,13 +1668,13 @@ function tickSatiro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
   if (commonTick(g, e, dt, def, m)) return true;
   const p = g.player;
   if (!p) { idleFloat(g, e, dt); return true; }
-  const d = dist(e.x, e.y, p.x, p.y);
+  const d2 = dist2(e.x, e.y, p.x, p.y);
 
   switch (e.ai) {
     case 'patrulla': {
       e.aiT -= dt;
       if (e.aiT <= 0) { e.aiT = 2 + Math.random() * 2; e.patrolAngle = Math.random() * Math.PI * 2; }
-      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 44;
+      const far = dist2(e.x, e.y, e.homeX, e.homeY) > 1936;
       const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
       moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed * 0.4, dt);
       if (e.aggro) e.ai = 'persigue';
@@ -1644,8 +1683,8 @@ function tickSatiro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
     case 'persigue': {
       if (!e.aggro) { e.ai = 'patrulla'; break; }
       const ang = Math.atan2(p.y - e.y, p.x - e.x);
-      if (d < 75) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), def.speed * 0.95, dt);
-      else if (d > 165) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
+      if (d2 < 5625) moveDir(g, e, -Math.cos(ang), -Math.sin(ang), def.speed * 0.95, dt);
+      else if (d2 > 27225) moveDir(g, e, Math.cos(ang), Math.sin(ang), def.speed, dt);
       else {
         if (m.orbitDir === undefined) m.orbitDir = 1;
         if (Math.random() < 0.004) m.orbitDir *= -1;
@@ -1653,7 +1692,7 @@ function tickSatiro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
         moveDir(g, e, Math.cos(tang), Math.sin(tang), def.speed * 0.6, dt);
       }
       e.dir = p.x > e.x ? 'right' : 'left';
-      if (e.atkCd <= 0 && d < def.atkR + 20) {
+      if (e.atkCd <= 0 && d2 < (def.atkR + 20) * (def.atkR + 20)) {
         // BALADA CURVA: marca de caída en la posición PREDICHA (0.5 s)
         const v = getPortadorVel();
         const px = p.x + v.x * 0.5, py = p.y + v.y * 0.5;
@@ -1675,7 +1714,8 @@ function tickSatiro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
         // silba el orbe hacia el punto marcado (llega cuando el 'aro' cierra)
         if (m.saltoX !== undefined && m.saltoY !== undefined) {
           const a = Math.atan2(m.saltoY - e.y, m.saltoX - e.x);
-          const dd = Math.hypot(m.saltoX - e.x, m.saltoY - e.y);
+          const ddx = m.saltoX - e.x, ddy = m.saltoY - e.y;
+          const dd = Math.sqrt(ddx * ddx + ddy * ddy); // R7-O1: sqrt (el valor hace falta para la velocidad)
           // el punto de spawn NUNCA dentro de pared (el bucle de proyectiles
           // elimina al instante los orbes nacidos en tile sólido): prueba el
           // offset de boca, el centro del cuerpo y un empujón en la dirección
@@ -1762,27 +1802,45 @@ export function expansionDeathFx(g: Game, e: Enemy): void {
 // La barra/banner los pintan los mecanismos ya existentes (bossRef/
 // bossActive + cerebros), al estilo update.ts:398 y hooks.acto3_subir.
 // ============================================================
+// R7-O1: posición del 'altar_c' cacheada por OBJETO de mapa (g.map es el
+// singleton MAPS[id]; props nunca muta tras la carga — engine solo lo lee).
+// Evita un props.find con closure por frame en la cripta post-Acto III.
+let altarMapVisto: unknown = null;
+let altarAx = 0, altarAy = 0;
+function altarCoroXY(g: Game): void {
+  if (altarMapVisto === g.map) return;
+  const altar = g.map.props.find(pr => pr.id === 'altar_c');
+  altarAx = (altar ? altar.x : 19) * 16 + 8; // TILE=16, constante del proyecto
+  altarAy = (altar ? altar.y + 4 : 8) * 16 + 8;
+  altarMapVisto = g.map;
+}
+
 export function expansionBossWatchers(g: Game): void {
   if (g.state !== 'play' || !g.player) return;
   const p = g.player;
 
-  // ---- activación de la barra de jefe al acercarte (vult) ----
-  const vult = g.mapId === 'cumbres' ? g.enemies.find(e => e.etype === T_VULT && !e.dead) : undefined;
-  if (vult && !g.bossActive) {
-    g.bossRef = vult;
-    if (dist(p.x, p.y, vult.x, vult.y) < 190) { g.bossActive = true; audio.playTrack('boss'); }
+  // ---- R7-O1: UNA pasada indexada sobre g.enemies (antes: find + some con
+  //      arrow closures nuevas por frame; mismo predicado `etype && !dead`,
+  //      mismas decisiones y orden de efectos — vult solo existe en cumbres
+  //      y coro solo en cripta, así que una variable sirve a los 4 checks) ----
+  let jefe: Enemy | undefined;
+  if (g.mapId === 'cumbres' || g.mapId === 'cripta') {
+    const tipo = g.mapId === 'cumbres' ? T_VULT : T_CORO;
+    const es = g.enemies;
+    for (let i = 0; i < es.length; i++) {
+      const o = es[i];
+      if (!o.dead && o.etype === tipo) { jefe = o; break; }
+    }
   }
 
-  // ---- activación de la barra de jefe al acercarte (coro) ----
-  const coro = g.mapId === 'cripta' ? g.enemies.find(e => e.etype === T_CORO && !e.dead) : undefined;
-  if (coro && !g.bossActive) {
-    g.bossRef = coro;
-    if (dist(p.x, p.y, coro.x, coro.y) < 190) { g.bossActive = true; audio.playTrack('boss'); }
+  // ---- activación de la barra de jefe al acercarte (vult · coro) ----
+  if (jefe && !g.bossActive) {
+    g.bossRef = jefe;
+    if (dist2(p.x, p.y, jefe.x, jefe.y) < 190 * 190) { g.bossActive = true; audio.playTrack('boss'); }
   }
 
   // ---- spawn de VULT (Cumbres de noche, tras q11) ----
-  if (g.mapId === 'cumbres' && !g.flags.vultDefeated
-      && !g.enemies.some(e => e.etype === T_VULT && !e.dead)
+  if (g.mapId === 'cumbres' && !g.flags.vultDefeated && jefe === undefined
       && g.questIdx >= 11 && isNightG(g)) {
     const v = g.makeEnemy('vult', p.x, p.y, 2, 'boss');
     // colócalo a distancia de caza (makeEnemy lo creó sobre el Portador)
@@ -1800,14 +1858,12 @@ export function expansionBossWatchers(g: Game): void {
 
   // ---- spawn de EL CORO ROTO (Cripta, post-Acto III) ----
   if (g.mapId === 'cripta' && g.flags.acto3Done && g.flags.guardianRecordadoDerrotado
-      && !g.flags.coroDefeated && !g.enemies.some(e => e.etype === T_CORO && !e.dead)) {
-    const altar = g.map.props.find(pr => pr.id === 'altar_c');
-    const ax = (altar ? altar.x : 19) * 16 + 8; // TILE=16, constante del proyecto
-    const ay = (altar ? altar.y + 4 : 8) * 16 + 8;
-    if (dist(p.x, p.y, ax, ay) < 200) {
-      const c = g.makeEnemy('coro', ax, ay, 0, 'boss');
+      && !g.flags.coroDefeated && jefe === undefined) {
+    altarCoroXY(g);
+    if (dist2(p.x, p.y, altarAx, altarAy) < 200 * 200) {
+      const c = g.makeEnemy('coro', altarAx, altarAy, 0, 'boss');
       g.enemies.push(c);
-      g.burst(ax, ay, '#c8b0e8', 24, 100);
+      g.burst(altarAx, altarAy, '#c8b0e8', 24, 100);
       g.shake = 8;
       g.toast('El altar libre canta al revés... EL CORO ROTO despierta', '#c8b0e8');
     }
