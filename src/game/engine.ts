@@ -466,6 +466,12 @@ export class Game {
     this.visitedMaps = { lunaris: true };
     if (this.flags.visitedBosque) this.visitedMaps.bosque = true;
     if (this.flags.visitedCripta) this.visitedMaps.cripta = true;
+    // R7-Q1 #5: restaura también la expansión — sin esto, tras recargar el
+    // santuario dejaba de ofrecer Viajar a los mapas del Acto II ya visitados
+    // (los flags visited_costa/aldea/cumbres SÍ se persisten).
+    for (const mid of ['costa', 'aldea', 'cumbres'] as const) {
+      if (this.flags[`visited_${mid}`]) this.visitedMaps[mid] = true;
+    }
     this.loadMap(d.map, Math.floor(d.x / TILE), Math.floor(d.y / TILE));
     // restaura la posición fina del guardado SOLO si su tile es seguro
     // (ni sólido ni dentro de una zona de salida); si no, conserva el tile
@@ -481,6 +487,10 @@ export class Game {
 
   save() {
     if (!this.player) return;
+    // R7-Q1 #1 (ALTA): guardar desde la pausa DENTRO de la arena serializaría
+    // mapId 'arena' + Portador temporal sobre el save de campaña. La
+    // reparación resave de restoreCampaign sigue como segunda línea de defensa.
+    if (this.challengeRun) return;
     const p = this.player;
     const d: SaveData = {
       v: 1,
@@ -863,8 +873,10 @@ export class Game {
     const targetY = this.player.y * ZOOM - VIEW_H / 2;
     const maxX = this.map.w * TILE * ZOOM - VIEW_W;
     const maxY = this.map.h * TILE * ZOOM - VIEW_H;
-    const cx = Math.max(0, Math.min(maxX, targetX));
-    const cy = Math.max(0, Math.min(maxY, targetY));
+    // R7-Q1 #7: mapa más estrecho/alto que la vista (aspecto extremo, maxX<0)
+    // → centrar el mundo en pantalla en vez de dejar banda negra a la derecha.
+    const cx = maxX < 0 ? maxX / 2 : Math.max(0, Math.min(maxX, targetX));
+    const cy = maxY < 0 ? maxY / 2 : Math.max(0, Math.min(maxY, targetY));
     if (snap) { this.camX = cx; this.camY = cy; }
     else { this.camX += (cx - this.camX) * 0.14; this.camY += (cy - this.camY) * 0.14; }
   }
@@ -1266,6 +1278,10 @@ export class Game {
   sanctuaryPos(id: MapId): [number, number] {
     if (id === 'lunaris') return [25, 19];
     if (id === 'bosque') return [38, 27];
+    // R7-Q1 #4: santuarios de la expansión (maps_expansion: sanc_co/sanc_a/sanc_cu)
+    if (id === 'costa') return [22, 21];
+    if (id === 'aldea') return [17, 21];
+    if (id === 'cumbres') return [14, 24];
     return [19, 24];
   }
 
@@ -1911,7 +1927,19 @@ export class Game {
     audio.sfx('kill');
     audio.sfx('enemyDie');
     // cuenta de lobos para la misión
-    if (e.etype === 'lobo' && this.questIdx === 1 && this.questStep === 0) {
+    // R7-Q1 #2 (ALTA): en duelos de arena el clon del jefe NO escribe campaña
+    // (flags de derrota, botín, misiones, música del mapa): el reto gestiona su
+    // propio flujo y restoreCampaign restaura el estado al terminar. Antes,
+    // matar al clon fijaba guardianDefeated/sirenaDefeated/... + questAdvance
+    // + playTrack sobre la campaña viva → con un save en la ventana endBeat
+    // (1,7 s) la cripta quedaba sin Guardián y q4 bloqueable.
+    if (this.challengeRun && BOSS_DEFEAT_FLAG[e.etype] !== undefined) {
+      this.bossActive = false;
+      audio.setCombat(false);
+      this.shake = 8;
+      return;
+    }
+    if (e.etype === 'lobo' && !this.challengeRun && this.questIdx === 1 && this.questStep === 0) {
       const n = Number(this.flags.wolfKills ?? 0) + 1;
       this.flags.wolfKills = n;
       this.toast(`Lobo de Niebla cazado (${n}/3)`, '#8ef0b0');

@@ -15,7 +15,7 @@ import { paintWater } from './world/water';
 import { paintStone } from './world/stone';
 import { paintVillage } from './world/village';
 import { paintTall } from './world/trees';
-import { px as tpx } from './world/palette';
+import { px as tpx, hash2 } from './world/palette';
 
 export { hash2 } from './world/palette';
 export type { Frames } from './actors/util';
@@ -85,6 +85,18 @@ export function drawTile(
   switch (ch) {
     case '.': case ',': case 'c': case 'm':
       paintGrass(x, ch, tx, ty, mapId, t, at); break;
+    // R7-Q1 #3: 'n' (Niebla Muda, bosque norte) es SÓLIDO pero caía al default
+    // de hierba plana → muro invisible de 6×2 en el camino. Velo de niebla
+    // determinista (hash2, sin Math.random) que delata el bloqueo.
+    case 'n': {
+      paintGrass(x, '.', tx, ty, mapId, t, at);
+      const bx = tx * TILE, by = ty * TILE;
+      tpx(x, bx, by, TILE, TILE, 'rgba(186,202,196,0.66)');
+      tpx(x, bx + Math.floor(hash2(tx, ty) * 9), by + Math.floor(hash2(tx + 7, ty + 3) * 9), 6, 3, 'rgba(214,226,220,0.5)');
+      tpx(x, bx + Math.floor(hash2(tx + 1, ty + 5) * 10), by + Math.floor(hash2(tx + 4, ty + 2) * 10), 4, 2, 'rgba(228,238,232,0.45)');
+      tpx(x, bx + Math.floor(hash2(tx + 9, ty + 8) * 11), by + Math.floor(hash2(tx + 2, ty + 6) * 12), 3, 2, 'rgba(168,188,180,0.55)');
+      break;
+    }
     case '~': case 'B': case 'x':
       paintWater(x, ch, tx, ty, mapId, t, at); break;
     case ':': case '_': case '#': case 'P': case 'A': case 'V':
