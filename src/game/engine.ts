@@ -14,7 +14,7 @@ import type {
   Toast, Shockwave, TeleGraph, SaveData, DialogueNode, DialogueOption, Dir, Element, StatsData,
   ChestDef,
 } from './types';
-import { MAPS, mapRows, tileAt } from './maps';
+import { MAPS, mapRows, tileAt, mapEpochs } from './maps';
 import { ARENA_MAP_ID } from './maps_expansion'; // 17-d: la arena no entra en visitedMaps (ver loadMap)
 import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
 import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
@@ -38,6 +38,7 @@ import { skillTick, skillCdMult, setSkillCdDecay, skillDamageMult } from './skil
 import { balanceTick, enemyStatMult, critChance, CRIT_MULT } from './balance';
 import { worldTick, worldInteract } from './worldlife';
 import { timeTick, beginEpochShift } from './timeskip';
+import { acto5Tick, estrenarCuna } from './acto5'; // R13 «La carta»: ritmo del Aún + estrena (solo en la Cuna)
 import { defaultStats, sanitizeStats, statsTick, achievementTick } from './achievements'; // 16-c: estadísticas + logros
 import {
   cycleCompanionMode, useSenno, registerCorpse16b, bossSennoLoot16b, companionInterpose,
@@ -310,6 +311,7 @@ export class Game {
     balanceTick(this, dt);   // monitor de dificultad dinámica
     worldTick(this, dt);     // fauna, rumores y eventos del mundo (13-b)
     timeTick(this, dt);      // inmersión del viaje temporal (13-c)
+    acto5Tick(this, dt);     // R13: compás del Aún — sale temprano fuera de la Cuna
     armorTick(this, dt);     // 14-b: pasiva de la Malla del Alba (+vigor/s)
     // ==== 16-c (logros-stats): tiempoJugado + memorias + logros (O(1), early-out) ====
     statsTick(this, dt);
@@ -504,8 +506,9 @@ export class Game {
     // ==== 16-c (logros-stats): restore tolerante (saves antiguos sin stats) ====
     this.stats = sanitizeStats(d.stats);
     // R8-1.1: la época de entrada usa el mismo flag derivado (saves sin
-    // hasEcho no descartan el viaje guardado).
-    this.epoch = d.epoch === 'pasado' && hasEchoDerived ? 'pasado' : 'presente';
+    // hasEcho no descartan el viaje guardado). R13: restaura también 'aun'
+    // (loadMap re-normaliza si el mapa guardado no admite la época ternaria).
+    this.epoch = d.epoch === 'pasado' && hasEchoDerived ? 'pasado' : d.epoch === 'aun' ? 'aun' : 'presente';
     this.companion = d.companion ? this.makeCompanion() : null;
     // ==== 16-b: restaura la orden táctica del compañero (saves viejos sin el
     // campo → undefined = 'seguir', el comportamiento de siempre) ====
@@ -590,6 +593,18 @@ export class Game {
     this.mapId = id;
     this.map = MAPS[id];
     this.rows = mapRows(this.map);
+    // ==== R13 (época ternaria): el estado 'aun' SOLO existe en mapas con
+    // baseEpoch 'aun'. Cualquier entrada a un mapa viejo lo normaliza a
+    // 'presente' (los mapas del primer acto jamás ven 'aun'). La Cuna SIEMPRE
+    // recibe en 'aun' hasta que su primer día se estrene (el jugador baja
+    // cargando 'presente' de la superficie: sin esto, el primer día ya
+    // estaría estrenado al aterrizar); tras la estrena, conserva la hora con
+    // la que llegues ('pasado' anómalo → 'aun'). ====
+    const baseEp = this.map.baseEpoch ?? 'presente';
+    if (baseEp === 'aun') {
+      if (!this.flags.cunaEstrenada) this.epoch = 'aun';
+      else if (this.epoch === 'pasado') this.epoch = 'aun';
+    } else if (this.epoch === 'aun') this.epoch = 'presente';
     this.buildGround();
     // R8-1.3: spawn de cofres saneado — tile destino y vecindad inmediata
     // libres de tiles altos/sólidos en la(s) época(s) donde el cofre existe.
@@ -646,6 +661,10 @@ export class Game {
     if (id === 'costa' && this.questIdx === 5 && this.questStep === 0) this.questAdvance();
     if (id === 'aldea' && this.questIdx === 7 && this.questStep === 0) this.questAdvance();
     if (id === 'cumbres' && this.questIdx === 8 && this.questStep === 0) this.questAdvance();
+    // R13: pisar la Cuna completa el descenso de q17 (idempotente por estado,
+    // patrón Acto II: si el jugador baja antes de aceptar, avanza al volver a
+    // repetir la bajada).
+    if (id === 'cuna' && this.questIdx === 16 && this.questStep === 1) this.questAdvance();
     if (!this.flags[`visited_${id}`]) this.flags[`visited_${id}`] = true;
     // R8-1.1: rearma de la habilidad derivado del flag persistente. Cualquier
     // ruta de (re)entrada al mapa (continueGame, respawn, viaje, fade) pasa por
@@ -677,7 +696,12 @@ export class Game {
       validatedChests.add(ch);
       const eps: Epoch[] = ch.needPast
         ? ['pasado']
-        : this.map.epochDiffs.length ? ['presente', 'pasado'] : ['presente'];
+        // R13: cofres needPresent se validan SOLO en 'presente' (el cofre del
+        // primer día no existe en 'aun'); los demás usan el PAR de épocas del
+        // mapa (ternario en la Cuna, binario en los viejos).
+        : ch.needPresent
+        ? ['presente']
+        : this.map.epochDiffs.length ? mapEpochs(this.map) : [this.map.baseEpoch ?? 'presente'];
       const badSpot = (x: number, y: number): boolean => {
         for (const ep of eps) {
           if (SOLID_CHARS.has(tileAt(this.map, this.rows, x, y, ep))) return true;
@@ -746,15 +770,19 @@ export class Game {
       }
       return c;
     };
-    this.groundCanvas = mk('presente');
-    this.groundPastCanvas = this.map.epochDiffs.length ? mk('pasado') : this.groundCanvas;
+    // R13: par de épocas por mapa — en los viejos es el par histórico
+    // ('presente','pasado'); en la Cuna ('aun','presente'). groundPastCanvas
+    // sigue siendo «el canvas de la época alternativa» (contrato de render).
+    const [epA, epB] = mapEpochs(this.map);
+    this.groundCanvas = mk(epA);
+    this.groundPastCanvas = this.map.epochDiffs.length ? mk(epB) : this.groundCanvas;
     // minimapa v2 (2 px/tile, relieve + costas + marco en drawMinimapOverlay):
-    // presente siempre; pasado solo si el mapa tiene diffs de época.
-    this.miniCanvas = buildMinimapV2(this.rows, this.map, 'presente',
-      (tx, ty) => tileAt(this.map, this.rows, tx, ty, 'presente'));
+    // época base siempre; alternativa solo si el mapa tiene diffs de época.
+    this.miniCanvas = buildMinimapV2(this.rows, this.map, epA,
+      (tx, ty) => tileAt(this.map, this.rows, tx, ty, epA));
     this.miniCanvasPast = this.map.epochDiffs.length
-      ? buildMinimapV2(this.rows, this.map, 'pasado',
-          (tx, ty) => tileAt(this.map, this.rows, tx, ty, 'pasado'))
+      ? buildMinimapV2(this.rows, this.map, epB,
+          (tx, ty) => tileAt(this.map, this.rows, tx, ty, epB))
       : null;
   }
 
@@ -1010,6 +1038,7 @@ export class Game {
   private inExitZone(tx: number, ty: number): boolean {
     return this.map.exits.some(ex => {
       if (ex.needPast && this.epoch !== 'pasado') return false;
+      if (ex.needFlag && !this.flags[ex.needFlag]) return false; // R13: la escalera a la Cuna (gated)
       return tx >= ex.x && tx < ex.x + ex.w && ty >= ex.y && ty < ex.y + ex.h;
     });
   }
@@ -1109,6 +1138,37 @@ export class Game {
       this.toast('La Cripta existe fuera del tiempo.', '#9aa0b8');
       return;
     }
+    // ==== R13 · ÉPOCA TERNARIA: en la Cuna, Q alterna 'aun' ↔ 'presente'. ====
+    // El gate es el SEGUNDO Fragmento (flags.cunaFragmento): la Cuna no alterna
+    // con su pasado (no tiene: no hay ayeres donde nadie vivió), sino con el
+    // tiempo que aún no se ha estrenado. Aterrizar en 'presente' por primera
+    // vez ESTRENA la zona (acto5.estrenarCuna, guard cunaEstrenada).
+    if (this.map.baseEpoch === 'aun') {
+      if (!this.flags.cunaFragmento) {
+        this.toast('El tiempo de este lugar aún no se estrena...', '#c8b0e8');
+        audio.sfx('error');
+        return;
+      }
+      if (!beginEpochShift(this)) return; // mismos vetos de momento hostil (13-c)
+      const toPresente = this.epoch === 'aun';
+      this.epoch = toPresente ? 'presente' : 'aun';
+      this.epochFx = 0.8;
+      if (!this.challengeRun) this.stats.vecesCambioEpoca++;
+      audio.sfx('epoch');
+      // el cambio de época puede traer el lago hasta ti: recoloca si quedas dentro
+      if (this.player && this.tileSolidAt(this.player.x, this.player.y)) {
+        const [sx, sy] = this.findSafeTile(Math.floor(this.player.x / TILE), Math.floor(this.player.y / TILE));
+        this.player.x = sx * TILE + 8;
+        this.player.y = sy * TILE + 8;
+        this.toast('El mundo cambia a tu alrededor... y te aparta del muro.', '#c8b0e8');
+      }
+      if (toPresente && !this.flags.cunaEstrenada) {
+        estrenarCuna(this); // UNA vez: emite sus propios avisos y textos
+        return;
+      }
+      this.toast(this.epoch === 'aun' ? 'El Aún te rodea: el tiempo sin estrenar' : 'El primer día de la Cuna canta a tu alrededor', '#c8d0e8');
+      return;
+    }
     // inmersión temporal (13-c): transición y posible veto (momento hostil)
     if (!beginEpochShift(this)) return;
     this.epoch = this.epoch === 'presente' ? 'pasado' : 'presente';
@@ -1140,6 +1200,7 @@ export class Game {
     for (const ch of this.map.chests) {
       if (this.openedChests.has(ch.id)) continue;
       if (ch.needPast && this.epoch !== 'pasado') continue;
+      if (ch.needPresent && this.epoch !== 'presente') continue; // R13: el cofre del primer día
       consider(ch.x * TILE + 8, ch.y * TILE + 8, 'chest', 'Abrir cofre', () => this.openChest(ch.id), 26);
     }
     for (const pr of this.map.props) {
@@ -1149,6 +1210,8 @@ export class Game {
       if (pr.kind === 'sanctuary') consider(px, py, 'sanc', 'Santuario del Eco', () => this.openSanctuary(), 26);
       else if (pr.kind === 'forge') consider(px, py, 'forge', 'Forja de Toln', () => this.talkTo('toln'), 28);
       else if (pr.kind === 'fragment') consider(px, py, 'frag', 'Fragmento de Eco', () => this.openDialogue('voz_fragment'), 30);
+      // R13: el SEGUNDO Fragmento (la Cuna) — su propio diálogo y su flag
+      else if (pr.kind === 'fragment2') consider(px, py, 'frag', 'Fragmento de la Cuna', () => this.openDialogue('voz_fragmento2'), 30);
       else if (pr.kind === 'altarEcho') consider(px, py, 'altar', 'Altar del Eco', () => this.tryTakeEco(), 30);
       else if (pr.kind === 'sign') consider(px, py, 'sign', 'Leer cartel', () => this.readSign(pr.label ?? ''), 28);
       else if (pr.kind === 'lamp' && !this.flags[pr.id]) consider(px, py, 'lamp', 'Encender el Farol del Recuerdo', () => this.lightLamp(pr.id), 28);

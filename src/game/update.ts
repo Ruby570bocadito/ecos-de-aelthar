@@ -488,6 +488,7 @@ export function updateGame(g: Game, dt: number) {
     const ptx = Math.floor(p.x / TILE), pty = Math.floor(p.y / TILE);
     for (const ex of g.map.exits) {
       if (ex.needPast && g.epoch !== 'pasado') continue;
+      if (ex.needFlag && !g.flags[ex.needFlag]) continue; // R13: escalera de la Cuna (gated)
       if (ptx >= ex.x && ptx < ex.x + ex.w && pty >= ex.y && pty < ex.y + ex.h) {
         g.fadeTo(ex.to, ex.tx, ex.ty);
         audio.sfx('echo');

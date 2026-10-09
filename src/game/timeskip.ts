@@ -200,15 +200,21 @@ export function beginEpochShift(g: Game): boolean {
   g.waves.push({ x: p.x, y: p.y, r: 3, maxR: 100, speed: 290, dmg: 0, hit: true });
 
   // ---- flash suave teñido por DESTINO (dorado = ayer, azulado = hoy) ----
-  addFlash(g, toPast ? '#ffd88a' : '#a8b8d8', 0.12);
+  // R13: en la Cuna la paleta es del SEGUNDO CANTO — plata al descender al
+  // Aún (el tiempo sin estrenar), oro al aterrizar en el presente (el primer
+  // día). toPast aquí significa «hacia la época alternativa del mapa».
+  const isCuna = g.mapId === 'cuna';
+  if (isCuna) addFlash(g, toPast ? '#d8d8ec' : '#ffe9a0', 0.14);
+  else addFlash(g, toPast ? '#ffd88a' : '#a8b8d8', 0.12);
   addShake(g, 2); // latido leve de la realidad
 
   // ---- capa sfx propia sobre el 'epoch' que lanza el motor ----
-  audio.sfx(toPast ? 'save' : 'quest');
+  if (isCuna) audio.sfx(toPast ? 'quest' : 'save'); // el Aún abre; el presente, a hogar
+  else audio.sfx(toPast ? 'save' : 'quest');
 
   // ---- ráfaga de notas musicales desde el Portador ----
-  const c1 = toPast ? '#ffd88a' : '#a8c8e8';
-  const c2 = toPast ? '#f0c060' : '#cfe0ff';
+  const c1 = isCuna ? (toPast ? '#d8d8ec' : '#ffe9a0') : (toPast ? '#ffd88a' : '#a8c8e8');
+  const c2 = isCuna ? (toPast ? '#c8d0e8' : '#f0d890') : (toPast ? '#f0c060' : '#cfe0ff');
   for (let i = 0; i < NOTE_CFG.length; i++) {
     const n = NOTE_CFG[i];
     const nx = p.x + Math.cos(n.a) * n.d;

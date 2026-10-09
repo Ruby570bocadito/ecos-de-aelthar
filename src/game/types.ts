@@ -1,13 +1,20 @@
 // ============================================================
 // ECOS DE AELTHAR — Demo (vertical slice)
 // Tipos compartidos del motor
+// R13 «La carta» (Acto V, todo ADITIVO):
+//  · Epoch gana el tercer estado 'aun' — SOLO lo reciben los mapas nuevos
+//    con MapDef.baseEpoch === 'aun' (los mapas viejos jamás lo ven: el
+//    motor lo normaliza a 'presente' al cargar; ver engine.loadMap).
+//  · MapId gana 'cuna' (La Cuna del Canto, sótano de la Sala).
+//  · PropKind gana 'fragment2' (el segundo Fragmento, se dibuja como el
+//    primero vía render.ts).
 // ============================================================
 
 export type Dir = 'down' | 'up' | 'left' | 'right';
 export interface Vec { x: number; y: number }
 
-export type MapId = 'lunaris' | 'bosque' | 'cripta' | 'costa' | 'aldea' | 'cumbres';
-export type Epoch = 'presente' | 'pasado';
+export type MapId = 'lunaris' | 'bosque' | 'cripta' | 'costa' | 'aldea' | 'cumbres' | 'cuna'; // R13: +cuna
+export type Epoch = 'presente' | 'pasado' | 'aun'; // R13: +aun (solo mapas baseEpoch 'aun')
 export type TrackName = 'village' | 'forest' | 'crypt' | 'boss' | 'title' | 'costa' | 'aldea' | 'cumbres';
 
 export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian' | 'neumo' | 'espectro' | 'arpi' | 'sirena' | 'golem' | 'vult' | 'coro' | 'ecodesg' | 'satiro' | 'heraldo'; // 16-a: jefe final del Acto IV
@@ -47,6 +54,7 @@ export interface ChestDef {
   id: string; x: number; y: number;
   gold?: number; potions?: number; item?: string;   // item: id de objeto clave
   needPast?: boolean;         // el cofre solo existe en el pasado
+  needPresent?: boolean;      // R13: el cofre solo existe en el presente (el «cofre del primer día» de la Cuna)
 }
 
 export interface EchoDef {
@@ -58,10 +66,11 @@ export interface ExitDef {
   x: number; y: number; w: number; h: number;   // en tiles
   to: MapId; tx: number; ty: number;
   needPast?: boolean;          // solo transitable en el pasado
+  needFlag?: string;           // R13: solo transitable con la flag activa (la escalera a la Cuna)
   label?: string;
 }
 
-export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'altarEcho' | 'sign' | 'gate' | 'wreck' | 'faro' | 'lamp';
+export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'fragment2' | 'altarEcho' | 'sign' | 'gate' | 'wreck' | 'faro' | 'lamp'; // R13: +fragment2
 
 export interface PropDef {
   id: string; kind: PropKind; x: number; y: number;
@@ -76,6 +85,11 @@ export interface MapDef {
   subtitle: string;
   w: number; h: number;
   rows: string[];
+  // R13: la época cuyo estado SON las filas base ('presente' por defecto:
+  // convención histórica — diffs = pasado). En la Cuna es 'aun': las filas
+  // base son el tiempo SIN estrenar y los diffs se aplican al aterrizar en
+  // 'presente' (el primer día). Los mapas viejos no lo definen.
+  baseEpoch?: Epoch;
   epochDiffs: EpochDiff[];
   dark?: boolean;
   music: TrackName;

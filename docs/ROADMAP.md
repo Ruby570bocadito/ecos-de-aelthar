@@ -130,6 +130,12 @@ empezar por un "coop de arena" (modo desafío a 2) que es el caso más barato.
 | **10** | Mapas grandes + cripta Zelda + interiores + eventos aleatorios | 6.2-6.6 |
 | **11** | Contenido: jefes, NPCs, cinemáticas, historia gated | 7.1-7.4, 7.6 |
 | **12** | Sistemas grandes + QA integral final + pulido | 8.2-8.3, QA |
+| **13** | Acto V fase 1 «La carta»: Cuna del Canto (época ternaria 'aún'), Fragmento 2, q17 | docs/history.md §19.2 (R13) |
 
 Cada ronda: 8-10 agentes → verificación (typecheck, build, juego, consola) →
 commit → merge a main → push. QA de solo lectura en cada ronda.
+
+> Rondas 9–12 ejecutadas (merge f1ca32e/fc68b6c). Desde R13 el calendario lo
+> gobierna la biblia: docs/history.md §19.2 (rondas 13–22, «El Segundo Canto»).
+> R13 «La carta» entregada: mapa 'cuna' (baseEpoch 'aun' — época ternaria),
+> Fragmento 2, q17, smoke_acto5.ts (14 smokes verdes).

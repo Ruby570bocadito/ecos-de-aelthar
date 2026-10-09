@@ -8,7 +8,7 @@ import {
   QUESTS, DIALOGUES, ENEMY_DEFS, MEMORIES, KEY_ITEMS, SKILLS,
   type DialogueNode,
 } from '../src/game/data';
-import { MAPS, mapRows, tileAt } from '../src/game/maps';
+import { MAPS, mapRows, tileAt, mapEpochs } from '../src/game/maps';
 import { SOLID_CHARS, TILE } from '../src/game/sprites';
 import type { MapId, Epoch } from '../src/game/types';
 
@@ -18,15 +18,15 @@ const warn = (m: string) => { console.log('  ⚠ ' + m); warns++; };
 const ok = (m: string) => console.log('  ✓ ' + m);
 
 console.log('=== 1) MISIONES (cadena principal) ===');
-if (QUESTS.length === 16) ok(`QUESTS.length = ${QUESTS.length} (q1..q16, Acto IV incluido)`);
-else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 16`);
+if (QUESTS.length === 17) ok(`QUESTS.length = ${QUESTS.length} (q1..q17, Acto V fase 1 incluido)`);
+else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 17`);
 QUESTS.forEach((q, i) => {
   if (!q.id || !q.name || !q.steps?.length) bad(`QUESTS[${i}] (${q.id}) incompleta`);
   else if (q.steps.some(s => !s)) bad(`QUESTS[${i}] (${q.id}) tiene un paso vacío`);
 });
 const ids = QUESTS.map(q => q.id);
 if (new Set(ids).size !== ids.length) bad('ids de misión duplicados');
-if (QUESTS.length === 16) ok('sin huecos: ' + ids.join(','));
+if (QUESTS.length === 17) ok('sin huecos: ' + ids.join(','));
 
 console.log('\n=== 2) ENEMY_DEFS (10 tipos) ===');
 const TYPES: (keyof typeof ENEMY_DEFS)[] = ['lobo', 'esqueleto', 'sombra', 'guardian', 'neumo', 'espectro', 'arpi', 'sirena', 'golem', 'heraldo']; // heraldo: jefe final del Acto IV (16-a)
@@ -61,7 +61,9 @@ const HOOKS_EXACT = new Set(['eco_taken_mem', 'mara_met', 'mara_gift', 'mera_eco
   'acto3_verdad', 'acto3_silencio', 'acto3_subir', 'acto3_velmora_fn',
   // Acto IV (16-a): handlers en hooks.handleCustomAction
   'accept_q14', 'acto4_toln', 'acto4_cam_mera', 'acto4_cam_ivo', 'accept_q15',
-  'acto4_guarda', 'acto4_subir', 'acto4_report', 'accept_q16', 'acto4_epilogo']);
+  'acto4_guarda', 'acto4_subir', 'acto4_report', 'accept_q16', 'acto4_epilogo',
+  // Acto V fase 1 (R13): handlers en hooks.handleCustomAction + watcher acto5CatchUp
+  'accept_q17', 'acto5_bajar', 'acto5_fragmento', 'acto5_report']);
 const HOOKS_PREFIX = ['memory_', 'rep_', 'flag_'];
 const ENGINE_PREFIX = ['armor_']; // 14-b: armor_N → engine.applyAction (case action.startsWith('armor_'))
 const actionHandled = (a: string) =>
@@ -101,7 +103,7 @@ ok('SKILLS: 4 habilidades por disciplina');
 
 console.log('\n=== 5) MAPAS: filas w×h correctas ===');
 const MAP_IDS = Object.keys(MAPS) as MapId[];
-if (MAP_IDS.length === 7) ok(`MAPS tiene 7 mapas: ${MAP_IDS.join(', ')}`); // 6 campaña + arena (12-a)
+if (MAP_IDS.length === 8) ok(`MAPS tiene 8 mapas: ${MAP_IDS.join(', ')}`); // 6 campaña + arena (12-a) + cuna (R13)
 else bad(`MAPS tiene ${MAP_IDS.length} mapas`);
 for (const id of MAP_IDS) {
   const m = MAPS[id];
@@ -133,11 +135,12 @@ for (const id of MAP_IDS) {
       bad(`${id} → ${ex.to}: aterrizaje (${ex.tx},${ex.ty}) FUERA del mapa destino (${dest.w}×${dest.h})`);
       continue;
     }
-    for (const ep of ['presente', 'pasado'] as Epoch[]) {
+    const [epA, epB] = mapEpochs(dest); // R13: par de épocas del destino (ternario en la Cuna)
+    for (const ep of [epA, epB]) {
       const ch = tileAt(dest, drows, ex.tx, ex.ty, ep);
       if (SOLID_CHARS.has(ch)) bad(`${id} → ${ex.to}: aterrizaje (${ex.tx},${ex.ty}) SÓLIDO en ${ep} (tile '${ch}')`);
     }
-    for (const ep of ['presente', 'pasado'] as Epoch[]) {
+    for (const ep of [epA, epB]) {
       const z = inExitZone(ex.to, ex.tx, ex.ty, ep);
       if (z) warn(`${id} → ${ex.to}: aterrizaje (${ex.tx},${ex.ty}) cae dentro de la zona de salida hacia ${z} en ${ep} (findSafeTile lo rescataría, pero conviene moverlo)`);
     }
@@ -146,7 +149,7 @@ for (const id of MAP_IDS) {
 ok(`${exitCount} salidas auditadas en ${MAP_IDS.length} mapas`);
 
 console.log('\n=== 7) EXPANSION_MAPS: spawns/NPCs/cofres/props pisables ===');
-for (const id of ['costa', 'aldea', 'cumbres'] as MapId[]) {
+for (const id of ['costa', 'aldea', 'cumbres', 'cuna'] as MapId[]) { // cuna: Acto V fase 1 (R13)
   const m = MAPS[id];
   const rows = mapRows(m);
   const pid = new Set<string>();
@@ -174,7 +177,7 @@ for (const id of ['costa', 'aldea', 'cumbres'] as MapId[]) {
     for (const ep of eps) if (!walk(pr.x, pr.y, ep)) bad(`${id}: prop '${pr.id}' (${pr.kind}) sobre tile SÓLIDO en ${ep}`);
   }
 }
-ok('costa/aldea/cumbres: spawns, NPCs, cofres y props revisados');
+ok('costa/aldea/cumbres/cuna: spawns, NPCs, cofres y props revisados');
 
 console.log('\n=== 8) FAROLES DE MERROW (contrato lightLamp) ===');
 const lamps = MAPS['aldea'].props.filter(p => p.kind === 'lamp');

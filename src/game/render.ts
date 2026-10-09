@@ -50,6 +50,7 @@ import { drawHudFx } from './actors/hudfx';
 const WORLD_FILTER: Record<string, string> = {
   presente: 'saturate(0.74) contrast(0.98)',
   pasado: 'saturate(1.35) brightness(1.1)',
+  aun: 'saturate(0.52) brightness(1.06) contrast(1.02)', // R13: lo que no ha sido — pálido, sin hábito
 };
 
 // ---------------- R5-O2 · ayudas de rendimiento ----------------
@@ -162,7 +163,10 @@ function drawWorld(g: Game) {
   g.ctx = octx; // helpers internos (props/estelas/glints/texto de ui) dibujan al offscreen
   try {
     // suelo (prerenderizado por época) — el canvas está en píxeles de mundo (1x)
-    const ground = g.epoch === 'pasado' && g.groundPastCanvas ? g.groundPastCanvas : g.groundCanvas;
+    // R13: el canvas alternativo corresponde a la época NO base del mapa
+    // ('pasado' en los viejos; 'presente' —el primer día— en la Cuna).
+    const altEpoch = g.map.baseEpoch === 'aun' ? 'presente' : 'pasado';
+    const ground = g.epoch === altEpoch && g.groundPastCanvas ? g.groundPastCanvas : g.groundCanvas;
     if (ground) {
       const gx = Math.floor(camX / ZOOM), gy = Math.floor(camY / ZOOM);
       octx.drawImage(ground, gx, gy, VIEW_W / ZOOM, VIEW_H / ZOOM, 0, 0, VIEW_W, VIEW_H);
@@ -243,6 +247,7 @@ function drawWorld(g: Game) {
   // cofres (encima, siempre visibles)
   for (const ch of g.map.chests) {
     if (ch.needPast && g.epoch !== 'pasado') continue;
+    if (ch.needPresent && g.epoch !== 'presente') continue; // R13: el cofre del primer día
     const opened = g.openedChests.has(ch.id);
     const sprC = getSpr(opened ? 'chest_open' : 'chest')[0];
     ctx.drawImage(sprC, sx(ch.x * TILE), sy(ch.y * TILE - 2), sprC.width * ZOOM, sprC.height * ZOOM);
@@ -321,10 +326,12 @@ function drawWorld(g: Game) {
   // aviso de época
   if (g.epochFx > 0) {
     const a = g.epochFx / 0.8;
-    ctx.fillStyle = g.epoch === 'pasado' ? `rgba(255, 216, 138, ${a * 0.5})` : `rgba(120, 140, 190, ${a * 0.5})`;
+    // R13: tercer estado 'aun' — plata pálida, el tiempo sin estrenar
+    const isPast = g.epoch === 'pasado', isAun = g.epoch === 'aun';
+    ctx.fillStyle = isPast ? `rgba(255, 216, 138, ${a * 0.5})` : isAun ? `rgba(200, 208, 232, ${a * 0.5})` : `rgba(120, 140, 190, ${a * 0.5})`;
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
     if (a > 0.4) {
-      textShadow(g, g.epoch === 'pasado' ? '◆ EL PASADO ◆' : '◆ EL PRESENTE ◆', VIEW_W / 2, 180, 16, g.epoch === 'pasado' ? COL.epochPast : COL.epochNow, '#000', 'center', true);
+      textShadow(g, isPast ? '◆ EL PASADO ◆' : isAun ? '◆ EL AÚN ◆' : '◆ EL PRESENTE ◆', VIEW_W / 2, 180, 16, isPast ? COL.epochPast : isAun ? '#c8d0e8' : COL.epochNow, '#000', 'center', true);
     }
   }
 
@@ -383,9 +390,10 @@ function drawProps(g: Game, sx: (n: number) => number, sy: (n: number) => number
     //    altarEcho/sign/gate) con id del prop para flags de altares
     //  · props de la expansión (wreck/faro/lamp) → drawExpansionProp
     switch (pr.kind) {
-      case 'sanctuary': case 'forge': case 'fragment':
+      case 'sanctuary': case 'forge': case 'fragment': case 'fragment2':
       case 'altarEcho': case 'sign': case 'gate':
-        drawPropV2(g.ctx, pr.kind, px, py, g, selected, pr.id);
+        // R13: 'fragment2' (la Cuna) se dibuja con el sprite del Fragmento original
+        drawPropV2(g.ctx, pr.kind === 'fragment2' ? 'fragment' : pr.kind, px, py, g, selected, pr.id);
         break;
       case 'wreck': case 'faro': case 'lamp':
         // Acto II: props de la expansión (nave naufragada, faro, faroles de Merrow)
@@ -512,7 +520,7 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
     // aura de época si puede cambiar
     if (p.hasEcho && g.map.epochDiffs.length > 0) {
       ctx.globalAlpha = 0.14 + Math.sin(g.globalT * 3) * 0.06;
-      ctx.fillStyle = g.epoch === 'pasado' ? '#ffd88a' : '#8ab8d8';
+      ctx.fillStyle = g.epoch === 'pasado' ? '#ffd88a' : g.epoch === 'aun' ? '#d8d0f0' : '#8ab8d8'; // R13: aura de plata en el Aún
       ctx.beginPath();
       ctx.arc(sx(p.x), sy(p.y - 5), 15, 0, Math.PI * 2);
       ctx.fill();
@@ -793,7 +801,9 @@ function drawLightingExtras(g: Game) {
   const ctx = g.ctx;
 
   // niebla del presente (además de las bandas de fx.ts)
-  if (g.epoch === 'presente' && g.map.epochDiffs.length > 0) {
+  // R13: la Cuna NO la recibe — su 'presente' es el primer día (no hay Niebla
+  // donde no hay ayeres que comer)
+  if (g.epoch === 'presente' && g.map.epochDiffs.length > 0 && g.map.baseEpoch !== 'aun') {
     ctx.save();
     ctx.globalAlpha = 0.1;
     ctx.fillStyle = '#9ec4b4';
@@ -901,7 +911,8 @@ function drawHud(g: Game) {
   if (p.weaponPlus > 0) text(g, `arma +${p.weaponPlus}`, 242, 58, 13, '#d8e0f0');
 
   // ---- minimapa v3 (Ronda 4): santuario + salidas como objetivos fijos ----
-  const mini = g.epoch === 'pasado' && g.miniCanvasPast ? g.miniCanvasPast : g.miniCanvas;
+  // R13: canvas alternativo = época no base del mapa
+  const mini = g.epoch !== (g.map.baseEpoch === 'aun' ? 'aun' : 'presente') && g.miniCanvasPast ? g.miniCanvasPast : g.miniCanvas;
   if (mini) {
     const [stx, sty] = g.sanctuaryPos(g.mapId);
     const targets: MinimapTarget[] = [{ x: stx, y: sty, kind: 'altar' }];
@@ -951,7 +962,7 @@ function drawHud(g: Game) {
   // ---- pista contextual ----
   if (g.state === 'play') {
     let hint: string | null = null;
-    if (p.hasEcho && !g.flags.usedEpoch && g.map.epochDiffs.length > 0) hint = 'Pulsa Q para alternar entre el presente y el pasado';
+    if (p.hasEcho && !g.flags.usedEpoch && g.map.epochDiffs.length > 0) hint = g.map.baseEpoch === 'aun' ? 'Pulsa Q para alternar entre el aún y el presente' : 'Pulsa Q para alternar entre el presente y el pasado';
     else if (g.questIdx === 0 && !g.flags.hintMove) hint = 'WASD para moverte · clic izq: atacar · Espacio: esquivar · clic der: parar · E: interactuar';
     if (hint) {
       const lines = wrapText(hint, 60);

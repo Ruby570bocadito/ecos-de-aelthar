@@ -29,6 +29,7 @@
 // por (mapa+época+huella de filas).
 // ============================================================
 
+import type { Epoch } from '../types';
 import type { Game } from '../engine';
 import { COL, fBody } from '../ui';
 import { hash2 } from './palette';
@@ -196,7 +197,8 @@ const miniCache = new Map<string, HTMLCanvasElement>();
 export function buildMinimapV2(
   mapRows: string[],
   m: { w: number; h: number },
-  epoch: 'presente' | 'pasado',
+  // R13: Epoch completo — la Cuna prerrenderiza su minimapa 'aun' (base).
+  epoch: Epoch,
   tileAtFn: (tx: number, ty: number) => string,
 ): HTMLCanvasElement {
   const kind = kindFromSize(m.w, m.h);

@@ -109,8 +109,8 @@ console.log('=== 1) ESTRUCTURA: misiones, memoria VII, jefe final, Guarda, brúj
   const q14 = QUESTS.find(q => q.id === 'q14'), q15 = QUESTS.find(q => q.id === 'q15'), q16 = QUESTS.find(q => q.id === 'q16');
   if (q14 && q15 && q16) ok('q14/q15/q16 presentes: ' + [q14, q15, q16].map(q => q.name).join(' · '));
   else bad('faltan misiones del Acto IV');
-  if (QUESTS.length === 16) ok(`QUESTS.length = ${QUESTS.length} (q1..q16, Acto IV incluido)`);
-  else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 16`);
+  if (QUESTS.length === 17) ok(`QUESTS.length = ${QUESTS.length} (q1..q17: Acto IV + Acto V fase 1 «La carta», R13)`);
+  else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 17`);
   if (q14 && q14.steps.length === 3 && q15 && q15.steps.length === 3 && q16 && q16.steps.length === 2) ok('pasos: q14 3 · q15 3 · q16 2');
   else bad('pasos de las misiones del Acto IV incompletos');
   if (MEMORIES['mem_ultimacanto' as keyof typeof MEMORIES]) ok('memoria VII mem_ultimacanto definida');

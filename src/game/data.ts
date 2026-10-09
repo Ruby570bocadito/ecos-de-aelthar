@@ -1960,3 +1960,156 @@ getDialogue = getDialogueR7V5;
 
 // ═══════ FIN DEL BLOQUE R7-V5 ═══════
 
+
+// ═══════ R13 (agente acto5) — BLOQUE AÑADIDO ═══════
+// ACTO V · "El Segundo Canto", fase 1 «La carta» (q17). Todo lo anterior
+// queda INTACTO. Este bloque SOLO AÑADE (mismo patrón 13-a/16-a):
+//   1) la misión q17 al final del array QUESTS (push),
+//   2) objetivos de la Brújula para el índice 16,
+//   3) KEY_ITEM 'laCartaVesh' (el gancho material del acto),
+//   4) 7 nodos de diálogo (Object.assign sobre DIALOGUES),
+//   5) la TERCERA capa del envoltorio de getDialogue (13-a → 16-a → R7-V5
+//      → 13-R13): captura la función vigente y delega toda ruta que no sea
+//      del Acto V fase 1 (regresión 0).
+// Sin enemigos nuevos, sin sprites nuevos, sin mecánicas de combate: la
+// fase 1 es mapa + Fragmento + época ternaria + la carta (docs/history.md,
+// plan de rondas R13).
+// Handlers en hooks.ts (accept_q17/acto5_bajar/acto5_fragmento/acto5_report);
+// el avance por pisar la Cuna vive en engine.loadMap (patrón Acto II).
+// ============================================================
+
+// ---------------- Misiones del Acto V fase 1 (append) ----------------
+
+QUESTS.push(
+  {
+    id: 'q17', name: 'La carta',
+    steps: [
+      'Habla con la Guarda del Primer Canto: encontró una carta cosida en la lanza',
+      'Desciende a la Cuna del Canto: la escalera tras el altar de la Sala',
+      'Despierta el Fragmento de la Cuna y estrena su primer día (Q)',
+      'Vuelve con la Guarda del Primer Canto',
+    ],
+  },
+);
+
+// ---------------- Brújula de Ecos: objetivos de q17 (índice 16) ----------------
+
+QUEST_COMPASS[16] = [
+  { npc: 'guarda' },
+  { prop: 'altar_c', map: 'cripta' },      // la escalera baja tras el altar
+  { prop: 'fragmento_cn', map: 'cuna' },   // el segundo Fragmento, en su pedestal
+  { npc: 'guarda' },
+];
+
+// ---------------- Objeto clave: la carta sin remitente ----------------
+
+Object.assign(KEY_ITEMS, {
+  laCartaVesh: {
+    name: 'La carta de Vesh',
+    desc: 'Cosida en el forro de la lanza de la Guarda, con la letra del Gran Inquisidor: «Si la nota descansa, no era la última. Sube.»',
+  },
+} satisfies Record<string, { name: string; desc: string }>);
+
+// ---------------- Nodos de diálogo del Acto V fase 1 ----------------
+
+const D_ACTO5: Record<string, DialogueNode> = {
+  // ----- EL GANCHO: la carta que llegó después del final -----
+  acto5_guarda_carta: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: '...Portador. Cuando dejé la lanza en el suelo, algo tintó dentro del asta como una semilla dentro de una cápsula. La abrí: estaba esta carta, COSIDA en el forro. Letra de Vesh —la conozco como reconoces la lluvia—. Una sola línea: «Si la nota descansa, no era la última. Sube.» (dobla la carta con cuidado de trescientos años) Yo creí que la Sala era el final del camino. Pero toda habitación tiene su suelo, y todo canto su sótano: debajo de donde el dios aprendió a cantar está donde el dios APRENDIÓ A CALLAR. Ahí no entró la Niebla —no hay ayeres donde nadie vivió, y el hambre no come de piedra—. Ahí queda el Canto original, sosteniendo el norte como una mano dormida bajo la nieve. La escalera está tras el altar. Trescientos años custodiando una puerta sin saber que había otra debajo. Baja tú, que las rodillas ya no me dan para el suelo del mundo.',
+    onEnd: 'accept_q17',
+    options: [
+      { text: 'Bajaré, Guarda. Y contaré nota por nota lo que duerma ahí abajo.', tone: 'empatico' },
+      { text: 'Una carta cosida, un sótano, un norte. Subiré desde el fondo.', tone: 'pragmatico' },
+      { text: 'Trescientos años de guardia y ni una vez miraste el suelo. Muy humana.', tone: 'sarcastico' },
+      { text: 'Si Vesh escribió «sube», bajando empiezo. Es la misma escalera.', tone: 'pragmatico' },
+    ],
+  },
+  acto5_guarda_baja: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: 'La escalera está tras el altar, Portador: el peldaño primero es de la Sala y el último no se sabe de quién. Lo que baje contigo —pociones, paciencia, coraje— que baje sobrado: abajo no hay enemigos, hay ESPERA. Y la espera carcomió a mejores que la Niebla.',
+    options: [
+      { text: '(Bajar ahora: el suelo del mundo aguarda)', action: 'acto5_bajar' },
+      { text: 'Prepararme primero. Nadie baja a un sótano de trescientos años sin filo.', tone: 'pragmatico' },
+    ],
+  },
+  acto5_guarda_estrena: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: '¿Y? (no disimula: se inclina como una niña) ¿Qué se siente debajo del mundo? No me contestes: todavía no lo sabes TÚ. Dicen los cantos viejos que en la Cuna duerme otro Fragmento —el del propio silencio— y que el tiempo de ese lugar no se ha ESTRENADO nunca: ni ayer, ni hoy... un aún. Despierta el Fragmento y prueba tu Q ahí dentro. Yo sostengo la puerta de arriba. Alguien tiene que quedarse mirando la escalera por si el mundo vuelve a necesitarla.',
+  },
+  acto5_guarda_informe: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: '...El dios no murió entero. (repite despacio, como se prueba un alimento nuevo) La Lanza atravesó el costado —la parte que cantaba— y lo que quedó callado no murió: ESPERÓ. Un siglo por nota, dices. Entonces la Niebla nunca conquistó el norte: lo rodeó, como se rodea una casa cuya puerta no se ve. Y la carta de Vesh... «no era la última». Portador, trescientos años guardando una nota MUERTA, y era una nota dormida. (recoge la lanza del suelo: suena como suena una campana chica) La Orden tiene deudas contigo y con el norte. Esto ya no se cierra con un informe: se cierra SUBIENDO. Toma —la recompensa por reescribirme la obediencia entera.',
+    onEnd: 'acto5_report',
+    options: [
+      { text: 'El Segundo Canto sonará, Guarda. Y esta vez nadie pagará el ayer.', tone: 'empatico' },
+      { text: 'La Ciudadela, la Orden, la Lanza. Un paso a la vez: primero esto.', tone: 'pragmatico' },
+      { text: 'Un sótano que era una cuna. El mundo entero es un idioma de puertas.', tone: 'sarcastico' },
+    ],
+  },
+  acto5_guarda_post: {
+    name: 'La Guarda del Primer Canto', portrait: 'kael',
+    text: 'La Cuna espera en el fondo de la Sala, y la carta espera en tu bolsillo: «Sube». Al norte, Portador —donde ninguna carta volvió de— está la Ciudadela de Vesh, y en ella los que esperaron demasiado. Cuando quieras subir, sube: yo sostengo esta puerta y ahora también la de abajo. Dos puertas, una Guarda. Alguien tendrá que cantar las horas de las dos.',
+    options: [
+      { text: 'Guardaré la carta cerca del pecho, como pide el cartel de las Cumbres.', tone: 'empatico' },
+      { text: 'Dos puertas, un poste. La Orden aprendería de ti.', tone: 'sarcastico' },
+    ],
+  },
+  // ----- EL SEGUNDO FRAGMENTO: la primera verdad del acto -----
+  voz_fragmento2: {
+    name: 'Fragmento de la Cuna', portrait: 'fragment',
+    text: '(el cristal del pedestal despierta con un zumbido que no sube: quedarse) PORTADOR. Ya conociste mi hermano: el que se parte en Ecos y regala memorias. Yo soy el otro —el que el dios dejó APAGADO a propósito, aquí abajo, donde el canto no llegaba porque el canto era YA de arriba. Escucha la primera verdad de este suelo: el dios no murió entero. La Lanza atravesó el costado —la parte que CANTABA—. Lo que quedó callado no murió: esperó. El Canto original sigue sonando bajo el norte, tan lento que un siglo por nota. No es un renacimiento, Portador: es una respiración lenta. (el aire tiembla como una cuerda pisada) Este lugar es el AÚN: ni presente ni pasado. El tiempo no lo ha estrenado. Toca tu Q y estrena nuestro primer día — pero sé suave: es su primero.',
+    onEnd: 'acto5_fragmento',
+    options: [
+      { text: '(Respirar con el Fragmento: que el tiempo estrene despacio)', tone: 'empatico' },
+      { text: 'Un siglo por nota. Yo también sé esperar. Estrenad vuestro día.', tone: 'pragmatico' },
+      { text: 'Un dios por la mitad y un tiempo sin estrenar. Qué familia la mía.', tone: 'sarcastico' },
+    ],
+  },
+  // ----- Brisa siente el norte respirar (una vez, tras despertar) -----
+  acto5_brisa_reaccion: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: '¿Lo sientes, Portador? Desde que bajaste, el valle duerme con la puerta abierta: algo al norte RESPIRA, y el viento de la noche lo trae tibio como pan de levadura vieja. (seca la taza, la llena otra vez: no la bebe) Te voy a decir lo que a mí me da miedo: que esa respiración sea de alguien que lleva trescientos años conteniéndola. Que cuando por fin suelte... suelte MUCHO. Ve con cuidado, y que tus pociones vayan llenas. La taza sigue llena para cuando vuelvas: ya sabes que las mías nunca se acaban, solo esperan.',
+    options: [
+      { text: 'Volveré por la taza, Brisa. Y el norte sabrá de nosotros.', action: 'flag_acto5Brisa', tone: 'empatico' },
+      { text: 'Si suelta mucho, que nos pille caminando. Llenas las pociones.', action: 'flag_acto5Brisa', tone: 'pragmatico' },
+      { text: 'Una anciana, una taza y un dios respirando. El barrio mejora.', action: 'flag_acto5Brisa', tone: 'sarcastico' },
+    ],
+  },
+};
+// Los nodos previos quedan intactos: este assign SOLO añade claves nuevas.
+Object.assign(DIALOGUES, D_ACTO5);
+
+// ---------------- Tercera capa del envoltorio de getDialogue ----------------
+/**
+ * R13: captura la función VIGENTE (cadena 13-a → 16-a → R7-V5) y reasigna el
+ * binding exportado. Solo intercepta 'guarda' y 'brisa' en el estado del Acto V
+ * fase 1 (acto4Done + q17); toda otra ruta delega tal cual (regresión 0).
+ *  · guarda sin q17 y con el epílogo hecho → la CARTA (gancho del acto).
+ *  · guarda en q17 → ruta por pasos (baja / estrena / informe / post).
+ *  · brisa con el Fragmento despertado (una vez) → la reacción del valle.
+ */
+const GET_DIALOGUE_PRE_ACTO5 = getDialogue;
+
+function getDialogueActo5(nid: string, ctx: DialogueCtx): string {
+  const q = ctx.questIdx, s = ctx.questStep, f = ctx.flags;
+  const acto5vivo = !!f.acto4Done;
+  if (nid === 'guarda' && acto5vivo && !f.q17) return 'acto5_guarda_carta';
+  if (nid === 'guarda' && q === 16) {
+    if (s <= 0) return 'acto5_guarda_carta';   // save a medio aceptar
+    if (s === 1) return 'acto5_guarda_baja';
+    // paso 2 → informe SOLO con el Fragmento despertado Y el día estrenado
+    // (la estrena exige el Fragmento, pero el cast defiende saves raros)
+    if (s === 2) return f.cunaEstrenada && f.cunaFragmento ? 'acto5_guarda_informe' : 'acto5_guarda_estrena';
+    return f.acto5Fase1 ? 'acto5_guarda_post' : 'acto5_guarda_informe';
+  }
+  if (nid === 'brisa' && q === 16 && f.cunaFragmento && !f.acto5Brisa) return 'acto5_brisa_reaccion';
+  return GET_DIALOGUE_PRE_ACTO5(nid, ctx);
+}
+// @ts-expect-error R13: reasignación deliberada del binding de función (capa
+// del Acto V sobre la cadena vigente). El binding exportado es vivo:
+// engine.talkTo resuelve SIEMPRE por aquí, y toda ruta no-Acto-V delega en
+// la función anterior intacta.
+getDialogue = getDialogueActo5;
+
+// ═══════ FIN DEL BLOQUE R13 ═══════

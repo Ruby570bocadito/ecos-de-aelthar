@@ -513,6 +513,18 @@ const RUMOR_LINES_16B: Record<MapId, string[]> = {
     'El polvo aquí no se posa: espera.',
     'Bajar es fácil. Subir canta.',
   ],
+  cuna: [
+    'La Cuna del Canto: el aire solo suena si caminas al ritmo. Camina bonito.',
+    'Aquí no hay Niebla. No hay ayeres que comer donde nadie vivió.',
+    'Las ondas de piedra no las talló nadie. El Canto pasó de largo y así quedaron.',
+    'El lago de abajo aún no existe. Cuando exista, será el agua más joven del mundo.',
+    'El tiempo de este sitio no se ha estrenado. Ni ayer, ni hoy: un aún.',
+    'El segundo Fragmento duerme en el pedestal. El primero era la voz; este es el silencio.',
+    'Un siglo por nota, dicen. Nosotros vivimos entre dos letras del mismo compás.',
+    'Los neumos nacieron el primer día. Pregúntales: no se acuerdan de nada antes.',
+    'Debajo de donde el dios aprendió a cantar está donde aprendió a callar.',
+    'Si el suelo tiembla al estrenar el día, no es miedo: es el mundo abriendo los ojos.',
+  ],
 };
 
 /** El motor la llama en Game.closeDialogue: recuerda junto a qué NPC cerró. */

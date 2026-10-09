@@ -6,6 +6,7 @@
 
 import type { MapDef, MapId, EpochDiff, Epoch } from './types';
 import { EXPANSION_MAPS } from './maps_expansion';
+import { ACTO5_MAPS } from './maps_acto5'; // R13 «La carta»: La Cuna del Canto (Acto V fase 1)
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -398,6 +399,11 @@ const BASE_MAPS: Record<'lunaris' | 'bosque' | 'cripta', MapDef> = {
       // de la zona de salida bosque→cripta (x:8..12, y:2..3). El destino antiguo
       // (10,3) era el altar sólido DENTRO de la zona → bucle de teletransporte.
       { x: 18, y: 31, w: 4, h: 3, to: 'bosque', tx: 10, ty: 5, label: 'Bosque Susurrante' },
+      // R13 «La carta»: la escalera al sótano de la Sala (el suelo del mundo).
+      // Gated por flag: se abre cuando la Guarda lee la carta de Vesh
+      // (acción acto5_bajar) — antes de eso no existe para el jugador.
+      // Aterrizaje en la Cuna (23,5): 3 tiles bajo la zona de salida de vuelta.
+      { x: 18, y: 2, w: 3, h: 1, to: 'cuna', tx: 23, ty: 5, needFlag: 'acto5CunaAbierta', label: 'La Cuna del Canto' },
     ],
     props: [
       { id: 'sanc_c', kind: 'sanctuary', x: 19, y: 23 },
@@ -407,7 +413,17 @@ const BASE_MAPS: Record<'lunaris' | 'bosque' | 'cripta', MapDef> = {
 };
 
 // Mundo completo: mapa base + expansión del Acto II (Costa, Aldea, Cumbres)
-export const MAPS: Record<MapId, MapDef> = { ...BASE_MAPS, ...EXPANSION_MAPS };
+// + Acto V fase 1 (La Cuna del Canto, R13)
+export const MAPS: Record<MapId, MapDef> = { ...BASE_MAPS, ...EXPANSION_MAPS, ...ACTO5_MAPS };
+
+/**
+ * R13 · Épocas de un mapa, en orden [base, alternativa]. Convención histórica
+ * (mapas sin baseEpoch): filas base = 'presente', diffs = 'pasado'. En la Cuna
+ * (baseEpoch 'aun'): filas base = el tiempo sin estrenar, diffs = 'presente'.
+ */
+export function mapEpochs(m: MapDef): [Epoch, Epoch] {
+  return m.baseEpoch === 'aun' ? ['aun', 'presente'] : ['presente', 'pasado'];
+}
 
 // Rellena filas cortas por seguridad
 export function mapRows(m: MapDef): string[] {
@@ -423,7 +439,11 @@ export function tileAt(m: MapDef, rows: string[], tx: number, ty: number, epoch:
   if (tx < 0 || ty < 0 || tx >= m.w || ty >= m.h) return 'V';
   if (ty >= rows.length || rows[ty].length === 0) return 'V'; // mapa aún no cargado (intro)
   let ch = rows[ty][tx];
-  if (epoch === 'pasado') {
+  // R13: los diffs se aplican en la época ALTERNATIVA del mapa (pasado en los
+  // mapas viejos; presente —el primer día— en la Cuna). Los mapas sin diffs
+  // y las épocas base no tocan nada: regresión 0 en todos los mapas previos.
+  const alt: Epoch = m.baseEpoch === 'aun' ? 'presente' : 'pasado';
+  if (epoch === alt) {
     for (const d of m.epochDiffs) {
       if (d.x === tx && d.y === ty) { ch = d.char; break; }
     }

@@ -505,6 +505,76 @@ export function handleCustomAction(g: Game, action: string): boolean {
     return true;
   }
 
+  // ----- Acto V · El Segundo Canto, fase 1 «La carta» (R13) -----
+  // Watcher idempotente (patrón acto3/4CatchUp): completa por ESTADO los
+  // pasos que el motor no avanza (fragmento + estrena en cualquier orden,
+  // reparación de saves a medio aceptar). O(1) fuera del estado del acto.
+  acto5CatchUp(g);
+
+  // accept_q17: la Guarda lee la carta de Vesh — acepta q17 (índice 16).
+  // La conversación MISMA completa el paso 0 (patrón accept_q6), así que el
+  // avance deja el índice en el paso 1 («Desciende a la Cuna»); con la Cuna
+  // ya visitada (saves curiosos), en el paso 2. Auto-repara a medio aceptar.
+  if (action === 'accept_q17') {
+    if (g.questIdx < 16) { g.questIdx = 16; g.questStep = g.flags.visited_cuna ? 2 : 1; }
+    if (!g.flags.q17) {
+      g.flags.q17 = true;
+      audio.sfx('quest');
+      g.toast('Nueva misión: La carta', '#8ef0b0');
+    }
+    return true;
+  }
+
+  // acto5_bajar: la Guarda abre la escalera (patrón acto4_subir): flag que
+  // habilita la salida física cripta→cuna para siempre + bajada inmediata.
+  // El avance de paso 1→2 lo hace engine.loadMap al pisar la Cuna (Acto II).
+  if (action === 'acto5_bajar') {
+    g.closeDialogue();
+    g.flags.acto5CunaAbierta = true;
+    g.loadMap('cuna', 23, 5);
+    if (!g.flags.cunaAvisoDada) {
+      g.flags.cunaAvisoDada = true;
+      g.toast('La Cuna del Canto: el aire aquí solo suena si caminas al ritmo', '#c8d0e8');
+    }
+    return true;
+  }
+
+  // acto5_fragmento: el SEGUNDO Fragmento despierta (una vez): habilita el
+  // pulso Q en la Cuna (aun ↔ presente). Idempotente con estrenarCuna
+  // (acto5.ts): quien llegue último al paso 2, avanza.
+  if (action === 'acto5_fragmento') {
+    if (!g.flags.cunaFragmento) {
+      g.flags.cunaFragmento = true;
+      audio.sfx('echo');
+      if (g.player) g.burst(g.player.x, g.player.y - 8, '#d8d8ec', 24, 80);
+      g.toast('El segundo Fragmento despierta: el Aún responde a tu Q', '#c8d0e8');
+    }
+    if (g.questIdx === 16 && g.questStep === 2 && g.flags.cunaEstrenada) {
+      g.questAdvance();
+      g.toast('Fragmento despierto y primer día estrenado: vuelve con la Guarda', '#8ef0b0');
+    }
+    return true;
+  }
+
+  // acto5_report: cierre de la fase 1 — paga UNA VEZ (flag acto5Paid17):
+  // +150 coronas y 1 poción (tarifas del Acto IV) + flag acto5Fase1. La
+  // misión NO se cierra (es la última del array: questAdvance la repetiría):
+  // el Acto V continúa en R14 «La Ciudadela».
+  if (action === 'acto5_report') {
+    if (g.questIdx === 16 && g.questStep >= 2 && !g.flags.acto5Paid17) {
+      g.flags.acto5Paid17 = true;
+      p.gold += 150; p.potions += 1;
+      audio.sfx('quest');
+      g.floatAt(p.x, p.y - 26, 'Recompensa: +150 coronas y 1 poción', '#f0c84a', 7);
+      g.toast('La carta, descifrada (+150 coronas, +1 poción)', '#8ef0b0');
+      // auto-reparación: si el save llegó a medio completar (paso 2 con ambas
+      // flags ya puestas, watcher no corrido aún), el pago CIERRA el paso 2→3
+      if (g.questStep < 3) g.questAdvance();
+      g.flags.acto5Fase1 = true;
+    }
+    return true;
+  }
+
   return false;
 }
 
@@ -664,4 +734,21 @@ function acto4CatchUp(g: Game): void {
   if (g.questIdx === 14 && g.questStep === 1 && f.heraldoDerrotado) {
     g.questAdvance();
   }
+}
+
+/**
+ * R13 — Watcher idempotente del Acto V fase 1 (mismo principio que
+ * acto3CatchUp/acto4CatchUp: corre al inicio de MI sección de
+ * handleCustomAction; O(1) fuera del estado del Acto V). Completa por ESTADO:
+ *  · reparación de saves a medio aceptar (flag q17 con questIdx aún 15).
+ *  · q17 paso 2: Fragmento + estrena en cualquier orden (los dos avances
+ *    normales viven en acto5_fragmento y estrenarCuna; este cubre saves
+ *    cargados con ambas flags ya puestas — el guard de questStep evita dobles).
+ */
+function acto5CatchUp(g: Game): void {
+  const f = g.flags;
+  if (!g.player) return;
+  if (g.questIdx === 15 && f.acto4Done && f.q17) { g.questIdx = 16; g.questStep = f.visited_cuna ? 2 : 1; }
+  if (g.questIdx !== 16) return;
+  if (g.questStep === 2 && f.cunaFragmento && f.cunaEstrenada) g.questAdvance();
 }
