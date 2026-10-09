@@ -94,6 +94,11 @@ export function sanitizeStats(raw: unknown): StatsData {
  * `!challengeRun`: la arena no contamina las cifras de campaña (12-a).
  */
 export function statsTick(g: Game, dt: number): void {
+  // ==== 17-a (qa): guard interno. El bloque de ticks del motor entra con
+  // estado 'play', pero UN tick puede cambiarlo (challengeTick → finish/aborto
+  // restauran la campaña y vuelven al título dentro del mismo frame): el
+  // tiempo de la arena/título no es tiempo de campaña y no debe contarse.
+  if (g.state !== 'play' && g.state !== 'dialogue') return;
   g.stats.tiempoJugado += dt;
   const p = g.player;
   if (p) g.stats.memoriasHalladas = p.memories?.length ?? 0;

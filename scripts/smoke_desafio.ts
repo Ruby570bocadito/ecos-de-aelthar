@@ -294,16 +294,19 @@ console.log('\n=== 6) Guardado escrito DENTRO de la arena → reparado al salir 
   tick(g, 3.8);
   for (const e of [...g.enemies]) g.damageEnemy(e, 5000, 'ninguno', 0);
   g.save();                                  // simula GUARDAR Y SALIR desde la pausa en arena
-  if (store.get('ecos-aelthar-save') !== rawPre) ok('guardado en arena detectado (el raw cambió)');
-  else bad('el guardado en arena no cambió el fichero');
+  // ==== 17-a: contrato nuevo — save() es NO-OP dentro del desafío: el
+  // fichero de campaña ni siquiera se escribe (antes se contaminaba y
+  // endChallenge lo "reparaba"; con el bloqueo ya no hay nada que reparar)
+  if (store.get('ecos-aelthar-save') === rawPre) ok('guardado en arena BLOQUEADO (save de campaña intacto)');
+  else bad('el guardado en arena escribió (regresión del fix 17-a)');
   g.damagePlayer(99999, g.player!.x, g.player!.y - 10);
   g.respawn();                               // derrota → resultados
-  endChallenge(g, false);                    // ejecuta la reparación (reescritura)
+  endChallenge(g, false);                    // cierre; el save sigue siendo el de campaña legítimo
   const d = JSON.parse(store.get('ecos-aelthar-save')!) as { map: string; player: { gold: number }; flags: Record<string, unknown> };
-  if (d.map === 'lunaris') ok('save reescrito con mapId lunaris (ya no atrapa en la arena)');
-  else bad(`save reparado con map=${d.map}`);
-  if (d.player.gold === 20 && d.flags.visited_arena === undefined) ok('save reescrito con campaña restaurada (oro/flags)');
-  else bad(`save reparado con oro=${d.player.gold}`);
+  if (d.map === 'lunaris') ok('save intacto con mapId lunaris (nunca atrapa en la arena)');
+  else bad(`save con map=${d.map}`);
+  if (d.player.gold === 20 && d.flags.visited_arena === undefined) ok('save intacto con campaña sana (oro/flags)');
+  else bad(`save con oro=${d.player.gold}`);
   void rawPre;
 }
 

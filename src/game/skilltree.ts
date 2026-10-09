@@ -172,6 +172,16 @@ let cdDecayEnabled = true;
  *  este decaimiento para no descontar dos veces. */
 export function setSkillCdDecay(on: boolean): void { cdDecayEnabled = on; }
 
+// --- dev/QA hooks (patrón __iReset/__iDecoy de interaccion.ts) ---
+/** ==== 17-e (qa): invalida el cache de árboles. El juego real NUNCA lo
+ *  necesita (la UI aprende nodos mutando el cache), pero las pruebas que
+ *  siembran 'ecos-arbol' por debajo del cache necesitan forzar la recarga. ==== */
+export function __stReloadTrees(): void { treeCache.clear(); }
+
+/** ==== 17-e (qa): limpia la selección de nodo del panel (el smoke mide el
+ *  invariante "un hit por nodo" con el footer sin botones de acción). ==== */
+export function __stResetSel(g: Game): void { selMap.delete(g); }
+
 // ============================================================
 // 4) EQUIPAJE DE MAGIAS NUEVAS EN LOS HUECOS 1-4
 // ============================================================
@@ -367,7 +377,12 @@ export function castNewSkill(g: Game, skillId: string): boolean {
       for (const e of g.enemies) {
         if (e.dead) continue;
         if (Math.hypot(e.x - p.x, e.y - p.y) < 72 + e.w / 2) {
-          e.statuses.push({ kind: 'congelado', t: 2.5, power: 1 });
+          // ==== 17-a (qa-combate) ==== se empujaba un 'congelado' CRUDO tras
+          // el que aoeHit→damageEnemy ya aplicó/refrescó: duplicados en la
+          // pila de estados (mismo convenio de refresco con tope).
+          const c = e.statuses.find(s => s.kind === 'congelado');
+          if (c) c.t = Math.min(5, Math.max(c.t, 2.5));
+          else e.statuses.push({ kind: 'congelado', t: 2.5, power: 1 });
         }
       }
       g.waves.push({ x: p.x, y: p.y, r: 6, maxR: 70, speed: 140, dmg: 0, hit: true });
@@ -718,7 +733,16 @@ export function skillTick(g: Game, dt: number): void {
           if (e.dead) continue;
           if (Math.hypot(e.x - p.x, e.y - p.y) < 48 + e.w / 2) {
             g.damageEnemy(e, dmg, 'fuego', 0);
-            e.statuses.push({ kind: 'quemado', t: 1.2, power: 3 + p.attrs.int * 0.25 });
+            // ==== 17-a (qa-combate) ==== aquí se apilaba un status 'quemado'
+            // CRUDO por cada tick de aura (0,5 s): damageEnemy REFRESCA la
+            // pila con tope (t≤6 · power≤8), pero este push añadía entradas
+            // nuevas sin fusión y el bucle de quemado suma power·dt de TODAS
+            // → DPS de quemado sin límite, trivializando quiebres y jefes.
+            // Mismo convenio de refresco con tope que damageEnemy.
+            const b = e.statuses.find(s => s.kind === 'quemado');
+            const pow = 3 + p.attrs.int * 0.25;
+            if (b) { b.t = Math.min(6, Math.max(b.t, 1.2)); b.power = Math.min(8, Math.max(b.power, pow)); }
+            else e.statuses.push({ kind: 'quemado', t: 1.2, power: pow });
           }
         }
       }

@@ -1500,11 +1500,18 @@ function tickCoro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
         m.coroT = (m.coroT ?? 0) + dt;
         if (m.coroT >= 0.22) {
           m.coroT = 0;
-          g.projectiles.push({
-            x: p.x + (Math.random() - 0.5) * 130, y: p.y - 95 + (Math.random() - 0.5) * 30,
-            vx: (Math.random() - 0.5) * 14, vy: 118,
-            t: 1.35, dmg: 10, element: 'sombra', from: 'enemy', sprite: 'nota', radius: 4.5, pierce: 0,
-          });
+          // ==== 17-a (qa-combate) ==== la lluvia nacía también DENTRO de
+          // muros (el punto de caída no se probaba): nota invisible que
+          // moría en el primer tick contra sólido. Sin spawn en sólido
+          // (misma convención del orbe del sátiro, 14-a).
+          const lx = p.x + (Math.random() - 0.5) * 130, ly = p.y - 95 + (Math.random() - 0.5) * 30;
+          if (!g.tileSolidAt(lx, ly)) {
+            g.projectiles.push({
+              x: lx, y: ly,
+              vx: (Math.random() - 0.5) * 14, vy: 118,
+              t: 1.35, dmg: 10, element: 'sombra', from: 'enemy', sprite: 'nota', radius: 4.5, pierce: 0,
+            });
+          }
           m.lluviaSfx = (m.lluviaSfx ?? 0) + 1;
           if ((m.lluviaSfx ?? 0) % 6 === 0) audio.sfx('ice');
         }

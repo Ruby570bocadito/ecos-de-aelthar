@@ -184,22 +184,28 @@ export interface BalanceState {
 }
 
 let bal: BalanceState | null = null;              // estado vivo (1 Game/página)
+let balRaw: string | null | undefined;            // ==== 17 (qa): raw cacheado → detecta corrupción/cambios externos ====
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Carga perezosa (primer uso desde el motor: título/tick/panel). SSR-safe:
- *  sin localStorage definido o con JSON corrupto, valores por defecto. */
+ *  sin localStorage definido o con JSON corrupto, valores por defecto.
+ *  El cache se revalida contra el disco SIEMPRE (comparando el raw): una
+ *  clave corrupta o reescrita por debajo del cache re-parsea; leer el mismo
+ *  raw repetidamente no re-parsea (el coste es una comparación de strings). */
 function ensureLoaded(): BalanceState {
-  if (bal) return bal;
+  let raw: string | null = null;
+  try {
+    if (typeof localStorage !== 'undefined') raw = localStorage.getItem(LS_KEY);
+  } catch { raw = null; }
+  if (bal && balRaw !== undefined && raw === balRaw) return bal;
+  balRaw = raw; // primera carga o el disco cambió por debajo (otra pestaña, QA, restauración)
   bal = { level: 0, auto: true, recentDeaths: 0, recentFlawless: 0 };
   try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(LS_KEY);
-      if (raw) {
-        const d = JSON.parse(raw) as { v?: number; level?: number; auto?: boolean };
-        if (d && typeof d.level === 'number' && typeof d.auto === 'boolean') {
-          bal.level = clampLevel(d.level);
-          bal.auto = d.auto;
-        }
+    if (raw) {
+      const d = JSON.parse(raw) as { v?: number; level?: number; auto?: boolean };
+      if (d && typeof d.level === 'number' && typeof d.auto === 'boolean') {
+        bal.level = clampLevel(d.level);
+        bal.auto = d.auto;
       }
     }
   } catch { /* guardado corrupto: se parte de Normal/AUTO */ }
@@ -223,7 +229,9 @@ export function saveBalance(s: BalanceState): void {
   };
   try {
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(LS_KEY, JSON.stringify({ v: 1, level: bal.level, auto: bal.auto }));
+      const out = JSON.stringify({ v: 1, level: bal.level, auto: bal.auto });
+      localStorage.setItem(LS_KEY, out);
+      balRaw = out; // el cache y el disco quedan sincronizados
     }
   } catch { /* almacenamiento lleno/bloqueado: el juego sigue sin persistir */ }
 }

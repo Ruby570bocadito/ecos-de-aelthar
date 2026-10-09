@@ -141,7 +141,11 @@ const pendingAcq = new Map<string, HuellaLoc>();  // tocadas y a la espera del f
 
 interface Duet { npc: Npc; lines: [string, string]; step: number; next: number }
 const duets: Duet[] = [];
-const duetCd = new WeakMap<Npc, number>();
+// ==== 17-d (qa-mundo): cooldown por NID, no por objeto. spawnNpcs() recréa
+// las Npc en CADA loadMap: con WeakMap<Npc,…> el cooldown de 30 s se
+// reiniciaba al salir y volver al mapa (versos duplicados cada re-entrada).
+// La clave es el nid y se limpia al detectar partida nueva/carga.
+const duetCd = new Map<string, number>();
 
 interface Slot { next: number }
 const residue: Slot[] = Array.from({ length: RESIDUE_SLOTS }, (_, i) => ({ next: 0.4 + i * 0.22 }));
@@ -159,6 +163,23 @@ const spotCache = new Map<MapId, Spot[]>();
 export function beginEpochShift(g: Game): boolean {
   const p = g.player;
   if (!p) return true;
+
+  // ==== 17-d (qa-mundo): veto por JEFE EN COMBATE. El veto aggro <5 tiles
+  // de abajo no cubre a los jefes que pelean a distancia (notas de la Sirena,
+  // rocas del Gólem, dagas de Vult): alternar de época a mitad de pelea
+  // cambiaba tiles BAJO el combate (muelle, niebla, puentes). Veta si el
+  // jefe del mapa tiene AGGRO (pelea viva a cualquier distancia) o si estás
+  // a <12 tiles de un jefe activo (a punto de desencadenar). NO es pegajizo:
+  // al romper el combate (leash) o alejarte, el viaje vuelve a disponible.
+  // La Cripta ya veta por epochDiffs vacío; esto cubre costa/cumbres.
+  const br = g.bossRef;
+  if (g.bossActive && br && !br.dead &&
+      (br.aggro || Math.hypot(br.x - p.x, br.y - p.y) < 12 * TILE)) {
+    addShake(g, 4);
+    g.toast('El jefe dicta el ritmo: este momento no se cambia.', '#c8b0e8');
+    audio.sfx('error');
+    return false;
+  }
 
   // ---- veto narrativo: enemigo con aggro a <5 tiles ----
   for (const e of g.enemies) {
@@ -224,6 +245,7 @@ export function timeTick(g: Game, dt: number): void {
     pendingAcq.clear();
     recalls.length = 0;
     duets.length = 0;
+    duetCd.clear(); // ==== 17-d: cooldowns por nid también se reinician
   }
 
   // ---- 1) flip de época (compara con el frame anterior; sin tocar engine) ----
@@ -372,9 +394,10 @@ function tryDuets(g: Game): void {
     const lines = DUALS[n.nid];
     if (!lines) continue;
     if (Math.hypot(n.x - p.x, n.y - p.y) > DUAL_TILES * TILE) continue;
-    const last = duetCd.get(n);
+    // ==== 17-d: cooldown por nid (sobrevive a los loadMap que recréan las Npc)
+    const last = duetCd.get(n.nid);
     if (last !== undefined && clock - last < DUAL_CD) continue;
-    duetCd.set(n, clock);
+    duetCd.set(n.nid, clock);
     duets.push({ npc: n, lines, step: 0, next: 0.15 });
   }
   while (duets.length > 4) duets.shift();

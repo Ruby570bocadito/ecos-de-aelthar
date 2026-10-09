@@ -437,17 +437,25 @@ export function updateGame(g: Game, dt: number) {
 
   // esquiva (detección de borde: la pulsación se pone en cola en keydown;
   // mantener Espacio ya no encadena volteretas con invulnerabilidad continua)
-  if (g.rollQueued && p.rollT <= 0 && p.attackT <= 0 && p.sta >= 20) {
+  if (g.rollQueued) {
+    // ==== 17-a (qa-combate) ==== la esquiva en cola se CONSUME SIEMPRE
+    // (1 pulsación = 1 intento). Antes la cola era eterna: si otra acción
+    // (parada −12, golpe cargado −8/−18) gastaba Aguante entre la pulsación y
+    // el frame, la voltereta no salía pero la cola sobrevivía y el roll
+    // saltaba SOLO, segundos después, al reponer 20 de Aguante.
+    const puedeRodar = p.rollT <= 0 && p.attackT <= 0 && p.sta >= 20;
     g.rollQueued = false;
-    p.rollT = 0.3;
-    p.iframes = 0.34;
-    p.sta -= 20;
-    let rd: Dir = p.dir;
-    if (mx !== 0 || my !== 0) rd = Math.abs(mx) > Math.abs(my) ? (mx > 0 ? 'right' : 'left') : (my > 0 ? 'down' : 'up');
-    (p as unknown as { rollDir?: Dir }).rollDir = rd;
-    // soplo de esquiva (8-c): anillo de partículas que se abre con la voltereta
-    dodgeRing(g, p.x, p.y);
-    audio.sfx('dodge');
+    if (puedeRodar) {
+      p.rollT = 0.3;
+      p.iframes = 0.34;
+      p.sta -= 20;
+      let rd: Dir = p.dir;
+      if (mx !== 0 || my !== 0) rd = Math.abs(mx) > Math.abs(my) ? (mx > 0 ? 'right' : 'left') : (my > 0 ? 'down' : 'up');
+      (p as unknown as { rollDir?: Dir }).rollDir = rd;
+      // soplo de esquiva (8-c): anillo de partículas que se abre con la voltereta
+      dodgeRing(g, p.x, p.y);
+      audio.sfx('dodge');
+    }
   }
 
   // impacto del ataque (instantáneo en la liberación, ver releaseCharge)
@@ -688,7 +696,12 @@ export function updateGame(g: Game, dt: number) {
       audio.sfx('slam');
       g.shake = 6;
       g.burst(t.x, t.y, '#c8b8a0', 18, 90);
-      if (dist2(p.x, p.y, t.x, t.y) < t.r * t.r && p.rollT <= 0 && p.iframes <= 0) {
+      // ==== 17-a (qa-combate) ==== solo golpean las telegrafías con daño:
+      // la marca de caída del Sátiro (dmg 0 — «el telegraph SOLO avisa»,
+      // enemies_expansion) llegaba a damagePlayer, que coerciona
+      // Math.max(1, …) → 1 de daño + i-frames gastados por un simple AVISO.
+      // Mismo convenio que el bucle de ondas (w.dmg > 0).
+      if (t.dmg > 0 && dist2(p.x, p.y, t.x, t.y) < t.r * t.r && p.rollT <= 0 && p.iframes <= 0) {
         // slam del Guardián: el impacto arrea al Portador
         if (p.parryT <= 0) applyKnockback(p, p.x - t.x, p.y - t.y, 260);
         g.damagePlayer(t.dmg, t.x, t.y);
