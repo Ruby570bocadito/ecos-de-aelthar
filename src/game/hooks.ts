@@ -38,7 +38,7 @@ const FAC_LABEL: Record<string, string> = {
 };
 
 /** Lee el tono dominante guardado en flags (se guarda como string en runtime). */
-export function toneFlagOf(flags: Record<string, number | boolean>): ToneKind | null {
+export function toneFlagOf(flags: Record<string, number | boolean | string>): ToneKind | null {
   const v = flags.tonoDominante;
   return typeof v === 'string' ? (v as ToneKind) : null;
 }

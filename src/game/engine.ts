@@ -18,9 +18,9 @@ import { MAPS, mapRows, tileAt, mapEpochs } from './maps';
 import { ARENA_MAP_ID } from './maps_expansion'; // 17-d: la arena no entra en visitedMaps (ver loadMap)
 import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
 import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
-import { audio, playSpellCast, playSpellImpact, playNightAmbience, playHowlDistant, playBossRoarVariant } from './audio';
+import { audio, playSpellCast, playSpellImpact, playNightAmbience, playHowlDistant, playBossRoarVariant, playLeverPull, playDoorOpen } from './audio';
 import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue, SENNUEL } from './data';
-import { updateGame } from './update';
+import { updateGame, cryptDoorOpen, cryptLeverTryActivateNear } from './update';
 // Ronda 2 · Terror: disolución al morir + stinger de pavor + resets de la intro/FX del jefe
 import { spawnDeathDissolve, resetBossFx } from './actors/bossfx';
 import { resetBossIntro } from './actors/bossintro';
@@ -49,6 +49,19 @@ import {
   ARMORS, ARMOR_HEAVY_SPEED, armorActive, armorActiveId, armorDefFor, armorReduction, armorTick,
 } from './armor';
 import { initPerf, perfFrame, drawPerfOverlay, togglePerfOverlay, perfQuality } from './perf'; // R5-O1: supervisión · R6-V10: consume perfQuality
+import { lorePropsForMap } from './world/props'; // R10-6: lore en el mundo
+
+// R10-6 · siembra de props de lore (placas/restos/altares/carteles/mojones):
+// determinista, nunca sobre sólidos. FUNCIÓN con guard — NO a nivel de módulo:
+// props importa TILE/ZOOM de engine y sembrar aquí rompería el orden de eval
+// (props→engine→props con TDZ en los consts de props). Se llama en el ctor.
+let loreSeeded = false;
+function seedLoreProps(): void {
+  if (loreSeeded) return;
+  loreSeeded = true;
+  for (const m of Object.values(MAPS)) m.props.push(...lorePropsForMap(m));
+}
+
 
 // 14-b (auditoría de cooldowns): el motor aplica skillCdMult AL FIJAR el cd
 // en useSkill (camino B del contrato skilltree.ts) → el decaimiento extra por
@@ -96,6 +109,7 @@ export const BOSS_DEFEAT_FLAG: Record<string, string> = {
   // hablar con nadie dejaba la derrota huérfana (re-invocable → doble
   // XP/botín). Rama propia en killEnemy abajo + espejo en interaccion.BOSS_TYPES.
   heraldo: 'heraldoDerrotado',
+  sepulcro: 'sepulcroDerrotado', // R10-9: mini-jefe de la entrada de la cripta
 };
 
 // R5-O6 (optimización): topes duros de recursos FX. fx.ts empuja partículas
@@ -194,7 +208,7 @@ export class Game {
   bossBannerSub = '';
 
   // progreso
-  flags: Record<string, number | boolean> = {};
+  flags: Record<string, number | boolean | string> = {}; // R10: string = bossHpWho_* (dueño de la memoria de HP)
   questIdx = 0;
   questStep = 0;
   openedChests = new Set<string>();
@@ -260,6 +274,7 @@ export class Game {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
     this.ctx.imageSmoothingEnabled = false;
+    seedLoreProps(); // R10-6: lore del mundo (1× por sesión, tras evaluar módulos)
     initSprites();
     initExpansionSprites(); // Acto II: sprites de neumo/espectro/arpi/sirena/golem + proyectiles
     this.bindInput();
@@ -593,6 +608,10 @@ export class Game {
     // memoria del jefe (generalizada Acto II): si sales de un mapa con su JEFE vivo, no se regenera
     if (this.bossRef && !this.bossRef.dead) {
       this.flags[`bossHp_${this.mapId}`] = this.bossRef.hp;
+      // R10: recuerda TAMBIÉN A QUIÉN pertenece la memoria (cripta tiene 2 jefes:
+      // sepulcro en antesala + guardián en sanctum — restaurar al primero de la
+      // lista corrompía al otro)
+      this.flags[`bossHpWho_${this.mapId}`] = this.bossRef.etype;
       if (this.mapId === 'cripta') this.flags.bossHp = this.bossRef.hp; // compat con saves antiguos
     }
     this.mapId = id;
@@ -639,7 +658,12 @@ export class Game {
     const savedBossHp = typeof this.flags[`bossHp_${id}`] === 'number' ? (this.flags[`bossHp_${id}`] as number)
       : id === 'cripta' && typeof this.flags.bossHp === 'number' ? (this.flags.bossHp as number) : null;
     if (savedBossHp !== null) {
-      const boss = this.enemies.find(e => BOSS_DEFEAT_FLAG[e.etype] !== undefined);
+      // R10: restaurar al DUEÑO de la memoria (bossHpWho_*); fallback legacy =
+      // primer enemigo con flag (saves antiguos, un jefe por mapa)
+      const who = this.flags[`bossHpWho_${id}`];
+      const boss = typeof who === 'string'
+        ? this.enemies.find(e => e.etype === who)
+        : this.enemies.find(e => BOSS_DEFEAT_FLAG[e.etype] !== undefined);
       if (boss) boss.hp = Math.max(1, Math.min(boss.maxHp, savedBossHp));
     }
     this.spawnNpcs();
@@ -1041,6 +1065,9 @@ export class Game {
   tileSolidAt(px: number, py: number): boolean {
     const tx = Math.floor(px / TILE), ty = Math.floor(py / TILE);
     const ch = tileAt(this.map, this.rows, tx, ty, this.epoch);
+    // R10-3: la puerta del puzzle ('D') es sólida DINÁMICA — abierta cuando
+    // todas las palancas del mapa están activadas (flags 'cripta_lever_*')
+    if (ch === 'D') return !cryptDoorOpen(this);
     return SOLID_CHARS.has(ch);
   }
 
@@ -1988,6 +2015,8 @@ export class Game {
     if (rumorAfterDialogue16b(this)) { audio.sfx('select'); return; }
     const it = this.nearestInteract();
     if (it) { audio.sfx('select'); it.act(); }
+    // R10-3: palancas de la cripta (activación por proximidad 3×3)
+    else if (cryptLeverTryActivateNear(this)) { audio.sfx("select"); playLeverPull(); }
     // micro-interacciones del mundo vivo (13-b): pozo, lápidas, agua, faroles…
     else if (worldInteract(this)) { audio.sfx('select'); }
     // ==== 16-b: restos de enemigos y cofres ya abiertos (añadidos al final de
@@ -2379,6 +2408,7 @@ export class Game {
       this.flags.guardianDefeated = true;
       delete this.flags.bossHp;
       delete this.flags.bossHp_cripta;
+      delete this.flags.bossHpWho_cripta; // R10: dueño de la memoria
       this.bossActive = false;
       audio.setCombat(false);
       audio.playTrack('crypt');
@@ -2389,6 +2419,7 @@ export class Game {
     } else if (e.etype === 'sirena') {
       this.flags.sirenaDefeated = true;
       delete this.flags.bossHp_costa;
+      delete this.flags.bossHpWho_costa; // R10
       this.bossActive = false;
       audio.setCombat(false);
       audio.playTrack('costa');
@@ -2403,6 +2434,7 @@ export class Game {
     } else if (e.etype === 'golem') {
       this.flags.golemDefeated = true;
       delete this.flags.bossHp_cumbres;
+      delete this.flags.bossHpWho_cumbres; // R10
       this.bossActive = false;
       audio.setCombat(false);
       audio.playTrack('cumbres');
@@ -2449,6 +2481,7 @@ export class Game {
       // el watcher de hooks queda como red idempotente (flag ya puesta → no-op).
       this.flags.heraldoDerrotado = true;
       delete this.flags.bossHp_cripta;
+      delete this.flags.bossHpWho_cripta; // R10
       this.bossActive = false;
       audio.setCombat(false);
       audio.playTrack('crypt');
@@ -2460,6 +2493,23 @@ export class Game {
       p.gold += 80;
       this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción, +80 coronas', '#f0c84a');
       if (this.questIdx === 14 && this.questStep === 1) this.questAdvance();
+    } else if (e.etype === 'sepulcro') {
+      // R10-9 · EL SEPULCRO (mini-jefe de la antesala): rama propia al estilo
+      // coro — flag (no renace), música cripta restaurada, botín generoso.
+      this.flags.sepulcroDerrotado = true;
+      delete this.flags.bossHp_cripta;
+      delete this.flags.bossHpWho_cripta;
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('crypt');
+      this.shake = 6;
+      playDoorOpen();
+      this.toast('El Sepulcro vuelve a descansar: el umbral es tuyo', '#b8a0f0');
+      this.toast('El camino al sanctum del Guardián queda abierto', '#c8b0e8');
+      // botín del mini-jefe (entre élite y jefatura, sin robar al Guardián)
+      p.potions += 1;
+      p.gold += 50;
+      this.floatAt(e.x, e.y - 34, 'Botín del Guarda: +1 poción, +50 coronas', '#f0c84a');
     }
     // ==== 17-a (qa): el duelo entra en pausa dramática EN EL MISMO golpe que
     // cae al jefe — challengeTick solo corría en el update siguiente y el

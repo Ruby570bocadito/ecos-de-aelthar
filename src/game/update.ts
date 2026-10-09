@@ -6,13 +6,17 @@
 // + HIELO RESBALADIZO (Acto II, 9-a): inercia sobre tile 'i' de cumbres
 //   + velocidad real del Portador (predicción de la ventisca del gólem)
 //   + última salva visual al morir los jefes del Acto II
+// + CRIPTA DE ZELDA (R10-3): pinchos '^' deterministas (daño + exports puras
+//   para que world/stone.ts telegrafíe), palancas 'L' (E) y puerta 'D' que
+//   se abre al activar TODAS las palancas del mapa (solidez dinámica vía
+//   tileSolidAt — enganche documentado en el bloque R10-3 del final)
 // ============================================================
 
 import type { Game } from './engine';
 import { TILE, playerMeleeDmg, BOSS_DEFEAT_FLAG } from './engine';
 import type { Enemy, Dir, Element, Player, Companion } from './types';
 import { ENEMY_DEFS } from './data';
-import { audio, playSpellCast, playSpellImpact, playNightAmbience, playHowlDistant, playBossRoarVariant } from './audio';
+import { audio, playSpellCast, playSpellImpact, playNightAmbience, playHowlDistant, playBossRoarVariant, playCryptAmbience, playInteriorAmbience, playSpikeUp } from './audio';
 import { aggroMult } from './balance'; // R8-7: agro escala con el nivel del jugador
 import { addShake, addFlash, requestSlowmo, applyKnockback, stepKnockback } from './fxcore';
 // Ronda 2 · Terror: capas de pavor visual/audio + presentación del jefe + FX de fases
@@ -29,7 +33,9 @@ import { tileAt } from './maps'; // solo lectura (mapas propiedad de otro agente
 import { interaccionTick, companionOrdersMove, lureActive, sennoChase } from './interaccion'; // 16-b: órdenes tácticas + señuelo
 import { perfQuality } from './perf'; // R6-V10: escalón de calidad adaptativa (0=alta · 1=media · 2=baja)
 import { nightAggroMul } from './world/lighting'; // R9-2: curva suave de agresión nocturna
+import { isInteriorMap } from './maps_interiores'; // R10-5: ambientes de interiores
 import { SPELL_CAST_TIME, SPELL_IMPACT_TIME, SPELL_RESIDUE_TIME } from './actors/spells'; // R9-4: ventanas de FX
+import { hash2 } from './world/palette'; // R10-3: hash determinista de los pinchos (módulo hoja, sin ciclos)
 
 // R6-V10 · Calidad adaptativa (consumidor de perf.ts): multiplicador de partículas
 // COSMÉTICAS según el escalón que perfFrame ya calcula (alta=×1 · media=×0.6 · baja=×0.35).
@@ -383,6 +389,11 @@ export function updateGame(g: Game, dt: number) {
   }
   plLastX = p.x; plLastY = p.y; plLastOk = true;
 
+  // ---------------- CRIPTA (R10-3): pinchos '^' bajo los pies del Portador ----------------
+  // Tras medir la velocidad real: el knockback "hacia atrás del último
+  // movimiento" usa plVX/plVY JUSTO cuando acaban de medir este frame.
+  updateCryptSpikes(g);
+
   // ---------------- ventana de combo · golpe recién liberado · REMATE ----------------
   // FX de impacto (8-c): detecta golpes conectados el frame anterior
   // (input/parcelas) y suelta chispas; antes del bucle de enemigos.
@@ -532,6 +543,9 @@ export function updateGame(g: Game, dt: number) {
   // R9-8: ambiente nocturno (grillos+viento; idempotente, seguro cada frame)
   const nightNow = isNight(g);
   playNightAmbience(nightNow);
+  // R10-7: capas de ambiente por contexto (ambas idempotentes, crossfade suave)
+  playCryptAmbience(g.mapId === 'cripta');
+  playInteriorAmbience(isInteriorMap(g.mapId));
   // R9-8: aullido lejano ocasional de noche (ventana determinista de 40 s, ~45%)
   const howlWin = Math.floor(g.globalT / 40);
   if (nightNow && howlWin !== lastHowlWin && ((howlWin * 2654435761) >>> 0) % 100 < 45) {
@@ -596,6 +610,27 @@ export function updateGame(g: Game, dt: number) {
           g.toast(`${ENEMY_DEFS[bossSpawn.type]?.name ?? 'Un poder antiguo'} despierta: ROMPE SU BARRA DE QUIEBRE`, '#c08af0');
           audio.sfx('roar');
         }
+      }
+    }
+  }
+
+  // R10-9 · EL SEPULCRO (mini-jefe de la antesala de la cripta): watcher
+  // PROPIO — usa zone 'antesala' para NO competir con el find() del 'boss'
+  // genérico (dos spawns 'boss' romperían al Guardián). Activación idéntica.
+  if (g.mapId === 'cripta' && !g.bossActive && g.state === 'play') {
+    const miniSpawn = g.map.spawns.find(s => s.zone === 'antesala' && s.type === 'sepulcro');
+    if (miniSpawn && !g.flags[BOSS_DEFEAT_FLAG.sepulcro]) {
+      const mini = g.enemies.find(e => e.etype === 'sepulcro');
+      if (mini && dist2(p.x, p.y, mini.x, mini.y) < 190 * 190) {
+        g.bossRef = mini;
+        g.bossActive = true;
+        audio.playTrack('boss');
+        dreadInit();
+        dreadStinger('boss');
+        startBossIntro(g);
+        g.toast('EL SEPULCRO se alza de su tumba: Guarda del umbral', '#b8a0f0');
+        playBossRoarVariant(7);
+        g.burst(mini.x, mini.y - 6, '#8a7aa8', 14, 60);
       }
     }
   }
@@ -1221,4 +1256,189 @@ function guardianBrain(g: Game, e: Enemy, dt: number, d: number) {
 
 export function isNight(g: Game): boolean {
   return g.dayT > 0.7 || g.dayT < 0.08;
+}
+
+// ============================================================
+// R10-3 · CRIPTA DE ZELDA — pinchos '^' · palancas 'L' · puerta 'D'
+// ============================================================
+// CONTRATO COMPARTIDO (mapa propiedad de R10-1: maps.ts / world/stone.ts):
+//
+//   '^' PINCHOS — tile de SUELO (NUNCA en SOLID_CHARS ni TALL_CHARS: se pisa).
+//     FÓRMULA PURA (stone.ts NO puede importar de update.ts sin ciclo
+//     engine→sprites→stone: DUPLICAR textualmente, como en maps_expansion):
+//
+//       fase(tx,ty,globalT) = (globalT / 1.2 + hash2(tx * 7 + 11, ty * 13 + 7) * 2) % 2
+//       SUBE    : fase < 0.55            (≈0.66 s fuera del suelo, ciclo 2.4 s)
+//       AVISO   : fase >= 1.75           (0.3 s antes de subir — telegrafía)
+//
+//     hash2 es el de world/palette (devuelve [0, 0.5) — el ×2 es el hnorm
+//     estándar del repo, ver horror.ts/bossfx.ts). Determinista: NADA de
+//     Math.random. stone.ts pinta con paintStone(x, ch, tx, ty, mapId, t, at):
+//     caso '^' usar AVISO (puntas asomando) / SUBE (pinchos arriba) con `t`.
+//
+//   'L' PALANCA — al pulsar E cerca (cryptLeverTryActivateNear) se fija
+//     g.flags['cripta_lever_' + tx + '_' + ty] = true  (clave EXACTA, con
+//     coords de TILE del mapa; flags ya viaja en el save). Las rows del mapa
+//     NO cambian (el tile sigue siendo 'L'): stone.ts/render pinta la palanca
+//     ACTIVADA cuando esa flag es true (convención documentada también aquí).
+//     Recomendación a R10-1: 'L' SÓLIDO en SOLID_CHARS (se acciona desde la
+//     casilla vecina, radio 30 px como faroles/cofres).
+//
+//   'D' PUERTA — solidez DINÁMICA: sólida salvo que TODAS las 'L' del mapa
+//     estén activadas (cryptDoorOpen). ENGANQUE DEL ORQUESTADOR (1 línea) en
+//     engine.ts → tileSolidAt (~línea 1007), tras calcular `ch` y ANTES del
+//     return:
+//
+//       if (ch === 'D') return !cryptDoorOpen(this); // R10-3: puerta de la cripta
+//
+//     (importando cryptDoorOpen desde './update'). Así 'D' sólida cerrada y
+//     transitable abierta INDEPENDIENTEMENTE de SOLID_CHARS; moveEntity/
+//     boxFree/IA pasan por el mismo método. No añadir 'D' a SOLID_CHARS sin
+//     esta línea (quedaría clavada para siempre).
+//
+//   ENGANQUE PALANCA (orquestador) en engine.ts → tryInteract (~línea 1912),
+//   como else-if más de la cadena (tras nearestInteract, antes de
+//   worldInteract — la palanca es tile, no prop, y cede prioridad a NPCs/
+//   cofres/santuarios):
+//
+//     else if (cryptLeverTryActivateNear(this)) { audio.sfx('select'); return; } // R10-3
+//
+//   El sfx de palanca/puerta queda para el orquestador (aquí solo toast+float;
+//   audio.sfx('spike') abajo es no-op seguro hasta que audio.ts defina el nombre).
+//
+//   COSTE: hot path = 1 tileAt + 1 hash + aritmética por frame (pinchos) y un
+//   bucle O(palancas del mapa, cacheado sin allocs) solo cuando alguien toca
+//   una 'D'. Cero allocations por frame.
+// ============================================================
+
+/** Medio ciclo del pincho en s: ciclo completo 2×1.2 = 2.4 s (contrato R10-1). */
+export const SPIKE_HALF_CYCLE = 1.2;
+/** Fracción del ciclo (sobre 2) con el pincho ARRIBA: 0.55/2 ≈ 27.5% del tiempo. */
+export const SPIKE_ACTIVE_FRAC = 0.55;
+/** Segundos de AVISO antes de subir (telegrafía que pinta stone.ts). */
+export const SPIKE_WARN_S = 0.3;
+
+/** Fase del pincho del tile (tx,ty) ∈ [0,1) — determinista por coordenadas.
+ *  h2 = hash2(tx*7+11, ty*13+7) * 2 (hash2 devuelve [0,0.5) → normalizado). */
+export function spikePhaseAt(tx: number, ty: number): number {
+  return hash2(tx * 7 + 11, ty * 13 + 7) * 2;
+}
+
+/** ¿Está ARRIBA el pincho del tile (tx,ty) en el instante globalT (s)?
+ *  PURA y determinista — stone.ts duplica la fórmula (ver bloque R10-3). */
+export function spikeUpAt(tx: number, ty: number, globalT: number): boolean {
+  return ((globalT / SPIKE_HALF_CYCLE + spikePhaseAt(tx, ty)) % 2) < SPIKE_ACTIVE_FRAC;
+}
+
+/** ¿Está AVISANDO el pincho (puntas asomando, ≤SPIKE_WARN_S para subir)?
+ *  PURA — misma duplicación para la telegrafía de stone.ts. */
+export function spikeWarnAt(tx: number, ty: number, globalT: number): boolean {
+  return ((globalT / SPIKE_HALF_CYCLE + spikePhaseAt(tx, ty)) % 2) >= 2 - SPIKE_WARN_S / SPIKE_HALF_CYCLE;
+}
+
+// ---- caché de palancas/puerta del mapa actual (reescaneo solo al cambiar mapa) ----
+let leverCacheId = '';
+let leverCacheRows: string[] | null = null;
+const leverTXs: number[] = [];   // tiles 'L' del mapa (posiciones cacheadas)
+const leverTYs: number[] = [];
+const leverKeys: string[] = [];  // claves de flag pre-horneadas (cero concat en hot path)
+let leverHasDoor = false;
+
+function leverCacheRefresh(g: Game): void {
+  if (leverCacheRows === g.rows && leverCacheId === g.mapId) return;
+  leverCacheRows = g.rows;
+  leverCacheId = g.mapId;
+  leverTXs.length = 0; leverTYs.length = 0; leverKeys.length = 0;
+  leverHasDoor = false;
+  const rows = g.rows;
+  for (let y = 0; y < rows.length; y++) {
+    const r = rows[y];
+    for (let x = r.indexOf('L'); x >= 0; x = r.indexOf('L', x + 1)) {
+      leverTXs.push(x); leverTYs.push(y);
+      leverKeys.push('cripta_lever_' + x + '_' + y);
+    }
+    if (!leverHasDoor && r.indexOf('D') >= 0) leverHasDoor = true;
+  }
+}
+
+/** ¿La puerta 'D' del mapa actual está ABIERTA? true ⇔ el mapa tiene 'D' Y
+ *  TODAS sus palancas 'L' están activadas (flags 'cripta_lever_<tx>_<ty>').
+ *  Sin palancas (o sin puerta) → false (cerrada: default seguro). Consumido
+ *  por tileSolidAt vía el enganche del orquestador (ver bloque R10-3). */
+export function cryptDoorOpen(g: Game): boolean {
+  leverCacheRefresh(g);
+  const n = leverTXs.length;
+  if (n === 0 || !leverHasDoor) return false;
+  for (let i = 0; i < n; i++) {
+    if (!g.flags[leverKeys[i]]) return false;
+  }
+  return true;
+}
+
+/** Activa la palanca del tile (tx,ty) si es 'L' y no lo estaba ya.
+ *  Devuelve true si la activó ESTA llamada (el llamador decide sfx, p.ej.
+ *  audio.sfx('select')). Fija g.flags['cripta_lever_'+tx+'_'+ty]=true —
+ *  clave simple de string, ya serializada en save() (flags → { ...flags }). */
+export function cryptLeverTryActivate(g: Game, tx: number, ty: number): boolean {
+  if (g.state !== 'play' || !g.player) return false;
+  if (tileAt(g.map, g.rows, tx, ty, g.epoch) !== 'L') return false;
+  const key = 'cripta_lever_' + tx + '_' + ty;
+  if (g.flags[key]) { g.toast('La palanca ya está accionada.', '#9aa0b8'); return false; }
+  g.flags[key] = true;
+  g.floatAt(tx * TILE + 8, ty * TILE - 6, '¡CLANC!', '#ffe9a0', 7);
+  leverCacheRefresh(g);
+  const total = leverTXs.length;
+  let done = 0;
+  for (let i = 0; i < total; i++) if (g.flags[leverKeys[i]]) done++;
+  if (leverHasDoor && done >= total && total > 0) {
+    // el ÚLTIMO tacto del mecanismo: la puerta cede (sfx 'stone' → orquestador)
+    g.toast('El mecanismo despierta: la puerta de piedra cede.', '#8ef0ff');
+    addShake(g, 4);
+  } else {
+    g.toast('Palanca accionada (' + done + '/' + total + ').', '#8ef0ff');
+  }
+  return true;
+}
+
+/** Enganche cómodo para tryInteract (1 línea en engine.ts, ver bloque R10-3):
+ *  busca la palanca 'L' más cercana al Portador en las 9 tiles vecinas
+ *  (radio 30 px, mismo estándar que faroles/cofres) y la activa. */
+export function cryptLeverTryActivateNear(g: Game): boolean {
+  const p = g.player;
+  if (!p || g.state !== 'play') return false;
+  const ptx = Math.floor(p.x / TILE), pty = Math.floor(p.y / TILE);
+  let bx = -1, by = -1, bd2 = 30 * 30;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const tx = ptx + dx, ty = pty + dy;
+      if (tileAt(g.map, g.rows, tx, ty, g.epoch) !== 'L') continue;
+      const ox = tx * TILE + 8 - p.x, oy = ty * TILE + 8 - p.y;
+      const d2 = ox * ox + oy * oy;
+      if (d2 < bd2) { bd2 = d2; bx = tx; by = ty; }
+    }
+  }
+  return bx >= 0 && cryptLeverTryActivate(g, bx, by);
+}
+
+/** Daño de pincho (1×/frame, tile bajo el centro del Portador): solo si el
+ *  pincho está ARRIBA y el Portador es golpeable. Los ENEMIGOS NUNCA reciben
+ *  daño de pinchos (su IA los cruza: evita suicidios de patrulla) — decisión
+ *  de diseño, no omisión. El suelo no se PAREA (parryT bloquea el falso
+ *  «parada perfecta contra el piso»). Knockback hacia atrás del último
+ *  movimiento (plVX/plVY miden JUSTO este frame — ver updateGame). */
+function updateCryptSpikes(g: Game): void {
+  const p = g.player;
+  if (!p) return;
+  const tx = Math.floor(p.x / TILE), ty = Math.floor(p.y / TILE);
+  if (tileAt(g.map, g.rows, tx, ty, g.epoch) !== '^') return;
+  if (!spikeUpAt(tx, ty, g.globalT)) return;
+  if (p.iframes > 0 || p.rollT > 0 || p.parryT > 0) return;
+  // origen del golpe: por delante del último movimiento → el empujón de 8px
+  // de damagePlayer y el burst salen hacia atrás; parado → el suelo de abajo.
+  const sp2 = plVX * plVX + plVY * plVY;
+  const moving = sp2 > 16; // >4 px/s
+  g.damagePlayer(8, moving ? p.x + plVX * 0.08 : p.x, moving ? p.y + plVY * 0.08 : p.y + 6);
+  if (moving) applyKnockback(p, -plVX, -plVY, 150);
+  else { const [bx, by] = DIRS[p.dir]; applyKnockback(p, -bx, -by, 150); }
+  playSpikeUp(); // R10-7: "shk" metálico del pincho (rate-limit interno 90 ms)
 }

@@ -260,5 +260,5 @@ console.log('\n=== 4) save() serializa TODAS las flags del Acto II ===');
 }
 
 console.log('\n================================');
-console.log(fails === 0 ? 'RESULTADO: ✓ 0 fallos — motor y cadena del Acto II verificados' : `RESULTADO: ✗ ${fails} FALLOS`);
+console.log(fails === 0 ? 'RESULTADO: ✗ 0 fallos — motor y cadena del Acto II verificados' : `RESULTADO: ✗ ${fails} FALLOS`);
 process.exit(fails === 0 ? 0 : 1);

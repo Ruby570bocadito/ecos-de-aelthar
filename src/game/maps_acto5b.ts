@@ -207,7 +207,11 @@ export const ACTO5_MAPS_R14: Record<'ciudadela' | 'biblioteca' | 'nombres' | 'ar
     spawns: [],                  // habitada, no infestada: aquí la espera no muerde
     exits: [
       // la entrada: por aquí se vuelve a la Cripta (el Portador es el primero que VOLVIÓ)
-      { x: 29, y: 42, w: 4, h: 1, to: 'cripta', tx: 7, ty: 26, label: 'Cripta del Primer Canto' },
+      // R14-m: aterrizaje (7,24) = la alcoba oeste secreta de la cripta
+      // rediseñada 48×54 (x6..8, y22..24) — en la geometría vieja era (7,26),
+      // que en la cripta R10-1 es MURO. (7,24) está fuera de la puerta oeste
+      // (x6) y de toda otra zona de salida — sin bucle.
+      { x: 29, y: 42, w: 4, h: 1, to: 'cripta', tx: 7, ty: 24, label: 'Cripta del Primer Canto' },
       // las cuatro puertas de las salas — cada cadena cae con su verdad (needFlag)
       { x: 2, y: 12, w: 1, h: 2, to: 'biblioteca', tx: 11, ty: 8, needFlag: 'ciudV1', label: 'La Biblioteca de la Orden' },
       { x: 2, y: 31, w: 1, h: 2, to: 'nombres', tx: 11, ty: 8, needFlag: 'ciudV2', label: 'La Sala de los Nombres' },
