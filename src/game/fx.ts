@@ -19,6 +19,24 @@
 //     doble pasada, contorno 1 px, fade-out por escala).
 //   - spawnHitSparks / drawSparks: chispas de impacto como trazos
 //     alargados + destello blanco (convención size >= SPARK_MIN_SIZE).
+//
+// R5-O7 (optimización fx): cero allocations por frame en las rutas calientes.
+//   - Pool ambiental con LISTA LIBRE (spawn O(1), antes pool.find O(n)) y
+//     reciclaje de la más vieja al saturar; cap 90 por mapa.
+//   - drawAmbient: sx/sy inline (antes 2 clausuras/frame), bucle indexado,
+//     culling de partículas fuera de viewport, batch de fillStyle y
+//     sin save/restore por luciérnaga.
+//   - drawSky: tabla de estrellas precalculada (hash2 una vez) + halo lunar
+//     cacheado (antes createRadialGradient por frame de noche).
+//   - drawSparks: 3 pases por grupo (destellos / colas / cabezas) con fillStyle
+//     una vez por grupo, culling y cero arrays literales por chispa.
+//   - drawFloatV2: string de fuente cacheada por tamaño + culling.
+//   - spawnHitSparks/critGlint: cap propio de chispas (≤220) reciclando la
+//     más vieja in situ.
+//   - bannerInfo devuelve objeto reutilizado (consumo inmediato en render.ts).
+//   - spawnAmbient: init pasa a función de módulo (antes 1 clausura nueva por
+//     spawn, hasta ~17/s); lookup del faro con bucle indexado (sin iterador).
+//   - FAROBEAM: strokeStyle en caché (_lastStroke) — 1 setter solo al cambiar.
 // ============================================================
 
 import type { Game } from './engine';
@@ -46,9 +64,9 @@ const SNOW = 9;        // Cumbres: ventisca — copos con vaivén de viento
 const WISPFRIO = 10;   // Cumbres: wisps azul-hielo erráticos junto al suelo
 const FAROBEAM = 11;   // Costa (10-c): motas alargadas del haz del faro encendido
 
-// 120 (antes 110): headroom para el haz del faro (~6-8 motas vivas); el
-// máximo autorizado por 7-c era 120 — se alcanza exactamente.
-const AMB_CAP = 120;
+// R5-O7: cap 90 motas por mapa (antes 120). Con lista libre + reciclaje de la
+// más vieja el emisor nunca se estanca, así que la densidad visible se mantiene.
+const AMB_CAP = 90;
 
 interface Amb {
   active: boolean;
@@ -66,9 +84,38 @@ const pool: Amb[] = Array.from({ length: AMB_CAP }, () => ({
   active: false, kind: 0, x: 0, y: 0, vx: 0, vy: 0, t: 0, maxT: 1, seed: 0, size: 1,
 }));
 
+// R5-O7: lista de ranuras LIBRES → spawn O(1) (antes pool.find O(n) por spawn).
+// Las bajas (muerte natural o salida de encuadre) devuelven su índice aquí.
+const ambFree: number[] = [];
+for (let i = AMB_CAP - 1; i >= 0; i--) ambFree.push(i);
+
+/** Ranura para una mota nueva: libre si hay, si no recicla la MÁS VIEJA
+ *  (mayor t/maxT = la más cerca de morir → mínima pérdida visual). */
+function allocAmb(): Amb | null {
+  let i = ambFree.pop();
+  if (i === undefined) {
+    let worst = 0, worstK = -1;
+    for (let j = 0; j < AMB_CAP; j++) {
+      const a = pool[j];
+      const k = a.t / a.maxT;
+      if (k > worstK) { worstK = k; worst = j; }
+    }
+    i = worst; // el llamador SIEMPRE activa la ranura devuelta
+  }
+  return pool[i];
+}
+
 let spawnAcc = 0;
 let dustAcc = 0;
 let faroAcc = 0; // acumulador del haz del faro (10-c): 3 motas/s cuando arde
+
+/** R5-O7: inicializa una ranura del pool SIN clausura (los parámetros entran
+ *  explícitos; antes `init` capturaba slot+seed → 1 closure por spawn). */
+function initAmb(slot: Amb, kind: number, x: number, y: number, vx: number, vy: number, maxT: number, size: number, seed: number): void {
+  slot.active = true; slot.kind = kind;
+  slot.x = x; slot.y = y; slot.vx = vx; slot.vy = vy;
+  slot.t = 0; slot.maxT = maxT; slot.seed = hash2(seed, 3); slot.size = size;
+}
 
 // temporizadores de feedback (calculados aquí, dibujados en render.ts)
 let bannerElapsed = 0;
@@ -105,7 +152,7 @@ let lastGT = -1;
 // ---------------- Spawning por mapa ----------------
 
 function spawnAmbient(g: Game): void {
-  const slot = pool.find(a => !a.active);
+  const slot = allocAmb();
   if (!slot) return;
   const margin = 24;
   const wx0 = g.camX / ZOOM - margin, wy0 = g.camY / ZOOM - margin;
@@ -113,31 +160,25 @@ function spawnAmbient(g: Game): void {
   const seed = Math.floor(g.globalT * 997) ^ (spawnAcc * 131 | 0);
   const r = hash2(seed, 7);
 
-  const init = (kind: number, x: number, y: number, vx: number, vy: number, maxT: number, size: number) => {
-    slot.active = true; slot.kind = kind;
-    slot.x = x; slot.y = y; slot.vx = vx; slot.vy = vy;
-    slot.t = 0; slot.maxT = maxT; slot.seed = hash2(seed, 3); slot.size = size;
-  };
-
   if (g.mapId === 'lunaris') {
     if (isNight(g)) {
       // luciérnagas verdosas: deambulan cerca del suelo con parpadeo
-      init(FIREFLY, wx0 + r * (wx1 - wx0), wy0 + (wy1 - wy0) * (0.35 + hash2(seed, 11) * 0.6),
-        (r - 0.5) * 10, (hash2(seed, 13) - 0.5) * 8, 5 + hash2(seed, 17) * 3, 1.5);
+      initAmb(slot, FIREFLY, wx0 + r * (wx1 - wx0), wy0 + (wy1 - wy0) * (0.35 + hash2(seed, 11) * 0.6),
+        (r - 0.5) * 10, (hash2(seed, 13) - 0.5) * 8, 5 + hash2(seed, 17) * 3, 1.5, seed);
     } else {
       // motas doradas cálidas: deriva lenta e irregular
-      init(MOTA, wx0 + r * (wx1 - wx0), wy0 + hash2(seed, 11) * (wy1 - wy0),
-        (r - 0.5) * 6, -2 - hash2(seed, 13) * 4, 6 + hash2(seed, 17) * 4, 1 + hash2(seed, 19) * 1.2);
+      initAmb(slot, MOTA, wx0 + r * (wx1 - wx0), wy0 + hash2(seed, 11) * (wy1 - wy0),
+        (r - 0.5) * 6, -2 - hash2(seed, 13) * 4, 6 + hash2(seed, 17) * 4, 1 + hash2(seed, 19) * 1.2, seed);
     }
   } else if (g.mapId === 'bosque') {
     if (r < 0.62) {
       // hojas: caen con vaivén sinusoidal
-      init(LEAF, wx0 + r * (wx1 - wx0), wy0 - 6, 0, 16 + hash2(seed, 13) * 12,
-        9, 2);
+      initAmb(slot, LEAF, wx0 + r * (wx1 - wx0), wy0 - 6, 0, 16 + hash2(seed, 13) * 12,
+        9, 2, seed);
     } else {
       // esporas: flotan casi inmóviles
-      init(SPORE, wx0 + r * (wx1 - wx0), wy0 + hash2(seed, 11) * (wy1 - wy0),
-        (r - 0.5) * 5, -1 - hash2(seed, 15) * 2, 5 + hash2(seed, 17) * 3, 1);
+      initAmb(slot, SPORE, wx0 + r * (wx1 - wx0), wy0 + hash2(seed, 11) * (wy1 - wy0),
+        (r - 0.5) * 5, -1 - hash2(seed, 15) * 2, 5 + hash2(seed, 17) * 3, 1, seed);
     }
   } else if (g.mapId === 'costa') {
     const night = isNight(g);
@@ -145,44 +186,44 @@ function spawnAmbient(g: Game): void {
     const foamK = night ? 0.16 : 0.42;
     if (r < foamK) {
       // espuma: chispas blancas junto al suelo, vida corta, estallan en 2-3 destellos
-      init(FOAM, wx0 + hash2(seed, 21) * (wx1 - wx0), wy0 + (wy1 - wy0) * (0.6 + hash2(seed, 11) * 0.32),
-        5 + hash2(seed, 13) * 10, -5 - hash2(seed, 15) * 6, 0.5 + hash2(seed, 17) * 0.4, 1.2);
+      initAmb(slot, FOAM, wx0 + hash2(seed, 21) * (wx1 - wx0), wy0 + (wy1 - wy0) * (0.6 + hash2(seed, 11) * 0.32),
+        5 + hash2(seed, 13) * 10, -5 - hash2(seed, 15) * 6, 0.5 + hash2(seed, 17) * 0.4, 1.2, seed);
     } else {
       // bruma salina: motas grandes semitransparentes que derivan al oeste, vida larga
-      init(SEAMIST, wx0 + hash2(seed, 21) * (wx1 - wx0), wy0 + hash2(seed, 11) * (wy1 - wy0),
-        -9 - hash2(seed, 13) * 5, 0, 7 + hash2(seed, 17) * 3.5, 2.2 + hash2(seed, 19) * 1.8);
+      initAmb(slot, SEAMIST, wx0 + hash2(seed, 21) * (wx1 - wx0), wy0 + hash2(seed, 11) * (wy1 - wy0),
+        -9 - hash2(seed, 13) * 5, 0, 7 + hash2(seed, 17) * 3.5, 2.2 + hash2(seed, 19) * 1.8, seed);
     }
   } else if (g.mapId === 'aldea') {
     if (r < 0.85) {
       // memoras: ceniza del recuerdo — suben MUY lento (los nombres que flotan)
-      init(MEMORA, wx0 + hash2(seed, 21) * (wx1 - wx0), wy1 - hash2(seed, 11) * 24,
-        (r - 0.5) * 4, -3.5 - hash2(seed, 13) * 3.5, 7 + hash2(seed, 17) * 4, 1 + hash2(seed, 19) * 0.8);
+      initAmb(slot, MEMORA, wx0 + hash2(seed, 21) * (wx1 - wx0), wy1 - hash2(seed, 11) * 24,
+        (r - 0.5) * 4, -3.5 - hash2(seed, 13) * 3.5, 7 + hash2(seed, 17) * 4, 1 + hash2(seed, 19) * 0.8, seed);
     } else {
       // ceniza (duelo de Merrow): unos pocos copos que ascienden más vivos
-      init(ASH, wx0 + hash2(seed, 21) * (wx1 - wx0), wy1 - hash2(seed, 11) * 20, (r - 0.5) * 6, -7 - hash2(seed, 13) * 6,
-        4 + hash2(seed, 17) * 2.5, 1 + hash2(seed, 19) * 0.6);
+      initAmb(slot, ASH, wx0 + hash2(seed, 21) * (wx1 - wx0), wy1 - hash2(seed, 11) * 20, (r - 0.5) * 6, -7 - hash2(seed, 13) * 6,
+        4 + hash2(seed, 17) * 2.5, 1 + hash2(seed, 19) * 0.6, seed);
     }
   } else if (g.mapId === 'cumbres') {
     const night = isNight(g);
     if (r < (night ? 0.7 : 0.8)) {
       // ventisca: NÚMEROS ALTOS, caída lenta constante; el viento (vx) oscila en update
-      init(SNOW, wx0 + hash2(seed, 21) * (wx1 - wx0), wy0 - 6,
-        0, 13 + hash2(seed, 13) * 10, 5 + hash2(seed, 17) * 3, 0.9 + hash2(seed, 19) * 1.3);
+      initAmb(slot, SNOW, wx0 + hash2(seed, 21) * (wx1 - wx0), wy0 - 6,
+        0, 13 + hash2(seed, 13) * 10, 5 + hash2(seed, 17) * 3, 0.9 + hash2(seed, 19) * 1.3, seed);
     } else {
       // wisp frío: azul-hielo, errático y lento, cerca del suelo
-      init(WISPFRIO, wx0 + hash2(seed, 21) * (wx1 - wx0), wy0 + (wy1 - wy0) * (0.45 + hash2(seed, 11) * 0.45),
-        (r - 0.5) * 8, -1 - hash2(seed, 13) * 2, 4.5 + hash2(seed, 17) * 2, 1.4);
+      initAmb(slot, WISPFRIO, wx0 + hash2(seed, 21) * (wx1 - wx0), wy0 + (wy1 - wy0) * (0.45 + hash2(seed, 11) * 0.45),
+        (r - 0.5) * 8, -1 - hash2(seed, 13) * 2, 4.5 + hash2(seed, 17) * 2, 1.4, seed);
     }
   } else {
     // cripta
     if (r < 0.78) {
       // ceniza azulada ascendente
-      init(ASH, wx0 + r * (wx1 - wx0), wy1 - hash2(seed, 11) * 20, (r - 0.5) * 8, -9 - hash2(seed, 13) * 8,
-        4.5 + hash2(seed, 17) * 3, 1 + hash2(seed, 19));
+      initAmb(slot, ASH, wx0 + r * (wx1 - wx0), wy1 - hash2(seed, 11) * 20, (r - 0.5) * 8, -9 - hash2(seed, 13) * 8,
+        4.5 + hash2(seed, 17) * 3, 1 + hash2(seed, 19), seed);
     } else {
       // wisp tenue: deriva serpenteante
-      init(CRYPTWISP, wx0 + r * (wx1 - wx0), wy0 + hash2(seed, 11) * (wy1 - wy0),
-        (r - 0.5) * 8, -2, 5 + hash2(seed, 17) * 2, 1.5);
+      initAmb(slot, CRYPTWISP, wx0 + r * (wx1 - wx0), wy0 + hash2(seed, 11) * (wy1 - wy0),
+        (r - 0.5) * 8, -2, 5 + hash2(seed, 17) * 2, 1.5, seed);
     }
   }
 }
@@ -260,7 +301,10 @@ export function updateAmbient(g: Game, dt: number): void {
   // DIBUJAR (f(t, seed)): la partícula del pool va con vx/vy = 0.
   if (g.mapId === 'costa') {
     let faro: PropDef | null = null;
-    for (const pr of g.map.props) {
+    // R5-O7: bucle indexado (sin objeto iterador por frame)
+    const props = g.map.props;
+    for (let pi = 0; pi < props.length; pi++) {
+      const pr = props[pi];
       if (pr.kind === 'faro' && g.flags[pr.id]) { faro = pr; break; }
     }
     if (faro) {
@@ -270,7 +314,7 @@ export function updateAmbient(g: Game, dt: number): void {
           ly >= g.camY / ZOOM - 48 && ly <= (g.camY + VIEW_H) / ZOOM + 48) {
         faroAcc += dt * 3;
         while (faroAcc >= 1) {
-          const slot = pool.find(a => !a.active);
+          const slot = allocAmb();
           if (!slot) { faroAcc = 1; break; } // sin hueco: no acumular ráfaga
           faroAcc -= 1;
           const s = Math.floor(g.globalT * 997) ^ ((faroAcc * 511) | 0);
@@ -306,10 +350,16 @@ export function updateAmbient(g: Game, dt: number): void {
     spawnAmbient(g);
   }
 
-  for (const a of pool) {
+  // R5-O7: bucle indexado (sin iterador por frame) + límites de encuadre
+  // precalculados (4 divisiones por frame en vez de 4 por partícula).
+  // Las bajas devuelven su ranura a ambFree (invariante del pool).
+  const killL = g.camX / ZOOM - 60, killR = (g.camX + VIEW_W) / ZOOM + 60;
+  const killT = g.camY / ZOOM - 60, killB = (g.camY + VIEW_H) / ZOOM + 60;
+  for (let i = 0; i < AMB_CAP; i++) {
+    const a = pool[i];
     if (!a.active) continue;
     a.t += dt;
-    if (a.t >= a.maxT) { a.active = false; continue; }
+    if (a.t >= a.maxT) { a.active = false; ambFree.push(i); continue; }
     switch (a.kind) {
       case FIREFLY: {
         // deambular suave con cambio de dirección determinista
@@ -362,9 +412,9 @@ export function updateAmbient(g: Game, dt: number): void {
     a.x += a.vx * dt;
     a.y += a.vy * dt;
     // matar las que salen demasiado del encuadre
-    if (a.x < g.camX / ZOOM - 60 || a.x > (g.camX + VIEW_W) / ZOOM + 60 ||
-        a.y < g.camY / ZOOM - 60 || a.y > (g.camY + VIEW_H) / ZOOM + 60) {
+    if (a.x < killL || a.x > killR || a.y < killT || a.y > killB) {
       a.active = false;
+      ambFree.push(i);
     }
   }
 }
@@ -377,11 +427,22 @@ export function updateAmbient(g: Game, dt: number): void {
  * layer 'sky': estrellas titilantes + halo lunar + parpadeo de
  * antorchas (encima de la iluminación, bajo el HUD).
  */
+
+// R5-O7: batch de fillStyle — el setter del navegador con el MISMO valor es
+// barato, pero así se evita re-resolver el color en grupos largos del mismo
+// tipo. Se resetea al entrar en cada función de dibujo (el fillStyle vivo puede
+// venir de otro pase/contexto).
+let _lastFill = '\u0000';
+function fillC(ctx: CanvasRenderingContext2D, c: string): void {
+  if (_lastFill !== c) { ctx.fillStyle = c; _lastFill = c; }
+}
+
+// R5-O7: mismo batch para strokeStyle (solo lo usa FAROBEAM, color constante).
+let _lastStroke = '\u0000';
+
 export function drawAmbient(g: Game, layer: 'world' | 'sky'): void {
   const ctx = g.ctx;
   const camX = Math.round(g.camX), camY = Math.round(g.camY);
-  const sx = (wx: number) => wx * ZOOM - camX;
-  const sy = (wy: number) => wy * ZOOM - camY;
 
   if (layer === 'sky') {
     drawSky(g, ctx);
@@ -406,34 +467,49 @@ export function drawAmbient(g: Game, layer: 'world' | 'sky'): void {
   }
 
   // ---- partículas del pool ----
-  for (const a of pool) {
+  // R5-O7: sin clausuras sx/sy (inline), bucle indexado, isNight 1 vez por
+  // frame (antes por MEMORA/FAROBEAM) y culling al viewport. Margen 32 px de
+  // pantalla: cubre el radio máximo de dibujo (SEAMIST ≈29, LEAF ≈17); las
+  // motas viven hasta 60 px de MUNDO fuera del encuadre, así que el culling
+  // sí descarta partículas que hoy se dibujan sin aportar un pixel visible.
+  const t = g.globalT;
+  const night = isNight(g);
+  const CULL = 32;
+  const cullL = -CULL, cullR = VIEW_W + CULL, cullT = -CULL, cullB = VIEW_H + CULL;
+  _lastFill = '\u0000';
+  _lastStroke = '\u0000';
+  for (let i = 0; i < AMB_CAP; i++) {
+    const a = pool[i];
     if (!a.active) continue;
     const lifeK = 1 - a.t / a.maxT;              // 1 → 0
     const fade = Math.min(1, lifeK * 3, a.t * 4); // fundido en ambos extremos
-    const x = sx(a.x), y = sy(a.y);
+    if (fade <= 0.02) continue;                  // invisible: fundido aún no arranca
+    const x = a.x * ZOOM - camX;
+    const y = a.y * ZOOM - camY;
+    if (a.kind !== FAROBEAM && (x < cullL || x > cullR || y < cullT || y > cullB)) continue;
     switch (a.kind) {
       case MOTA: {
         ctx.globalAlpha = 0.5 * fade;
-        ctx.fillStyle = '#ffe9a0';
-        const wob = Math.sin(g.globalT * 2 + a.seed * 8) * 2;
+        fillC(ctx, '#ffe9a0');
+        const wob = Math.sin(t * 2 + a.seed * 8) * 2;
         ctx.fillRect(x + wob, y, a.size * ZOOM, a.size * ZOOM);
         break;
       }
       case FIREFLY: {
         // parpadeo: brillo breve con halo aditivo
-        const blink = Math.max(0, Math.sin(g.globalT * 2.4 + a.seed * 12));
+        // R5-O7: sin save/restore por partícula — se conmuta el composite
+        // explícitamente (este caso es el único que lo cambia).
+        const blink = Math.max(0, Math.sin(t * 2.4 + a.seed * 12));
         const al = blink * blink * fade;
-        ctx.globalAlpha = 1;
-        ctx.save();
         ctx.globalCompositeOperation = 'lighter';
         ctx.globalAlpha = 0.35 * al;
-        ctx.fillStyle = '#8ef0a8';
+        fillC(ctx, '#8ef0a8');
         ctx.beginPath();
         ctx.arc(x, y, 5 * ZOOM * 0.6, 0, Math.PI * 2);
         ctx.fill();
-        ctx.restore();
+        ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = Math.min(1, 0.4 + al);
-        ctx.fillStyle = '#d8ffd0';
+        fillC(ctx, '#d8ffd0');
         ctx.fillRect(x, y, 2, 2);
         break;
       }
@@ -442,46 +518,46 @@ export function drawAmbient(g: Game, layer: 'world' | 'sky'): void {
         const sway = Math.sin(a.t * 2.6 + a.seed * 9) * 14;
         const flip = Math.sin(a.t * 5 + a.seed * 4);
         ctx.globalAlpha = 0.85 * fade;
-        ctx.fillStyle = a.seed > 0.5 ? '#c8a050' : '#8aa050';
+        fillC(ctx, a.seed > 0.5 ? '#c8a050' : '#8aa050');
         ctx.fillRect(x + sway, y, 2 * ZOOM * 0.7, Math.max(1, Math.abs(flip) * 2.2));
-        ctx.fillStyle = a.seed > 0.5 ? '#e0b860' : '#a8bc60';
+        fillC(ctx, a.seed > 0.5 ? '#e0b860' : '#a8bc60');
         ctx.fillRect(x + sway, y, ZOOM * 0.7, Math.max(1, Math.abs(flip) * 1.4));
         break;
       }
       case SPORE: {
-        ctx.globalAlpha = 0.45 * fade * (0.6 + 0.4 * Math.sin(g.globalT * 3 + a.seed * 7));
-        ctx.fillStyle = '#d8f0e0';
+        ctx.globalAlpha = 0.45 * fade * (0.6 + 0.4 * Math.sin(t * 3 + a.seed * 7));
+        fillC(ctx, '#d8f0e0');
         ctx.fillRect(x, y, 1.5 * ZOOM, 1.5 * ZOOM);
         break;
       }
       case ASH: {
         ctx.globalAlpha = 0.5 * fade;
-        ctx.fillStyle = a.seed > 0.6 ? '#b8c8e0' : '#8fa4c8';
+        fillC(ctx, a.seed > 0.6 ? '#b8c8e0' : '#8fa4c8');
         ctx.fillRect(x, y, a.size * ZOOM * 0.8, a.size * ZOOM * 0.8);
         break;
       }
       case CRYPTWISP: {
-        const pulse = 0.5 + 0.5 * Math.sin(g.globalT * 2.2 + a.seed * 9);
+        const pulse = 0.5 + 0.5 * Math.sin(t * 2.2 + a.seed * 9);
         ctx.globalAlpha = 0.3 * fade * (0.4 + pulse * 0.6);
-        ctx.fillStyle = '#9fe8d8';
+        fillC(ctx, '#9fe8d8');
         ctx.beginPath();
         ctx.arc(x, y, 3 * ZOOM * 0.7, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 0.8 * fade * pulse;
-        ctx.fillStyle = '#e8fff8';
+        fillC(ctx, '#e8fff8');
         ctx.fillRect(x, y, 1.5 * ZOOM, 1.5 * ZOOM);
         break;
       }
       case SEAMIST: {
         // bruma salina: pompa grande blanco-azulada semitransparente que ondula en y
-        const wob = Math.sin(g.globalT * 0.55 + a.seed * 9) * 7;
+        const wob = Math.sin(t * 0.55 + a.seed * 9) * 7;
         ctx.globalAlpha = 0.14 * fade;
-        ctx.fillStyle = '#cfe0f2';
+        fillC(ctx, '#cfe0f2');
         ctx.beginPath();
         ctx.arc(x, y + wob, a.size * ZOOM * 2.4, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 0.1 * fade;
-        ctx.fillStyle = '#e8f2fa';
+        fillC(ctx, '#e8f2fa');
         ctx.beginPath();
         ctx.arc(x + a.size * ZOOM, y + wob + 3, a.size * ZOOM * 1.7, 0, Math.PI * 2);
         ctx.fill();
@@ -491,7 +567,7 @@ export function drawAmbient(g: Game, layer: 'world' | 'sky'): void {
         // espuma: estalla en 2-3 destellos discretos durante su vida corta
         const strobe = Math.sin(a.t * (9 + a.seed * 5) + a.seed * 30) > 0 ? 1 : 0.12;
         ctx.globalAlpha = (0.55 + 0.45 * strobe) * fade;
-        ctx.fillStyle = '#ffffff';
+        fillC(ctx, '#ffffff');
         ctx.fillRect(x, y, 2, 2);
         if (strobe > 0) {
           ctx.globalAlpha = 0.25 * fade;
@@ -503,28 +579,28 @@ export function drawAmbient(g: Game, layer: 'world' | 'sky'): void {
         // mota dorada pálida; parpadeo (pulso de alpha) al morir — de noche, más tenue
         const dying = lifeK < 0.4;
         const pulse = dying ? 0.35 + 0.65 * Math.abs(Math.sin(a.t * 9 + a.seed * 20)) : 1;
-        ctx.globalAlpha = (isNight(g) ? 0.34 : 0.55) * fade * pulse;
-        ctx.fillStyle = a.seed > 0.5 ? '#ecdcae' : '#d8c898';
-        ctx.fillRect(x + Math.sin(g.globalT * 1.6 + a.seed * 8) * 2, y, a.size * ZOOM * 0.9, a.size * ZOOM * 0.9);
+        ctx.globalAlpha = (night ? 0.34 : 0.55) * fade * pulse;
+        fillC(ctx, a.seed > 0.5 ? '#ecdcae' : '#d8c898');
+        ctx.fillRect(x + Math.sin(t * 1.6 + a.seed * 8) * 2, y, a.size * ZOOM * 0.9, a.size * ZOOM * 0.9);
         break;
       }
       case SNOW: {
         // copo: blanco, tamaño variado (la ventisca se siente por la cantidad)
         ctx.globalAlpha = 0.85 * fade;
-        ctx.fillStyle = '#f2f6ff';
+        fillC(ctx, '#f2f6ff');
         ctx.fillRect(x, y, a.size * ZOOM * 0.8, a.size * ZOOM * 0.8);
         break;
       }
       case WISPFRIO: {
         // wisp azul-hielo (pariente frío del CRYPTWISP)
-        const pulseF = 0.5 + 0.5 * Math.sin(g.globalT * 1.9 + a.seed * 8);
+        const pulseF = 0.5 + 0.5 * Math.sin(t * 1.9 + a.seed * 8);
         ctx.globalAlpha = 0.28 * fade * (0.4 + pulseF * 0.6);
-        ctx.fillStyle = '#9ecdf0';
+        fillC(ctx, '#9ecdf0');
         ctx.beginPath();
         ctx.arc(x, y, 3 * ZOOM * 0.7, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 0.75 * fade * pulseF;
-        ctx.fillStyle = '#e6f6ff';
+        fillC(ctx, '#e6f6ff');
         ctx.fillRect(x, y, 1.5 * ZOOM, 1.5 * ZOOM);
         break;
       }
@@ -534,14 +610,18 @@ export function drawAmbient(g: Game, layer: 'world' | 'sky'): void {
         // haz cónico del sprite). Trazo alargado ORIENTADO a la tangente del
         // giro → sensación de barrido de luz. Cull barato: si la linterna
         // sale de encuadre, updateAmbient las desactiva por posición.
-        const ang = g.globalT * 0.35 + a.seed * 6.28;
+        const ang = t * 0.35 + a.seed * 6.28;
         const rad = (9 + a.t * 17 + a.seed * 6) * ZOOM;
         const bx = x + Math.cos(ang) * rad;
         const by = y + Math.sin(ang) * rad * 0.85; // leve achatado cenital
-        const tw = 0.75 + 0.25 * Math.sin(g.globalT * 5 + a.seed * 40);
-        const nightK = isNight(g) ? 1.25 : 1; // de noche arde más en la bruma
+        // R5-O7: culling sobre el PUNTO ORBITAL (lo que se pinta de verdad;
+        // la base puede quedar hasta 120 px fuera del encuadre).
+        if (bx < -8 || bx > VIEW_W + 8 || by < -8 || by > VIEW_H + 8) break;
+        const tw = 0.75 + 0.25 * Math.sin(t * 5 + a.seed * 40);
+        const nightK = night ? 1.25 : 1; // de noche arde más en la bruma
         ctx.globalAlpha = Math.min(0.34, 0.17 * fade * tw * nightK);
-        ctx.strokeStyle = '#fff3c8';
+        // R5-O7: strokeStyle constante → 1 setter solo si cambió desde fuera
+        if (_lastStroke !== '#fff3c8') { ctx.strokeStyle = '#fff3c8'; _lastStroke = '#fff3c8'; }
         ctx.lineWidth = a.size * ZOOM * 0.7;
         ctx.beginPath();
         ctx.moveTo(bx - Math.sin(ang) * 3.2 * ZOOM, by + Math.cos(ang) * 3.2 * ZOOM);
@@ -556,6 +636,38 @@ export function drawAmbient(g: Game, layer: 'world' | 'sky'): void {
 }
 
 // ---- capa de cielo: estrellas, luna, antorchas ----
+
+// R5-O7: tabla de estrellas PRECALCULADA — los 3 hash2 por estrella son
+// deterministas (mismos valores SIEMPRE), así que se calculan una vez y se
+// reconstruyen solo si la vista dinámica cambia VIEW_W/VIEW_H. Antes: 138
+// hash2 + ternarios por frame cada noche.
+interface SkyStar { x: number; y: number; sz: number; warm: boolean; sp: number; ph: number }
+let skyStars: SkyStar[] | null = null;
+let skyStarsW = -1, skyStarsH = -1;
+
+function ensureSkyStars(): SkyStar[] {
+  if (skyStars && skyStarsW === VIEW_W && skyStarsH === VIEW_H) return skyStars;
+  const arr: SkyStar[] = [];
+  for (let i = 0; i < 46; i++) {
+    const s1 = hash2(i * 7 + 1, 3);
+    const s2 = hash2(i * 13 + 2, 5);
+    const s3 = hash2(i * 17 + 4, 9);
+    arr.push({
+      x: s1 * VIEW_W, y: s2 * VIEW_H * 0.55,
+      sz: s3 > 0.7 ? 2 : 1, warm: s3 > 0.85,
+      sp: 0.5 + s3 * 1.2, ph: s3 * 9,
+    });
+  }
+  skyStars = arr; skyStarsW = VIEW_W; skyStarsH = VIEW_H;
+  return arr;
+}
+
+// R5-O7: halo lunar cacheado (antes createRadialGradient + addColorStop POR
+// FRAME de noche). El nf que antes iba horneado en el stop pasa a globalAlpha:
+// pintar rgba(a=0.30) con alpha nf ≡ rgba(a=0.30·nf) — resultado idéntico.
+let moonHalo: CanvasGradient | null = null;
+let moonHaloW = -1;
+
 function drawSky(g: Game, ctx: CanvasRenderingContext2D): void {
   const t = g.globalT;
 
@@ -576,17 +688,15 @@ function drawSky(g: Game, ctx: CanvasRenderingContext2D): void {
   const nf = 1 - Math.min(1, dayLight);
   if (nf < 0.08) return;
 
-  // ---- estrellas titilantes (deterministas) ----
-  for (let i = 0; i < 46; i++) {
-    const s1 = hash2(i * 7 + 1, 3);
-    const s2 = hash2(i * 13 + 2, 5);
-    const s3 = hash2(i * 17 + 4, 9);
-    const x = s1 * VIEW_W;
-    const y = s2 * VIEW_H * 0.55;
-    const tw = 0.25 + 0.75 * Math.abs(Math.sin(t * (0.5 + s3 * 1.2) + s3 * 9));
+  // ---- estrellas titilantes (deterministas, tabla precalculada) ----
+  const stars = ensureSkyStars();
+  _lastFill = '\u0000';
+  for (let i = 0; i < stars.length; i++) {
+    const s = stars[i];
+    const tw = 0.25 + 0.75 * Math.abs(Math.sin(t * s.sp + s.ph));
     ctx.globalAlpha = nf * tw * 0.8;
-    ctx.fillStyle = s3 > 0.85 ? '#ffe9c8' : '#dce4ff';
-    ctx.fillRect(x, y, s3 > 0.7 ? 2 : 1, s3 > 0.7 ? 2 : 1);
+    fillC(ctx, s.warm ? '#ffe9c8' : '#dce4ff');
+    ctx.fillRect(s.x, s.y, s.sz, s.sz);
   }
   ctx.globalAlpha = 1;
 
@@ -595,10 +705,14 @@ function drawSky(g: Game, ctx: CanvasRenderingContext2D): void {
     const mx = VIEW_W * 0.8, my = 64;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    const halo = ctx.createRadialGradient(mx, my, 6, mx, my, 52);
-    halo.addColorStop(0, `rgba(214,226,255,${0.30 * nf})`);
-    halo.addColorStop(1, 'rgba(214,226,255,0)');
-    ctx.fillStyle = halo;
+    if (!moonHalo || moonHaloW !== VIEW_W) {
+      moonHalo = ctx.createRadialGradient(mx, my, 6, mx, my, 52);
+      moonHalo.addColorStop(0, 'rgba(214,226,255,0.30)');
+      moonHalo.addColorStop(1, 'rgba(214,226,255,0)');
+      moonHaloW = VIEW_W;
+    }
+    ctx.globalAlpha = nf; // el alpha de noche vive ahora aquí (ver nota R5-O7)
+    ctx.fillStyle = moonHalo;
     ctx.fillRect(mx - 56, my - 56, 112, 112);
     ctx.restore();
     ctx.globalAlpha = Math.min(1, nf * 1.2);
@@ -663,15 +777,27 @@ export function dodgeRing(g: Game, x: number, y: number): void {
  * Complementa el flash de daño (e.hitFlash) sin tocar render.
  */
 export function critGlint(g: Game, x: number, y: number): void {
-  for (let i = 0; i < 3; i++) {
+  // R5-O7: las 2 primeras son CHISPAS (size ≥ 3) → respetan el cap propio
+  // de chispas vía beginSparkBatch/pushSpark (ver SPARK_CAP).
+  beginSparkBatch(g, 2);
+  for (let i = 0; i < 2; i++) {
     const a = i * (Math.PI * 2 / 3) + 0.5;
     const t = 0.28 + i * 0.04;
-    g.particles.push({
-      x: x + Math.cos(a) * 3, y: y + Math.sin(a) * 3,
-      vx: Math.cos(a) * 24, vy: Math.sin(a) * 24,
-      t, maxT: t, color: i === 0 ? '#ffe86a' : '#ffd24a', size: 4.4 - i * 0.8, grav: 14,
-    });
+    pushSpark(
+      g, x + Math.cos(a) * 3, y + Math.sin(a) * 3,
+      Math.cos(a) * 24, Math.sin(a) * 24,
+      t, t, i === 0 ? '#ffe86a' : '#ffd24a', 4.4 - i * 0.8, 14,
+    );
   }
+  // la tercera (size 2.8) es partícula NORMAL (bucle estándar del render;
+  // el techo global del motor, particles ≤ 400, la cubre)
+  const a2 = 2 * (Math.PI * 2 / 3) + 0.5;
+  const t2 = 0.28 + 2 * 0.04;
+  g.particles.push({
+    x: x + Math.cos(a2) * 3, y: y + Math.sin(a2) * 3,
+    vx: Math.cos(a2) * 24, vy: Math.sin(a2) * 24,
+    t: t2, maxT: t2, color: '#ffd24a', size: 4.4 - 2 * 0.8, grav: 14,
+  });
 }
 
 // ---------------- Consultas para render.ts ----------------
@@ -693,13 +819,17 @@ export function getRollTrail(): TrailPt[] {
   return rollTrail;
 }
 
+// R5-O7: objeto reutilizado (antes 1 objeto nuevo por frame); render.ts
+// desestructura el resultado AL INSTANTE (consumo inmediato) — no retener la
+// referencia devuelta.
+const _bannerInfo = { slide: 0, out: 0, elapsed: 0 };
+
 /** Progreso del banner de jefe: slide 0→1 (entrada), out 1→0 (salida). */
 export function bannerInfo(g: Game): { slide: number; out: number; elapsed: number } {
-  return {
-    slide: Math.min(1, bannerElapsed / 0.45),
-    out: Math.min(1, g.bossBannerT / 0.4),
-    elapsed: bannerElapsed,
-  };
+  _bannerInfo.slide = Math.min(1, bannerElapsed / 0.45);
+  _bannerInfo.out = Math.min(1, g.bossBannerT / 0.4);
+  _bannerInfo.elapsed = bannerElapsed;
+  return _bannerInfo;
 }
 
 /** Alpha del overlay de memoria (entrada 0.5 s, salida según t restante). */
@@ -722,6 +852,17 @@ const CRIT_CORE: Record<string, string> = {
   '#ffd24a': '#fff0b0', // número de daño crítico (dorado)
   '#ffe86a': '#fff6c8', // etiqueta '¡CRÍTICO!' (pasa por FLOAT_SPECIAL)
 };
+
+// R5-O7: caché de strings de fuente por tamaño redondeado — antes 1 string
+// nueva por float por frame (fBody) + re-resolución de la fuente en el setter.
+// Tamaños posibles ~4..30: la tabla es diminuta y la string repetida va por
+// camino rápido en el setter del navegador.
+const _fontCache = new Map<number, string>();
+function cachedFont(px: number): string {
+  let f = _fontCache.get(px);
+  if (f === undefined) { f = fBody(px); _fontCache.set(px, f); }
+  return f;
+}
 
 /**
  * Número de daño V2 — reemplaza el dibujo inline de drawFloats.
@@ -790,6 +931,11 @@ export function drawFloatV2(
   const x = Math.round(sx(f.x) + ox * ZOOM);
   const y = Math.round(sy(f.y) + oy * ZOOM);
 
+  // R5-O7: culling — un float fuera de viewport no pinta nada. Margen Y 64 px
+  // (tamaño máximo de fuente + subrayado) y margen X 96 px (los textos
+  // especiales son anchos: '¡PARADA!' ≈ 73 px de semiancho).
+  if (x < -96 || x > VIEW_W + 96 || y < -64 || y > VIEW_H + 64) return;
+
   // --- (d) fade-out por escala en el último 20 % de vida ---
   const tw = FLOAT_LIFE * 0.2;
   const scale = f.t < tw ? 0.55 + 0.45 * (f.t / tw) : 1;
@@ -807,7 +953,10 @@ export function drawFloatV2(
 
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.font = fBody(Math.max(4, Math.round(size)));
+  // R5-O7: font desde caché (string estable → setter rápido). El save/restore
+  // se mantiene: ≤64 floats y cada uno ya cuesta 5-6 fillText — el estado del
+  // ctx queda exactamente como antes (no contamina otros draws).
+  ctx.font = cachedFont(Math.max(4, Math.round(size)));
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
 
@@ -865,6 +1014,47 @@ export function drawFloatV2(
  */
 export const SPARK_MIN_SIZE = 3;
 
+// ---------------- R5-O7 · cap de CHISPAS propias ----------------
+// El motor ya protege el TOTAL de g.particles (≤ 400); aquí acotamos las
+// CHISPAS nuestras (size >= SPARK_MIN_SIZE) a 220. En cada evento de spawn se
+// cuentan las vivas (O(n) UNA vez por evento, no por frame) y si el lote
+// excede el cap se RECICLA la más vieja mutando su slot in situ (cero
+// crecida del array, cero alloc extra). "Más vieja" = primero en el orden del
+// array: update.ts filtra preservando el orden y el motor recorta desde el
+// inicio al pasarse de 400, así que el array siempre queda ordenado por edad.
+const SPARK_CAP = 220;
+const sparkIdx: number[] = []; // índices de chispas vivas (reutilizado)
+let sparkRecycle = 0;          // cuántas hay que reciclar para el lote actual
+let sparkUsed = 0;             // cursor de reciclaje dentro de sparkIdx
+
+function beginSparkBatch(g: Game, incoming: number): void {
+  const ps = g.particles;
+  sparkIdx.length = 0;
+  for (let i = 0; i < ps.length; i++) {
+    if (ps[i].size >= SPARK_MIN_SIZE) sparkIdx.push(i);
+  }
+  let r = sparkIdx.length + incoming - SPARK_CAP;
+  if (r > sparkIdx.length) r = sparkIdx.length; // nunca más que las vivas
+  sparkRecycle = r > 0 ? r : 0;
+  sparkUsed = 0;
+}
+
+/** Inserta una chispa: slot nuevo o la más vieja reciclada (mutación in situ). */
+function pushSpark(
+  g: Game, x: number, y: number, vx: number, vy: number,
+  t: number, maxT: number, color: string, size: number, grav: number,
+): void {
+  const ps = g.particles;
+  if (sparkRecycle > 0) {
+    const p = ps[sparkIdx[sparkUsed++]];
+    sparkRecycle--;
+    p.x = x; p.y = y; p.vx = vx; p.vy = vy;
+    p.t = t; p.maxT = maxT; p.color = color; p.size = size; p.grav = grav;
+    return;
+  }
+  ps.push({ x, y, vx, vy, t, maxT, color, size, grav });
+}
+
 /** Semilla secuencial determinista para las chispas (cero Math.random). */
 let sparkSeed = 1;
 
@@ -891,6 +1081,10 @@ export function spawnHitSparks(g: Game, x: number, y: number, dir: number, color
   else if (dir === 0) base = -Math.PI / 2; // sin dirección: abanico hacia arriba
   else base = dir;                       // ángulo completo en radianes
 
+  // R5-O7: cap de chispas — con el lote nuevo (count + 1 destello) por encima
+  // de SPARK_CAP se recicla la más vieja en vez de crecer sin techo propio.
+  beginSparkBatch(g, count + 1);
+
   for (let i = 0; i < count; i++) {
     const h1 = hash2(sparkSeed * 7919 + i * 131, 11) * 2;
     const h2 = hash2(sparkSeed * 7919 + i * 131, 23) * 2;
@@ -899,21 +1093,17 @@ export function spawnHitSparks(g: Game, x: number, y: number, dir: number, color
     const a = base + (h1 - 0.5) * 1.7;   // abanico de ±0.85 rad
     const spd = 55 + h2 * 85;            // 55-140 px/s de mundo
     const maxT = 0.22 + h3 * 0.16;       // 0.22-0.38 s
-    g.particles.push({
-      x, y,
-      vx: Math.cos(a) * spd,
-      vy: Math.sin(a) * spd - 18,        // leve patada hacia arriba
-      t: maxT, maxT,
-      color,
-      size: 3 + (h4 > 0.72 ? 1 : 0),     // 3-4 = CHISPA (trazo en drawSparks)
-      grav: 85 + h4 * 40,                // grav leve: caen arqueándose
-    });
+    pushSpark(
+      g, x, y,
+      Math.cos(a) * spd,
+      Math.sin(a) * spd - 18,            // leve patada hacia arriba
+      maxT, maxT, color,
+      3 + (h4 > 0.72 ? 1 : 0),           // 3-4 = CHISPA (trazo en drawSparks)
+      85 + h4 * 40,                      // grav leve: caen arqueándose
+    );
   }
   // destello blanco: 1 partícula grande y muy breve (size >= 5 = DESTELLO)
-  g.particles.push({
-    x, y: y - 2, vx: 0, vy: 0, t: 0.09, maxT: 0.09,
-    color: '#ffffff', size: 5.5, grav: 0,
-  });
+  pushSpark(g, x, y - 2, 0, 0, 0.09, 0.09, '#ffffff', 5.5, 0);
   sparkSeed = (sparkSeed + 1) % 100003;  // avanza la secuencia determinista
 }
 
@@ -929,40 +1119,69 @@ export function spawnHitSparks(g: Game, x: number, y: number, dir: number, color
  * - DESTELLO (size ≥ 5): cruz blanca 2×2 + brazos que crecen al apagarse.
  * Todo con fillRect ENTEROS en pantalla y alpha clampeado a [0,1].
  * Restaura globalAlpha; ignora partículas normales (size < 3) y muertas.
+ *
+ * R5-O7: 3 PASES por grupo con batch de estilo — destellos, colas (fillStyle
+ * solo al cambiar de color) y cabezas (fillStyle UNA vez para todo el grupo;
+ * antes: 2 setters + un array literal POR CHISPA POR FRAME). Culling de lo
+ * que esté fuera de viewport (margen 8 px ≥ radio máximo de dibujo 5 px) y
+ * sqrt directo en vez de hypot. Única diferencia consciente: el orden entre
+ * píxeles de chispas DISTINTAS (solape raro, mezcla por alpha imperceptible).
  */
+const SPARK_HEAD_A = [1, 0.65, 0.35]; // alphas cabeza/cola (antes 1 literal por chispa)
+
 export function drawSparks(
   ctx: CanvasRenderingContext2D,
   g: Game,
   sx: (n: number) => number,
   sy: (n: number) => number,
 ): void {
-  for (const p of g.particles) {
-    if (p.size < SPARK_MIN_SIZE || p.t <= 0) continue;
+  const ps = g.particles;
+  const M = 8; // margen de culling en px de pantalla (destello ≤ 5, chispa ≤ 3)
+  // ---- pase 1: DESTELLOS (size ≥ 5) — pocos; estilo por partícula ----
+  for (let i = 0; i < ps.length; i++) {
+    const p = ps[i];
+    if (p.size < 5 || p.t <= 0) continue;
     const lifeK = Math.max(0, Math.min(1, p.t / p.maxT)); // 1 → 0
     const x = Math.round(sx(p.x));
     const y = Math.round(sy(p.y));
-    if (p.size >= 5) {
-      // --- destello: cruz blanca creciente que se apaga ---
-      const arm = 1 + Math.round((1 - lifeK) * 3);
-      ctx.globalAlpha = lifeK;
-      ctx.fillStyle = p.color;
-      ctx.fillRect(x - 1, y - 1, 2, 2);
-      ctx.globalAlpha = Math.max(0, Math.min(1, lifeK * 0.7));
-      ctx.fillRect(x - arm, y, arm * 2 + 1, 1);  // brazo horizontal
-      ctx.fillRect(x, y - arm, 1, arm * 2 + 1);  // brazo vertical
-    } else {
-      // --- chispa: trazo alargado según (vx, vy), cola hacia atrás ---
-      const len = Math.hypot(p.vx, p.vy) || 1;
-      const dx = p.vx / len;
-      const dy = p.vy / len;
-      const steps = 3;
-      const headA = [1, 0.65, 0.35];
-      for (let k = 0; k < steps; k++) {
-        ctx.globalAlpha = Math.max(0, Math.min(1, headA[k] * lifeK));
-        ctx.fillStyle = k === 0 ? '#fff8e0' : p.color; // cabeza caliente
-        ctx.fillRect(x - Math.round(dx * k), y - Math.round(dy * k), 1, 1);
-      }
-    }
+    if (x < -M || x > VIEW_W + M || y < -M || y > VIEW_H + M) continue;
+    // --- destello: cruz blanca creciente que se apaga ---
+    const arm = 1 + Math.round((1 - lifeK) * 3);
+    ctx.globalAlpha = lifeK;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(x - 1, y - 1, 2, 2);
+    ctx.globalAlpha = Math.max(0, Math.min(1, lifeK * 0.7));
+    ctx.fillRect(x - arm, y, arm * 2 + 1, 1);  // brazo horizontal
+    ctx.fillRect(x, y - arm, 1, arm * 2 + 1);  // brazo vertical
+  }
+  // ---- pase 2: colas de CHISPA (3 ≤ size < 5) — fillStyle solo al cambiar ----
+  let lastFill = '\u0000';
+  for (let i = 0; i < ps.length; i++) {
+    const p = ps[i];
+    if (p.size < SPARK_MIN_SIZE || p.size >= 5 || p.t <= 0) continue;
+    const lifeK = Math.max(0, Math.min(1, p.t / p.maxT));
+    const x = Math.round(sx(p.x));
+    const y = Math.round(sy(p.y));
+    if (x < -M || x > VIEW_W + M || y < -M || y > VIEW_H + M) continue;
+    const len = Math.sqrt(p.vx * p.vx + p.vy * p.vy) || 1;
+    const dx = p.vx / len, dy = p.vy / len;
+    if (p.color !== lastFill) { ctx.fillStyle = p.color; lastFill = p.color; }
+    ctx.globalAlpha = Math.max(0, Math.min(1, SPARK_HEAD_A[1] * lifeK));
+    ctx.fillRect(x - Math.round(dx), y - Math.round(dy), 1, 1);
+    ctx.globalAlpha = Math.max(0, Math.min(1, SPARK_HEAD_A[2] * lifeK));
+    ctx.fillRect(x - Math.round(dx * 2), y - Math.round(dy * 2), 1, 1);
+  }
+  // ---- pase 3: cabezas calientes — fillStyle UNA vez para todo el grupo ----
+  ctx.fillStyle = '#fff8e0';
+  for (let i = 0; i < ps.length; i++) {
+    const p = ps[i];
+    if (p.size < SPARK_MIN_SIZE || p.size >= 5 || p.t <= 0) continue;
+    const lifeK = Math.max(0, Math.min(1, p.t / p.maxT));
+    const x = Math.round(sx(p.x));
+    const y = Math.round(sy(p.y));
+    if (x < -M || x > VIEW_W + M || y < -M || y > VIEW_H + M) continue;
+    ctx.globalAlpha = Math.max(0, Math.min(1, SPARK_HEAD_A[0] * lifeK));
+    ctx.fillRect(x, y, 1, 1);
   }
   ctx.globalAlpha = 1;
 }

@@ -61,6 +61,16 @@ const POINTS_GLINT_DUR = 0.55; // destello violeta de notifyStatPoint (s)
 const PART_CAP = 32;           // pool fijo de partículas doradas (cero GC)
 const PART_GRAV = 150;         // gravedad de las partículas (px/s²)
 
+// R5-O8: string de font cacheado a nivel de módulo (antes: 1 string por frame
+// con puntos sin gastar; fBody es pura → mismo resultado, cero alloc).
+const FONT_POINTS = fBody(15);
+
+// R5-O8: colores opacos constantes — el fade SIEMPRE va por globalAlpha
+// (src-over: rgba(c,a) ≡ globalAlpha=a con fillStyle c → composite idéntico,
+// sin construir strings rgba por frame).
+const COL_LOW_HP = '#961418';  // rgb(150,20,24): borde de vida baja
+const COL_GLINT = '#b080ff';   // rgb(176,128,255): destello violeta de puntos
+
 // Panel del jugador (drawHud): panel(g, 8, 8, 224, 74) → x[8..232], y[8..82].
 const PANEL_R = 232;       // borde derecho del panel
 const PANEL_B = 82;        // borde inferior del panel
@@ -264,12 +274,14 @@ export function drawHudFx(ctx: CanvasRenderingContext2D, g: Game): void {
       const a = 0.10 + 0.12 * (0.5 + f / 2.6);
       if (a === a && a > 0) { // descarta NaN
         // borde interior 3 px + línea interior 1 px al 50 % (escalón pixel)
-        ctx.fillStyle = 'rgba(150,20,24,' + a.toFixed(3) + ')';
+        // R5-O8: fillStyle constante + globalAlpha (≡ rgba dinámica, sin string)
+        ctx.fillStyle = COL_LOW_HP;
+        ctx.globalAlpha = a;
         ctx.fillRect(0, 0, VIEW_W, 3);
         ctx.fillRect(0, VIEW_H - 3, VIEW_W, 3);
         ctx.fillRect(0, 0, 3, VIEW_H);
         ctx.fillRect(VIEW_W - 3, 0, 3, VIEW_H);
-        ctx.globalAlpha = 0.5;
+        ctx.globalAlpha = a * 0.5;
         ctx.fillRect(0, 3, VIEW_W, 1);
         ctx.fillRect(0, VIEW_H - 4, VIEW_W, 1);
         ctx.fillRect(3, 0, 1, VIEW_H);
@@ -342,7 +354,7 @@ export function drawHudFx(ctx: CanvasRenderingContext2D, g: Game): void {
     ctx.fillRect(PANEL_R - 26, PANEL_B + 1, 27, 2);     // horizontal bajo el borde inferior
     // glifo '✦' con bob (bajo el bloque de textos de la derecha, zona libre)
     const bob = Math.round(Math.sin(t * 2.8)) * 2;
-    ctx.font = fBody(15);
+    ctx.font = FONT_POINTS; // R5-O8: string cacheado (antes fBody(15) por frame)
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     ctx.globalAlpha = 0.55 + 0.25 * Math.sin(t * 3.4 + 1.3);
@@ -356,9 +368,12 @@ export function drawHudFx(ctx: CanvasRenderingContext2D, g: Game): void {
   // --- destello violeta de notifyStatPoint (borde superior/inferior) ---
   if (st.glintT > 0) {
     const a = (st.glintT / POINTS_GLINT_DUR) * 0.38; // decay 1→0, sutil
-    ctx.fillStyle = 'rgba(176,128,255,' + a.toFixed(3) + ')';
+    // R5-O8: fillStyle constante + globalAlpha (≡ rgba dinámica, sin string)
+    ctx.fillStyle = COL_GLINT;
+    ctx.globalAlpha = a;
     ctx.fillRect(0, 0, VIEW_W, 2);
     ctx.fillRect(0, VIEW_H - 2, VIEW_W, 2);
+    ctx.globalAlpha = 1;
   }
 
   // --- (d) XP ~llena: brillo que recorre la barra (sutil) ---

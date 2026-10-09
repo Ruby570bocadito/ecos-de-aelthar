@@ -5,8 +5,9 @@
 
 // VIEW_W/VIEW_H/ZOOM viven en ./consts (primer import: ver nota allí) y se
 // re-exportan para que `from './engine'` siga funcionando en todo el motor.
-import { VIEW_W, VIEW_H, ZOOM } from './consts';
-export { VIEW_W, VIEW_H, ZOOM };
+// fitViewToWindow (vista dinámica, merge main) también vive allí.
+import { VIEW_W, VIEW_H, ZOOM, fitViewToWindow } from './consts';
+export { VIEW_W, VIEW_H, ZOOM, fitViewToWindow };
 
 import type {
   Player, Enemy, Npc, Companion, MapId, Epoch, Projectile, Particle, FloatText,
@@ -43,6 +44,7 @@ import {
 import {
   ARMORS, ARMOR_HEAVY_SPEED, armorActive, armorActiveId, armorDefFor, armorReduction, armorTick,
 } from './armor';
+import { initPerf, perfFrame, drawPerfOverlay, togglePerfOverlay } from './perf'; // R5-O1: supervisión de rendimiento
 
 // 14-b (auditoría de cooldowns): el motor aplica skillCdMult AL FIJAR el cd
 // en useSkill (camino B del contrato skilltree.ts) → el decaimiento extra por
@@ -68,30 +70,6 @@ const COMPANION_LINES = [
   '¡Están flanqueándote!',
 ];
 
-// Vista DINÁMICA (fix barra negra): el buffer se ajusta al aspecto real de la
-// ventana (sin letterbox en 16:10/3:2/4:3/21:9). `let` + live bindings: todos
-// los módulos importan VIEW_W/VIEW_H y leen el valor actual en cada frame.
-export let VIEW_W = 960, VIEW_H = 540;
-export const ZOOM = 2;
-
-/**
- * Ajusta el buffer del juego al aspecto de la ventana para eliminar el
- * letterbox (la "barra negra" abajo/arriba). Mantiene 540px de alto base
- * a 16:9 exacto; pantallas más anchas ganan vista lateral (hasta 1600px)
- * y más cuadradas ganan vista vertical (hasta 800px). Clamp de seguridad
- * para aspectos extremos (móvil vertical): ahí el letterbox es aceptable.
- */
-export function fitViewToWindow(winW: number, winH: number): void {
-  const a = winW / Math.max(1, winH);
-  let vw = Math.round(540 * a);
-  let vh = 540;
-  if (vw < 840) { vw = 840; vh = Math.round(vw / a); }
-  else if (vw > 1600) { vw = 1600; vh = Math.round(vw / a); }
-  vh = Math.max(460, Math.min(800, vh));
-  vw = Math.max(840, Math.min(1600, Math.round(vh * a)));
-  if (vw !== VIEW_W || vh !== VIEW_H) { VIEW_W = vw; VIEW_H = vh; }
-}
-
 /** Flag de derrota por tipo de JEFE (Acto II: sirena/golem se suman al Guardián). */
 export const BOSS_DEFEAT_FLAG: Record<string, string> = {
   guardian: 'guardianDefeated',
@@ -100,6 +78,12 @@ export const BOSS_DEFEAT_FLAG: Record<string, string> = {
   vult: 'vultDefeated', // 14-a
   coro: 'coroDefeated', // 14-a
 };
+
+// R5-O6 (optimización): topes duros de recursos FX. fx.ts empuja partículas
+// directo a g.particles sin cap: en picos de combate el render degradaba.
+// Recortar las más viejas mantiene el coste de update/render acotado.
+const MAX_PARTICLES = 400;
+const MAX_FLOATS = 64;
 
 export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end' | 'skills';
 
@@ -131,6 +115,9 @@ export class Game {
   groundPastCanvas: HTMLCanvasElement | null = null;
   miniCanvas: HTMLCanvasElement | null = null;
   miniCanvasPast: HTMLCanvasElement | null = null; // minimapa v2 del pasado (solo mapas con epochDiffs)
+  // R5-O6: clave del último prerrender (mapId|epoch|rows.length) — evita
+  // reconstruir groundCanvas/miniCanvas al recargar el MISMO mapa+época.
+  private groundCacheKey: string | null = null;
   epoch: Epoch = 'presente';
   epochFx = 0;
 
@@ -218,6 +205,7 @@ export class Game {
     initSprites();
     initExpansionSprites(); // Acto II: sprites de neumo/espectro/arpi/sirena/golem + proyectiles
     this.bindInput();
+    initPerf(this); // R5-O1: lee localStorage['aelthar_perf'] (no-op seguro en SSR)
     // volúmenes persistidos (sistema → sliders)
     try {
       const v = JSON.parse(localStorage.getItem('ecos-vol') ?? 'null');
@@ -315,12 +303,22 @@ export class Game {
   start() {
     if (this.running) return;
     this.running = true;
+    cancelAnimationFrame(this.raf); // R5-O6: blindaje anti-doble-rAF (remontajes/pausas)
     this.lastTs = performance.now();
     const loop = (ts: number) => {
       if (!this.running) return;
+      // R5-O6: pestaña oculta → pausa lógica. rAF ya no dispara en segundo
+      // plano, pero si algún navegador lo hace, no simulamos ni dejamos
+      // acumular un dt enorme (al volver, dt nace fresco).
+      if (document.hidden) { this.lastTs = ts; this.raf = requestAnimationFrame(loop); return; }
       try {
+        // clamp 1/20 s (0.05): tras un enganchón/alt-tab el mundo nunca da un salto gigante
         let dt = Math.min(0.05, (ts - this.lastTs) / 1000);
         this.lastTs = ts;
+        // R5-O6: topes duros de FX (cubren también los pushes directos de fx.ts);
+        // coste O(1) mientras van por debajo del cap.
+        if (this.particles.length > MAX_PARTICLES) this.particles.splice(0, this.particles.length - MAX_PARTICLES);
+        if (this.floats.length > MAX_FLOATS) this.floats.splice(0, this.floats.length - MAX_FLOATS);
         if (this.flashT > 0) this.flashT = Math.max(0, this.flashT - dt);
         if (this.bossBannerT > 0) this.bossBannerT = Math.max(0, this.bossBannerT - dt);
         if (this.memoryReveal) { this.memoryReveal.t -= dt; if (this.memoryReveal.t <= 0) this.memoryReveal = null; }
@@ -329,6 +327,7 @@ export class Game {
         this.globalT += dt;
         if (this.state === 'play' || this.state === 'dialogue') this.update(dt);
         drawGame(this);
+        perfFrame(this, dt); drawPerfOverlay(this); // R5-O1: muestreo + overlay 1×/frame, tras update+draw
         this.loopError = null;
       } catch (err) {
         this.loopError = err instanceof Error ? (err.stack ?? String(err)) : String(err);
@@ -562,6 +561,13 @@ export class Game {
   }
 
   buildGround() {
+    // R5-O6: prerrender cacheado por (mapId, epoch, nº de filas). Los mapas son
+    // estáticos (rows solo se asigna en loadMap; mapRows/tileAt deterministas),
+    // así que recargar el MISMO mapa+época (respawn, santuario) reutiliza los
+    // canvas pintados en vez de reconstruirlos tile a tile.
+    const cacheKey = `${this.mapId}|${this.epoch}|${this.rows.length}`;
+    if (this.groundCacheKey === cacheKey && this.groundCanvas) return;
+    this.groundCacheKey = cacheKey;
     const { w, h } = this.map;
     const mk = (ep: Epoch) => {
       const c = document.createElement('canvas');
@@ -1319,6 +1325,8 @@ export class Game {
 
   floatAt(x: number, y: number, text: string, color: string, size = 8) {
     this.floats.push({ x, y, text, t: 0.9, color, vy: -26, size });
+    // R5-O6: tope duro — recorta los textos más viejos (como toast)
+    if (this.floats.length > MAX_FLOATS) this.floats.splice(0, this.floats.length - MAX_FLOATS);
   }
 
   burst(x: number, y: number, color: string, n: number, spd = 60) {
@@ -1327,6 +1335,8 @@ export class Game {
       const s = spd * (0.4 + Math.random() * 0.8);
       this.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 20, t: 0.5 + Math.random() * 0.4, maxT: 0.9, color, size: 1 + Math.random() * 2, grav: 90 });
     }
+    // R5-O6: tope duro — recorta las partículas más viejas
+    if (this.particles.length > MAX_PARTICLES) this.particles.splice(0, this.particles.length - MAX_PARTICLES);
   }
 
   // ---------------- Muerte ----------------
@@ -1430,6 +1440,7 @@ export class Game {
     if (e.repeat) return;
     this.keys.add(k);
     audio.resume();
+    if (!isDomInput && k === 'f3') { e.preventDefault(); togglePerfOverlay(); } // R5-O1: F3 alterna el overlay (k ya en minúsculas)
 
     if (this.state === 'title') {
       if (k === 'enter' || k === 'e' || k === ' ') { /* botones por click; enter = nueva partida */ }

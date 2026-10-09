@@ -46,9 +46,19 @@
 //    el terreno con el MISMO convenio que waterOverlay: camX/camY =
 //    g.camX/g.camY (px de pantalla), at ABSOLUTO at(tx,ty) = char
 //    del tile (tx,ty); ideal dentro del bloque con filtro de época.
+//
+// R5-O5 · overlay optimizado (misma firma y estética):
+//  - Snapshot de tiles visibles: UNA lectura de at() por tile y frame en un
+//    Uint8Array reutilizable; la vecindad de los planes se lee de la snapshot
+//    con una función de módulo (cero closures por árbol).
+//  - Hebras de copa horneadas a mini-láminas por (tonos, vaivén, largo):
+//    1 drawImage por hebra en vez de px() por píxel.
+//  - Culling estricto al viewport, early-out sin árboles y plan/lean
+//    reutilizados a nivel de módulo (cero objetos por frame).
 // ============================================================
 
 import { hash2, px, PAL, isForest, pick, type NeighborFn } from './palette';
+import { VIEW_W, VIEW_H, ZOOM as Z } from '../consts'; // R5-O5: vista viva
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -135,7 +145,8 @@ function leanOf(nb: NeighborFn): { lx: number; ly: number } {
   else if (nL === '=' && nR !== '=') lx = 2;
   if (nDown === '=') ly = -1;
   else if (nUp === '=') ly = 1;
-  return { lx, ly };
+  LEAN.lx = lx; LEAN.ly = ly;
+  return LEAN;
 }
 
 /** Plan común por ejemplar: edad, variante de copa y altura (px sobre la fila). */
@@ -144,6 +155,10 @@ interface TreePlan {
   variant: number;  // coposo: 0 redondo · 1 doble copa · 2 llorón — pino: 0 esbelto · 1 doble punta · 2 abeto
   reach: number;    // altura de copa sobre py0
 }
+
+/** R5-O5 · plan y lean REUTILIZABLES a nivel de módulo (cero objetos/frame). */
+const PLAN: TreePlan = { age: 0, variant: 0, reach: 0 };
+const LEAN: { lx: number; ly: number } = { lx: 0, ly: 0 };
 
 /** Plan del coposo: banda de altura por edad + ajustes de vecindad (R1). */
 function coposoPlan(tx: number, ty: number, nb: NeighborFn): TreePlan {
@@ -159,7 +174,8 @@ function coposoPlan(tx: number, ty: number, nb: NeighborFn): TreePlan {
   if (!tUp && !tDown && !tL && !tR) reach -= 2;          // ejemplar aislado
   reach = Math.min(29, Math.max(12, reach));
   if (nUp === 'p') reach = Math.min(reach, 20);          // no rebanar la copa del pino de arriba
-  return { age, variant, reach };
+  PLAN.age = age; PLAN.variant = variant; PLAN.reach = reach;
+  return PLAN;
 }
 
 /** Plan del pino: mismas reglas de edad con techos propios de variante. */
@@ -179,7 +195,8 @@ function pinePlan(tx: number, ty: number, nb: NeighborFn): TreePlan {
   if (variant === 2) reach = Math.min(reach, 28);
   reach = Math.min(28, Math.max(12, reach));
   if (nUp === 't') reach = Math.min(reach, 18);          // bajo un coposo: pino de sotobosque
-  return { age, variant, reach };
+  PLAN.age = age; PLAN.variant = variant; PLAN.reach = reach;
+  return PLAN;
 }
 
 /**
@@ -626,13 +643,11 @@ export function paintTall(
   else if (ch === 'p') paintPine(x, tx, ty, mapId, nb);
 }
 
-// ---------------- capa animada opcional (R4-A6) ----------------
-// Espejo de consts.ts en constantes locales: el módulo world no puede
-// importar engine.ts (ciclo engine → render → world).
+// ---------------- capa animada opcional (R4-A6 + R5-O5) ----------------
+// R5-O5 · VIEW_W/VIEW_H/ZOOM ahora viven en consts.ts (que no importa nada:
+// el ciclo era engine → render → world, y consts está FUERA del ciclo).
 
 const T = 16;                    // TILE
-const Z = 2;                     // ZOOM
-const VIEW_W = 960, VIEW_H = 540; // viewport en px de pantalla
 
 /**
  * CAPA ANIMADA OPCIONAL — puntas de copa en movimiento (R4-A6).
@@ -652,7 +667,47 @@ const VIEW_W = 960, VIEW_H = 540; // viewport en px de pantalla
  *  - at ABSOLUTO: at(tx,ty) = char del tile (tx,ty) del mapa.
  * Se recomienda llamarla dentro del bloque con filtro de época, justo
  * tras waterOverlay, para que las hebras se fundan con el terreno.
+ *
+ * R5-O5: snapshot en Uint8Array (1 lectura de at por tile y frame),
+ * hebras prerrenderizadas (1 drawImage por hebra), culling estricto al
+ * viewport y early-out si el bloque visible no contiene árboles.
  */
+// ============================================================
+// R5-O5 · SNAPSHOT DE TILES VISIBLES + HEBRAS HORNEADAS
+// ============================================================
+
+let snap = new Uint8Array(0);            // charcodes del bloque visible + borde
+let snapW = 0, snapX0 = 0, snapY0 = 0;   // geometría de la snapshot del frame
+
+/** Vecino ABSOLUTO leído de la snapshot del frame (cero closures por árbol). */
+function snapNb(tx: number, ty: number): string {
+  return String.fromCharCode(snap[(ty - snapY0) * snapW + (tx - snapX0)]);
+}
+
+// — hebras de copa horneadas: (par de tonos) × (vaivén −5..5) × (largo 2..3) —
+const STRAND_HI = 5;                     // vaivén máximo por lado (amp < 5)
+const STRAND_SW = STRAND_HI * 2 + 1;     // 11 índices de vaivén
+const strandStamps: (HTMLCanvasElement | null)[] = new Array(3 * STRAND_SW * 2).fill(null);
+
+/** Mini-lámina de 1 hebra (11×4): px d en x = 5 + round(sway·(len−d)/len). */
+function getStrand(pair: number, swayI: number, lenI: number): HTMLCanvasElement {
+  const idx = (pair * STRAND_SW + swayI) * 2 + lenI;
+  const hit = strandStamps[idx];
+  if (hit) return hit;
+  const cv = document.createElement('canvas');
+  cv.width = STRAND_SW; cv.height = 4;
+  const c = cv.getContext('2d') as CanvasRenderingContext2D;
+  const sway = swayI - STRAND_HI;
+  const len = 2 + lenI;
+  const hi = pair === 0 ? PAL.copaLightL : pair === 1 ? PAL.copaLightB : PAL.pineLight;
+  const lo = pair === 0 ? PAL.copaMidL : pair === 1 ? PAL.copaMidB : PAL.pineMid;
+  for (let d = 0; d < len; d++) {
+    px(c, STRAND_HI + Math.round((sway * (len - d)) / len), d, 1, 1, d === 0 ? hi : lo);
+  }
+  strandStamps[idx] = cv;
+  return cv;
+}
+
 export function drawTreeCanopy(
   x: Ctx, camX: number, camY: number, mapId: string, t: number,
   at?: (tx: number, ty: number) => string,
@@ -660,49 +715,67 @@ export function drawTreeCanopy(
   if (!at) return;                                       // sin acceso al mapa: nada que animar
   const gx = Math.floor(camX / Z), gy = Math.floor(camY / Z);
   const viewW = VIEW_W / Z, viewH = VIEW_H / Z;          // ventana visible en px de mundo
-  const tx0 = Math.floor(gx / T) - 1, tx1 = Math.ceil((gx + viewW) / T) + 1;
-  const ty0 = Math.floor(gy / T) - 1, ty1 = Math.ceil((gy + viewH) / T) + 1;
+  // R5-O5 · culling: solo tiles cuyo rect toca la pantalla (margen ≤ 1 tile;
+  // las copas suben ≤ 29px, pero siempre DENTRO de la fila que ya se recorre)
+  const vx0 = Math.floor(gx / T), vx1 = Math.ceil((gx + viewW) / T);
+  const vy0 = Math.floor(gy / T), vy1 = Math.ceil((gy + viewH) / T);
+
+  // R5-O5 · snapshot del bloque visible (+borde de 1 tile para vecinos):
+  // UNA llamada a at() por tile y frame (antes: hasta 11 por árbol).
+  const w = vx1 - vx0 + 3, h = vy1 - vy0 + 3;
+  if (snap.length < w * h) snap = new Uint8Array(w * h); // solo crece (raro)
+  snapW = w; snapX0 = vx0 - 1; snapY0 = vy0 - 1;
+  let hasTree = false;
+  for (let r = 0; r < h; r++) {
+    const ty = snapY0 + r, rowBase = r * w;
+    for (let c = 0; c < w; c++) {
+      const code = at(snapX0 + c, ty).charCodeAt(0);
+      snap[rowBase + c] = code;
+      if (code === 116 || code === 112) hasTree = true;  // 't' · 'p'
+    }
+  }
+  if (!hasTree) return; // early-out: ni un árbol en el viewport
+
   const forest = isForest(mapId);
+  const nb: NeighborFn = snapNb; // vecindad desde la snapshot (misma función)
   x.save();
   x.translate(-gx * Z, -gy * Z);                         // coordenadas de mundo escaladas ×ZOOM
   x.scale(Z, Z);
-  for (let ty = ty0; ty <= ty1; ty++) {
-    for (let tx = tx0; tx <= tx1; tx++) {
-      const ch = at(tx, ty);
-      if (ch !== 't' && ch !== 'p') continue;
-      const nb: NeighborFn = (dx, dy) => at(tx + dx, ty + dy);
+  for (let r = 1; r < h - 1; r++) {                      // solo tiles que tocan la pantalla
+    const ty = snapY0 + r, rowBase = r * w;
+    for (let c = 1; c < w - 1; c++) {
+      const idx = rowBase + c;
+      const code = snap[idx];
+      if (code !== 116 && code !== 112) continue;        // 't' · 'p'
+      const tx = snapX0 + c;
       const py0 = ty * T + (ty === 0 ? 2 : 0);
       const s = tx * 3 + 1, s2 = ty * 5 + 7;
       // punta de la copa: misma geometría que el prerrender
-      let tipX: number, tipY: number, tipHi: string, tipLo: string;
-      if (ch === 't') {
+      let tipX: number, tipY: number, pair: number;
+      if (code === 116) {
         const plan = coposoPlan(tx, ty, nb);
         const lean = leanOf(nb);
         tipX = tx * T + 7 + lean.lx + (plan.variant === 1 ? 2 : 0);
         tipY = py0 - plan.reach + lean.ly + (plan.variant === 1 ? 3 : 0);
-        tipHi = forest ? PAL.copaLightB : PAL.copaLightL;
-        tipLo = forest ? PAL.copaMidB : PAL.copaMidL;
+        pair = forest ? 1 : 0;
       } else {
         const plan = pinePlan(tx, ty, nb);
         const lean = leanOf(nb);
         tipX = tx * T + 7 + lean.lx + (plan.variant === 1 ? 2 : 0);
         tipY = py0 - plan.reach + (plan.variant === 1 ? 0 : 1);
-        tipHi = PAL.pineLight;
-        tipLo = PAL.pineMid;
+        pair = 2;
       }
       // vaivén determinista: sin(t) con fase/frecuencia/amplitud por hash
       const ph = h2(s * 71 + 13, s2 * 89 + 17) * Math.PI * 2;
       const fq = 1.0 + h2(s * 13 + 3, s2 * 7 + 11) * 0.6;   // 1.0-1.6 rad/s: vaivén lento
       const amp = 1.4 + h2(s * 17 + 9, s2 * 23 + 5) * 1.8;  // recorrido ±2-3px
       const sway = Math.round(Math.sin(t * fq + ph) * amp);
+      const swayI = Math.max(0, Math.min(STRAND_SW - 1, sway + STRAND_HI));
       const strands = 2 + pick(h2(s * 29 + 1, s2 * 31 + 7), 2); // 2-3 hebras
       for (let i = 0; i < strands; i++) {
         const bx = tipX + Math.floor(h2(s * 37 + i * 3, s2 * 41 + i) * 7) - 3;
-        const len = 2 + pick(h2(s * 43 + i, s2 * 47 + i * 5), 2);
-        for (let d = 0; d < len; d++) {
-          const k = (len - d) / len;                     // la punta se dobla más que la base
-          px(x, bx + Math.round(sway * k), tipY + d, 1, 1, d === 0 ? tipHi : tipLo);
-        }
+        const lenI = pick(h2(s * 43 + i, s2 * 47 + i * 5), 2);
+        x.drawImage(getStrand(pair, swayI, lenI), bx - STRAND_HI, tipY);
       }
     }
   }

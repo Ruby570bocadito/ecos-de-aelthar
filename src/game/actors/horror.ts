@@ -31,6 +31,7 @@ let shakeAmp = 0;        // amplitud de temblor 0..1.5 px
 let shakeOff = 0;        // desplazamiento firmado actual (±shakeAmp)
 let clockT = -1;         // globalT del último refresco (estabilidad intra-frame)
 let vignette: HTMLCanvasElement | null = null; // viñeta cardiaca pre-pintada
+let vigW = 0, vigH = 0;  // VIEW con el que se construyó (la vista es DINÁMICA)
 // Anclas de los ojos en la niebla (pool interno de 2): se fijan en px de MUNDO
 // al abrir cada ventana de 6 s, así el jugador puede acercarse y ahuyentarlos.
 let ojoSlot = -1;
@@ -306,7 +307,9 @@ function ensureEyeAnchors(g: Game, slot: number, n: number): void {
  * drawImage con globalAlpha, cero allocations. Rojo muy apagado: nunca vivo.
  */
 function ensureVignette(): HTMLCanvasElement {
-  if (vignette) return vignette;
+  // R5-O8: VIEW_W/H son dinámicos (fitViewToWindow) — si cambiaron desde el
+  // build, la caché queda obsoleta (tamaño equivocado) → reconstruir 1 vez.
+  if (vignette && vigW === VIEW_W && vigH === VIEW_H) return vignette;
   const c = document.createElement('canvas');
   c.width = VIEW_W;
   c.height = VIEW_H;
@@ -321,5 +324,7 @@ function ensureVignette(): HTMLCanvasElement {
   x.fillStyle = g0;
   x.fillRect(0, 0, VIEW_W, VIEW_H);
   vignette = c;
+  vigW = VIEW_W;
+  vigH = VIEW_H;
   return c;
 }

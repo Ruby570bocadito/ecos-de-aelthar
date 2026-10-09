@@ -33,6 +33,15 @@
 //  4) NIEBLA DE AMANECER — bandas horizontales bajas dithered (Bayer 2×2)
 //     solo en lunaris (valle) durante el alba, con deriva por tile.
 //
+// R5-O4 (optimización): ESTRELLAS pre-renderizadas a 3 canvas estáticos
+// (posiciones hash2 intactas; deriva/parallax por drawImage envuelto y
+// twinkle por alpha alternante de capa), plan de nubes con array
+// prealocado y memo por campos (cero strings/objetos por frame),
+// transitionAt con objeto reutilizado + memo, strings rgba de grading/
+// banda/niebla precalculados por escalón (fillStyle sin parsear),
+// bandas del backdrop escaladas a VIEW_H dinámico y MIST_BANDS como
+// fracción de VIEW_H.
+//
 // Calibración con el motor (update.ts / engine.ts / render.ts):
 //  - dayT avanza dt/240  → ciclo completo de 240 s.
 //  - luz del motor: dayLight = max(0.1, sin(dayT·2π)·1.25 + 0.25)
@@ -147,15 +156,30 @@ export function stageAt(dayT: number): DayStage {
   return DAY_STAGES[stageIndexAt(dayT)];
 }
 
-/** Transición activa cerca de una frontera: etapas a→b y mezcla m 0..1. */
+/**
+ * Transición activa cerca de una frontera: etapas a→b y mezcla m 0..1.
+ * R5-O4: resultado en objeto REUTILIZADO (los lectores copian a/b/m al
+ * momento) + memo de 1 entrada por dT — gradeTintAt, bandas del cielo y
+ * nubes lo piden varias veces en el MISMO frame con el mismo dayT.
+ */
+const TR_RES = { a: 0, b: 0, m: 0 };
+let trMemoT = -1;
+let trMemoHit = false;
 function transitionAt(dT: number): { a: number; b: number; m: number } | null {
+  if (dT === trMemoT) return trMemoHit ? TR_RES : null;
+  trMemoT = dT;
   for (let i = 0; i < DAY_STAGES.length; i++) {
     const b = DAY_STAGES[i].from;
     const d = mod(dT - b + 0.5, 1) - 0.5;    // distancia circular a la frontera
     if (Math.abs(d) <= TRANS_W) {
-      return { a: mod(i - 1, DAY_STAGES.length), b: i, m: 0.5 + d / (2 * TRANS_W) };
+      TR_RES.a = mod(i - 1, DAY_STAGES.length);
+      TR_RES.b = i;
+      TR_RES.m = 0.5 + d / (2 * TRANS_W);
+      trMemoHit = true;
+      return TR_RES;
     }
   }
+  trMemoHit = false;
   return null;
 }
 
@@ -173,13 +197,25 @@ function hexRgb(h: string): [number, number, number] {
   return v;
 }
 
-/** Mezcla dos colores hex por componentes (m 0..1) → 'rgb(r,g,b)'. */
+/** Mezcla dos colores hex por componentes (m 0..1) → 'rgb(r,g,b)'.
+ *  R5-O4: resultado cacheado por (colorA, colorB, escalón 1/64 de m) —
+ *  las 6 bandas del backdrop lo piden por frame durante transiciones. */
+const mixHexCache = new Map<string, string>();
 function mixHex(ha: string, hb: string, m: number): string {
-  const a = hexRgb(ha), b = hexRgb(hb);
-  const r = Math.round(a[0] + (b[0] - a[0]) * m);
-  const g = Math.round(a[1] + (b[1] - a[1]) * m);
-  const bl = Math.round(a[2] + (b[2] - a[2]) * m);
-  return `rgb(${r},${g},${bl})`;
+  const q = Math.round(m * 64);
+  const key = ha + '|' + hb + '|' + q;
+  let s = mixHexCache.get(key);
+  if (!s) {
+    const a = hexRgb(ha), b = hexRgb(hb);
+    const f = q / 64;
+    const r = Math.round(a[0] + (b[0] - a[0]) * f);
+    const g = Math.round(a[1] + (b[1] - a[1]) * f);
+    const bl = Math.round(a[2] + (b[2] - a[2]) * f);
+    s = `rgb(${r},${g},${bl})`;
+    if (mixHexCache.size > 1024) mixHexCache.clear();
+    mixHexCache.set(key, s);
+  }
+  return s;
 }
 
 /** Mezcla dos tintes (null = tinte neutro transparente). */
@@ -204,6 +240,37 @@ export function gradeTintAt(dayT: number): SkyTint {
   const tr = transitionAt(dT);
   if (tr) return mixTint(DAY_STAGES[tr.a].tint, DAY_STAGES[tr.b].tint, tr.m);
   return DAY_STAGES[stageIndexAt(dT)].tint ?? ZERO_TINT;
+}
+
+// R5-O4: fillStyle del grading SIN construir strings por frame.
+// Sin transición (el caso habitual) es 1 lookup a un array precalculado
+// por franja; en transición, cache por escalón 1/48 de la mezcla.
+function tintCss(t: SkyTint, aMul: number): string {
+  const a = Math.min(1, t[3] * aMul);
+  return `rgba(${t[0]},${t[1]},${t[2]},${a.toFixed(3)})`;
+}
+const STAGE_TINT_NOW: (string | null)[] = DAY_STAGES.map((st) => (st.tint ? tintCss(st.tint, 1) : null));
+const STAGE_TINT_PAST: (string | null)[] = DAY_STAGES.map((st) => (st.tint ? tintCss(st.tint, 1.1) : null));
+const tintMixCache = new Map<number, string | null>();
+
+/** String rgba del tinte de grading para dayT (null = franja limpia o
+ *  alpha ~0 ⇒ el draw hace early-out: mediodía = cero trabajo de tinte). */
+function tintStyleAt(dT: number, isPast: boolean): string | null {
+  const tr = transitionAt(dT);
+  if (!tr) return (isPast ? STAGE_TINT_PAST : STAGE_TINT_NOW)[stageIndexAt(dT)];
+  const q = Math.round(tr.m * 48);
+  const key = ((tr.a * 8 + tr.b) * 64 + q) * 2 + (isPast ? 1 : 0);
+  let s = tintMixCache.get(key);
+  if (s === undefined) {
+    const tn = mixTint(DAY_STAGES[tr.a].tint, DAY_STAGES[tr.b].tint, q / 48);
+    const ta = isPast ? Math.min(0.35, tn[3] * 1.1) : tn[3];
+    s = ta >= 0.004
+      ? `rgba(${Math.round(tn[0])},${Math.round(tn[1])},${Math.round(tn[2])},${ta.toFixed(3)})`
+      : null;
+    if (tintMixCache.size > 1024) tintMixCache.clear();
+    tintMixCache.set(key, s);
+  }
+  return s;
 }
 
 /** Color de una banda del backdrop, interpolado si hay transición activa. */
@@ -412,10 +479,13 @@ function getCloudShadow(seed: number, i: number): HTMLCanvasElement {
   return c;
 }
 
-// Memoización del plan (drawCloudShadows + drawDayNightGrade lo piden en el
-// MISMO frame con los mismos argumentos → cero allocations repetidas).
-let planMemoKey = '';
-let planMemoPlan: CloudState[] = [];
+/** Memoización del plan (drawCloudShadows + drawDayNightGrade lo piden en el
+ *  MISMO frame con los mismos argumentos → cero trabajo repetido).
+ *  R5-O4: estados PREALOCADOS (se mutan in situ) y memo por campos —
+ *  antes se construía un string-clave y un objeto CloudState por frame. */
+const PLAN_MAX = 8;
+const planArr: CloudState[] = Array.from({ length: PLAN_MAX }, () => ({ x: 0, y: 0, w: 0, h: 0, shX: 0, shY: 0 }));
+let planMapId = '', planT = -1, planCX = -1, planCY = -1;
 
 /**
  * Estado determinista de la flota de nubes de un mapa.
@@ -425,8 +495,8 @@ let planMemoPlan: CloudState[] = [];
  * abajo-derecha: sol arriba-izquierda) de la nube "virtual".
  */
 export function cloudPlanAt(mapId: string, globalT: number, camX: number, camY: number): CloudState[] {
-  const key = mapId + '|' + globalT + '|' + camX + '|' + camY;
-  if (planMemoKey === key) return planMemoPlan;
+  if (planMapId === mapId && planT === globalT && planCX === camX && planCY === camY) return planArr;
+  planMapId = mapId; planT = globalT; planCX = camX; planCY = camY;
   const seed = seedFromMapId(mapId);
   const n = 5 + Math.floor(hash2(seed, 901) * 4);              // 5..8 nubes por mapa
   const wAng = hash2(seed, 911) * TAU;                         // dirección del viento
@@ -434,7 +504,7 @@ export function cloudPlanAt(mapId: string, globalT: number, camX: number, camY: 
   const wX = Math.cos(wAng) * wSpd;
   const wY = Math.sin(wAng) * wSpd;
   const M = 40;                                                // margen fuera de pantalla
-  const plan: CloudState[] = [];
+  planArr.length = n;                                          // ranuras prealocadas
   for (let i = 0; i < n; i++) {
     const s = seed * 16 + i;
     const f = 0.75 + hash2(s, 931) * 0.5;                      // factor de viento por nube
@@ -449,11 +519,10 @@ export function cloudPlanAt(mapId: string, globalT: number, camX: number, camY: 
     const off = 12 + hash2(s, 941) * 8;                        // 12..20 px (euclídeo)
     const ox = Math.round(off * 0.6);                          // dirección (0.6, 0.8)
     const oy = Math.round(off * 0.8);
-    plan.push({ x, y, w: gm.w, h: gm.h, shX: x + ox, shY: y + oy });
+    const st = planArr[i];
+    st.x = x; st.y = y; st.w = gm.w; st.h = gm.h; st.shX = x + ox; st.shY = y + oy;
   }
-  planMemoKey = key;
-  planMemoPlan = plan;
-  return plan;
+  return planArr;
 }
 
 /** Factor de día de las nubes (0 fuera de 0.08-0.70, rampa en los bordes). */
@@ -491,7 +560,9 @@ export const SHOOT_PERIOD = 40;
 
 export interface ShootStar { x: number; y: number; dx: number; dy: number; u: number }
 
-/** Estrella fugaz activa en el instante globalT (o null). Determinista. */
+/** Estrella fugaz activa en el instante globalT (o null). Determinista.
+ *  R5-O4: devuelve un objeto REUTILIZADO (solo lectura para los draws). */
+const SHOOT_RES: ShootStar = { x: 0, y: 0, dx: 0, dy: 0, u: 0 };
 export function shootingStarAt(globalT: number): ShootStar | null {
   const T = Math.max(0, globalT);
   const k = Math.floor(T / SHOOT_PERIOD);
@@ -501,13 +572,12 @@ export function shootingStarAt(globalT: number): ShootStar | null {
   if (u < 0 || u > 1) return null;
   const dir = hash2(k * 17 + 7, 1009) > 0.5 ? 1 : -1;          // caída a izq. o der.
   const spd = 130 + hash2(k * 19 + 9, 1013) * 60;              // px/s
-  return {
-    x: 60 + hash2(k * 11 + 3, 993) * (VIEW_W - 220),
-    y: 24 + hash2(k * 13 + 5, 997) * 130,
-    dx: dir * spd * 0.86,
-    dy: spd * 0.5,
-    u,
-  };
+  SHOOT_RES.x = 60 + hash2(k * 11 + 3, 993) * (VIEW_W - 220);
+  SHOOT_RES.y = 24 + hash2(k * 13 + 5, 997) * 130;
+  SHOOT_RES.dx = dir * spd * 0.86;
+  SHOOT_RES.dy = spd * 0.5;
+  SHOOT_RES.u = u;
+  return SHOOT_RES;
 }
 
 /** Trazo de ~7 px: cabeza 2×2 + 3 colas de 2 px con fade sinusoidal. */
@@ -546,23 +616,36 @@ export function horizonBandStrength(dayT: number): number {
   return Math.max(trap(x, 0.20, 0.30, 0.035), trap(x, 0.65, 0.75, 0.035));
 }
 
-/** Escalones de la banda (pixel-art, sin gradiente): 3 franjas por borde. */
+/** Escalones de la banda (pixel-art, sin gradiente): 3 franjas por borde.
+ *  R5-O4: strings rgba PRECALCULADOS por escalón de intensidad (1/64)
+ *  — antes se construían 6 strings por frame en las ventanas activas. */
+const HG_HS = [26, 20, 14];                                  // alturas de escalón
+const HG_AS = [0.11, 0.07, 0.04];                            // alphas tenues
+const HG_Q = 64;
+const HG_TOP: string[][] = [[], [], []];                     // borde superior (rosado)
+const HG_BOT: string[][] = [[], [], []];                     // borde inferior (naranja)
+for (let i = 0; i < 3; i++) {
+  for (let q = 0; q <= HG_Q; q++) {
+    HG_TOP[i].push(`rgba(255,158,150,${(HG_AS[i] * q / HG_Q).toFixed(3)})`);
+    HG_BOT[i].push(`rgba(255,152,106,${(HG_AS[i] * q / HG_Q).toFixed(3)})`);
+  }
+}
+
 function drawHorizonGlow(ctx: CanvasRenderingContext2D, dayT: number): void {
   const s = horizonBandStrength(dayT);
   if (s <= 0.005) return;
-  const HS = [26, 20, 14];                                     // alturas de escalón
-  const AS = [0.11, 0.07, 0.04];                               // alphas tenues
+  const q = Math.max(1, Math.round(s * HG_Q));                // intensidad cuantizada
   let y = 0;
-  for (let i = 0; i < 3; i++) {                                // borde superior (rosado)
-    ctx.fillStyle = `rgba(255,158,150,${(AS[i] * s).toFixed(3)})`;
-    ctx.fillRect(0, y, VIEW_W, HS[i]);
-    y += HS[i];
+  for (let i = 0; i < 3; i++) {                               // borde superior (rosado)
+    ctx.fillStyle = HG_TOP[i][q];
+    ctx.fillRect(0, y, VIEW_W, HG_HS[i]);
+    y += HG_HS[i];
   }
   y = VIEW_H;
-  for (let i = 0; i < 3; i++) {                                // borde inferior (naranja)
-    y -= HS[i];
-    ctx.fillStyle = `rgba(255,152,106,${(AS[i] * s).toFixed(3)})`;
-    ctx.fillRect(0, y, VIEW_W, HS[i]);
+  for (let i = 0; i < 3; i++) {                               // borde inferior (naranja)
+    y -= HG_HS[i];
+    ctx.fillStyle = HG_BOT[i][q];
+    ctx.fillRect(0, y, VIEW_W, HG_HS[i]);
   }
 }
 
@@ -575,26 +658,38 @@ export function dawnMistStrength(dayT: number): number {
 }
 
 // Bandas bajas del valle: cobertura Bayer creciente hacia el suelo.
+// R5-O4: y como FRACCIÓN de VIEW_H (vista dinámica; antes quedaba
+// congelada al VIEW_H del arranque del módulo) + strings precalculados.
 const MIST_BANDS = [
-  { y: Math.round(VIEW_H * 0.66), h: 36, mask: 0b0001, a: 0.18, spd: 5, dir: 1 },
-  { y: Math.round(VIEW_H * 0.76), h: 44, mask: 0b0011, a: 0.24, spd: 9, dir: -1 },
-  { y: Math.round(VIEW_H * 0.86), h: 52, mask: 0b0111, a: 0.30, spd: 14, dir: 1 },
+  { fy: 0.66, h: 36, mask: 0b0001, a: 0.18, spd: 5, dir: 1 },
+  { fy: 0.76, h: 44, mask: 0b0011, a: 0.24, spd: 9, dir: -1 },
+  { fy: 0.86, h: 52, mask: 0b0111, a: 0.30, spd: 14, dir: 1 },
 ];
+const DM_Q = 64;
+const DM_CSS: string[][] = [[], [], []];
+for (let i = 0; i < MIST_BANDS.length; i++) {
+  for (let q = 0; q <= DM_Q; q++) {
+    DM_CSS[i].push(`rgba(214,226,238,${(MIST_BANDS[i].a * q / DM_Q).toFixed(3)})`);
+  }
+}
 
 /** Niebla de amanecer: bandas horizontales dithered SOLO en lunaris (valle). */
 function drawDawnMist(ctx: CanvasRenderingContext2D, g: Game, dT: number): void {
   if (g.mapId !== 'lunaris') return;                           // valle de Lunaris
   const p = dawnMistStrength(dT);
   if (p <= 0.005) return;
-  for (const b of MIST_BANDS) {
-    const col = `rgba(214,226,238,${(b.a * p).toFixed(3)})`;
+  const q = Math.max(1, Math.round(p * DM_Q));                 // intensidad cuantizada
+  for (let bi = 0; bi < MIST_BANDS.length; bi++) {
+    const b = MIST_BANDS[bi];
     // deriva cuantizada a píxeles ≤ 1 tile: el patrón es periódico de 4 px,
     // así que el envuelve del módulo es invisible y el rect sigue entero.
     const d = Math.floor(mod(g.globalT * b.spd * b.dir, 4));
     ctx.save();
     ctx.translate(-d, 0);
-    ctx.fillStyle = ditherPattern(ctx, col, b.mask);
-    ctx.fillRect(d, b.y, VIEW_W, b.h);
+    // patrón dither cacheado por (color, máscara); con la intensidad
+    // cuantizada el color es estable → el patrón se reutiliza sin rebuilds
+    ctx.fillStyle = ditherPattern(ctx, DM_CSS[bi][q], b.mask);
+    ctx.fillRect(d, Math.round(VIEW_H * b.fy), VIEW_W, b.h);
     ctx.restore();
   }
 }
@@ -602,9 +697,98 @@ function drawDawnMist(ctx: CanvasRenderingContext2D, g: Game, dT: number): void 
 // ============================================================
 // 1) drawSkyBackdrop — cielo completo para TITLE SCREEN y transiciones
 //    Pinta: bandas de color INTERPOLADAS según franja del día, estrellas
-//    en 2 capas parallax deterministas (hash2), luna escalonada con halo
+//    en 3 capas PRE-RENDERIZADAS (R5-O4), luna escalonada con halo
 //    dithered, estrella fugaz rara y nubes lobuladas v2 derivando.
 // ============================================================
+
+// ---------------- Estrellas pre-renderizadas (R5-O4) ----------------
+// Las 70 estrellas fijas del backdrop (44 lejanas 1px + 26 cercanas 2px,
+// posiciones deterministas con hash2 INTACTAS) se pintan UNA vez a 3
+// canvas estáticos (la cercana partida en 2 sub-capas para alternar
+// fases) y por frame solo hay 12 drawImage con offset envuelto (deriva
+// + parallax, mismo signo que la v1). El twinkle por estrella se
+// sustituye por 3 capas de alpha alternantes + brillo base horneado por
+// estrella. Se reconstruyen si fitViewToWindow cambia VIEW_W/VIEW_H.
+
+interface StarLayer {
+  cv: HTMLCanvasElement | null;
+  drift: number;                     // deriva horizontal px/s (1.6 lejanas / 3.2 cercanas)
+  parX: number;                      // factor parallax camX (0.012 / 0.03)
+  parY: number;                      // factor parallax camY (0.008 / 0.016)
+  base: number;                      // alpha base (0.55 lejanas / 0.85 cercanas)
+  om: number; ph: number;            // twinkle de capa: fase alterna por capa
+}
+
+const STAR_LAYERS: StarLayer[] = [
+  { cv: null, drift: 1.6, parX: 0.012, parY: 0.008, base: 0.55, om: 0.5, ph: 0.0 },
+  { cv: null, drift: 3.2, parX: 0.03,  parY: 0.016, base: 0.85, om: 0.9, ph: 2.1 },
+  { cv: null, drift: 3.2, parX: 0.03,  parY: 0.016, base: 0.85, om: 0.7, ph: 4.2 },
+];
+let starVW = 0, starVH = 0;          // VIEW con la que se construyeron
+
+function buildStarLayers(): void {
+  starVW = VIEW_W; starVH = VIEW_H;
+  for (let L = 0; L < 3; L++) {
+    const far = L === 0;
+    const n = far ? 44 : 13;                       // cercanas: 26 partida en 2 sub-capas
+    const extra = far ? 40 : 60;                   // margen de envuelve horizontal
+    const fracY = far ? 0.7 : 0.62;                // banda vertical (como la v1)
+    const span = VIEW_W + extra;
+    const bandH = Math.max(8, Math.round(VIEW_H * fracY));
+    const cv = document.createElement('canvas');
+    cv.width = span; cv.height = bandH;
+    const cc = cv.getContext('2d')!;
+    for (let k = 0; k < n; k++) {
+      // índice ORIGINAL de estrella (mismos hash2 que la v1 → mismas posiciones)
+      const i = far ? k : k * 2 + (L - 1);
+      const h1 = far ? hash2(i * 3 + 11, 101) : hash2(i * 11 + 19, 113);
+      const h2v = far ? hash2(i * 5 + 13, 103) : hash2(i * 13 + 23, 127);
+      const h3 = far ? hash2(i * 7 + 17, 107) : hash2(i * 17 + 29, 131);
+      const x = Math.round(h1 * span);
+      const y = Math.round(h2v * bandH);
+      const a = STAR_LAYERS[L].base * (0.6 + 0.4 * h3);          // brillo horneado
+      if (far) {
+        cc.globalAlpha = a;
+        cc.fillStyle = h3 > 0.85 ? '#ffe9c8' : '#dce4ff';
+        cc.fillRect(x, y, 1, 1);
+      } else {
+        cc.globalAlpha = a;
+        cc.fillStyle = h3 > 0.8 ? '#fff3d8' : '#e6ecff';
+        cc.fillRect(x, y, 2, 2);
+        if (h3 > 0.82) {                                         // cruz de destello
+          cc.globalAlpha = a * 0.47;                             // (0.4 / 0.85 de la v1)
+          cc.fillRect(x - 2, y, 2, 2);
+          cc.fillRect(x + 2, y, 2, 2);
+          cc.fillRect(x, y - 2, 2, 2);
+          cc.fillRect(x, y + 2, 2, 2);
+        }
+      }
+    }
+    STAR_LAYERS[L].cv = cv;
+  }
+}
+
+/** Dibuja las 3 capas con offset envuelto (deriva + parallax) y alpha
+ *  alternante por capa (twinkle barato: 12 drawImage, cero hash/sin). */
+function drawStarLayers(ctx: CanvasRenderingContext2D, t: number, camX: number, camY: number, nf: number): void {
+  for (let L = 0; L < 3; L++) {
+    const S = STAR_LAYERS[L];
+    const cv = S.cv;
+    if (!cv) continue;
+    const W = cv.width, H = cv.height;
+    const offX = mod(t * S.drift + camX * S.parX, W);
+    const offY = mod(camY * S.parY, H);
+    ctx.globalAlpha = nf * (0.72 + 0.28 * Math.sin(t * S.om + S.ph));
+    ctx.drawImage(cv, offX - W, offY - H);
+    ctx.drawImage(cv, offX, offY - H);
+    ctx.drawImage(cv, offX - W, offY);
+    ctx.drawImage(cv, offX, offY);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** Alturas base de las 6 bandas del backdrop (suma 540; se escalan a VIEW_H). */
+const BH_BASE = [128, 104, 92, 84, 72, 60];
 
 export function drawSkyBackdrop(ctx: CanvasRenderingContext2D, g: Game): void {
   const dT = mod(g.dayT, 1);
@@ -620,12 +804,15 @@ export function drawSkyBackdrop(ctx: CanvasRenderingContext2D, g: Game): void {
   if (titleMode) nf = Math.max(nf, 0.9);
 
   // ---- bandas de cielo (pixel-art: 6 franjas horizontales, sin gradiente;
-  //      interpoladas entre franjas durante las transiciones) ----
-  const BH = [128, 104, 92, 84, 72, 60];           // suma = VIEW_H
+  //      interpoladas entre franjas durante las transiciones). R5-O4:
+  //      alturas base (suma 540) escaladas a la vista dinámica; la última
+  //      absorbe el redondeo y el total cubre VIEW_H exacto. ----
+  const SC = VIEW_H / 540;
   let by = 0;
   for (let i = 0; i < 6; i++) {
-    px(ctx, 0, by, VIEW_W, BH[i], skyBandColorAt(i, dT, titleMode));
-    by += BH[i];
+    const bh = i === 5 ? VIEW_H - by : Math.round(BH_BASE[i] * SC);
+    px(ctx, 0, by, VIEW_W, bh, skyBandColorAt(i, dT, titleMode));
+    by += bh;
   }
 
   // etapas para la mezcla de nubes (en título: noche plana, sin mezcla)
@@ -635,39 +822,11 @@ export function drawSkyBackdrop(ctx: CanvasRenderingContext2D, g: Game): void {
   const siB = tr ? tr.b : si;
   const mx = tr ? tr.m : 0;
 
-  // ---- estrellas: capa lejana (1 px, deriva lenta) ----
+  // ---- estrellas: 3 capas pre-renderizadas (R5-O4): deriva + parallax
+  //      por drawImage envuelto y twinkle por alpha alternante de capa ----
   if (nf > 0.03) {
-    for (let i = 0; i < 44; i++) {
-      const h1 = hash2(i * 3 + 11, 101);
-      const h2 = hash2(i * 5 + 13, 103);
-      const h3 = hash2(i * 7 + 17, 107);
-      const x = (mod(h1 * (VIEW_W + 40) + t * 1.6 + camX * 0.012, VIEW_W + 40) - 20) | 0;
-      const y = (mod(h2 * VIEW_H * 0.7 + camY * 0.008, VIEW_H * 0.7)) | 0;
-      const tw = 0.4 + 0.6 * Math.abs(Math.sin(t * (0.4 + h3 * 0.8) + h3 * 9));
-      ctx.globalAlpha = nf * tw * 0.55;
-      ctx.fillStyle = h3 > 0.85 ? '#ffe9c8' : '#dce4ff';
-      ctx.fillRect(x, y, 1, 1);
-    }
-    // ---- estrellas: capa cercana (2 px, más brillantes y rápidas) ----
-    for (let i = 0; i < 26; i++) {
-      const h1 = hash2(i * 11 + 19, 113);
-      const h2 = hash2(i * 13 + 23, 127);
-      const h3 = hash2(i * 17 + 29, 131);
-      const x = (mod(h1 * (VIEW_W + 60) + t * 3.2 + camX * 0.03, VIEW_W + 60) - 30) | 0;
-      const y = (mod(h2 * VIEW_H * 0.62 + camY * 0.016, VIEW_H * 0.62)) | 0;
-      const tw = 0.35 + 0.65 * Math.abs(Math.sin(t * (0.9 + h3 * 1.3) + h3 * 7));
-      ctx.globalAlpha = nf * tw * 0.85;
-      ctx.fillStyle = h3 > 0.8 ? '#fff3d8' : '#e6ecff';
-      ctx.fillRect(x, y, 2, 2);
-      if (h3 > 0.82) {                              // estrella grande: cruz de destello
-        ctx.globalAlpha = nf * tw * 0.4;
-        ctx.fillRect(x - 2, y, 2, 2);
-        ctx.fillRect(x + 2, y, 2, 2);
-        ctx.fillRect(x, y - 2, 2, 2);
-        ctx.fillRect(x, y + 2, 2, 2);
-      }
-    }
-    ctx.globalAlpha = 1;
+    if (!STAR_LAYERS[0].cv || starVW !== VIEW_W || starVH !== VIEW_H) buildStarLayers();
+    drawStarLayers(ctx, t, camX, camY, nf);
 
     // ---- estrella fugaz rara (comparte ventana temporal con el mundo) ----
     if (nf > 0.55) drawShootingStar(ctx, t, Math.min(1, (nf - 0.55) / 0.25));
@@ -709,11 +868,12 @@ export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void 
   const dT = mod(g.dayT, 1);
   const isPast = g.epoch === 'pasado';
 
-  // ---- 1) tinte de grading continuo (franjas interpoladas, R4-A2) ----
-  const tn = gradeTintAt(dT);
-  const ta = isPast ? Math.min(0.35, tn[3] * 1.1) : tn[3];   // 'pasado' calienta +10%
-  if (ta >= 0.004) {
-    ctx.fillStyle = `rgba(${Math.round(tn[0])},${Math.round(tn[1])},${Math.round(tn[2])},${ta})`;
+  // ---- 1) tinte de grading continuo (franjas interpoladas, R4-A2).
+  //      R5-O4: fillStyle cacheado por franja/escalón; null ⇒ early-out
+  //      (mediodía = cero trabajo de tinte, sin leer arrays ni mezclar). ----
+  const tnStyle = tintStyleAt(dT, isPast);
+  if (tnStyle) {
+    ctx.fillStyle = tnStyle;
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   }
 

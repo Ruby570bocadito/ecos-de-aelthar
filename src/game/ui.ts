@@ -1,5 +1,7 @@
 // ============================================================
 // ECOS DE AELTHAR — Helpers de UI para canvas
+// R5-O9: cachés de strings de fuente, de estado de canvas y de wrapText
+// (ver notas junto a cada caché). Firmas y aspecto píxel-iguales.
 // ============================================================
 
 import type { UiHit } from './engine';
@@ -33,12 +35,49 @@ export const COL = {
   phase: '#7ee8ff',   // acento de fase de jefe / quiebre
 };
 
+// R5-O9 — caché de strings de fuente por tamaño: fTitle/fBody se llaman
+// decenas de veces por frame (HUD + toasts + floats vía fx.ts) y cada template
+// literal era una alocación nueva. Tamaños usados: pocos; tope 64 con reset.
+const FONT_TITLE_CACHE = new Map<number, string>();
+const FONT_BODY_CACHE = new Map<number, string>();
+
 export function fTitle(px: number): string {
-  return `${px}px "Press Start 2P", monospace`;
+  let s = FONT_TITLE_CACHE.get(px);
+  if (s === undefined) {
+    s = `${px}px "Press Start 2P", monospace`;
+    if (FONT_TITLE_CACHE.size >= 64) FONT_TITLE_CACHE.clear();
+    FONT_TITLE_CACHE.set(px, s);
+  }
+  return s;
 }
 
 export function fBody(px: number): string {
-  return `${px}px "VT323", "Press Start 2P", monospace`;
+  let s = FONT_BODY_CACHE.get(px);
+  if (s === undefined) {
+    s = `${px}px "VT323", "Press Start 2P", monospace`;
+    if (FONT_BODY_CACHE.size >= 64) FONT_BODY_CACHE.clear();
+    FONT_BODY_CACHE.set(px, s);
+  }
+  return s;
+}
+
+// R5-O9 — asignar ctx.font es la operación cara (invalida métricas internas);
+// leer el getter es barato. Como el navegador NORMALIZA el string (comillas,
+// orden), aprendemos UNA sola vez por string de fuente cómo lo serializa
+// ctx.font y comparamos contra esa serialización antes de asignar. Es seguro
+// aunque otros módulos toquen ctx.font directamente (render/toasts/fx lo
+// hacen): si el getter no coincide con lo esperado, simplemente se reasigna.
+const FONT_SER_CACHE = new Map<string, string>();
+
+function ensureFont(ctx: CanvasRenderingContext2D, font: string): void {
+  const ser = FONT_SER_CACHE.get(font);
+  if (ser === undefined) {
+    ctx.font = font; // primera vez: asigna y aprende la serialización real
+    if (FONT_SER_CACHE.size >= 64) FONT_SER_CACHE.clear();
+    FONT_SER_CACHE.set(font, ctx.font);
+  } else if (ctx.font !== ser) {
+    ctx.font = font; // solo si la fuente vigente es OTRA
+  }
 }
 
 export function text(
@@ -46,10 +85,12 @@ export function text(
   size: number, color = COL.text, align: CanvasTextAlign = 'left', title = false,
 ) {
   const ctx = g.ctx;
-  ctx.font = title ? fTitle(size) : fBody(size);
-  ctx.textAlign = align;
-  ctx.textBaseline = 'top';
-  ctx.fillStyle = color;
+  // R5-O9 — solo se toca font/align/baseline/fillStyle si difiere de lo
+  // vigente: el estado final del contexto es IDÉNTICO al de antes.
+  ensureFont(ctx, title ? fTitle(size) : fBody(size));
+  if (ctx.textAlign !== align) ctx.textAlign = align;
+  if (ctx.textBaseline !== 'top') ctx.textBaseline = 'top';
+  if (ctx.fillStyle !== color) ctx.fillStyle = color;
   ctx.fillText(str, x, y);
 }
 
@@ -58,16 +99,20 @@ export function textShadow(
   size: number, color = COL.text, shadow = '#000', align: CanvasTextAlign = 'left', title = false,
 ) {
   const ctx = g.ctx;
-  ctx.font = title ? fTitle(size) : fBody(size);
-  ctx.textAlign = align;
-  ctx.textBaseline = 'top';
-  ctx.fillStyle = shadow;
+  // R5-O9 — mismas garantías que text(): comparar antes de asignar. Los
+  // colores llegan como literales de los llamadores (internados, sin alocar
+  // por frame); el string fijo interno de sombra tampoco cambia por frame.
+  ensureFont(ctx, title ? fTitle(size) : fBody(size));
+  if (ctx.textAlign !== align) ctx.textAlign = align;
+  if (ctx.textBaseline !== 'top') ctx.textBaseline = 'top';
+  if (ctx.fillStyle !== shadow) ctx.fillStyle = shadow;
   ctx.fillText(str, x + 2, y + 2);
-  ctx.fillStyle = color;
+  if (ctx.fillStyle !== color) ctx.fillStyle = color;
   ctx.fillText(str, x, y);
 }
 
-export function wrapText(str: string, maxChars: number): string[] {
+// R5-O9 — núcleo original de wrapText (lógica idéntica), como ayuda privada.
+function wrapTextUncached(str: string, maxChars: number): string[] {
   const out: string[] = [];
   for (const para of str.split('\n')) {
     let line = '';
@@ -84,15 +129,44 @@ export function wrapText(str: string, maxChars: number): string[] {
   return out;
 }
 
+// R5-O9 — caché LRU (256 entradas) del resultado por (maxChars, string): los
+// textos de misión/hint/diálogo/toast se re-wrapean IDÉNTICOS cada frame y el
+// split/trim alocaba arrays y strings por frame. NOTA: el array devuelto es
+// COMPARTIDO entre llamadas/frames (los llamadores actuales solo lo leen:
+// forEach/for..of/.length/.slice — verificado); no mutarlo.
+const WRAP_CACHE_MAX = 256;
+const wrapCache = new Map<string, string[]>();
+
+export function wrapText(str: string, maxChars: number): string[] {
+  const key = maxChars + '\u0000' + str;
+  const hit = wrapCache.get(key);
+  if (hit !== undefined) {
+    wrapCache.delete(key); // refresca recencia (Map = orden de inserción)
+    wrapCache.set(key, hit);
+    return hit;
+  }
+  const out = wrapTextUncached(str, maxChars);
+  if (wrapCache.size >= WRAP_CACHE_MAX) {
+    const oldest: string | undefined = wrapCache.keys().next().value;
+    if (oldest !== undefined) wrapCache.delete(oldest);
+  }
+  wrapCache.set(key, out);
+  return out;
+}
+
+// R5-O9 — estilo fijo del bisel interior, hoisted (string constante).
+const PANEL_INNER = 'rgba(255,255,255,0.08)';
+
 export function panel(g: Game, x: number, y: number, w: number, h: number, border = COL.panelBorder, bg = COL.panel) {
   const ctx = g.ctx;
-  ctx.fillStyle = bg;
+  // R5-O9 — comparar antes de asignar (estado final idéntico).
+  if (ctx.fillStyle !== bg) ctx.fillStyle = bg;
   ctx.fillRect(x, y, w, h);
-  ctx.strokeStyle = border;
-  ctx.lineWidth = 2;
+  if (ctx.strokeStyle !== border) ctx.strokeStyle = border;
+  if (ctx.lineWidth !== 2) ctx.lineWidth = 2;
   ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
-  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-  ctx.lineWidth = 1;
+  if (ctx.strokeStyle !== PANEL_INNER) ctx.strokeStyle = PANEL_INNER;
+  if (ctx.lineWidth !== 1) ctx.lineWidth = 1;
   ctx.strokeRect(x + 3.5, y + 3.5, w - 7, h - 7);
 }
 
@@ -101,12 +175,13 @@ export function bar(
   pct: number, color: string, bg: string, border = '#000',
 ) {
   const ctx = g.ctx;
-  ctx.fillStyle = bg;
+  // R5-O9 — comparar antes de asignar (estado final idéntico).
+  if (ctx.fillStyle !== bg) ctx.fillStyle = bg;
   ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = color;
+  if (ctx.fillStyle !== color) ctx.fillStyle = color;
   ctx.fillRect(x, y, Math.max(0, Math.min(1, pct)) * w, h);
-  ctx.strokeStyle = border;
-  ctx.lineWidth = 1;
+  if (ctx.strokeStyle !== border) ctx.strokeStyle = border;
+  if (ctx.lineWidth !== 1) ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 }
 

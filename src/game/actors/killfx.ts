@@ -251,9 +251,15 @@ export function drawKillFx(ctx: CanvasRenderingContext2D, g: Game, sx: (n: numbe
   els.length = keep;
 
   // ---- dibujo por kind (k: 0 recién creado → 1 apagándose) ----
+  // R5-O8 · culling: margen 176 px cubre el alcance máximo de pantalla
+  // (columna ~150 px, remate ~135, onda ~57); fuera del rect expandido el
+  // canvas ya recortaría todo → saltar el elemento entero.
+  const CULL = 176;
   for (let i = 0; i < els.length; i++) {
     const el = els[i];
     const k = 1 - el.t / el.maxT;
+    const ex0 = sx(el.x), ey0 = sy(el.y);
+    if (ex0 < -CULL || ex0 > VIEW_W + CULL || ey0 < -CULL || ey0 > VIEW_H + CULL) continue;
     if (el.kind === 'cruz') drawCruz(ctx, el, k, sx, sy);
     else if (el.kind === 'onda') drawOnda(ctx, el, k, sx, sy);
     else if (el.kind === 'columna') drawColumna(ctx, el, k, gt, sx, sy);

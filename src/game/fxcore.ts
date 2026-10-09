@@ -18,6 +18,12 @@
 //   usa el reloj del sistema (performance.now) con snapshot estable
 //   intra-frame; el estado vive en un WeakMap por instancia de Game
 //   (una instancia nueva empieza limpia sin reset manual).
+//
+// R5-O7 (optimización): takeShakeDir devuelve un objeto REUTILIZADO (antes
+//   1 objeto nuevo por frame; render.ts lee x/y al instante — no retener).
+//   stepKnockback memoiza la fricción 0.0015^dt (1 Math.pow por frame en vez
+//   de 1 por entidad), usa sqrt directo en vez de Math.hypot y reutiliza la
+//   magnitud sp0 para la cola (sp = sp0·decay; sin segundo sqrt por entidad).
 // ============================================================
 
 import type { Game } from './engine';
@@ -55,6 +61,12 @@ const KB_MAX_SPEED = 380; // px/s — tope de velocidad total (no dar pasos giga
 const KB_TAIL = 24;       // px/s — radio de la cola amortiguada
 const KB_EPS = 0.25;      // px/s — consumo final
 
+// R5-O7: memo de 1 entrada para la fricción — todas las entidades reciben el
+// MISMO dt por frame, así que el Math.pow se calcula 1 vez por frame (antes:
+// 1 por entidad con knockback; Math.pow es de lo más caro de esta ruta).
+let kbDecayDt = -1;
+let kbDecayVal = 1;
+
 /** Decae el knockback de una entidad y mueve con colisiones. Devuelve true si se movió.
  *  R3-A2 (pulido, firma y booleano intactos): la fricción ya era exponencial
  *  (0.0015^dt ≡ e^(-6.5·dt)) y se mantiene exacta; se añade tope de velocidad
@@ -65,15 +77,25 @@ export function stepKnockback(g: Game, e: Entity, dt: number): boolean {
   if (kx === 0 && ky === 0) return false;
   const dtc = Math.max(0, Math.min(dt, 0.05)); // pausas grandes no desintegran la fricción
   // tope de velocidad total: knockbacks apilados no teletransportan
-  const sp0 = Math.hypot(kx, ky);
-  if (sp0 > KB_MAX_SPEED) { const f = KB_MAX_SPEED / sp0; kx *= f; ky *= f; }
-  // fricción exponencial suave (equivalente exacta al 0.0015^dt original)
-  const decay = Math.pow(0.0015, dtc);
+  let sp0 = Math.sqrt(kx * kx + ky * ky); // R5-O7: sqrt directo (antes hypot)
+  if (sp0 > KB_MAX_SPEED) { const f = KB_MAX_SPEED / sp0; kx *= f; ky *= f; sp0 = KB_MAX_SPEED; }
+  // fricción exponencial suave (equivalente exacta al 0.0015^dt original;
+  // R5-O7: memoizada por dt — el valor es idéntico, solo se cachea)
+  let decay: number;
+  if (dtc === kbDecayDt) {
+    decay = kbDecayVal;
+  } else {
+    decay = Math.pow(0.0015, dtc);
+    kbDecayDt = dtc;
+    kbDecayVal = decay;
+  }
   kx *= decay;
   ky *= decay;
   // cola suave: cerca del reposo la velocidad se amortigua cuadráticamente
-  // (sp → sp²/24, continua en el radio) y se consume sin reptar
-  const sp = Math.hypot(kx, ky);
+  // (sp → sp²/24, continua en el radio) y se consume sin reptar.
+  // R5-O7: sp = sp0·decay — la fricción escala kx/ky por igual, así que la
+  // magnitud pos-decaimiento es exactamente sp0·decay (sin 2º sqrt/entidad).
+  const sp = sp0 * decay;
   if (sp < KB_TAIL) {
     const f = sp / KB_TAIL;
     kx *= f;
@@ -151,7 +173,11 @@ export function addShakeDir(g: Game, mag: number, dx: number, dy: number): void 
 /** Offset direccional DEL FRAME para sumar a la cámara (render.drawWorld,
  *  junto al translate de g.shake). Estable intra-frame: todas las llamadas
  *  dentro del mismo frame devuelven el MISMO valor; entre frames decae ~8/s
- *  y se consume — agotado, sigue devolviendo {0,0} sin coste. */
+ *  y se consume — agotado, sigue devolviendo {0,0} sin coste.
+ *  R5-O7: el objeto devuelto es REUTILIZADO entre frames (0 alloc/frame);
+ *  contrato: el consumidor lee x/y inmediatamente (render.drawWorld lo hace). */
+const _shakeDirOut = { x: 0, y: 0 };
+
 export function takeShakeDir(g: Game): { x: number; y: number } {
   const s = dirState(g);
   const now = nowMs();
@@ -161,7 +187,9 @@ export function takeShakeDir(g: Game): { x: number; y: number } {
     s.sy = s.dy;
     s.snapMs = now;
   }
-  return { x: s.sx, y: s.sy };
+  _shakeDirOut.x = s.sx;
+  _shakeDirOut.y = s.sy;
+  return _shakeDirOut;
 }
 
 // --- hitstop / remate / combo ---

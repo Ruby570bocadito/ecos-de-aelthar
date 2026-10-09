@@ -51,6 +51,13 @@
 // '../consts' (módulo fuente, mismo valor que re-exporta engine) para
 // que el módulo sea evaluable en headless — misma decisión que sky.ts
 // en R4-A2.
+//
+// R5-O4 (optimización): alloc con cursor rotatorio (O(1) amortizado),
+// contadores vivos por familia (sin recontar el pool 20×/s), CAP de
+// lluvia por calidad (RAIN_CAP), early-out barato en mapas sin clima
+// propio (costa/aldea/cumbres ya no heredan partículas de cripta),
+// memo de 1 entrada para índice/viento (update + los 2 draws piden lo
+// mismo por frame) y SHAFT_X como fracción de VIEW_W (vista dinámica).
 // ============================================================
 
 import type { Game } from '../engine';
@@ -122,10 +129,28 @@ export function weatherWindAt(mapId: string, globalT: number): number {
   return (raw / 1.55) * WIND_MAX;
 }
 
+// R5-O4: memo de 1 entrada para índice/viento. updateWeather y los dos
+// draws los piden con (mapId, globalT) IDÉNTICOS en el mismo frame →
+// 1 cálculo real por frame en vez de 4 (son puras, memo seguro).
+let miMap = '', miT = -1, miVal = 0.5;
+function idxAt(mapId: string, globalT: number): number {
+  if (mapId === miMap && globalT === miT) return miVal;
+  miMap = mapId; miT = globalT;
+  miVal = weatherIndexAt(mapId, globalT);
+  return miVal;
+}
+let mwMap = '', mwT = -1, mwVal = 0;
+function windAt(mapId: string, globalT: number): number {
+  if (mapId === mwMap && globalT === mwT) return mwVal;
+  mwMap = mapId; mwT = globalT;
+  mwVal = weatherWindAt(mapId, globalT);
+  return mwVal;
+}
+
 /** 0..1: régimen de lluvia v2 (smoothstep entre RAIN_LO y RAIN_HI, bosque). */
 function rainAmpAt(mapId: string, globalT: number): number {
   if (mapId !== 'bosque') return 0;
-  const u = (weatherIndexAt(mapId, globalT) - RAIN_LO) / (RAIN_HI - RAIN_LO);
+  const u = (idxAt(mapId, globalT) - RAIN_LO) / (RAIN_HI - RAIN_LO);
   if (u <= 0) return 0;
   if (u >= 1) return 1;
   return u * u * (3 - 2 * u);
@@ -167,6 +192,16 @@ const pool: WSlot[] = Array.from({ length: CAP }, () => ({
   seed: 0, seedI: 0, size: 2, groundY: 0, tvx: 0, tvy: 0, phase: -1,
 }));
 
+// R5-O4: techo de calidad para partículas de lluvia (gotas+salpicones
+// simultáneos). Con ventanas grandes no llega a ligar (≈24 vivas de
+// media en lluvia forzada); es un seguro de coste, no un cambio visual.
+const RAIN_CAP = 90;
+// Cursor rotatorio de asignación + contadores vivos (evitan escanear
+// el pool en cada spawn-tick y en cada búsqueda de ranura libre).
+let allocCur = 0;
+let nFirefly = 0; // luciérnagas activas
+let nRain = 0;    // gotas + salpicones activos
+
 // Estado interno del módulo (sin globales fuera de aquí)
 let lastMap: string = '';
 let lastEpoch: string = '';
@@ -198,9 +233,11 @@ function duskFactor(dayT: number): number {
 
 // ---------------- Spawning ----------------
 
-/** Busca una ranura libre (las ranuras son intercambiables). */
+/** Busca una ranura libre desde el cursor rotatorio (R5-O4: O(1) amortizado). */
 function alloc(): WSlot | null {
-  for (let i = 0; i < CAP; i++) {
+  for (let n = 0; n < CAP; n++) {
+    const i = allocCur;
+    allocCur = (allocCur + 1) % CAP;
     const s = pool[i];
     if (!s.active) return s;
   }
@@ -233,6 +270,7 @@ function spawnBrizna(g: Game, k: number): void {
 
 function spawnFirefly(g: Game, k: number): void {
   const s = alloc(); if (!s) return;
+  nFirefly++;
   s.active = true; s.kind = P_FIREFLY;
   // entra por un borde aleatorio con velocidad hacia el interior
   const e = Math.floor(h2(k, 23) * 4);
@@ -277,7 +315,9 @@ function spawnPollen(g: Game, k: number): void {
  * índice (diagonal por viento, alpha bajo).
  */
 function spawnDrop(g: Game, k: number, flavor: 0 | 1 | 2): void {
+  if (nRain >= RAIN_CAP) return;          // R5-O4: cap de calidad de lluvia
   const s = alloc(); if (!s) return;
+  nRain++;
   s.active = true; s.kind = P_DROP;
   s.x = _wx0 + 40 + h2(k, 3) * (_wx1 - _wx0 - 80);
   s.y = _wy0 + MARGIN - 10;             // justo por encima de la vista
@@ -455,13 +495,9 @@ function spawnTick(g: Game, k: number): void {
     // luciérnagas: mantener 12-18 vivas de noche (dayT>0.6) — contrato R1 intacto
     const nf = nightFactor(g.dayT);
     if (nf > 0.2) {
-      let n = 0;
-      for (let i = 0; i < CAP; i++) {
-        const p = pool[i];
-        if (p.active && p.kind === P_FIREFLY) n++;
-      }
+      // R5-O4: contador vivo en vez de recontar el pool 20×/s
       const target = Math.round(12 + nf * 6);
-      if (n < target && hash2(k * 13 + 3, 79) < 0.9) spawnFirefly(g, k);
+      if (nFirefly < target && hash2(k * 13 + 3, 79) < 0.9) spawnFirefly(g, k);
     }
   } else if (g.mapId === 'bosque') {
     const mod = 0.75 + 0.5 * curIdx;     // [0.75..1.25]
@@ -509,6 +545,11 @@ function fireflyStep(s: WSlot, g: Game, dt: number): void {
   s.vy += (s.tvy - s.vy) * k2;
 }
 
+/** ¿Mapa con clima propio? (R5-O4: el resto hace early-out barato). */
+function hasWeather(mapId: string): boolean {
+  return mapId === 'lunaris' || mapId === 'bosque' || mapId === 'cripta';
+}
+
 /**
  * Avanza el clima. Llamar 1× por frame desde update (con dt del juego).
  * Reinicia el pool al cambiar de mapa/época (el clima es identidad) y
@@ -519,12 +560,14 @@ export function updateWeather(g: Game, dt: number): void {
     lastMap = g.mapId; lastEpoch = g.epoch;
     for (let i = 0; i < CAP; i++) pool[i].active = false;
     lastTick = -1;
+    nFirefly = 0; nRain = 0;               // R5-O4: contadores coherentes
     computeDustAnchors(g);
   }
+  if (!hasWeather(g.mapId)) return;        // mapa sin clima: nada que simular
 
-  // índice de clima, viento y régimen de lluvia de este frame (baratos)
-  curIdx = weatherIndexAt(g.mapId, g.globalT);
-  curWind = weatherWindAt(g.mapId, g.globalT);
+  // índice de clima, viento y régimen de lluvia de este frame (memoizados)
+  curIdx = idxAt(g.mapId, g.globalT);
+  curWind = windAt(g.mapId, g.globalT);
   curRainAmp = weatherMode === 'rain' ? 1 : rainAmpAt(g.mapId, g.globalT);
 
   // límites de vista en coords de mundo 1× (+ margen de vida)
@@ -577,6 +620,9 @@ export function updateWeather(g: Game, dt: number): void {
     if (s.t >= s.maxT || s.x < _wx0 - 8 || s.x > _wx1 + 8 ||
         s.y < _wy0 - 8 || s.y > _wy1 + 8) {
       s.active = false;
+      // R5-O4: baja en los contadores vivos de su familia
+      if (s.kind === P_FIREFLY) nFirefly--;
+      else if (s.kind === P_DROP || s.kind === P_SPLASH) nRain--;
     }
   }
 }
@@ -584,7 +630,9 @@ export function updateWeather(g: Game, dt: number): void {
 // ---------------- Haces de luz de la cripta (deterministas) ----------------
 
 const SHAFT_N = 3;
-const SHAFT_X = [VIEW_W * 0.34, VIEW_W * 0.58, VIEW_W * 0.8];
+// R5-O4: fracciones de VIEW_W (leídas por frame — vista dinámica; el
+// array antiguo quedaba congelado al VIEW_W del arranque del módulo).
+const SHAFT_FRAC = [0.34, 0.58, 0.8];
 const SHAFT_W = [16, 12, 9];
 const SHAFT_A = [0.09, 0.07, 0.055];
 const SHAFT_SLOPE = -0.32; // vienen de arriba-derecha: x baja al bajar y
@@ -596,10 +644,10 @@ const SHAFT_WIND_LEAN = 0.0032; // el viento inclina el haz (±26 → ±0.083 de
  * dirección que lluvia y niebla). Función pura de (g, j, y).
  */
 function shaftX(g: Game, j: number, y: number): number {
-  const wind = weatherWindAt('cripta', g.globalT);
+  const wind = windAt('cripta', g.globalT);
   const lean = SHAFT_SLOPE + wind * SHAFT_WIND_LEAN;
   const sway = Math.sin(g.globalT * 0.21 + j * 2.1) * 8 + wind * 0.5;
-  return SHAFT_X[j] + lean * y + sway;
+  return VIEW_W * SHAFT_FRAC[j] + lean * y + sway;
 }
 
 /** Ancho respirante del haz j (±6 %, lento — la luz del techo respira). */
@@ -703,20 +751,20 @@ function drawFogLayers(
  * pantalla: screen = world*ZOOM - cam, redondeadas a px entero.
  */
 export function drawWeatherWorld(ctx: CanvasRenderingContext2D, g: Game): void {
+  if (!hasWeather(g.mapId)) return;        // R5-O4: early-out barato
   const camX = Math.round(g.camX), camY = Math.round(g.camY);
   // el draw es función pura de g (no depende de estado de update)
-  const idx = weatherIndexAt(g.mapId, g.globalT);
-  const wind = weatherWindAt(g.mapId, g.globalT);
+  const idx = idxAt(g.mapId, g.globalT);
 
   // ---- capas atmosféricas por mapa (moduladas por el índice) ----
   if (g.mapId === 'bosque') {
     // el pasado recuerda con menos niebla (×0.55 legado); el índice
     // hace respirar la densidad entre 0.55 y 1.25 del diseño actual
     const dens = (g.epoch === 'pasado' ? 0.55 : 1) * (0.55 + 0.7 * idx);
-    drawFogLayers(ctx, g, FOG_LAYERS, '#aebfb4', dens, wind);
+    drawFogLayers(ctx, g, FOG_LAYERS, '#aebfb4', dens, windAt(g.mapId, g.globalT));
   } else if (g.mapId === 'cripta') {
     drawShafts(ctx, g);
-    drawFogLayers(ctx, g, MIST_LAYERS, '#9db2c8', 0.7 + 0.6 * idx, wind);
+    drawFogLayers(ctx, g, MIST_LAYERS, '#9db2c8', 0.7 + 0.6 * idx, windAt(g.mapId, g.globalT));
   }
 
   // ---- partículas del pool en coordenadas de mundo ----
@@ -796,9 +844,10 @@ export function drawWeatherWorld(ctx: CanvasRenderingContext2D, g: Game): void {
  * de la cripta flotando en las zonas iluminadas.
  */
 export function drawWeatherSky(ctx: CanvasRenderingContext2D, g: Game): void {
+  if (!hasWeather(g.mapId)) return;        // R5-O4: early-out barato
   const camX = Math.round(g.camX), camY = Math.round(g.camY);
   const nf = g.mapId === 'lunaris' ? nightFactor(g.dayT) : 0;
-  const idx = weatherIndexAt(g.mapId, g.globalT);
+  const idx = idxAt(g.mapId, g.globalT);
 
   // motas doradas dentro de los haces (cripta, deterministas)
   if (g.mapId === 'cripta') drawShaftMotes(ctx, g);

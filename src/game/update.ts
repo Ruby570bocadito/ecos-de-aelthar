@@ -62,12 +62,85 @@ const iceMem = new WeakMap<Player, IceMem>();
  *  a la ventisca del gólem (enemies_expansion → getPortadorVel) para
  *  telegrafiar su posición FUTURA. Teleportes (saltos grandes) → 0. */
 let plLastX = 0, plLastY = 0, plLastOk = false, plVX = 0, plVY = 0;
+// R5-O10: objeto reutilizado (cero alloc por llamada). Los lectores actuales
+// (ventisca/salto/balada del gólem en enemies_expansion) consumen x/y al
+// momento; si un lector futuro RETUVIERA la referencia debe copiarla antes.
+const portadorVel = { x: 0, y: 0 };
 export function getPortadorVel(): { x: number; y: number } {
-  return { x: plVX, y: plVY };
+  portadorVel.x = plVX;
+  portadorVel.y = plVY;
+  return portadorVel;
 }
 
+// R5-O10: sqrt en vez de Math.hypot (más rápido; equivalente a escala de juego)
 function dist(ax: number, ay: number, bx: number, by: number): number {
-  return Math.hypot(bx - ax, by - ay);
+  const dx = bx - ax, dy = by - ay;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/** R5-O10: distancia al cuadrado — evita sqrt/hypot en comparaciones. */
+function dist2(ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay;
+  return dx * dx + dy * dy;
+}
+
+// ---------------- GRID ESPACIAL (R5-O10) ----------------
+// Rejilla uniforme de celdas de 64 px para las consultas "enemigos cercanos"
+// de las colisiones de proyectiles (antes O(proyectiles × enemigos) por frame).
+// Se reconstruye UNA vez por frame, justo antes del bucle de proyectiles, con
+// las posiciones ya actualizadas del frame. Con población pequeña (<12 enemigos)
+// no se construye y las colisiones usan el barrido directo (más barato).
+// Cero allocaciones en régimen: celdas y array de candidatos se reutilizan.
+const GRID_CELL = 64;
+const GRID_MIN = 12;                            // población mínima para usar la rejilla
+const gridCells = new Map<number, number[]>();  // clave cx·65536+cy → índices en g.enemies
+let gridArr: Enemy[] | null = null;             // identidad del array indexado (validez)
+let gridMapId = '';                             // mapa indexado
+let gridN = 0;                                  // nº de enemigos al construir
+let gridMaxHalfW = 0;                           // mayor semiancho indexado (expansión de consulta)
+const gridScratch: number[] = [];               // candidatos de la consulta en curso
+const rainTargets: Enemy[] = [];                // R5-O10: objetivos de Lluvia de estrellas (reutilizado)
+let curNightMult = 1;                           // R5-O10: isNight memoizado 1×/frame (no cambia dentro del frame)
+
+/** Reconstruye la rejilla con los enemigos vivos (1×/frame). */
+function gridRebuild(g: Game): void {
+  for (const cell of gridCells.values()) cell.length = 0;
+  gridArr = g.enemies;
+  gridMapId = g.mapId;
+  gridN = g.enemies.length;
+  gridMaxHalfW = 0;
+  if (gridN < GRID_MIN) return; // población pequeña: camino directo
+  for (let i = 0; i < gridN; i++) {
+    const e = g.enemies[i];
+    if (e.dead) continue;
+    const hw = e.w * 0.5;
+    if (hw > gridMaxHalfW) gridMaxHalfW = hw;
+    const key = Math.floor(e.x / GRID_CELL) * 65536 + Math.floor(e.y / GRID_CELL);
+    let cell = gridCells.get(key);
+    if (cell === undefined) { cell = []; gridCells.set(key, cell); }
+    cell.push(i);
+  }
+}
+
+/** Candidatos cercanos (índices en g.enemies) o null si la rejilla no aplica
+ *  (población pequeña, mapa cambiado o array sustituido a mitad de frame → el
+ *  llamador cae al barrido directo, siempre correcto). `r` es el radio MÁXIMO
+ *  de la prueba del llamador: la consulta se expande con el mayor semiancho
+ *  indexado para no excluir nunca un candidato válido (cero falsos negativos). */
+function gridQuery(g: Game, x: number, y: number, r: number): number[] | null {
+  if (gridN < GRID_MIN || gridArr !== g.enemies || gridMapId !== g.mapId) return null;
+  const rr = r + gridMaxHalfW;
+  gridScratch.length = 0;
+  const cx0 = Math.floor((x - rr) / GRID_CELL), cx1 = Math.floor((x + rr) / GRID_CELL);
+  const cy0 = Math.floor((y - rr) / GRID_CELL), cy1 = Math.floor((y + rr) / GRID_CELL);
+  for (let cx = cx0; cx <= cx1; cx++) {
+    for (let cy = cy0; cy <= cy1; cy++) {
+      const cell = gridCells.get(cx * 65536 + cy);
+      if (cell === undefined) continue;
+      for (let k = 0; k < cell.length; k++) gridScratch.push(cell[k]);
+    }
+  }
+  return gridScratch;
 }
 
 /** Tipos de enemigo del Acto II con cerebro propio en enemies_expansion.ts. */
@@ -117,12 +190,20 @@ export function updateGame(g: Game, dt: number) {
   g.mapTitleT = Math.max(0, g.mapTitleT - dt);
   g.epochFx = Math.max(0, g.epochFx - dt);
   g.shake = Math.max(0, g.shake - dt * 22);
-  for (const t of g.toasts) t.t -= dt;
-  g.toasts = g.toasts.filter(t => t.t > 0);
-  for (const f of g.floats) { f.t -= dt; f.y += f.vy * dt; }
-  g.floats = g.floats.filter(f => f.t > 0);
-  for (const p of g.particles) { p.t -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.grav * dt; }
-  g.particles = g.particles.filter(p => p.t > 0);
+  // R5-O10: compactación in place — mismo filtrado y mismo orden, cero arrays
+  // nuevos por frame (antes .filter() alocaba 3 arrays por frame aquí)
+  let alive = 0;
+  const toasts = g.toasts;
+  for (let i = 0; i < toasts.length; i++) { const t = toasts[i]; t.t -= dt; if (t.t > 0) toasts[alive++] = t; }
+  toasts.length = alive;
+  alive = 0;
+  const floats = g.floats;
+  for (let i = 0; i < floats.length; i++) { const f = floats[i]; f.t -= dt; f.y += f.vy * dt; if (f.t > 0) floats[alive++] = f; }
+  floats.length = alive;
+  alive = 0;
+  const parts = g.particles;
+  for (let i = 0; i < parts.length; i++) { const pt = parts[i]; pt.t -= dt; pt.x += pt.vx * dt; pt.y += pt.vy * dt; pt.vy += pt.grav * dt; if (pt.t > 0) parts[alive++] = pt; }
+  parts.length = alive;
   // terror v2 (Ronda 2) + HUD vivo (Ronda 3): corren en TODOS los estados
   updateHorror(g, dt);
   updateDread(g, dt);
@@ -271,8 +352,8 @@ export function updateGame(g: Game, dt: number) {
     if (ddx * ddx + ddy * ddy < 160 * 160) {
       plVX = ddx / Math.max(1e-4, dt);
       plVY = ddy / Math.max(1e-4, dt);
-      const vm = Math.hypot(plVX, plVY);
-      if (vm > 240) { plVX *= 240 / vm; plVY *= 240 / vm; } // tope (rodar+retroceso)
+      const v2 = plVX * plVX + plVY * plVY;
+      if (v2 > 240 * 240) { const vm = Math.sqrt(v2); plVX *= 240 / vm; plVY *= 240 / vm; } // tope (rodar+retroceso; R5-O10: sqrt solo en la rama rara)
     } else { plVX = 0; plVY = 0; }
   }
   plLastX = p.x; plLastY = p.y; plLastOk = true;
@@ -311,7 +392,10 @@ export function updateGame(g: Game, dt: number) {
       const cx2 = p.x + fdx * 20, cy2 = p.y + fdy * 20;
       for (const e of g.enemies) {
         if (e.dead) continue;
-        if (Math.hypot(e.x - cx2, e.y - cy2) < 36 + e.w / 2) {
+        // R5-O10: comparación con distancia al cuadrado (evento raro, barrido directo)
+        const thr = 36 + e.w * 0.5;
+        const ddx = e.x - cx2, ddy = e.y - cy2;
+        if (ddx * ddx + ddy * ddy < thr * thr) {
           applyKnockback(e, e.x - p.x, e.y - p.y, 200);
         }
       }
@@ -320,7 +404,7 @@ export function updateGame(g: Game, dt: number) {
     for (const e of g.enemies) {
       if (e.dead || e.ai !== 'aturdido' || e.maxSta <= 0) continue;
       if (finisherUsed.has(e)) continue;
-      if (dist(p.x, p.y, e.x, e.y) < 30) {
+      if (dist2(p.x, p.y, e.x, e.y) < 30 * 30) {
         finisherUsed.add(e);
         const [rdx, rdy] = DIRS[p.dir];
         g.damageEnemy(e, playerMeleeDmg(p) * 0.6, 'ninguno', 90, rdx, rdy);
@@ -362,7 +446,7 @@ export function updateGame(g: Game, dt: number) {
   for (let i = g.deadGolds.length - 1; i >= 0; i--) {
     const dgl = g.deadGolds[i];
     if (dgl.map !== g.mapId) continue;
-    if (dist(p.x, p.y, dgl.x, dgl.y) < 14) {
+    if (dist2(p.x, p.y, dgl.x, dgl.y) < 14 * 14) {
       p.gold += dgl.amount;
       g.deadGolds.splice(i, 1);
       audio.sfx('coin');
@@ -407,6 +491,9 @@ export function updateGame(g: Game, dt: number) {
   interaccionTick(g, dt);
 
   // ---------------- enemigos ----------------
+  // R5-O10: isNight no cambia dentro del frame (dayT se integró al inicio) —
+  // se memoiza 1× por frame en vez de 1× por enemigo.
+  curNightMult = isNight(g) ? 1.3 : 1;
   let anyAggro = false;
   for (const e of g.enemies) {
     if (e.dead) {
@@ -418,7 +505,12 @@ export function updateGame(g: Game, dt: number) {
     updateEnemy(g, e, dt);
     if (e.aggro && e.ai !== 'muerto') anyAggro = true;
   }
-  g.enemies = g.enemies.filter(e => !e.dead);
+  // R5-O10: compactación in place (antes .filter() alocaba un array por frame;
+  // la identidad estable del array mantiene válidos los índices del grid espacial)
+  let aliveE = 0;
+  const es = g.enemies;
+  for (let i = 0; i < es.length; i++) { const e = es[i]; if (!e.dead) es[aliveE++] = e; }
+  es.length = aliveE;
   if (g.bossRef && g.bossRef.dead) g.bossRef = null;
   audio.setCombat(anyAggro);
 
@@ -428,7 +520,7 @@ export function updateGame(g: Game, dt: number) {
     const boss = g.enemies.find(e => e.etype === bossSpawn.type);
     if (boss) {
       g.bossRef = boss;
-      if (dist(p.x, p.y, boss.x, boss.y) < 190) {
+      if (dist2(p.x, p.y, boss.x, boss.y) < 190 * 190) {
         g.bossActive = true;
         audio.playTrack('boss');
         // terror v2 (Ronda 2): capa de pavor + presentación cinematográfica
@@ -460,6 +552,11 @@ export function updateGame(g: Game, dt: number) {
   expansionBossWatchers(g);
 
   // ---------------- proyectiles ----------------
+  // R5-O10: la rejilla se reconstruye UNA vez por frame aquí — los enemigos ya
+  // se movieron este frame, así que las colisiones ven posiciones exactas.
+  // tileSolidAt (abajo) se llama 1× por proyectil con args distintos: sin llamadas
+  // repetidas con mismos args en el frame → sin memoización posible/necesaria.
+  gridRebuild(g);
   for (let i = g.projectiles.length - 1; i >= 0; i--) {
     const pr = g.projectiles[i];
     pr.t -= dt;
@@ -470,23 +567,46 @@ export function updateGame(g: Game, dt: number) {
     if (pr.from !== 'enemy') {
       // proyectil aliado (Portador o Ilwen): daña enemigos
       if (Math.random() < 0.5) g.particles.push({ x: pr.x, y: pr.y, vx: 0, vy: 0, t: 0.22, maxT: 0.22, color: pr.element === 'fuego' ? '#ff9040' : pr.element === 'hielo' ? '#a0e8ff' : '#ffe86a', size: 1.5, grav: 0 });
-      for (const e of g.enemies) {
-        if (e.dead) continue;
-        if (dist(pr.x, pr.y, e.x, e.y - 4) < pr.radius + e.w / 2 + 2) {
-          g.damageEnemy(e, pr.dmg, pr.element, 30, Math.sign(pr.vx), Math.sign(pr.vy));
-          // empuje según elemento: el fuego arrea más (contrato fxcore)
-          const kbForce = pr.from === 'companion' ? 90 : pr.element === 'fuego' ? 150 : pr.element === 'rayo' ? 110 : 85;
-          applyKnockback(e, pr.vx, pr.vy, kbForce);
-          // el impacto del proyectil ya suelta burst propio → marcar para que
-          // updateCombatFx no duplique chispas al ver el hitFlash subir
-          fxOwnFx.set(e, fxF);
-          dead = true;
-          break;
+      // R5-O10: candidatos por rejilla espacial (≥12 enemigos) o barrido directo.
+      // La prueba EXACTA por candidato y la elección del PRIMER enemigo vivo en
+      // orden de array se mantienen idénticas (mínimo índice entre los en rango).
+      const cands = gridQuery(g, pr.x, pr.y, pr.radius + 2);
+      let hitIdx = -1;
+      if (cands !== null) {
+        for (let ci = 0; ci < cands.length; ci++) {
+          const ei = cands[ci];
+          if (hitIdx >= 0 && ei > hitIdx) continue; // no puede superar al mínimo hallado
+          const e = g.enemies[ei];
+          if (e.dead) continue;
+          const thr = pr.radius + e.w * 0.5 + 2;
+          const ddx = e.x - pr.x, ddy = e.y - 4 - pr.y;
+          if (ddx * ddx + ddy * ddy < thr * thr) hitIdx = ei;
         }
+      } else {
+        for (let ei = 0; ei < g.enemies.length; ei++) {
+          const e = g.enemies[ei];
+          if (e.dead) continue;
+          const thr = pr.radius + e.w * 0.5 + 2;
+          const ddx = e.x - pr.x, ddy = e.y - 4 - pr.y;
+          if (ddx * ddx + ddy * ddy < thr * thr) { hitIdx = ei; break; }
+        }
+      }
+      if (hitIdx >= 0) {
+        const e = g.enemies[hitIdx];
+        g.damageEnemy(e, pr.dmg, pr.element, 30, Math.sign(pr.vx), Math.sign(pr.vy));
+        // empuje según elemento: el fuego arrea más (contrato fxcore)
+        const kbForce = pr.from === 'companion' ? 90 : pr.element === 'fuego' ? 150 : pr.element === 'rayo' ? 110 : 85;
+        applyKnockback(e, pr.vx, pr.vy, kbForce);
+        // el impacto del proyectil ya suelta burst propio → marcar para que
+        // updateCombatFx no duplique chispas al ver el hitFlash subir
+        fxOwnFx.set(e, fxF);
+        dead = true;
       }
     } else {
       // proyectil enemigo: parable o dañino para el Portador
-      if (dist(pr.x, pr.y, p.x, p.y - 4) < pr.radius + 7) {
+      // (R5-O10: distancia al cuadrado, umbral equivalente)
+      const thrP = pr.radius + 7;
+      if ((p.x - pr.x) * (p.x - pr.x) + (p.y - 4 - pr.y) * (p.y - 4 - pr.y) < thrP * thrP) {
         if (p.parryT > 0) {
           // ¡parada perfecta de proyectil!
           audio.sfx('parry');
@@ -532,7 +652,10 @@ export function updateGame(g: Game, dt: number) {
     const w = g.waves[i];
     w.r += w.speed * dt;
     if (w.dmg > 0 && !w.hit) {
-      if (Math.abs(dist(w.x, w.y, p.x, p.y) - w.r) < 8) {
+      // R5-O10: |d − r| < 8 ⇔ (r−8)² < d² < (r+8)² — sin sqrt por onda
+      const d2w = dist2(w.x, w.y, p.x, p.y);
+      const rLo = w.r - 8;
+      if ((rLo <= 0 || d2w > rLo * rLo) && d2w < (w.r + 8) * (w.r + 8)) {
         // onda del Guardián: empuja al Portador si el golpe entra (no en parada)
         if (p.parryT <= 0 && p.iframes <= 0 && p.rollT <= 0) applyKnockback(p, p.x - w.x, p.y - w.y, 260);
         g.damagePlayer(w.dmg, w.x, w.y);
@@ -550,7 +673,7 @@ export function updateGame(g: Game, dt: number) {
       audio.sfx('slam');
       g.shake = 6;
       g.burst(t.x, t.y, '#c8b8a0', 18, 90);
-      if (dist(p.x, p.y, t.x, t.y) < t.r && p.rollT <= 0 && p.iframes <= 0) {
+      if (dist2(p.x, p.y, t.x, t.y) < t.r * t.r && p.rollT <= 0 && p.iframes <= 0) {
         // slam del Guardián: el impacto arrea al Portador
         if (p.parryT <= 0) applyKnockback(p, p.x - t.x, p.y - t.y, 260);
         g.damagePlayer(t.dmg, t.x, t.y);
@@ -569,6 +692,7 @@ function updateCompanion(g: Game, dt: number) {
   const p = g.player!;
   const mem = ilwenMem.get(c) ?? { rainCd: 8, markCd: 3, arrowIdx: 0, bondT: 0 };
   ilwenMem.set(c, mem);
+  const perim2 = (2 * TILE) * (2 * TILE); // R5-O10: perímetro defensivo (2 tiles) al cuadrado
 
   // knockback suave (la empujan ondas/impactos)
   stepKnockback(g, c, dt);
@@ -601,13 +725,14 @@ function updateCompanion(g: Game, dt: number) {
   // disparo a enemigos aggro cercanos: flechas elementales cíclicas fuego→hielo→rayo
   // (fuego/hielo aplican sus estados vía damageEnemy; rayo solo daño)
   if (c.atkCd <= 0) {
-    let best: Enemy | null = null, bd = 150;
+    // R5-O10: distancias al cuadrado — mismo ganador (orden de array + < estricto)
+    let best: Enemy | null = null, bd2 = 150 * 150;
     // ==== 16-b: modo DEFENSIVO — solo dispara a enemigos a <2 tiles del Portador ====
     for (const e of g.enemies) {
       if (e.dead) continue;
-      if (defensivo16b && dist(e.x, e.y, p.x, p.y) >= 2 * TILE) continue;
-      const dd = dist(c.x, c.y, e.x, e.y);
-      if (dd < bd) { bd = dd; best = e; }
+      if (defensivo16b && dist2(e.x, e.y, p.x, p.y) >= perim2) continue;
+      const dd2 = dist2(c.x, c.y, e.x, e.y);
+      if (dd2 < bd2) { bd2 = dd2; best = e; }
     }
     if (best) {
       c.atkCd = 1.5;
@@ -630,11 +755,12 @@ function updateCompanion(g: Game, dt: number) {
   // MARCA de Ilwen: en combate, cada 6 s fija al enemigo aggro más cercano (5 s)
   mem.markCd -= dt;
   if (mem.markCd <= 0) {
-    let best: Enemy | null = null, bd = 180;
+    // R5-O10: distancias al cuadrado — mismo ganador
+    let best: Enemy | null = null, bd2 = 180 * 180;
     for (const e of g.enemies) {
       if (e.dead || !e.aggro) continue;
-      const dd = dist(c.x, c.y, e.x, e.y);
-      if (dd < bd) { bd = dd; best = e; }
+      const dd2 = dist2(c.x, c.y, e.x, e.y);
+      if (dd2 < bd2) { bd2 = dd2; best = e; }
     }
     if (best) {
       best.marked = 5;
@@ -646,8 +772,15 @@ function updateCompanion(g: Game, dt: number) {
   mem.rainCd -= dt;
   if (mem.rainCd <= 0 && c.affinity >= 20) {
     // ==== 16-b: en DEFENSIVO la Lluvia de estrellas también respeta el perímetro de 2 tiles ====
-    const targets = g.enemies.filter(e => !e.dead && e.aggro && dist(c.x, c.y, e.x, e.y) < 140
-      && (!defensivo16b || dist(e.x, e.y, p.x, p.y) < 2 * TILE));
+    // R5-O10: mismo filtrado sin .filter (cero alloc) — array de módulo reutilizado
+    rainTargets.length = 0;
+    for (const e of g.enemies) {
+      if (e.dead || !e.aggro) continue;
+      if (dist2(c.x, c.y, e.x, e.y) >= 140 * 140) continue;
+      if (defensivo16b && dist2(e.x, e.y, p.x, p.y) >= perim2) continue;
+      rainTargets.push(e);
+    }
+    const targets = rainTargets;
     if (targets.length > 0) {
       mem.rainCd = 24;
       const t0 = targets[0];
@@ -735,10 +868,10 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
   if (e.invulT !== undefined && e.invulT > 0) e.invulT -= dt;
   if (EXPANSION_TYPES.has(e.etype) && expansionTick(g, e, dt, def)) return;
 
-  const d = dist(e.x, e.y, p.x, p.y);
-  const nightMult = isNight(g) ? 1.3 : 1;
+  const d2 = dist2(e.x, e.y, p.x, p.y);
+  const nightMult = curNightMult; // R5-O10: isNight memoizado 1×/frame en updateGame
   const aggroR = def.aggroR * nightMult * (e.etype === 'guardian' ? (g.bossActive ? 99 : 1) : 1);
-  if (!e.aggro && d < aggroR && g.state === 'play') {
+  if (!e.aggro && d2 < aggroR * aggroR && g.state === 'play') {
     e.aggro = true;
     if (e.etype === 'guardian') {
       // primera vez que entra en aggro: banner del jefe (render lo dibuja)
@@ -772,7 +905,9 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
         e.patrolAngle = Math.random() * Math.PI * 2;
       }
       // si se aleja de su hogar, vuelve; si no, deambula
-      const far = Math.hypot(e.x - e.homeX, e.y - e.homeY) > 60;
+      // R5-O10: distancia al hogar al cuadrado
+      const fhx = e.x - e.homeX, fhy = e.y - e.homeY;
+      const far = fhx * fhx + fhy * fhy > 3600;
       const ang = far ? Math.atan2(e.homeY - e.y, e.homeX - e.x) : e.patrolAngle;
       const vx = Math.cos(ang) * 22, vy = Math.sin(ang) * 22;
       const before = { x: e.x, y: e.y };
@@ -787,24 +922,26 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
     }
     case 'persigue': {
       if (!e.aggro) { e.ai = 'patrulla'; break; }
-      if (d > aggroR * 2.4) { e.aggro = false; e.ai = 'patrulla'; break; }
+      if (d2 > (aggroR * 2.4) * (aggroR * 2.4)) { e.aggro = false; e.ai = 'patrulla'; break; }
       // ==== 16-b (señuelo): enemigo atraído camina hacia el señuelo y NO
       // ataca al Portador; al expirar el timer retoma la persecución normal ====
       if (lureActive(g, e)) { sennoChase(g, e, dt, def.speed * speedMult(e)); break; }
-      const dx = (p.x - e.x) / (d || 1), dy = (p.y - e.y) / (d || 1);
       const spd = def.speed * speedMult(e);
-      if (d > def.atkR * 0.8) {
+      if (d2 > (def.atkR * 0.8) * (def.atkR * 0.8)) {
+        // R5-O10: sqrt solo al normalizar la dirección (antes hypot por frame)
+        const dl = Math.sqrt(d2) || 1;
+        const dx = (p.x - e.x) / dl, dy = (p.y - e.y) / dl;
         g.moveEntity(e, dx * spd * dt, dy * spd * dt);
         e.moving = true;
         e.dir = dx > 0 ? 'right' : 'left';
       } else e.moving = false;
-      if (d <= def.atkR && e.atkCd <= 0) {
+      if (d2 <= def.atkR * def.atkR && e.atkCd <= 0) {
         e.ai = 'carga';
         e.windup = def.windup * (e.etype === 'guardian' && e.phase >= 3 ? 0.7 : 1);
         e.telegraphKind = undefined;
       }
-      // jefe: acciones especiales
-      if (e.etype === 'guardian') guardianBrain(g, e, dt, d);
+      // jefe: acciones especiales (R5-O10: sqrt perezoso, solo para el jefe)
+      if (e.etype === 'guardian') guardianBrain(g, e, dt, Math.sqrt(d2));
       break;
     }
     case 'carga': {
@@ -827,7 +964,7 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
           e.ai = 'ataca';
           e.aiT = 0.22;
           audio.sfx('slam');
-          if (d < 46) {
+          if (d2 < 46 * 46) {
             // el slam del Guardián arrea al Portador
             if (p.parryT <= 0 && p.iframes <= 0 && p.rollT <= 0) applyKnockback(p, p.x - e.x, p.y - e.y, 260);
             g.damagePlayer(def.dmg * e.phase, e.x, e.y);
@@ -838,9 +975,10 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
           // estampida del lobo / mandoble del esqueleto
           e.ai = 'ataca';
           e.aiT = 0.22;
-          const dx = (p.x - e.x) / (d || 1), dy = (p.y - e.y) / (d || 1);
+          const dl = Math.sqrt(d2) || 1; // R5-O10
+          const dx = (p.x - e.x) / dl, dy = (p.y - e.y) / dl;
           g.moveEntity(e, dx * 14, dy * 14);
-          if (d < def.atkR + 10) {
+          if (d2 < (def.atkR + 10) * (def.atkR + 10)) {
             g.damagePlayer(def.dmg, e.x, e.y);
           }
         }
@@ -871,7 +1009,8 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
   }
   if (e.ai === 'huye') {
     e.aiT -= dt;
-    const dx = (e.x - p.x) / (d || 1), dy = (e.y - p.y) / (d || 1);
+    const dl = Math.sqrt(d2) || 1; // R5-O10: sqrt solo para normalizar
+    const dx = (e.x - p.x) / dl, dy = (e.y - p.y) / dl;
     g.moveEntity(e, dx * def.speed * 1.2 * dt, dy * def.speed * 1.2 * dt);
     if (e.aiT <= 0) e.ai = 'persigue';
   }

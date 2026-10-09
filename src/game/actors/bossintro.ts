@@ -75,10 +75,10 @@ let on = false;           // intro en curso
 let seen = false;         // esta pelea YA vio su intro (start pasa a no-op)
 let t = 0;                // reloj de la intro (s)
 
-// Cachés pre-pintadas (una sola vez por sesión).
+// Cachés pre-pintadas (una sola vez por sesión; reconstruidas si VIEW cambia).
 let vigDark: HTMLCanvasElement | null = null;
 let vigRed: HTMLCanvasElement | null = null;
-let vigTried = false;
+let vigW = 0, vigH = 0;   // VIEW con el que se construyeron (vista DINÁMICA)
 let noDoc = false;        // sin DOM (harness): pinta los anillos en directo
 
 // ---------------- Utilidades deterministas ----------------
@@ -210,8 +210,12 @@ function buildVig(col: string, n: number, th: number, a: number): HTMLCanvasElem
 }
 
 function ensureVigs(): void {
-  if (vigTried) return;
-  vigTried = true;
+  if (noDoc) return;
+  // R5-O8: caché válida solo con el VIEW actual (fitViewToWindow la cambia) →
+  // reconstrucción 1 vez por cambio de tamaño, nunca por frame.
+  if (vigDark && vigRed && vigW === VIEW_W && vigH === VIEW_H) return;
+  vigW = VIEW_W;
+  vigH = VIEW_H;
   vigDark = buildVig(VIG_BLACK, 15, 20, 0.3); // bordes ~0.99 de negro acumulado
   if (!noDoc) vigRed = buildVig(VIG_RED, 12, 22, 0.3);
 }
@@ -229,6 +233,90 @@ function blitVig(
     paintVig(ctx, col, n, th, a, mul);
   }
   ctx.globalAlpha = 1;
+}
+
+// ---------------- R5-O8 · TEXTO HORNEADO (sprites prerrenderizados) ----------------
+/**
+ * El banner dibujaba el nombre COMPLETO 4 veces por frame (sombra + base +
+ * 2 pasadas cromáticas) y el subtítulo 2 veces con fillRect por celda:
+ * ~3000 fillRect/frame durante la intro. Cada pasada se HORNEA a un
+ * minicanvas (misma drawTextPx, mismos colores) y el draw por frame son 4-6
+ * drawImage con la MISMA globalAlpha que antes — composite idéntico
+ * (source-over es asociativo: hornear capas opacas y volcarlas con alpha 1
+ * por pasada es equivalente a pintarlas en orden). Sin DOM → ruta directa.
+ */
+const NAME_PASSES = [COL_SHADOW, COL_NAME, COL_CHRO_R, COL_CHRO_C];
+const SUB_PASSES = [COL_SHADOW, COL_SUB];
+
+let nameSprs: HTMLCanvasElement[] | null = null;
+let subSprs: HTMLCanvasElement[] | null = null;
+let txtSprTried = false;
+
+function buildTextSprs(str: string, s: number, cols: string[]): HTMLCanvasElement[] | null {
+  try {
+    const w = Math.ceil(textW(str.length, s)) + 2;      // +2: margen izquierdo
+    const h = 10 * s + 2;                               // 3s acento + 7s glifo + margen
+    const out: HTMLCanvasElement[] = [];
+    for (let i = 0; i < cols.length; i++) {
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const x = c.getContext('2d');
+      if (!x) return null;
+      x.fillStyle = cols[i];
+      drawTextPx(x, str, 1, 3 * s + 1, s);
+      out.push(c);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function ensureTextSprs(): void {
+  if (txtSprTried) return;
+  txtSprTried = true;
+  nameSprs = buildTextSprs(NAME_STR, BAN_S, NAME_PASSES);
+  subSprs = nameSprs ? buildTextSprs(SUB_STR, SUB_S, SUB_PASSES) : null;
+  if (!nameSprs || !subSprs) { nameSprs = null; subSprs = null; }
+}
+
+/**
+ * R5-O8 · CENIZA HORNEADA: los 8 hash por mota (h2(i, 201..209)) son
+ * CONSTANTES por i — se precalculan UNA vez en esta tabla y el draw por
+ * frame solo evalúa sin/módulo (antes: ~240 hash2 por frame durante la
+ * intro). Mismos valores → mismos píxeles.
+ */
+interface AshMote {
+  spd: number;   // px/s de subida
+  p0: number;    // fase inicial de vida
+  x0: number;    // fracción 0..1 de VIEW_W (× VIEW_W en runtime: vista dinámica)
+  dx: number;    // deriva horizontal px/s
+  swF: number;   // frecuencia del vaivén
+  faM: number;   // multiplicador de alpha
+  c2: boolean;   // color ceniza apagada
+  sz: number;    // tamaño 1|2
+  ex: number;    // alto extra 0|1
+}
+const ASH: AshMote[] = [];
+let ashReady = false;
+
+function ensureAsh(): void {
+  if (ashReady) return;
+  ashReady = true;
+  for (let i = 0; i < 30; i++) {
+    ASH.push({
+      spd: 14 + h2(i, 201) * 26,
+      p0: h2(i, 202),
+      x0: h2(i, 203),
+      dx: 6 + h2(i, 204) * 10,
+      swF: 0.5 + h2(i, 205) * 0.6,
+      faM: 0.14 + 0.22 * h2(i, 206),
+      c2: h2(i, 207) < 0.3,
+      sz: h2(i, 208) < 0.35 ? 1 : 2,
+      ex: h2(i, 209) < 0.5 ? 1 : 0,
+    });
+  }
 }
 
 // ---------------- CONTRATO: ciclo de vida ----------------
@@ -310,19 +398,19 @@ export function drawBossIntro(ctx: CanvasRenderingContext2D, g: Game): void {
   // -------- ACTO 2 · motas de ceniza ascendentes (deriva determinista) --------
   const ashMul = cl((t - 0.25) / 0.4) * cl((2.85 - t) / 0.35);
   if (ashMul > 0.01) {
+    ensureAsh(); // R5-O8: constantes por mota precalculadas (1 vez, no por frame)
     ctx.fillStyle = COL_ASH1;
     for (let i = 0; i < 30; i++) {
-      const spd = 14 + h2(i, 201) * 26;                         // px/s de subida
-      const prog = (h2(i, 202) + (t * spd) / VIEW_H) % 1;       // vida 0..1
-      const fa = Math.sin(prog * Math.PI) * (0.14 + 0.22 * h2(i, 206)) * ashMul;
+      const m = ASH[i];
+      const prog = (m.p0 + (t * m.spd) / VIEW_H) % 1;           // vida 0..1
+      const fa = Math.sin(prog * Math.PI) * m.faM * ashMul;
       if (fa < 0.02) continue;
-      const xr = h2(i, 203) * VIEW_W + t * (6 + h2(i, 204) * 10)
-               + Math.sin(t * (0.5 + h2(i, 205) * 0.6) + i * 1.7) * 12;
+      const xr = m.x0 * VIEW_W + t * m.dx
+               + Math.sin(t * m.swF + i * 1.7) * 12;
       const x = ((xr % VIEW_W) + VIEW_W) % VIEW_W;
       ctx.globalAlpha = cl(fa);
-      ctx.fillStyle = h2(i, 207) < 0.3 ? COL_ASH2 : COL_ASH1;
-      const sz = h2(i, 208) < 0.35 ? 1 : 2;
-      ctx.fillRect(Math.round(x), Math.round(VIEW_H - prog * VIEW_H), sz, sz + (h2(i, 209) < 0.5 ? 1 : 0));
+      ctx.fillStyle = m.c2 ? COL_ASH2 : COL_ASH1;
+      ctx.fillRect(Math.round(x), Math.round(VIEW_H - prog * VIEW_H), m.sz, m.sz + m.ex);
     }
     ctx.globalAlpha = 1;
   }
@@ -346,18 +434,31 @@ export function drawBossIntro(ctx: CanvasRenderingContext2D, g: Game): void {
     const by = 176 + Math.round(rise * 14) + jy;
 
     // sombra dura → base cian pálido → 2 pasadas cromáticas ±1 px
-    ctx.fillStyle = COL_SHADOW;
-    ctx.globalAlpha = cl(0.75 * aBan);
-    drawTextPx(ctx, NAME_STR, bx + 3, by + 3, BAN_S);
-    ctx.fillStyle = COL_NAME;
-    ctx.globalAlpha = cl(aBan);
-    drawTextPx(ctx, NAME_STR, bx, by, BAN_S);
-    ctx.fillStyle = COL_CHRO_R;
-    ctx.globalAlpha = cl(0.22 * aBan);
-    drawTextPx(ctx, NAME_STR, bx - 1, by, BAN_S);
-    ctx.fillStyle = COL_CHRO_C;
-    ctx.globalAlpha = cl(0.22 * aBan);
-    drawTextPx(ctx, NAME_STR, bx + 1, by, BAN_S);
+    // R5-O8: pasadas HORNEADAS a sprites (4 drawImage en vez de ~2800 fillRect)
+    ensureTextSprs();
+    if (nameSprs) {
+      const pad = 3 * BAN_S + 1; // alto del margen superior del sprite (acentos)
+      ctx.globalAlpha = cl(0.75 * aBan);
+      ctx.drawImage(nameSprs[0], bx + 3 - 1, by + 3 - pad);
+      ctx.globalAlpha = cl(aBan);
+      ctx.drawImage(nameSprs[1], bx - 1, by - pad);
+      ctx.globalAlpha = cl(0.22 * aBan);
+      ctx.drawImage(nameSprs[2], bx - 1 - 1, by - pad);
+      ctx.drawImage(nameSprs[3], bx + 1 - 1, by - pad);
+    } else {
+      ctx.fillStyle = COL_SHADOW;
+      ctx.globalAlpha = cl(0.75 * aBan);
+      drawTextPx(ctx, NAME_STR, bx + 3, by + 3, BAN_S);
+      ctx.fillStyle = COL_NAME;
+      ctx.globalAlpha = cl(aBan);
+      drawTextPx(ctx, NAME_STR, bx, by, BAN_S);
+      ctx.fillStyle = COL_CHRO_R;
+      ctx.globalAlpha = cl(0.22 * aBan);
+      drawTextPx(ctx, NAME_STR, bx - 1, by, BAN_S);
+      ctx.fillStyle = COL_CHRO_C;
+      ctx.globalAlpha = cl(0.22 * aBan);
+      drawTextPx(ctx, NAME_STR, bx + 1, by, BAN_S);
+    }
 
     // regla que se abre del centro bajo el nombre
     const aRule = cl(aBan * 0.95);
@@ -382,12 +483,20 @@ export function drawBossIntro(ctx: CanvasRenderingContext2D, g: Game): void {
     if (aSub > 0.01) {
       const sx0 = Math.round((VIEW_W - textW(SUB_STR.length, SUB_S)) / 2);
       const sy0 = by + 7 * BAN_S + 18;
-      ctx.fillStyle = COL_SHADOW;
-      ctx.globalAlpha = cl(0.7 * aSub);
-      drawTextPx(ctx, SUB_STR, sx0 + 2, sy0 + 2, SUB_S);
-      ctx.fillStyle = COL_SUB;
-      ctx.globalAlpha = cl(aSub);
-      drawTextPx(ctx, SUB_STR, sx0, sy0, SUB_S);
+      if (subSprs) { // R5-O8: subtítulo también horneado (2 drawImage)
+        const padS = 3 * SUB_S + 1;
+        ctx.globalAlpha = cl(0.7 * aSub);
+        ctx.drawImage(subSprs[0], sx0 + 2 - 1, sy0 + 2 - padS);
+        ctx.globalAlpha = cl(aSub);
+        ctx.drawImage(subSprs[1], sx0 - 1, sy0 - padS);
+      } else {
+        ctx.fillStyle = COL_SHADOW;
+        ctx.globalAlpha = cl(0.7 * aSub);
+        drawTextPx(ctx, SUB_STR, sx0 + 2, sy0 + 2, SUB_S);
+        ctx.fillStyle = COL_SUB;
+        ctx.globalAlpha = cl(aSub);
+        drawTextPx(ctx, SUB_STR, sx0, sy0, SUB_S);
+      }
     }
   }
 

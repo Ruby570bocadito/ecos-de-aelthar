@@ -221,6 +221,11 @@ export function drawBossFx(ctx: CanvasRenderingContext2D, g: Game): void {
   const fx = Math.round(b.x * ZOOM) - camX;          // pies (x)
   const fy = Math.round((b.y + 4) * ZOOM) - camY;    // pies (y, sombra en e.y+4)
 
+  // R5-O8 · culling: jefe activo pero fuera del rect visible expandido → nada
+  // que pintar (alcance máximo de aura/grietas/esquirlas ~100 px de pantalla;
+  // margen 192 px holgado). El canvas ya recortaría todos los rects.
+  if (cx < -192 || cx > VIEW_W + 192 || fy < -192 || fy > VIEW_H + 192) return;
+
   // pulso determinista del aura (respiración lenta, late más rápido en fase 3)
   const rate = 2.4 + ph * 0.5;
   const pulse = 0.82 + 0.18 * Math.sin(t * rate);
@@ -329,6 +334,12 @@ function echoColor(e: Enemy): string {
   }
 }
 
+// R5-O8: 8 vecinos del eco espectral — tabla de módulo (antes: array + tuplas
+// nuevas por CADA muerte; evento poco frecuente, pero cero coste ahora).
+const ECHO_PTS: ReadonlyArray<readonly [number, number]> = [
+  [-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1],
+];
+
 // colapso del guardián: rojo vivo + ámbar (fase final del jefe)
 const COLLAPSE_COLS = ['#ff5a4a', '#ffd24a', '#c03028', '#ff8a3a'];
 // piedra de la cripta (PAL.stoneDark / PAL.stoneDeep, world/palette.ts)
@@ -378,11 +389,8 @@ function mortalDissolve(g: Game, e: Enemy): void {
   const col = echoColor(e);
   const rx0 = w / 2 + 3;
   const ry0 = hgt / 2 + 3;
-  const pts: [number, number][] = [
-    [-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1],
-  ];
-  for (let k = 0; k < pts.length; k++) {
-    const nx = pts[k][0], ny = pts[k][1];
+  for (let k = 0; k < ECHO_PTS.length; k++) {
+    const nx = ECHO_PTS[k][0], ny = ECHO_PTS[k][1];
     const hk = h2(k * 17 + 3, sx + sy);
     g.particles.push({
       x: e.x + nx * rx0,

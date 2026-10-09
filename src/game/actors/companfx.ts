@@ -88,7 +88,7 @@
 // ============================================================
 
 import type { Game } from '../engine'; // type-only: se borra en compilación, sin ciclos
-import { ZOOM } from '../consts';
+import { VIEW_W, VIEW_H, ZOOM } from '../consts';
 import { hash2 } from '../world/palette';
 import { projectileColor } from './spells'; // misma paleta elemental que las flechas (R3-A5)
 
@@ -305,6 +305,9 @@ export function drawCompanionFx(
   const gT = fin(g.globalT, 0);
   const X = Math.round(sx(fin(c.x, 0)));
   const feetY = Math.round(sy(fin(c.y, 0) + 4)); // mismo punto de suelo que la sombra de drawEntity
+  // R5-O8 · culling: TODO el FX vive en X±22 y [feetY-38, feetY+8]; si el rect
+  // expandido no toca la vista, nada que pintar (el canvas ya lo recortaría).
+  if (X + 24 < 0 || X - 24 > VIEW_W || feetY + 8 < 0 || feetY - 40 > VIEW_H) return;
   drawBondAura(ctx, X, feetY, gT);
   drawArrowGlyphs(ctx, X, feetY - SPR_H + 6, gT); // centro de la cabeza (~30 px sobre el suelo)
   drawBowFlash(ctx, X, feetY, c.dir ?? 'down', gT);
@@ -361,6 +364,9 @@ export function setArrowIndex(idx: number): void {
 export function drawMarkFx(ctx: CanvasRenderingContext2D, x: number, y: number, t: number): void {
   const X = Math.round(fin(x, 0));
   const Y = Math.round(fin(y, 0));
+  // R5-O8 · culling: el anillo vive en X±14 / Y±8; fuera del rect expandido el
+  // canvas recortaría todo → saltar sin tocar estado (sin alloc, sin alpha).
+  if (X + 16 < 0 || X - 16 > VIEW_W || Y + 10 < 0 || Y - 10 > VIEW_H) return;
   const tt = fin(t, 0);
   const pulse = Math.sin(tt * 6) * 0.5 + 0.5; // latido ~1 Hz
   const a = 0.3 + pulse * 0.26; // [0.30, 0.56]

@@ -30,14 +30,21 @@
 //    puente roto del bosque, 'B' el entero del pasado), así que las vetas
 //    lentas y el polvo sumergido viven en los '~' interiores (profundidad 2).
 //  - Cero allocations por frame: colores y tablas son const de módulo.
+// R5-O5 · overlay optimizado (mismas firmas y estética):
+//  - Snapshot de tiles visibles: UNA lectura de at() por tile y frame en un
+//    Uint8Array reutilizable (antes: hasta 13 llamadas por tile de agua).
+//  - Espuma y marea horneadas a minicanvases por (dirección, variante de
+//    dentado, fotograma): 1 drawImage por borde en vez de ~30 fillRect+hash.
+//  - Culling estricto al viewport y early-out si no hay agua visible.
+//  - VIEW_W/VIEW_H vivos desde ../consts: el camino de luna queda alineado
+//    con sky.ts en cualquier tamaño de ventana.
 // ============================================================
 
 import { hash2, isForest } from './palette';
 import { px, PAL, type NeighborFn } from './palette';
+import { VIEW_W, VIEW_H, ZOOM as Z } from '../consts'; // R5-O5: vista viva
 
-const T = 16; // lado del tile en px de mundo
-const Z = 2;  // ZOOM de engine.ts: px de pantalla por cada px de mundo
-const VIEW_W = 960, VIEW_H = 540; // espejo de engine.ts (px de pantalla)
+const T = 16; // lado del tile en px de mundo (TILE)
 
 type At = NeighborFn | undefined;
 
@@ -111,18 +118,14 @@ const TERRAIN_COL: readonly (readonly [string, string, string])[] = [
   ['A', '#4a4a5c', '#4a4a5c'], // altar / entrada
   ['P', '#3e3e50', '#3e3e50'], // pilar
 ];
-const REFLECT_V: Record<string, string> = {};
-const REFLECT_F: Record<string, string> = {};
+// R5-O5 · indexadas por CÓDIGO de char: lookup O(1) sin strings por frame
+const REFLECT_VC: (string | undefined)[] = [];
+const REFLECT_FC: (string | undefined)[] = [];
 for (const [ch, cv, cf] of TERRAIN_COL) {
-  REFLECT_V[ch] = darken(cv, 0.6);
-  REFLECT_F[ch] = darken(cf, 0.6);
+  REFLECT_VC[ch.charCodeAt(0)] = darken(cv, 0.6);
+  REFLECT_FC[ch.charCodeAt(0)] = darken(cf, 0.6);
 }
 const REFLECT_DF = darken('#3a4a30', 0.6); // terreno no catalogado
-
-/** R4-A1: ¿vecino de TIERRA firme? (no agua, no borde de mapa, no puente) */
-function isLandN(c: string): boolean {
-  return c !== '~' && c !== 'V' && c !== 'B' && c !== 'x';
-}
 
 /**
  * Cuenta vecinos que cumplen `pred` en la vecindad 8 del punto (ox,oy),
@@ -147,18 +150,6 @@ function countAround(at: At, ox: number, oy: number, pred: (ch: string) => boole
  */
 function depthLevel(n: number): 0 | 1 | 2 {
   return n >= 6 ? 2 : n >= 3 ? 1 : 0;
-}
-
-/** Variante con `at` ABSOLUTO (la que usa waterOverlay). */
-function countAroundAbs(at: (tx: number, ty: number) => string, tx: number, ty: number): number {
-  let n = 0;
-  for (let dy = -1; dy <= 1; dy++) {
-    for (let dx = -1; dx <= 1; dx++) {
-      if (dx === 0 && dy === 0) continue;
-      if (at(tx + dx, ty + dy) === '~') n++;
-    }
-  }
-  return n;
 }
 
 // Tonos base por profundidad: somera (azul claro) · media · profunda (oscuro)
@@ -245,14 +236,20 @@ function ditherSpots(
  * Rect de un segmento en el borde `dir` (0=N 1=S 2=W 3=E).
  * `inset` = píxeles desde el borde hacia dentro; `size` = grosor;
  * `seg` = largo del segmento sobre el borde.
+ * R5-O5: devuelve una tupla RASPA de módulo (cero allocaciones por frame —
+ * la usa edgeReflect, que corre por frame). Todos los consumidores la leen
+ * INMEDIATAMENTE en su fillRect (verificado en los 7 puntos de llamada);
+ * no guardar el resultado entre llamadas.
  */
+const EDGE_R: [number, number, number, number] = [0, 0, 0, 0];
 function edgeRect(
   dir: number, px0: number, py0: number, i: number, inset: number, size: number, seg: number,
 ): [number, number, number, number] {
-  if (dir === 0) return [px0 + i, py0 + inset, seg, size];              // N ↓
-  if (dir === 1) return [px0 + i, py0 + T - inset - size, seg, size];   // S ↑
-  if (dir === 2) return [px0 + inset, py0 + i, size, seg];              // W →
-  return [px0 + T - inset - size, py0 + i, size, seg];                  // E ←
+  if (dir === 0) { EDGE_R[0] = px0 + i; EDGE_R[1] = py0 + inset; EDGE_R[2] = seg; EDGE_R[3] = size; }
+  else if (dir === 1) { EDGE_R[0] = px0 + i; EDGE_R[1] = py0 + T - inset - size; EDGE_R[2] = seg; EDGE_R[3] = size; }
+  else if (dir === 2) { EDGE_R[0] = px0 + inset; EDGE_R[1] = py0 + i; EDGE_R[2] = size; EDGE_R[3] = seg; }
+  else { EDGE_R[0] = px0 + T - inset - size; EDGE_R[1] = py0 + i; EDGE_R[2] = size; EDGE_R[3] = seg; }
+  return EDGE_R;
 }
 
 /**
@@ -574,6 +571,91 @@ function paintBridgeBroken(
 }
 
 // ============================================================
+// R5-O5 · SNAPSHOT + TIRAS DE BORDE PRERRENDERIZADAS
+// La espuma (foamEdge) y la marea (tideRing + shoreWet) dibujaban ~30
+// segmentos (hash2 + sin + fillRect) por BORDE y tile en cada frame.
+// Ahora se hornean a minicanvases de 16×16 (coords de tile) por
+// (dirección, variante de dentado, fotograma) y se pintan con UN
+// drawImage por borde. edgeReflect sigue inmediato: su alpha depende de
+// nightF (por frame) y del terreno del vecino. Los dentados pasan de ser
+// por-tile a por-variante (8 por dirección): misma estética de orilla.
+// ============================================================
+
+let snap = new Uint8Array(0); // charcodes del bloque visible + borde de 1 tile
+
+const AQ = 126; // código de '~'
+const VD = 86;  // código de 'V' (fuera de mapa)
+
+/** ¿Vecino de TIERRA firme? (no agua, no borde de mapa, no puente) — código. */
+function isLandCode(c: number): boolean {
+  return c !== AQ && c !== VD && c !== 66 && c !== 120; // no '~', 'V', 'B', 'x'
+}
+
+/** Fase base del borde (compartida por espuma, marea y barro). */
+function edgeBase(dir: number, tx: number, ty: number): number {
+  return dir === 0 ? tx * 0.7
+       : dir === 1 ? tx * 0.7 + 2.1
+       : dir === 2 ? ty * 0.7 + 4.2
+       : ty * 0.7 + 5.5;
+}
+
+const EDGE_V = 8;                 // variantes de dentado por dirección
+const FOAM_F = 32;                // fotogramas de espuma (período 2π/3 s)
+const TIDE_F = 32;                // fotogramas de marea (período 4π s)
+const FOAM_P = Math.PI * 2 / 3;   // período del ciclo de espuma (t*3)
+const TIDE_P = Math.PI * 4;       // período del ciclo de marea (t*0.5)
+
+// semillas por variante (grandes: dentados propios y estables por variante)
+const vxOf = (v: number): number => v * 73 + 1;
+const vyOf = (v: number): number => v * 149 + 3;
+
+const foamStrips: (HTMLCanvasElement | null)[] = new Array(4 * EDGE_V * FOAM_F).fill(null);
+const tideStrips: (HTMLCanvasElement | null)[] = new Array(4 * EDGE_V * TIDE_F).fill(null);
+
+/** Tira horneada (se cuece al primer uso; después cache puro, 0 alloc). */
+function getStrip(foam: boolean, dir: number, v: number, k: number): HTMLCanvasElement {
+  const table = foam ? foamStrips : tideStrips;
+  const idx = (dir * EDGE_V + v) * (foam ? FOAM_F : TIDE_F) + k;
+  const hit = table[idx];
+  if (hit) return hit;
+  const cv = document.createElement('canvas');
+  cv.width = T; cv.height = T;
+  const c = cv.getContext('2d') as CanvasRenderingContext2D;
+  c.imageSmoothingEnabled = false;
+  const bx = vxOf(v), by = vyOf(v);
+  if (foam) {
+    foamEdge(c, bx, by, 0, 0, dir, k * (FOAM_P / FOAM_F));
+  } else {
+    tideRing(c, bx, by, 0, 0, dir, k * (TIDE_P / TIDE_F));
+    shoreWet(c, bx, by, 0, 0, dir, k * (TIDE_P / TIDE_F));
+  }
+  table[idx] = cv;
+  return cv;
+}
+
+/** Espuma del borde `dir`: variante + fotograma por hash/fase y 1 blit. */
+function drawEdgeFoam(
+  x: CanvasRenderingContext2D, tx: number, ty: number,
+  px0: number, py0: number, dir: number, t: number,
+): void {
+  const v = (hash2(tx * T + dir * 61, ty * T - dir * 47) * EDGE_V) | 0;
+  const db = edgeBase(dir, tx, ty) - edgeBase(dir, vxOf(v), vyOf(v));
+  const kf = ((((t + db / 3) % FOAM_P) + FOAM_P) % FOAM_P) * FOAM_F / FOAM_P & (FOAM_F - 1);
+  x.drawImage(getStrip(true, dir, v, kf), px0, py0);
+}
+
+/** Marea+barro del borde `dir`: misma variante que la espuma, ciclo lento. */
+function drawEdgeTide(
+  x: CanvasRenderingContext2D, tx: number, ty: number,
+  px0: number, py0: number, dir: number, t: number,
+): void {
+  const v = (hash2(tx * T + dir * 61, ty * T - dir * 47) * EDGE_V) | 0;
+  const db = edgeBase(dir, tx, ty) - edgeBase(dir, vxOf(v), vyOf(v));
+  const kt = ((((t + db * 1.2) % TIDE_P) + TIDE_P) % TIDE_P) * TIDE_F / TIDE_P & (TIDE_F - 1);
+  x.drawImage(getStrip(false, dir, v, kt), px0, py0);
+}
+
+// ============================================================
 // CAPA ANIMADA — waterOverlay (1 llamada por frame desde render.ts)
 // ============================================================
 
@@ -592,9 +674,13 @@ function paintBridgeBroken(
  * - at: char del tile en coordenadas ABSOLUTAS de mapa (¡ojo, convenio
  *   distinto al `at` relativo de drawTile/paintWater!), consciente de época.
  *
- * Recorre únicamente los tiles visibles (~600 pruebas de at por frame) y
- * solo pinta en los que son '~'. Trazo en px de MUNDO con scale(Z,Z):
- * alineación exacta con la rejilla de 16 px del canvas de suelo.
+ * Recorre únicamente los tiles visibles y solo pinta en los que son '~'.
+ * Trazo en px de MUNDO con scale(Z,Z): alineación exacta con la rejilla
+ * de 16 px del canvas de suelo.
+ *
+ * R5-O5: snapshot en Uint8Array (1 lectura de at por tile y frame),
+ * espuma/marea horneadas a minicanvases, culling estricto al viewport y
+ * early-out si el bloque visible no contiene agua.
  *
  * Ronda 4 (agua v3): llamar TAMBIÉN cada frame, desde render.ts:
  *   setWaterNight(g.dayT > 0.7 || g.dayT < 0.08 ? 1 : 0);
@@ -610,11 +696,29 @@ export function waterOverlay(
 ): void {
   const viewW = VIEW_W / Z, viewH = VIEW_H / Z;   // ventana visible en px de mundo
   const gx = Math.floor(camX / Z), gy = Math.floor(camY / Z); // igual que render.ts
-  const tx0 = Math.floor(gx / T) - 1, tx1 = Math.ceil((gx + viewW) / T) + 1;
-  const ty0 = Math.floor(gy / T) - 1, ty1 = Math.ceil((gy + viewH) / T) + 1;
-  const forest = isForest(mapId);
-  const refl = forest ? REFLECT_F : REFLECT_V; // tabla de reflejos de borde
+  // R5-O5 · culling: solo tiles cuyo rect toca la pantalla (margen ≤ 1 tile)
+  const vx0 = Math.floor(gx / T), vx1 = Math.ceil((gx + viewW) / T);
+  const vy0 = Math.floor(gy / T), vy1 = Math.ceil((gy + viewH) / T);
 
+  // R5-O5 · snapshot del bloque visible (+borde de 1 tile para vecinos):
+  // UNA llamada a at() por tile y frame; vecinos y profundidad se leen del
+  // Uint8Array (antes: hasta 13 at() por tile de agua).
+  const w = vx1 - vx0 + 3, h = vy1 - vy0 + 3;
+  if (snap.length < w * h) snap = new Uint8Array(w * h); // solo crece (raro)
+  const sx0 = vx0 - 1, sy0 = vy0 - 1;
+  let hasWater = false;
+  for (let r = 0; r < h; r++) {
+    const ty = sy0 + r, rowBase = r * w;
+    for (let c = 0; c < w; c++) {
+      const code = at(sx0 + c, ty).charCodeAt(0);
+      snap[rowBase + c] = code;
+      if (code === AQ) hasWater = true;
+    }
+  }
+  if (!hasWater) return; // early-out: ni un tile de agua en el viewport
+
+  const forest = isForest(mapId);
+  const reflC = forest ? REFLECT_FC : REFLECT_VC; // reflejos por código de char
   // R4-A1 · anclaje del camino de luna: la MISMA x de pantalla que la luna
   // pre-pintada de sky.ts (VIEW_W*0.78 - camX*0.004), convertida a mundo.
   const moonWx = gx + (VIEW_W * 0.78 - camX * 0.004) / Z;
@@ -625,16 +729,28 @@ export function waterOverlay(
   x.translate(-gx * Z, -gy * Z); // coordenadas de mundo escaladas ×2
   x.scale(Z, Z);
 
-  for (let ty = ty0; ty <= ty1; ty++) {
-    for (let tx = tx0; tx <= tx1; tx++) {
-      if (at(tx, ty) !== '~') continue;
-      const px0 = tx * T, py0 = ty * T;
-      // vecinos cacheados (R4-A1): una llamada de at por dirección
-      const cn = at(tx, ty - 1), cs = at(tx, ty + 1), cw = at(tx - 1, ty), ce = at(tx + 1, ty);
-      const depth = depthLevel(countAroundAbs(at, tx, ty));
+  for (let r = 1; r < h - 1; r++) { // solo tiles que tocan la pantalla
+    const ty = sy0 + r, rowBase = r * w;
+    for (let c = 1; c < w - 1; c++) {
+      const idx = rowBase + c;
+      if (snap[idx] !== AQ) continue;
+      const tx = sx0 + c, px0 = tx * T, py0 = ty * T;
+      // vecinos desde la snapshot (0 llamadas a at)
+      const cn = snap[idx - w], cs = snap[idx + w], cw = snap[idx - 1], ce = snap[idx + 1];
+      // profundidad: 8 vecinos desde la snapshot (0 llamadas a at)
+      let n8 = 0;
+      if (snap[idx - w - 1] === AQ) n8++;
+      if (cn === AQ) n8++;
+      if (snap[idx - w + 1] === AQ) n8++;
+      if (cw === AQ) n8++;
+      if (ce === AQ) n8++;
+      if (snap[idx + w - 1] === AQ) n8++;
+      if (cs === AQ) n8++;
+      if (snap[idx + w + 1] === AQ) n8++;
+      const depth = n8 >= 6 ? 2 : n8 >= 3 ? 1 : 0;
       // fase idéntica a la del agua original
       const ph = t * 2 + tx * 0.9 + ty * 1.3;
-      const w = Math.sin(ph) * 0.5 + 0.5;
+      const wv = Math.sin(ph) * 0.5 + 0.5;
 
       // — olas animadas: 2 líneas de 1 px que suben y bajan con la fase
       for (let k = 0; k < 2; k++) {
@@ -648,9 +764,9 @@ export function waterOverlay(
           ? (depth === 2 ? 'rgba(120,170,180,0.5)' : 'rgba(150,200,205,0.45)')
           : (depth === 2 ? 'rgba(110,160,205,0.5)' : 'rgba(150,195,228,0.45)');
         x.fillRect(px0 + lx, py0 + ly, len, 1);
-        if (k === 0 && w > 0.72) { // brillo que recorre la ola
+        if (k === 0 && wv > 0.72) { // brillo que recorre la ola
           x.fillStyle = 'rgba(214,236,248,0.6)';
-          x.fillRect(px0 + lx + Math.floor(w * (len - 3)), py0 + ly, 3, 1);
+          x.fillRect(px0 + lx + Math.floor(wv * (len - 3)), py0 + ly, 3, 1);
         }
       }
 
@@ -684,29 +800,26 @@ export function waterOverlay(
 
       // — R4-A1 · reflejo oscuro-invertido del borde: banda de 2 px a 3 px
       //    de la orilla con el color del terreno adyacente oscurecido ×0.6
-      //    (solo contra tierra firme: los puentes ya tienen su sombra estática)
-      if (isLandN(cn)) edgeReflect(x, tx, ty, px0, py0, 0, refl[cn] ?? REFLECT_DF, t);
-      if (isLandN(cs)) edgeReflect(x, tx, ty, px0, py0, 1, refl[cs] ?? REFLECT_DF, t);
-      if (isLandN(cw)) edgeReflect(x, tx, ty, px0, py0, 2, refl[cw] ?? REFLECT_DF, t);
-      if (isLandN(ce)) edgeReflect(x, tx, ty, px0, py0, 3, refl[ce] ?? REFLECT_DF, t);
+      //    (dibujo inmediato: alpha por frame vía nightF)
+      if (isLandCode(cn)) edgeReflect(x, tx, ty, px0, py0, 0, reflC[cn] ?? REFLECT_DF, t);
+      if (isLandCode(cs)) edgeReflect(x, tx, ty, px0, py0, 1, reflC[cs] ?? REFLECT_DF, t);
+      if (isLandCode(cw)) edgeReflect(x, tx, ty, px0, py0, 2, reflC[cw] ?? REFLECT_DF, t);
+      if (isLandCode(ce)) edgeReflect(x, tx, ty, px0, py0, 3, reflC[ce] ?? REFLECT_DF, t);
 
-      // — espuma animada en las orillas (vecino no-agua, dentro del tile)
-      if (cn !== '~' && cn !== 'V') foamEdge(x, tx, ty, px0, py0, 0, t);
-      if (cs !== '~' && cs !== 'V') foamEdge(x, tx, ty, px0, py0, 1, t);
-      if (cw !== '~' && cw !== 'V') foamEdge(x, tx, ty, px0, py0, 2, t);
-      if (ce !== '~' && ce !== 'V') foamEdge(x, tx, ty, px0, py0, 3, t);
-
-      // — R4-A1 · orillas vivas: anillo de espuma secundario que avanza y
-      //    retrocede con la marea + transición barro/musgo de 2-3 px en la
-      //    orilla interior (solo contra tierra firme)
-      if (isLandN(cn)) { tideRing(x, tx, ty, px0, py0, 0, t); shoreWet(x, tx, ty, px0, py0, 0, t); }
-      if (isLandN(cs)) { tideRing(x, tx, ty, px0, py0, 1, t); shoreWet(x, tx, ty, px0, py0, 1, t); }
-      if (isLandN(cw)) { tideRing(x, tx, ty, px0, py0, 2, t); shoreWet(x, tx, ty, px0, py0, 2, t); }
-      if (isLandN(ce)) { tideRing(x, tx, ty, px0, py0, 3, t); shoreWet(x, tx, ty, px0, py0, 3, t); }
+      // — R5-O5 · espuma animada horneada (1 drawImage por borde; también
+      //    bajo puentes, como antes) y marea/barro solo contra tierra firme
+      if (cn !== AQ && cn !== VD) drawEdgeFoam(x, tx, ty, px0, py0, 0, t);
+      if (cs !== AQ && cs !== VD) drawEdgeFoam(x, tx, ty, px0, py0, 1, t);
+      if (cw !== AQ && cw !== VD) drawEdgeFoam(x, tx, ty, px0, py0, 2, t);
+      if (ce !== AQ && ce !== VD) drawEdgeFoam(x, tx, ty, px0, py0, 3, t);
+      if (isLandCode(cn)) drawEdgeTide(x, tx, ty, px0, py0, 0, t);
+      if (isLandCode(cs)) drawEdgeTide(x, tx, ty, px0, py0, 1, t);
+      if (isLandCode(cw)) drawEdgeTide(x, tx, ty, px0, py0, 2, t);
+      if (isLandCode(ce)) drawEdgeTide(x, tx, ty, px0, py0, 3, t);
 
       // — R4-A1 · camino de luna: SOLO de noche y en agua ABIERTA (los 4
       //    vecinos son '~': la orilla y los puentes cortan el reflejo)
-      if (nightF > 0 && cn === '~' && cs === '~' && cw === '~' && ce === '~'
+      if (nightF > 0 && cn === AQ && cs === AQ && cw === AQ && ce === AQ
           && px0 <= moonWx + 8 && px0 + T >= moonWx - 8) {
         moonPath(x, moonWx, px0, py0, t);
       }
@@ -725,10 +838,7 @@ function foamEdge(
   px0: number, py0: number, dir: number, t: number,
 ): void {
   // desfase por borde para que N/S/E/O no respiren al unísono
-  const base = dir === 0 ? tx * 0.7
-             : dir === 1 ? tx * 0.7 + 2.1
-             : dir === 2 ? ty * 0.7 + 4.2
-             : ty * 0.7 + 5.5;
+  const base = edgeBase(dir, tx, ty);
   for (let i = 0; i < T; i += 2) {
     const jag = hash2(tx * T + i * 3 + dir * 257, ty * T + i * 5 + dir * 91);
     const s = Math.sin(t * 3 + base + i * 0.35) * 0.5 + 0.5 + jag * 0.45;
@@ -856,10 +966,7 @@ function tideRing(
   x: CanvasRenderingContext2D, tx: number, ty: number,
   px0: number, py0: number, dir: number, t: number,
 ): void {
-  const base = dir === 0 ? tx * 0.7
-             : dir === 1 ? tx * 0.7 + 2.1
-             : dir === 2 ? ty * 0.7 + 4.2
-             : ty * 0.7 + 5.5;
+  const base = edgeBase(dir, tx, ty);
   const tide = Math.sin(t * 0.5 + base * 0.6);   // -1..1 respiración lenta
   const inset = 2 + (tide > 0 ? 1 : 0);          // 2..3 px desde la orilla
   x.fillStyle = PAL.foamWash;
@@ -884,10 +991,7 @@ function shoreWet(
   x: CanvasRenderingContext2D, tx: number, ty: number,
   px0: number, py0: number, dir: number, t: number,
 ): void {
-  const base = dir === 0 ? tx * 0.7
-             : dir === 1 ? tx * 0.7 + 2.1
-             : dir === 2 ? ty * 0.7 + 4.2
-             : ty * 0.7 + 5.5;
+  const base = edgeBase(dir, tx, ty);
   const tide = Math.sin(t * 0.5 + base * 0.6);
   const inset = 5 + (tide > 0 ? 0 : 1);          // 5..6 px desde la orilla
   const th = tide > 0.2 ? 3 : 2;                 // 2-3 px de transición

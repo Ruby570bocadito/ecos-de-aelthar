@@ -52,6 +52,50 @@ const WORLD_FILTER: Record<string, string> = {
   pasado: 'saturate(1.35) brightness(1.1)',
 };
 
+// ---------------- R5-O2 · ayudas de rendimiento ----------------
+
+// Capa offscreen donde se agrupa el pase de mundo (suelo+agua+props+entidades)
+// para aplicar el filtro de época UNA sola vez por frame en el volcado final
+// (ctx.filter por operación era el hotspot principal del render).
+let worldCv: HTMLCanvasElement | null = null;
+let worldCtx: CanvasRenderingContext2D | null = null;
+function worldLayerCtx(): CanvasRenderingContext2D {
+  if (!worldCv) {
+    worldCv = document.createElement('canvas');
+    worldCtx = worldCv.getContext('2d');
+  }
+  // VIEW_W/H son dinámicos: redimensiona (y limpia) si cambió el tamaño de vista
+  if (worldCv.width !== VIEW_W || worldCv.height !== VIEW_H) {
+    worldCv.width = VIEW_W;
+    worldCv.height = VIEW_H;
+  }
+  return worldCtx!;
+}
+
+// Entidades ordenables por Y — array y comparador reutilizados (sin alloc/frame)
+const _ents: Entity[] = [];
+const _byY = (a: Entity, b: Entity) => a.y - b.y;
+
+// Estados activos de un enemigo — array reutilizado (antes: filter+slice por frame)
+const _actSt: Enemy['statuses'] = [];
+
+// Gradientes estáticos cacheados (viñetas/bruma): se invalidan si cambia VIEW
+const _grads = new Map<string, CanvasGradient>();
+let _gradsView = '';
+function cachedGrad(ctx: CanvasRenderingContext2D, id: string, make: () => CanvasGradient): CanvasGradient {
+  const v = VIEW_W + 'x' + VIEW_H;
+  if (v !== _gradsView) {
+    _grads.clear();
+    _gradsView = v;
+  }
+  let gr = _grads.get(id);
+  if (!gr) {
+    gr = make();
+    _grads.set(id, gr);
+  }
+  return gr;
+}
+
 export function drawGame(g: Game) {
   const ctx = g.ctx;
   clearHits(g);
@@ -99,89 +143,101 @@ function drawWorld(g: Game) {
   ctx.translate(shx, shy);
   const camX = Math.round(g.camX), camY = Math.round(g.camY);
 
-  // suelo (prerenderizado por época) — el canvas está en píxeles de mundo (1x)
-  const ground = g.epoch === 'pasado' && g.groundPastCanvas ? g.groundPastCanvas : g.groundCanvas;
-  if (ground) {
-    ctx.save();
-    ctx.filter = WORLD_FILTER[g.epoch] ?? 'none';
-    const gx = Math.floor(camX / ZOOM), gy = Math.floor(camY / ZOOM);
-    ctx.drawImage(ground, gx, gy, VIEW_W / ZOOM, VIEW_H / ZOOM, 0, 0, VIEW_W, VIEW_H);
-    ctx.restore();
-  }
-
-  // sombras de nube (módulo sky): solo exterior de día; se dibuja ENCIMA del
-  // suelo y SIN WORLD_FILTER (atmósfera, no terreno)
-  drawCloudShadows(ctx, g);
-
-  // agua animada (módulo water): olas/espuma sobre el prerrender estático,
-  // con el MISMO filtro de época que el suelo para fundirse con él
-  ctx.save();
-  ctx.filter = WORLD_FILTER[g.epoch] ?? 'none';
-  waterOverlay(ctx, camX, camY, g.globalT, g.mapId,
-    (tx, ty) => tileAt(g.map, g.rows, tx, ty, g.epoch));
-  ctx.restore();
-
-  // copas que se mecen (Ronda 4): puntas de árbol animadas sobre el terreno
-  drawTreeCanopy(ctx, camX, camY, g.mapId, g.globalT,
-    (tx, ty) => tileAt(g.map, g.rows, tx, ty, g.epoch));
-
   const sx = (wx: number) => wx * ZOOM - camX;
   const sy = (wy: number) => wy * ZOOM - camY;
 
-  // agua viva: brillos especulares sobre los tiles '~' visibles (R3-c)
-  drawWaterGlints(g, sx, sy);
+  // R5-O2 · pase de mundo agrupado en offscreen: suelo+agua+props+entidades se
+  // dibujan SIN filtro en un canvas intermedio y se vuelcan al principal con el
+  // filtro de época UNA sola vez por frame (antes: 1 filtro por operación).
+  const filt = WORLD_FILTER[g.epoch] ?? 'none';
+  const octx = worldLayerCtx();
+  octx.setTransform(1, 0, 0, 1, 0, 0); // estado limpio cada frame
+  octx.globalAlpha = 1;
+  octx.globalCompositeOperation = 'source-over';
+  octx.filter = 'none';
+  octx.imageSmoothingEnabled = false;
+  octx.clearRect(0, 0, VIEW_W, VIEW_H);
 
+  const mainCtx = ctx;
+  g.ctx = octx; // helpers internos (props/estelas/glints/texto de ui) dibujan al offscreen
+  try {
+    // suelo (prerenderizado por época) — el canvas está en píxeles de mundo (1x)
+    const ground = g.epoch === 'pasado' && g.groundPastCanvas ? g.groundPastCanvas : g.groundCanvas;
+    if (ground) {
+      const gx = Math.floor(camX / ZOOM), gy = Math.floor(camY / ZOOM);
+      octx.drawImage(ground, gx, gy, VIEW_W / ZOOM, VIEW_H / ZOOM, 0, 0, VIEW_W, VIEW_H);
+    }
+
+    // sombras de nube (módulo sky): solo exterior de día; atmósfera sobre el
+    // terreno (van en el pase agrupado, así que reciben el filtro como el resto)
+    drawCloudShadows(octx, g);
+
+    // agua animada (módulo water): olas/espuma sobre el prerrender estático,
+    // se funde con el suelo al llevar el MISMO filtro de época (el del volcado)
+    waterOverlay(octx, camX, camY, g.globalT, g.mapId,
+      (tx, ty) => tileAt(g.map, g.rows, tx, ty, g.epoch));
+
+    // copas que se mecen (Ronda 4): puntas de árbol animadas sobre el terreno
+    drawTreeCanopy(octx, camX, camY, g.mapId, g.globalT,
+      (tx, ty) => tileAt(g.map, g.rows, tx, ty, g.epoch));
+
+    // agua viva: brillos especulares sobre los tiles '~' visibles (R3-c)
+    drawWaterGlints(g, sx, sy);
+
+    // oro perdido
+    for (const dgl of g.deadGolds) {
+      if (dgl.map !== g.mapId) continue;
+      const bob = Math.sin(g.globalT * 3) * 2;
+      octx.drawImage(getSpr('goldbag')[0], sx(dgl.x - 5), sy(dgl.y - 8 + bob), 10 * ZOOM, 8 * ZOOM);
+    }
+
+    // ecos menores (susurros)
+    for (const ec of g.map.echoes) {
+      if (g.takenEchoes.has(ec.id)) continue;
+      const bob = Math.sin(g.globalT * 2 + ec.x) * 2;
+      const fr = Math.floor(g.globalT * 3) % getSpr('wisp').length;
+      octx.globalAlpha = 0.75;
+      octx.drawImage(getSpr('wisp')[fr], sx(ec.x * TILE + 8 - 5), sy(ec.y * TILE + 2 + bob), 10 * ZOOM, 10 * ZOOM);
+      octx.globalAlpha = 1;
+    }
+
+    // props (v2: obeliscos, forja, fragmentos, altares, carteles, portones)
+    drawProps(g, sx, sy);
+
+    // aura de suelo, esquirlas orbitando y grietas del Guardián (Ronda 2):
+    // bajo las entidades, fundidos con el mundo en el pase agrupado
+    drawBossFx(octx, g);
+
+    // estelas de esquiva (afterimages del jugador, bajo las entidades)
+    drawRollTrail(g, sx, sy);
+
+    // entidades ordenadas por Y (array reutilizado: sin alloc por frame)
+    _ents.length = 0;
+    for (const n of g.npcs) _ents.push(n);
+    if (g.companion && g.companion.downT <= 0) _ents.push(g.companion);
+    for (const e of g.enemies) if (!e.dead) _ents.push(e);
+    if (g.player) _ents.push(g.player);
+    _ents.sort(_byY);
+
+    for (const e of _ents) {
+      // marca de Ilwen (Ronda 3): anillo de suelo bajo el enemigo marcado
+      const enM = e as Enemy;
+      if (e.kind === 'enemy' && (enM.marked ?? 0) > 0) {
+        drawMarkFx(octx, sx(e.x), sy(e.y + 4), g.globalT);
+      }
+      drawEntity(g, e, sx, sy);
+      if (e.kind === 'companion') {
+        drawCompanionFx(octx, g, sx, sy);
+      }
+    }
+  } finally {
+    g.ctx = mainCtx;
+  }
+
+  // volcado único del pase de mundo con el filtro de época (1 filtro por frame)
   ctx.save();
-  ctx.filter = WORLD_FILTER[g.epoch] ?? 'none';
-
-  // oro perdido
-  for (const dgl of g.deadGolds) {
-    if (dgl.map !== g.mapId) continue;
-    const bob = Math.sin(g.globalT * 3) * 2;
-    ctx.drawImage(getSpr('goldbag')[0], sx(dgl.x - 5), sy(dgl.y - 8 + bob), 10 * ZOOM, 8 * ZOOM);
-  }
-
-  // ecos menores (susurros)
-  for (const ec of g.map.echoes) {
-    if (g.takenEchoes.has(ec.id)) continue;
-    const bob = Math.sin(g.globalT * 2 + ec.x) * 2;
-    const fr = Math.floor(g.globalT * 3) % getSpr('wisp').length;
-    ctx.globalAlpha = 0.75;
-    ctx.drawImage(getSpr('wisp')[fr], sx(ec.x * TILE + 8 - 5), sy(ec.y * TILE + 2 + bob), 10 * ZOOM, 10 * ZOOM);
-    ctx.globalAlpha = 1;
-  }
-
-  // props (v2: obeliscos, forja, fragmentos, altares, carteles, portones)
-  drawProps(g, sx, sy);
-
-  // aura de suelo, esquirlas orbitando y grietas del Guardián (Ronda 2):
-  // bajo las entidades, dentro del filtro de época para fundirse con el mundo
-  drawBossFx(ctx, g);
-
-  // estelas de esquiva (afterimages del jugador, bajo las entidades)
-  drawRollTrail(g, sx, sy);
-
-  // entidades ordenadas por Y
-  type Drawable = { e: Entity; y: number };
-  const ents: Drawable[] = [];
-  for (const n of g.npcs) ents.push({ e: n, y: n.y });
-  if (g.companion && g.companion.downT <= 0) ents.push({ e: g.companion, y: g.companion.y });
-  for (const e of g.enemies) if (!e.dead) ents.push({ e, y: e.y });
-  if (g.player) ents.push({ e: g.player, y: g.player.y });
-  ents.sort((a, b) => a.y - b.y);
-
-  for (const { e } of ents) {
-    // marca de Ilwen (Ronda 3): anillo de suelo bajo el enemigo marcado
-    const enM = e as Enemy;
-    if (e.kind === 'enemy' && (enM.marked ?? 0) > 0) {
-      drawMarkFx(ctx, sx(e.x), sy(e.y + 4), g.globalT);
-    }
-    drawEntity(g, e, sx, sy);
-    if (e.kind === 'companion') {
-      drawCompanionFx(ctx, g, sx, sy);
-    }
-  }
-
+  ctx.filter = filt;
+  ctx.drawImage(worldCv!, 0, 0);
   ctx.restore();
 
   // cofres (encima, siempre visibles)
@@ -296,7 +352,7 @@ function drawRollTrail(g: Game, sx: (n: number) => number, sy: (n: number) => nu
     const dx = sx(tp.x) - (spr[0].width * ZOOM) / 2;
     const dy = sy(tp.y + 4) - spr[0].height * ZOOM;
     ctx.save();
-    ctx.filter = WORLD_FILTER[g.epoch] ?? 'none';
+    // sin filtro aquí: el volcado agrupado de drawWorld ya aplica el de época
     ctx.globalAlpha = a;
     if (tp.dir === 'left') {
       ctx.translate(dx + spr[0].width * ZOOM, 0);
@@ -314,6 +370,7 @@ function drawRollTrail(g: Game, sx: (n: number) => number, sy: (n: number) => nu
 
 function drawProps(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
   const p = g.player;
+  const ctx = g.ctx;
   for (const pr of g.map.props) {
     if (pr.needPast && g.epoch !== 'pasado') continue;
     if (pr.needPresent && g.epoch !== 'presente') continue;
@@ -508,12 +565,17 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
 
 function drawStatusIcons(g: Game, en: Enemy, cx: number, y: number) {
   const ctx = g.ctx;
-  const list = en.statuses.filter(s => s.t > 0).slice(-3);
+  // sin filter/slice (allocaban por frame): activos en array reutilizado
+  const list = _actSt;
+  list.length = 0;
+  for (const s of en.statuses) if (s.t > 0) list.push(s);
   const marked = (en.marked ?? 0) > 0;
-  const total = list.length + (marked ? 1 : 0);
+  const start = Math.max(0, list.length - 3); // últimos 3, igual que el slice anterior
+  const total = list.length - start + (marked ? 1 : 0);
   if (total === 0) return;
   let ix = cx - (total * 9) / 2 + 1;
-  for (const s of list) {
+  for (let i = start; i < list.length; i++) {
+    const s = list[i];
     drawStatusIcon(g, s.kind, ix, y, s.t / (s.kind === 'quemado' ? 3 : 2.5));
     ix += 10;
   }
@@ -606,8 +668,11 @@ function drawBiomeTint(g: Game) {
       // día: dorado salino cálido; atardecer/anochecer: azul marino profundo
       const dayLight = Math.max(0.1, Math.sin(g.dayT * Math.PI * 2) * 1.25 + 0.25);
       const night = 1 - Math.min(1, dayLight); // 0 pleno día → ~0.9 madrugada
-      ctx.fillStyle = `rgba(240,224,176,${0.07 * (1 - night)})`;
-      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      const dayTint = 0.07 * (1 - night);
+      if (dayTint > 0.01) { // alpha ≈ 0: no pintar (invisible)
+        ctx.fillStyle = `rgba(240,224,176,${dayTint})`;
+        ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      }
       if (night > 0.25) {
         ctx.fillStyle = `rgba(24,48,92,${Math.min(0.14, (night - 0.25) * 0.2)})`;
         ctx.fillRect(0, 0, VIEW_W, VIEW_H);
@@ -627,9 +692,13 @@ function drawBiomeTint(g: Game) {
       ctx.fillRect(0, 0, VIEW_W, VIEW_H);
       if (g.epoch !== 'pasado') {
         // viñeta más densa: la pérdida de Merrow aprieta desde los bordes
-        const vg = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.36, VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.8);
-        vg.addColorStop(0, 'rgba(6,6,16,0)');
-        vg.addColorStop(1, 'rgba(6,6,16,0.30)');
+        // gradiente cacheado: solo se recrea si cambia el tamaño de vista
+        const vg = cachedGrad(ctx, 'aldea_vg', () => {
+          const gr = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.36, VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.8);
+          gr.addColorStop(0, 'rgba(6,6,16,0)');
+          gr.addColorStop(1, 'rgba(6,6,16,0.30)');
+          return gr;
+        });
         ctx.fillStyle = vg;
         ctx.fillRect(0, 0, VIEW_W, VIEW_H);
       }
@@ -667,12 +736,21 @@ function drawSeaMist(g: Game) {
   const t = g.globalT;
   const a = 0.10 + 0.08 * (0.5 + 0.5 * Math.sin(t * 0.5));
   const top = y0 - 30 + Math.sin(t * 0.5) * 8;
-  const grad = ctx.createLinearGradient(0, top, 0, top + 260);
-  grad.addColorStop(0, 'rgba(222,236,250,0)');
-  grad.addColorStop(0.35, `rgba(222,236,250,${a})`);
-  grad.addColorStop(1, 'rgba(178,204,236,0)');
+  // gradiente cacheado en espacio local + globalAlpha para el pulso:
+  // evita crear el gradiente cada frame (resultado idéntico)
+  const grad = cachedGrad(ctx, 'sea_mist', () => {
+    const gr = ctx.createLinearGradient(0, 0, 0, 260);
+    gr.addColorStop(0, 'rgba(222,236,250,0)');
+    gr.addColorStop(0.35, 'rgba(222,236,250,1)');
+    gr.addColorStop(1, 'rgba(178,204,236,0)');
+    return gr;
+  });
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.translate(0, top);
   ctx.fillStyle = grad;
-  ctx.fillRect(0, top, VIEW_W, 260);
+  ctx.fillRect(0, 0, VIEW_W, 260);
+  ctx.restore();
 }
 
 // brillos especulares del agua: 1-2 píxeles blancos por tile '~' visible cuya
@@ -743,11 +821,18 @@ function drawLightingExtras(g: Game) {
     const severity = 1 - hpPct / 0.3;               // 0 → 1
     const pulse = 0.5 + 0.5 * Math.sin(g.globalT * 5);
     const a = (0.10 + pulse * 0.10) * (0.4 + severity * 0.6);
-    const rg = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.3, VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.78);
-    rg.addColorStop(0, 'rgba(180,40,40,0)');
-    rg.addColorStop(1, `rgba(180,40,40,${a})`);
+    // gradiente cacheado + globalAlpha para el pulso (evita recrearlo por frame)
+    const rg = cachedGrad(ctx, 'vign_lowhp', () => {
+      const gr = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.3, VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.78);
+      gr.addColorStop(0, 'rgba(180,40,40,0)');
+      gr.addColorStop(1, 'rgba(180,40,40,1)');
+      return gr;
+    });
+    ctx.save();
+    ctx.globalAlpha = a;
     ctx.fillStyle = rg;
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    ctx.restore();
   }
 }
 
