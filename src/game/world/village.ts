@@ -37,6 +37,38 @@
 //    cultivo viven en 'c' (grass.ts), no aquí.
 //  · ROCAS — piedritas sueltas al pie (hash).
 //
+// R7-V2 (aldea v4 · siluetas y arquitectura):
+//  · 3 TIPOS DE CASA legibles por silueta, elegidos por hash del
+//    BLOQUE (determinista, sin Math.random):
+//      0 · casa BAJA ANCHA (look v3 intacto).
+//      1 · casa ALTA DE DOS AGUAS — aguilón triangular de 7 px que
+//          desborda hacia ARRIBA desde la teja de cúspide, con
+//          buhardilla, limatesas escalonadas y remate. Solo en casas
+//          ENTERAS (mismo nº de tejas 'r' que de muro 'H'/'d'): las
+//          ruinas del presente quedan bajas y rotas, el pueblo vivo
+//          del ayer estrena silueta alta.
+//      2 · COBERTIZO — teja 'r' AISLADA sin muros (los escombros 'r'
+//          dispersos de la aldea): tejado bajo de tablones con hueco,
+//          musgo y hierbas; silueta 2 px más corta.
+//  · REMATES de cumbrera en los extremos expuestos (hash por bloque)
+//    y CLARABOYA única por bloque grande (teja con vecinos 'r' a
+//    ambos lados, elegida por hash mínimo, nunca en la cúspide).
+//  · MUROS: zócalo y postes v3 + TIRANTES diagonales en esquinas
+//    (hash) y LEÑAS APILADAS bajo el alero (muro intermedio con
+//    tejado encima, sin ventana; hash ~1/3).
+//  · PUERTAS: marco de madera en las jambas, escalón de entrada de
+//    DOS ALTURAS y farolillo ENCENDIDO/APAGADO por hash de posición.
+//  · Pozo: cuerda enrollada en el balancín, cubo apartado y musgo
+//    (hash). Valla: tramo reparado con tornapunta y musgo en base.
+//  · MESAS DE MERCADO: NO soportadas — verificado contra maps.ts y
+//    maps_expansion.ts: paintVillage solo recibe H r d F w g R y
+//    ningún mapa envía un char de mesa. Tarea del mapa: char nuevo
+//    (p. ej. 'M') + caso en sprites.drawTile. NO se fuerza aquí.
+//  · HUMO DE CHIMENEA: NO se dibuja ni se ancla — weather/R4 no tiene
+//    sistema de humo (verificado: 0 referencias en weather.ts). Un
+//    integrador futuro puede derivar el ancla de chimTx/chimTy de
+//    houseBlockAt (puro y determinista).
+//
 // NOTA de prerrender: buildGround pinta todos los tiles en UN solo
 // canvas por orden de fila, así que el desbordamiento hacia ARRIBA
 // (chimenea, horquilla del pozo) es seguro; nunca se desborda abajo.
@@ -121,9 +153,16 @@ const HOUSE_CHARS = new Set(['r', 'H', 'd']);
 
 interface HouseBlock {
   mat: number;     // 0 teja · 1 pizarra · 2 paja
-  chim: boolean;   // el bloque tiene chimenea (~1/3)
+  tipo: number;    // v4: 0 baja ancha · 1 dos aguas · 2 cobertizo
+  chim: boolean;   // el bloque tiene chimenea (~1/3; nunca cobertizos)
   chimTx: number;  // teja del tejado que la dibuja (hash mínimo)
   chimTy: number;
+  apx: number;     // v4: teja de CÚSPIDE (fila norte, x medio) — aguas
+  apy: number;
+  skx: number;     // v4: teja de la claraboya (-1 si no hay)
+  sky: number;
+  finL: boolean;   // v4: remates de cumbrera en los extremos
+  finR: boolean;
 }
 
 /** Caché por mapId: el resultado es una función pura del grid, la caché
@@ -140,23 +179,58 @@ function houseBlockAt(tx0: number, ty0: number, mapId: string, nb: At): HouseBlo
   const stack: Array<[number, number]> = [[tx0, ty0]];
   let ax = tx0, ay = ty0;                 // ancla: teja mínima (y, luego x)
   let chimTx = -1, chimTy = -1, chimBest = 2;
+  let rCount = 0, hCount = 0;             // v4: tejas vs muros (casa entera)
+  const tops: Array<[number, number]> = []; // v4: tejas de cumbrera (sin 'r' arriba)
   while (stack.length) {
     const [cx, cy] = stack.pop()!;
     const k = `${cx},${cy}`;
     if (seen.has(k)) continue;
     seen.add(k);
-    if (!HOUSE_CHARS.has(nb(cx - tx0, cy - ty0))) continue;
+    const c = nb(cx - tx0, cy - ty0);
+    if (!HOUSE_CHARS.has(c)) continue;
     if (cy < ay || (cy === ay && cx < ax)) { ax = cx; ay = cy; }
-    if (nb(cx - tx0, cy - ty0) === 'r') {
+    if (c === 'r') {
+      rCount++;
       const h = vh(cx * 5 + 3, cy * 9 + 7);
       if (h < chimBest) { chimBest = h; chimTx = cx; chimTy = cy; }
+      if (nb(cx - tx0, cy - 1 - ty0) !== 'r') tops.push([cx, cy]);
+    } else {
+      hCount++;
     }
     stack.push([cx - 1, cy], [cx + 1, cy], [cx, cy - 1], [cx, cy + 1]);
   }
+  // — v4: TIPO por silueta. Teja 'r' aislada (sin muros) = cobertizo/
+  //   derrumbe; el AGUILÓN (dos aguas) solo en casas ENTERAS (r == H+d
+  //   y ≥3 tejas): las ruinas fragmentadas del presente quedan bajas. —
+  const entera = rCount === hCount && rCount >= 3;
+  const tipo = rCount === 1 && hCount === 0 ? 2
+    : entera && vh(ax * 5 + 2, ay * 11 + 3) < 0.38 ? 1 : 0;
+  // — Cúspide: fila norte de 'r', x del medio (impares exacto). —
+  let apx = -1, apy = -1;
+  if (tops.length) {
+    let minY = tops[0][1];
+    for (const tp of tops) if (tp[1] < minY) minY = tp[1];
+    const xs = tops.filter((tp) => tp[1] === minY).map((tp) => tp[0]).sort((a, b) => a - b);
+    apx = xs[(xs.length - 1) >> 1]; apy = minY;
+  }
+  // — Claraboya: una por bloque grande (≥5 tejas), en tramo continuo
+  //   de faldón (vecinos 'r' a ambos lados), nunca en la cúspide. —
+  let skx = -1, sky = -1, skBest = 2;
+  if (rCount >= 5 && tipo !== 2) {
+    for (const [cx, cy] of tops) {
+      if (cx === apx && cy === apy) continue;
+      if (nb(cx - 1 - tx0, cy - ty0) !== 'r' || nb(cx + 1 - tx0, cy - ty0) !== 'r') continue;
+      const h = vh(cx * 7 + 1, cy * 3 + 8);
+      if (h < skBest) { skBest = h; skx = cx; sky = cy; }
+    }
+  }
   const info: HouseBlock = {
     mat: Math.floor(vh(ax * 3 + 11, ay * 7 + 5) * 3),
-    chim: chimTx >= 0 && vh(ax * 13 + 1, ay * 5 + 9) < 0.34,
-    chimTx, chimTy,
+    tipo,
+    chim: chimTx >= 0 && tipo !== 2 && vh(ax * 13 + 1, ay * 5 + 9) < 0.34,
+    chimTx, chimTy, apx, apy, skx, sky,
+    finL: vh(ax * 11 + 4, ay * 3 + 1) < 0.72,
+    finR: vh(ax * 7 + 9, ay * 13 + 2) < 0.72,
   };
   if (cache.size > 8192) cache.clear();
   cache.set(key, info);
@@ -275,9 +349,12 @@ function groundBase(x: CanvasRenderingContext2D, tx: number, ty: number, mapId: 
 
 function paintRoof(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, mapId: string): void {
   const X = tx * 16, Y = ty * 16;
+  const blk = houseBlockAt(tx, ty, mapId, nb);
+  // — v4 COBERTIZO: teja 'r' aislada → tejado bajo de tablones —
+  if (blk.tipo === 2) { paintShedRoof(x, tx, ty, mapId); return; }
   const contL = nb(-1, 0) === 'r', contR = nb(1, 0) === 'r';
   const contU = nb(0, -1) === 'r', contD = nb(0, 1) === 'r';
-  const mat = houseBlockAt(tx, ty, mapId, nb).mat;
+  const mat = blk.mat;
 
   // — Faldón: base plana + CURSOS de 4 px alineados a la coordenada ABSOLUTA.
   //   Nada depende de tx en el patrón: dos 'r' vecinos comparten rejilla →
@@ -377,6 +454,17 @@ function paintRoof(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, 
     const r = mat === 1 ? SLATE.ridge : mat === 2 ? THATCH.ridge : PAL.ridge;
     px(x, X, Y, 16, 1, rHi);                       // lomo iluminado 1px
     px(x, X, Y + 1, 16, 1, r);                     // sombra del lomo
+    // — v4: REMATES de cumbrera en los extremos expuestos (hash) —
+    if (!contL && blk.finL) { px(x, X + 1, Y - 2, 1, 2, r); px(x, X + 1, Y - 3, 1, 1, rHi); }
+    if (!contR && blk.finR) { px(x, X + 14, Y - 2, 1, 2, r); px(x, X + 14, Y - 3, 1, 1, rHi); }
+  }
+  // — v4: CLARABOYA (una por bloque grande, en la teja elegida) —
+  if (tx === blk.skx && ty === blk.sky) {
+    px(x, X + 4, Y + 3, 8, 6, PAL.winFrame);       // marco
+    px(x, X + 5, Y + 4, 6, 4, PAL.glassDark);      // cristal emplomado
+    px(x, X + 5, Y + 4, 2, 1, PAL.glass);          // reflejo
+    px(x, X + 6, Y + 5, 1, 1, PAL.glassHi);
+    px(x, X + 7, Y + 3, 2, 1, PAL.iron);           // bisagra superior
   }
   // — Limatesas laterales solo contra vecino que no es tejado —
   const verge = mat === 1 ? SLATE.verge : mat === 2 ? THATCH.verge : PAL.brokenTile;
@@ -389,8 +477,8 @@ function paintRoof(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, 
   // — CHIMENEA: 1 por bloque en ~1/3 de las casas; la dibuja UNA sola teja
   //   (la de hash mínimo del faldón) y solo si el vecino de arriba es suelo
   //   blando (el desbordamiento hacia arriba es seguro en el prerrender). —
-  const blk = houseBlockAt(tx, ty, mapId, nb);
-  if (blk.chim && tx === blk.chimTx && ty === blk.chimTy) {
+  if (blk.chim && tx === blk.chimTx && ty === blk.chimTy &&
+      !(blk.tipo === 1 && tx === blk.apx && ty === blk.apy)) {
     const up = nb(0, -1);
     const upFree = up === '.' || up === ',' || up === '=' || up === 'c' || up === 'm';
     if (upFree) {
@@ -406,13 +494,88 @@ function paintRoof(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, 
       px(x, cx + 1, Y - 3, 1, 1, PAL.chimneyHi);   // sillar iluminado suelto
     }
   }
+
+  // — v4: AGUILÓN de las casas altas de dos aguas (desborda hacia
+  //   arriba desde la teja de cúspide; seguro en el prerrender) —
+  if (blk.tipo === 1 && tx === blk.apx && ty === blk.apy) {
+    paintGable(x, tx, ty, mat);
+  }
+}
+
+/** v4 — Aguilón triangular de las casas de DOS AGUAS: cara de muro con
+ *  buhardilla, limatesas escalonadas y remate en la cúspide. Ocupa las
+ *  7 filas SOBRE la teja de cúspide (desbordamiento hacia arriba,
+ *  seguro por el orden de filas del prerrender). */
+function paintGable(x: CanvasRenderingContext2D, tx: number, ty: number, mat: number): void {
+  const X = tx * 16, Y = ty * 16, cx = X + 8;
+  const face = mat === 1 ? PLANK.base : mat === 2 ? PLASTER_WARM.base : PAL.wall;
+  const faceHi = mat === 1 ? PLANK.hi : mat === 2 ? PLASTER_WARM.hi : PAL.wallHi;
+  const verge = mat === 1 ? SLATE.verge : mat === 2 ? THATCH.verge : PAL.brokenTile;
+  const rF = mat === 1 ? SLATE.ridge : mat === 2 ? THATCH.ridge : PAL.ridge;
+  const rFHi = mat === 1 ? SLATE.ridgeHi : mat === 2 ? THATCH.ridgeHi : PAL.ridgeHi;
+  // remate en la cúspide (astil + punta iluminada)
+  px(x, cx, Y - 9, 1, 1, rFHi);
+  px(x, cx, Y - 8, 1, 2, rF);
+  // filas del triángulo: semiancho 2..14 (recortado al tile)
+  for (let i = 0; i < 7; i++) {
+    const gy = Y - 7 + i;
+    const half = 2 + i * 2;
+    const x0 = Math.max(X, cx - half), x1 = Math.min(X + 15, cx + half - 1);
+    px(x, x0, gy, x1 - x0 + 1, 1, face);
+    px(x, x0, gy, 1, 1, verge);            // limatesa W
+    px(x, x1, gy, 1, 1, verge);            // limatesa E
+    if (i === 2 && vh(tx * 3 + 6, ty * 5 + 2) < 0.5) px(x, x0 + 2, gy, 2, 1, faceHi);
+  }
+  // buhardilla diminuta en la cara del aguilón
+  px(x, cx - 2, Y - 5, 4, 3, PAL.winFrame);
+  px(x, cx - 1, Y - 4, 2, 2, PAL.glassDark);
+  px(x, cx - 1, Y - 4, 1, 1, PAL.glassHi);
+}
+
+/** v4 — Cobertizo: la teja 'r' AISLADA (sin muros) se dibuja como tejado
+ *  bajo de tablones — derrumbe en el presente, cobertizo en el ayer.
+ *  Silueta 2 px más baja que una casa: hierba asomando arriba y abajo. */
+function paintShedRoof(x: CanvasRenderingContext2D, tx: number, ty: number, mapId: string): void {
+  const X = tx * 16, Y = ty * 16;
+  grassBase(x, tx, ty, mapId);
+  px(x, X, Y + 2, 16, 1, PAL.brokenTile);  // canto trasero del faldón
+  // tres cursos de tablones con junta y veta
+  for (let b = 0; b < 3; b++) {
+    const by = Y + 3 + b * 3;
+    px(x, X, by, 16, 2, PLANK.base);
+    px(x, X, by + 2, 16, 1, PLANK.line);
+    if (vh(tx * 3 + b, ty * 5 + b * 2) < 0.5) {
+      px(x, X + 2 + Math.floor(vh(tx + b, ty * 3 + b) * 10), by, 4, 1, PLANK.hi);
+    }
+  }
+  // tornapuntas verticales (rejilla absoluta cada 5 px)
+  for (let bx = X + ((3 - (X % 5) + 5) % 5); bx < X + 16; bx += 5) {
+    px(x, bx, Y + 3, 1, 9, PLANK.line);
+  }
+  // hueco roto (hash) con astillas
+  if (vh(tx * 7 + 4, ty * 11 + 6) < 0.42) {
+    const hx = X + 3 + Math.floor(vh(tx * 5 + 2, ty + 8) * 9);
+    const hy = Y + 4 + Math.floor(vh(tx + 6, ty * 7 + 1) * 5);
+    px(x, hx, hy, 3, 3, DOOR_IN);
+    px(x, hx + 3, hy, 1, 1, PLANK.base);      // canto del hueco
+    px(x, hx - 1, hy + 3, 2, 1, PLANK.line);  // astilla caída
+  }
+  // musgo y desgaste
+  if (vh(tx * 9 + 1, ty * 3 + 5) < 0.35) {
+    px(x, X + 2 + Math.floor(vh(tx * 3, ty + 2) * 10), Y + 10, 3, 1, PAL.mossTile);
+  }
+  // alero y sombra sobre el suelo; hierbas al pie
+  px(x, X, Y + 12, 16, 1, PLANK.post);
+  px(x, X, Y + 13, 16, 1, PAL.objShadow);
+  px(x, X + 2, Y + 14, 1, 2, PAL.grassBlade);
+  px(x, X + 12, Y + 14, 1, 2, PAL.mossTile);
 }
 
 // ------------------------------------------------------------
 // 'H' / 'd' — Pared v3 (material del bloque, viga maestra, alero)
 // ------------------------------------------------------------
 
-function wallBase(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, mat: number): void {
+function wallBase(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, mat: number, noFirewood = false): void {
   const X = tx * 16, Y = ty * 16;
   if (mat === 1) {
     // SILLARES DE MADERA: tablones horizontales con extremos escalonados
@@ -469,6 +632,33 @@ function wallBase(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, m
   if (!isWallCh(nb(1, 0))) {
     px(x, X + 13, Y, 3, 16, post);
     px(x, X + 13, Y, 1, 16, postHi);
+  }
+  // — v4: TIRANTES diagonales en esquinas (poste → viga maestra) —
+  if (!isWallCh(nb(-1, 0)) && vh(tx * 3 + 2, ty * 5 + 7) < 0.6) {
+    px(x, X + 3, Y + 8, 1, 1, post);
+    px(x, X + 4, Y + 7, 1, 1, post);
+    px(x, X + 5, Y + 6, 1, 1, post);
+    px(x, X + 6, Y + 5, 1, 1, postHi);
+  }
+  if (!isWallCh(nb(1, 0)) && vh(tx * 5 + 8, ty * 3 + 4) < 0.6) {
+    px(x, X + 12, Y + 8, 1, 1, post);
+    px(x, X + 11, Y + 7, 1, 1, post);
+    px(x, X + 10, Y + 6, 1, 1, post);
+    px(x, X + 9, Y + 5, 1, 1, postHi);
+  }
+  // — v4: LEÑAS APILADAS bajo el alero (muro intermedio con tejado
+  //   encima, sin ventana; hash ~1/3) —
+  if (!noFirewood && nb(0, -1) === 'r' && isWallCh(nb(-1, 0)) && isWallCh(nb(1, 0)) &&
+      vh(tx * 13 + 5, ty * 9 + 2) < 0.34) {
+    const fw = X + 3 + Math.floor(vh(tx * 5 + 1, ty * 7 + 3) * 2) * 6; // X+3 | X+9
+    px(x, fw + 2, Y + 9, 4, 2, PAL.woodMid);   // tronco superior
+    px(x, fw + 2, Y + 9, 4, 1, PAL.woodLight);
+    px(x, fw + 5, Y + 9, 1, 2, PAL.woodDark);  // canto del corte
+    px(x, fw, Y + 11, 4, 2, PAL.woodMid);      // troncos inferiores
+    px(x, fw + 4, Y + 11, 4, 2, PAL.woodMid);
+    px(x, fw, Y + 11, 1, 2, PAL.woodLight);    // vetas de corte
+    px(x, fw + 7, Y + 11, 1, 2, PAL.woodDark);
+    px(x, fw + 3, Y + 11, 2, 1, PAL.woodDark); // sombra entre troncos
   }
 }
 
@@ -546,6 +736,11 @@ function paintDoor(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, 
   // jambas
   px(x, X + 2, Y + 5, 1, 8, PAL.stepDark);
   px(x, X + 13, Y + 5, 1, 8, PAL.stepDark);
+  // v4: marco de MADERA en las jambas (entre dintel y escalón)
+  px(x, X + 2, Y + 5, 1, 8, PAL.winFrame);
+  px(x, X + 13, Y + 5, 1, 8, PAL.winFrame);
+  px(x, X + 2, Y + 5, 1, 1, PAL.beamHi);
+  px(x, X + 13, Y + 5, 1, 1, PAL.beamHi);
   // — Hoja de tablones: por hash algunas quedan ENTORNADAS 1-2px con el
   //   interior oscuro asomando por el lado del pomo —
   const openH = vh(tx * 7 + 3, ty * 11 + 5);
@@ -574,16 +769,25 @@ function paintDoor(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At, 
   const kx = leafX + leafW - 3;
   px(x, kx, Y + 8, 1, 1, PAL.gold);
   px(x, kx, Y + 9, 1, 1, '#8a6038');           // sombra del pomo
-  // escalón de piedra (sustituye al zócalo bajo la puerta)
-  px(x, X + 2, Y + 13, 12, 3, PAL.step);
-  px(x, X + 2, Y + 13, 12, 1, PAL.plinthHi);
-  px(x, X + 2, Y + 15, 12, 1, PAL.stepDark);
-  // farolillo colgante apagado (por hash) junto a la puerta
+  // v4: escalón de entrada de DOS ALTURAS (superior estrecho + inferior ancho)
+  px(x, X + 1, Y + 14, 14, 1, PAL.plinthHi);  // canto del escalón inferior
+  px(x, X + 3, Y + 13, 10, 1, PAL.plinthHi);  // top del escalón superior
+  px(x, X + 3, Y + 14, 10, 1, PAL.step);      // cara del superior
+  px(x, X + 1, Y + 15, 14, 1, PAL.stepDark);  // cara del inferior
+  // v4: farolillo junto a la puerta, ENCENDIDO o APAGADO (cristal
+  // agrietado) por hash de posición
   if (vh(tx * 19 + 2, ty * 23 + 4) < 0.45) {
+    const lit = vh(tx * 23 + 5, ty * 17 + 8) < 0.38;
     px(x, X + 1, Y + 4, 2, 1, PAL.iron);        // brazo
     px(x, X + 1, Y + 5, 2, 1, PAL.iron);        // gancho
     px(x, X + 1, Y + 6, 2, 3, PAL.lanternOff);  // cuerpo
-    px(x, X + 1, Y + 7, 2, 1, PAL.lanternGlass);// cristal apagado
+    if (lit) {
+      px(x, X + 1, Y + 7, 2, 1, NIGHT_GLASS);   // cristal ámbar
+      px(x, X + 1, Y + 6, 1, 1, NIGHT_CORE);    // llama
+    } else {
+      px(x, X + 1, Y + 7, 2, 1, PAL.lanternGlass); // cristal apagado
+      px(x, X + 2, Y + 7, 1, 1, PAL.iron);         // grieta
+    }
     px(x, X + 1, Y + 9, 2, 1, PAL.iron);        // base
   }
 }
@@ -685,6 +889,16 @@ function paintFence(x: CanvasRenderingContext2D, tx: number, ty: number, nb: At,
     px(x, X + 6 + ps, Y, 3, 1, '#c8a878');          // punta
   }
   px(x, X + 5 + ps, Y + 13, 5, 1, PAL.woodDark);    // base del poste
+  // v4: musgo en la base (hash)
+  if (vh(tx * 9 + 6, ty * 3 + 4) < 0.3) {
+    px(x, X + 4 + Math.floor(vh(tx * 3 + 1, ty + 5) * 8), Y + 12, 2, 1, PAL.mossTile);
+  }
+  // v4: tramo reparado con tornapunta clavada (tramos rectos, hash)
+  if (hL && hR && !vU && !vD && vh(tx * 5 + 8, ty * 7 + 2) < 0.22) {
+    for (let s = 0; s < 5; s++) px(x, X + 4 + s, Y + 5 + s, 1, 1, PAL.woodDark);
+    px(x, X + 4, Y + 5, 1, 1, PAL.woodLight);      // clavo
+    px(x, X + 8, Y + 9, 1, 1, PAL.woodLight);
+  }
   dropShadow(x, X + 7, Y + 14, 4);                  // sombra de contacto
 }
 
@@ -736,6 +950,21 @@ function paintWell(x: CanvasRenderingContext2D, tx: number, ty: number, mapId: s
   px(x, X + 2, Y + 14, 1, 2, PAL.grassBlade);
   px(x, X + 13, Y + 13, 1, 2, PAL.mossTile);
   px(x, X + 1, Y + 13, 1, 1, PAL.grassBlade);
+  // — v4: variantes por hash — cuerda enrollada en el balancín,
+  //   cubo apartado en el suelo y musgo en el brocal —
+  if (vh(tx * 5 + 3, ty * 7 + 2) < 0.55) {
+    px(x, X + 9, Y - 8, 3, 1, PAL.rope);          // cuerda enrollada
+    px(x, X + 10, Y - 9, 1, 1, PAL.rope);
+    px(x, X + 12, Y - 8, 1, 1, PAL.ropeDark);
+  }
+  if (vh(tx * 3 + 8, ty * 11 + 4) < 0.4) {
+    px(x, X + 1, Y + 12, 3, 2, PAL.woodMid);      // cubo apartado
+    px(x, X + 1, Y + 12, 3, 1, PAL.woodDark);
+    px(x, X + 1, Y + 13, 3, 1, PAL.iron);
+  }
+  if (vh(tx * 7 + 2, ty * 5 + 6) < 0.45) {
+    px(x, X + 4, Y + 12, 2, 1, PAL.mossTile);     // musgo del brocal
+  }
 }
 
 // ------------------------------------------------------------
@@ -921,8 +1150,9 @@ export function paintVillage(
   switch (ch) {
     case 'H': { // pared casa: base por material + ventana(s) por plan R1
       const mat = houseBlockAt(tx, ty, mapId, nb).mat;
-      wallBase(x, tx, ty, nb, mat);
-      if (windowPlanAbs(tx, ty, (a) => nb(a - tx, 0))) paintWindow(x, tx, ty);
+      const win = windowPlanAbs(tx, ty, (a) => nb(a - tx, 0));
+      wallBase(x, tx, ty, nb, mat, win); // v4: sin leñas bajo una ventana
+      if (win) paintWindow(x, tx, ty);
       return;
     }
     case 'r': paintRoof(x, tx, ty, nb, mapId); return;

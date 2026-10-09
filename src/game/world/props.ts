@@ -26,6 +26,22 @@
 //   · selected (jugador <24 px): TODOS los kinds reciben un
 //     contorno claro de 1 px en el suelo que pulsa sutilmente.
 //
+// NOVEDAD v4 (R7-V2 · aditivo, firmas intactas):
+//   · VARIANTES POR FAMILIA vía hash2 (3-4 looks por prop, cero
+//     Math.random): sign → tabla doble / pértiga con banderín /
+//     farol colgado encendido-apagado; forge → tonel de temple con
+//     aros (tapa puesta o abierta), caja con/sin tapa y saco atado;
+//     gate → faroles de pilar encendidos (el halo crece de noche) o
+//     apagados con cristal agrietado; sanctuary → remate apuntado y
+//     ofrenda al pie; fragment → esquirla caída / grieta extra;
+//     altarEcho → tapiz frontal con sigil por altar y musgo.
+//   · Detalles de historia: cuerda deshilachada, tabla agrietada y
+//     musgo en el cartel; PERCHAS DE PESCADO junto a los carteles de
+//     la costa (mapId 'costa' + hash de posición).
+//   · Los efectos v3 (auras, brasas, remaches, selección, sombras
+//     nocturnas) quedan INTACTOS: solo se AÑADEN rects deterministas
+//     baratos (fillRect, sin paths nuevos ni gradientes).
+//
 // CONTRATO DE COORDENADAS (elección documentada):
 //   drawPropV2 recibe coords de MUNDO (wx, wy = centro del prop
 //   en px de mundo, p. ej. pr.x*16+8, pr.y*16+8) y aplica ella
@@ -58,6 +74,7 @@ let _tx = 0;                 // tile X del prop (para hash determinista)
 let _ty = 0;                 // tile Y del prop
 let _nf = 0;                 // factor noche 0..1 (de g.dayT, espejo de lighting.ts)
 let _pid = '';               // id del prop actual (flags de altares por id: altar_mareas/…)
+let _mid = '';               // mapId del prop (v4: variantes por mapa, p. ej. perchas en costa)
 
 // ---------------- Helpers de dibujo (px mundo locales ×ZOOM) ----------------
 
@@ -289,6 +306,17 @@ function drawSanctuary(): void {
   P(1, -25, 2, 24, PAL_PROP.sanctShade);   // sombra
   P(-2, -27, 4, 2, PAL_PROP.sanctStone);   // remate
   P(-2, -27, 2, 1, PAL_PROP.sanctLight);
+  // v4: variante de remate por hash (pirámide apuntada) + ofrenda al pie
+  const sv2 = h2(_tx * 5 + 3, _ty * 7 + 1);
+  if (sv2 >= 0.55) {
+    P(-1, -28, 2, 1, PAL_PROP.sanctStone);   // pirámide apuntada
+    P(-1, -28, 1, 1, PAL_PROP.sanctLight);
+  }
+  if (sv2 > 0.72) {
+    P(7, 2, 1, 2, PAL_PROP.wax);             // vela apagada de ofrenda
+    P(7, 2, 1, 1, PAL_PROP.waxHi);
+    PEBBLE(10, 3, '#6a6a7a', '#8a8a9a', 1);  // piedritas
+  }
   // punta luminosa = CRISTAL del santuario: pulso LENTO de 2 s
   PA(-1, -29, 2, 2, PAL_PROP.runeCyan, 0.5 + pulse * 0.4);
   PA(-1, -29, 1, 1, PAL_PROP.runeCyanHi, 0.75 + pulse * 0.25);
@@ -437,6 +465,50 @@ function drawForge(): void {
       PA(xx, yy, 1, 1, i === 0 ? PAL_PROP.emberCore : PAL_PROP.spark, fade);
     }
   }
+
+  // —— v4: ajuar determinista alrededor de la forja (hash por
+  //    posición): tonel de temple con aros, caja y saco ——
+  const fs = h2(_tx * 3 + 11, _ty * 7 + 5);
+  if (fs < 0.7) { // TONEL con aros (tapa puesta o abierta por hash)
+    P(14, -3, 5, 7, PAL.woodMid);
+    P(14, -3, 1, 7, PAL.woodLight);          // luz lateral
+    P(18, -3, 1, 7, PAL.woodDark);           // sombra lateral
+    P(15, -3, 1, 7, PAL.woodDark);           // junta de duelas
+    P(14, -2, 5, 1, PAL_PROP.ironDeep);      // aro superior
+    P(14, 1, 5, 1, PAL_PROP.ironDeep);       // aro inferior
+    P(14, 3, 5, 1, PAL.woodDark);            // fondo
+    if (h2(_tx * 5 + 8, _ty * 3 + 2) < 0.5) {
+      P(14, -4, 5, 1, PAL.woodDark);         // tapa
+      P(14, -4, 2, 1, PAL.woodLight);
+    } else {
+      P(15, -4, 3, 1, PAL_PROP.barDeep);     // abierto: agua de temple
+      P(15, -4, 2, 1, PAL.waterGlint);
+    }
+  }
+  if (fs >= 0.35 && fs < 0.95) { // CAJA con/sin tapa
+    P(-20, 0, 6, 5, PAL.woodMid);
+    P(-20, 0, 1, 5, PAL.woodLight);
+    P(-15, 0, 1, 5, PAL.woodDark);
+    P(-20, 2, 6, 1, PAL.woodDark);           // junta del tablón
+    P(-20, 0, 2, 1, PAL_PROP.iron);          // refuerzo de esquina
+    P(-20, 0, 1, 2, PAL_PROP.iron);
+    if (h2(_tx * 9 + 4, _ty * 5 + 6) < 0.5) {
+      P(-20, -1, 6, 1, PAL.woodLight);       // tapa cerrada
+    } else {
+      P(-19, 0, 4, 1, PAL_PROP.barDeep);     // abierta: contenido
+      P(-18, 0, 1, 1, '#9aa0ac');            // lima asomando
+    }
+  }
+  if (fs > 0.78 || fs < 0.12) { // SACO atado con grano derramado
+    P(7, 0, 5, 4, SACK_C);
+    P(7, 0, 5, 1, SACK_HI);
+    P(7, 3, 5, 1, SACK_DK);
+    P(8, 1, 2, 1, SACK_DK);                  // pliegue
+    P(8, -1, 2, 1, SACK_C);                  // cuello
+    P(8, -1, 1, 1, SACK_DK);                 // nudo
+    P(6, 4, 2, 1, SACK_HI);                  // grano derramado
+    P(9, 4, 1, 1, SACK_C);
+  }
 }
 
 // ---------------- Fragmento de Eco ----------------
@@ -484,8 +556,17 @@ function drawFragment(): void {
   PA(0, -14 + bob, 1, 3, PAL_PROP.crackGoldDeep, gl * 0.9);
   PA(-2, -11 + bob, 2, 1, PAL_PROP.crackGold, gl);
   PA(-2, -8 + bob, 1, 2, PAL_PROP.crackGoldDeep, gl * 0.6);
-  PA(1, -19 + bob, 1, 2, PAL_PROP.crackGoldDeep, gl * 0.75);
+  PA(-1, -19 + bob, 1, 2, PAL_PROP.crackGoldDeep, gl * 0.75);
   PA(-1, -16 + bob, 1, 1, PAL_PROP.crackGoldHi, 0.95);
+
+  // v4: variantes por hash — esquirla caída al pie / grieta extra
+  const fv = h2(_tx * 7 + 5, _ty * 3 + 2);
+  if (fv < 0.3) {
+    P(7, 2, 2, 2, '#5a5a6a');
+    P(7, 2, 1, 1, '#7a7a8a');
+    PA(7, 2, 1, 1, PAL_PROP.crackGoldDeep, 0.45); // eco dorado en la esquirla
+  }
+  if (fv > 0.75) PA(2, -9 + bob, 1, 2, PAL_PROP.crackGold, gl * 0.7);
 
   // piedritas delanteras
   for (const o of orb) if (!o.back) PEBBLE(o.x, o.y, '#6a6a7a', '#8a8a9a', 1);
@@ -522,6 +603,19 @@ function drawAltarEcho(g: Game): void {
   const prog = (t * 2.5) % 1;
   PA(-1, -2 + Math.round(prog * 5), 2, 1, PAL_PROP.crackGoldHi, 0.9);
   ELL(0, 0, 6, 3, PAL_PROP.crackGold, 0.12 + Math.sin(t * 2) * 0.05);
+
+  // v4: tapiz frontal con sigil por altar + musgo en la losa (hash)
+  const av = h2(_tx * 5 + 1, _ty * 3 + 9);
+  if (av < 0.5) {
+    const sig = _pid === 'altar_mareas' ? PAL_PROP.runeCyan
+      : _pid === 'altar_cumbres' ? '#a8d8ff' : PAL_PROP.crackGold;
+    P(-8, 1, 6, 3, CLOTH);
+    P(-8, 1, 6, 1, CLOTH_HI);
+    P(-8, 3, 6, 1, CLOTH_DK);
+    P(-6, 2, 1, 1, sig);                     // sigil del guardián
+    P(-4, 2, 1, 1, sig);
+  }
+  if (av > 0.6) P(6, 0, 2, 1, PAL_PROP.mossDark);
 
   // velas 2×3 (dos columnas, tres filas) con llama de 3 frames
   for (let row = 0; row < 3; row++) {
@@ -614,6 +708,62 @@ function drawSign(selected: boolean): void {
   if (r > 0.5) P(-4 + dx, -16, 4, 1, '#7a5230');
   if (r < 0.35) { P(3 + dx, -16, 2, 1, '#5c3a1e'); P(4 + dx, -16, 1, 1, '#4a2d16'); } // nudo
 
+  // —— v4: VARIANTE por hash (4 looks de la familia cartel) ——
+  const sv = Math.floor(h2(_tx * 3 + 11, _ty * 5 + 2) * 4); // 0..3
+  if (sv === 1) { // tabla doble bajo la principal
+    P(-6 + dx, -9, 12, 4, '#8a5a2b');
+    P(-6 + dx, -9, 12, 1, '#a8703a');
+    P(-6 + dx, -6, 12, 1, PAL.door);
+    P(-4 + dx, -8, 1, 1, '#9aa0ac'); P(3 + dx, -8, 1, 1, '#9aa0ac');
+  } else if (sv === 2) { // pértiga con banderín
+    P(-1 + dx, -24, 2, 7, PAL.woodDark);
+    P(-1 + dx, -24, 1, 7, PAL.woodMid);
+    const swy = Math.round(Math.sin(t * 2 + h2(_tx, _ty) * 6.283));
+    P(1 + dx, -23, 4, 1, CLOTH);
+    P(1 + dx, -22, 3, 1, CLOTH);
+    P(1 + dx, -21, 2, 1, CLOTH);
+    P(1 + dx + swy, -20, 1, 1, CLOTH_DK);    // punta que ondea
+    P(1 + dx, -23, 1, 1, CLOTH_HI);          // brillo de la tela
+  } else if (sv === 3) { // farol colgado del brazo (encendido por hash)
+    P(2 + dx, -20, 5, 1, PAL.woodDark);      // brazo
+    P(6 + dx, -19, 1, 1, PAL.ropeDark);      // cordel
+    P(5 + dx, -18, 3, 5, PAL_PROP.ironDeep); // cuerpo
+    P(5 + dx, -13, 3, 1, PAL_PROP.iron);     // base
+    if (h2(_tx * 7 + 9, _ty * 11 + 3) < 0.5) {
+      P(6 + dx, -17, 1, 3, LANT_LIT);        // cristal ámbar
+      PA(6 + dx, -17 + (Math.floor(t * 3) % 2), 1, 1, PAL_PROP.flame2, 0.85);
+      ELL(6.5 + dx, -15.5, 3.5, 3, LANT_HALO, 0.06 + 0.13 * _nf);
+    } else {
+      P(6 + dx, -17, 1, 3, PAL.lanternGlass);
+      P(6 + dx, -17, 1, 1, PAL_PROP.iron);   // cristal agrietado
+    }
+  }
+  // —— v4: detalles de historia (independientes de la variante) ——
+  if (h2(_tx * 13 + 6, _ty * 7 + 1) < 0.3) { // cuerda deshilachada
+    P(5 + dx, -10, 1, 2, PAL.rope);
+    P(6 + dx, -9, 1, 1, PAL.rope);
+    P(4 + dx, -9, 1, 1, PAL.ropeDark);
+  }
+  if (h2(_tx * 7 + 2, _ty * 9 + 4) < 0.22) { // tabla agrietada + astilla
+    P(2 + dx, -18, 1, 2, PAL.door);
+    P(3 + dx, -16, 1, 1, PAL.door);
+    P(-2 + dx, -10, 1, 2, '#6d4520');
+  }
+  if (h2(_tx * 11 + 6, _ty * 3 + 1) < 0.35) P(-1 + dx, 3, 2, 1, PAL_PROP.moss); // musgo
+  // —— v4: perchas de pescado (solo costa + hash): rack junto al cartel ——
+  if (_mid === 'costa' && h2(_tx * 11 + 4, _ty * 13 + 7) < 0.55) {
+    const swf = Math.round(Math.sin(t * 1.7 + h2(_tx, _ty) * 6.283));
+    P(9, -6, 1, 11, PAL.woodDark);           // poste del rack
+    P(13, -4, 1, 9, PAL.woodDark);
+    P(8, -7, 7, 1, PAL.woodMid);             // travesaño
+    P(8, -6, 7, 1, PAL.woodDark);            // sombra
+    for (const fxp of [10, 12]) {            // peces colgando (vaivén 1px)
+      P(fxp + swf, -5, 1, 3, FISH_C);
+      P(fxp + swf, -5, 1, 1, FISH_HI);
+      P(fxp + swf, -2, 1, 1, FISH_DK);
+    }
+  }
+
   // icono de lectura (solo seleccionado): globito redondeado con "E"
   if (selected) {
     const by = -26 + Math.round(Math.sin(t * 3));
@@ -642,6 +792,19 @@ function drawSign(selected: boolean): void {
 // Óxido del portcullis (v3: 2 tonos, locales al módulo)
 const RUST_A = '#7a4a28';
 const RUST_B = '#5a3a20';
+
+// —— v4 (R7-V2 · aditivo): telas, sacos, faroles y pescado ——
+const CLOTH = '#a84a3a';      // tela del banderín / tapiz
+const CLOTH_HI = '#c86a50';   // borde iluminado de la tela
+const CLOTH_DK = '#7e3626';   // dobladillo en sombra
+const SACK_C = '#c8b088';     // arpillera del saco
+const SACK_HI = '#dccaa4';
+const SACK_DK = '#9a8262';
+const LANT_LIT = '#ffc868';   // cristal de farol encendido
+const LANT_HALO = '#ffb054';  // halo cálido del farol
+const FISH_C = '#7a8a96';     // pez colgado (percha de costa)
+const FISH_HI = '#9aa8b4';
+const FISH_DK = '#56626e';
 
 function drawGate(): void {
   const t = _t;
@@ -676,6 +839,25 @@ function drawGate(): void {
       if (hg < 0.4) P(x0 + 1 + (Math.floor(hg * 110) % 3), gy + 4, 2, 1, PAL_PROP.moss);
     }
     if (hg > 0.35) P(x0 + 1 + (Math.floor(hg * 8) % 3), 0, 2, 1, PAL_PROP.mossDark); // musgo al pie
+
+    // v4: farol de PILAR — encendido (halo que crece de noche) o
+    // apagado con cristal agrietado, por hash de posición
+    const hl = h2(_tx * 17 + side * 5 + 2, _ty * 9 + side * 3 + 4);
+    if (hl < 0.65) {
+      const ox = side === 0 ? x0 - 2 : x0 + 5;   // extremo del brazo
+      P(side === 0 ? x0 - 2 : x0 + 4, -21, 2, 1, PAL_PROP.iron); // brazo
+      P(ox - 1, -20, 3, 1, PAL_PROP.iron);       // tapa
+      P(ox - 1, -19, 3, 5, PAL_PROP.ironDeep);   // cuerpo
+      P(ox - 1, -14, 3, 1, PAL_PROP.iron);       // base
+      if (h2(_tx * 7 + side * 11 + 6, _ty * 5 + side * 13 + 9) < 0.5) {
+        P(ox, -18, 1, 3, LANT_LIT);              // cristal ámbar
+        PA(ox, -18 + (Math.floor(t * 3 + side) % 2), 1, 1, PAL_PROP.flame2, 0.85);
+        ELL(ox, -16, 4, 3, LANT_HALO, 0.05 + 0.14 * nf); // halo crece de noche
+      } else {
+        P(ox, -18, 1, 3, PAL.lanternGlass);
+        P(ox, -18, 1, 1, PAL_PROP.iron);         // grieta del cristal
+      }
+    }
   }
 
   // penumbra del vano
@@ -744,6 +926,7 @@ export function drawPropV2(
   _ty = Math.floor(wy / TILE);
   _nf = nightFactor(g.dayT); // v3: factor noche para sombras largas (gate)
   _pid = id ?? '';
+  _mid = g.mapId; // v4: variantes por mapa (perchas de pescado en costa)
   ctx.save();
   try {
     switch (kind) {
