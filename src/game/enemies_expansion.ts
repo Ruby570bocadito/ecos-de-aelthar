@@ -777,7 +777,7 @@ function tickSirena(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
   // ---- banner de la jefa (misma técnica que guardianBrain) ----
   if (e.aggro && !g.flags.sirenaIntro) {
     g.flags.sirenaIntro = true;
-    g.bossBannerT = 3.2;
+    g.bossBannerT = 1.8; // R9-5: intro corta ya muestra el nombre
     g.bossBannerText = 'SIRENA ABISAL';
     g.bossBannerSub = 'La que olvidó su nombre';
     addFlash(g, '#8ef0ff', 0.25);
@@ -958,7 +958,7 @@ function tickGolem(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): boo
   // ---- banner del jefe ----
   if (e.aggro && !g.flags.golemIntro) {
     g.flags.golemIntro = true;
-    g.bossBannerT = 3.2;
+    g.bossBannerT = 1.8; // R9-5: intro corta ya muestra el nombre
     g.bossBannerText = 'GÓLEM DE ESCARCHA';
     g.bossBannerSub = 'Memoria de la montaña';
     addFlash(g, '#a8d8ff', 0.25);
@@ -1263,7 +1263,7 @@ function tickVult(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
   // ---- banner del jefe (misma técnica que sirena/golem) ----
   if (e.aggro && !g.flags.vultIntro) {
     g.flags.vultIntro = true;
-    g.bossBannerT = 3.2;
+    g.bossBannerT = 1.8; // R9-5: intro corta ya muestra el nombre
     g.bossBannerText = 'VULT, EL CAZADOR DE ECOS';
     g.bossBannerSub = 'El mapa de tus pasos es su contrato';
     addFlash(g, '#c8b0e8', 0.25);
@@ -1499,7 +1499,7 @@ function tickCoro(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bool
   // ---- banner del jefe ----
   if (e.aggro && !g.flags.coroIntro) {
     g.flags.coroIntro = true;
-    g.bossBannerT = 3.2;
+    g.bossBannerT = 1.8; // R9-5: intro corta ya muestra el nombre
     g.bossBannerText = 'EL CORO ROTO';
     g.bossBannerSub = 'Tres máscaras, una nota al revés';
     addFlash(g, '#c8b0e8', 0.25);

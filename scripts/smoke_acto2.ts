@@ -194,5 +194,5 @@ if (SOLID_CHARS.size > 0) ok(`SOLID_CHARS = ${SOLID_CHARS.size} chars (${[...SOL
 else bad('SOLID_CHARS vacío');
 
 console.log('\n================================');
-console.log(fails === 0 ? `RESULTADO: ✗ 0 fallos, ⚠ ${warns} avisos` : `RESULTADO: ✗ ${fails} FALLOS, ⚠ ${warns} avisos`);
+console.log(fails === 0 ? `RESULTADO: ✓ 0 fallos, ⚠ ${warns} avisos` : `RESULTADO: ✗ ${fails} FALLOS, ⚠ ${warns} avisos`);
 process.exit(fails === 0 ? 0 : 1);

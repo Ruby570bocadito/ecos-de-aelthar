@@ -12,13 +12,13 @@ import type { Game } from './engine';
 import { TILE, playerMeleeDmg, BOSS_DEFEAT_FLAG } from './engine';
 import type { Enemy, Dir, Element, Player, Companion } from './types';
 import { ENEMY_DEFS } from './data';
-import { audio } from './audio';
+import { audio, playSpellCast, playSpellImpact, playNightAmbience, playHowlDistant, playBossRoarVariant } from './audio';
 import { aggroMult } from './balance'; // R8-7: agro escala con el nivel del jugador
 import { addShake, addFlash, requestSlowmo, applyKnockback, stepKnockback } from './fxcore';
 // Ronda 2 · Terror: capas de pavor visual/audio + presentación del jefe + FX de fases
 import { updateHorror } from './actors/horror';
 import { updateDread, dreadInit, dreadStinger } from './actors/dread';
-import { startBossIntro, updateBossIntro } from './actors/bossintro';
+import { startBossIntro, updateBossIntro, bossIntroActive } from './actors/bossintro';
 import { updateBossFx } from './actors/bossfx';
 // Ronda 3 · Combate y Juice: HUD vivo, FX de Ilwen y audio de latido
 import { updateHudFx, hudHeartbeatPulse } from './actors/hudfx';
@@ -28,6 +28,8 @@ import { expansionTick, expansionDeathFx, expansionBossWatchers } from './enemie
 import { tileAt } from './maps'; // solo lectura (mapas propiedad de otro agente)
 import { interaccionTick, companionOrdersMove, lureActive, sennoChase } from './interaccion'; // 16-b: órdenes tácticas + señuelo
 import { perfQuality } from './perf'; // R6-V10: escalón de calidad adaptativa (0=alta · 1=media · 2=baja)
+import { nightAggroMul } from './world/lighting'; // R9-2: curva suave de agresión nocturna
+import { SPELL_CAST_TIME, SPELL_IMPACT_TIME, SPELL_RESIDUE_TIME } from './actors/spells'; // R9-4: ventanas de FX
 
 // R6-V10 · Calidad adaptativa (consumidor de perf.ts): multiplicador de partículas
 // COSMÉTICAS según el escalón que perfFrame ya calcula (alta=×1 · media=×0.6 · baja=×0.35).
@@ -35,6 +37,9 @@ import { perfQuality } from './perf'; // R6-V10: escalón de calidad adaptativa 
 // El feedback de gameplay NO se recorta aquí (disolución de jefes/hitsparks viven en
 // bossfx.ts/fx.ts); las brasas de 'quemado' llevan suelo 0.7 por ser feedback de estado.
 const qMul = (): number => [1, 0.6, 0.35][perfQuality()];
+
+// R9-8: ventana del aullido lejano (40 s deterministas) — dispara 1 vez por ventana
+let lastHowlWin = -1;
 
 const DIRS: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
 
@@ -522,7 +527,17 @@ export function updateGame(g: Game, dt: number) {
   // ---------------- enemigos ----------------
   // R5-O10: isNight no cambia dentro del frame (dayT se integró al inicio) —
   // se memoiza 1× por frame en vez de 1× por enemigo.
-  curNightMult = isNight(g) ? 1.3 : 1;
+  // R9-2: curva suave de agresión (1.0 día → 1.35 noche profunda, sin salto binario)
+  curNightMult = nightAggroMul(g.dayT * 1440);
+  // R9-8: ambiente nocturno (grillos+viento; idempotente, seguro cada frame)
+  const nightNow = isNight(g);
+  playNightAmbience(nightNow);
+  // R9-8: aullido lejano ocasional de noche (ventana determinista de 40 s, ~45%)
+  const howlWin = Math.floor(g.globalT / 40);
+  if (nightNow && howlWin !== lastHowlWin && ((howlWin * 2654435761) >>> 0) % 100 < 45) {
+    lastHowlWin = howlWin;
+    playHowlDistant();
+  }
   let anyAggro = false;
   // R8-2.5 · TOKEN DE ATAQUE — 1 pasada O(n), sin allocs ( EPIC 2.5 espaciado):
   // elige al atacante no-jefe más cercano al Portador; los demás lo respetan.
@@ -603,6 +618,8 @@ export function updateGame(g: Game, dt: number) {
     pr.y += pr.vy * dt;
     // colisión de pared: tileSolidAt es el método público del motor (SOLID_CHARS + época)
     let dead = pr.t <= 0 || g.tileSolidAt(pr.x, pr.y);
+      // R9-4: ¿el hechizo REMATA? (impacto contundente + sacudida sonora grande)
+      let killedBig = false;
     if (pr.from !== 'enemy') {
       // proyectil aliado (Portador o Ilwen): daña enemigos
       // R6-V10: estela de proyectil aliado = cosmética → probabilidad × calidad
@@ -634,6 +651,8 @@ export function updateGame(g: Game, dt: number) {
       if (hitIdx >= 0) {
         const e = g.enemies[hitIdx];
         g.damageEnemy(e, pr.dmg, pr.element, 30, Math.sign(pr.vx), Math.sign(pr.vy));
+        killedBig = e.dead === true; // R9-4: el golpe mata → impacto grande
+        if (killedBig) addShake(g, 2.5); // R9-4: micro-sacudida al rematar (contrato spells.ts)
         // empuje según elemento: el fuego arrea más (contrato fxcore)
         const kbForce = pr.from === 'companion' ? 90 : pr.element === 'fuego' ? 150 : pr.element === 'rayo' ? 110 : 85;
         applyKnockback(e, pr.vx, pr.vy, kbForce);
@@ -673,6 +692,12 @@ export function updateGame(g: Game, dt: number) {
       }
     }
     if (dead) {
+      // R9-4 · magias espectaculares: impacto + residuo mágico del proyectil
+      // del Portador (el seed queda fijado en el pool; sonido grande si remata)
+      if (pr.from === 'player') {
+        g.pushSpellImpactFx(pr.x, pr.y, pr.element, killedBig);
+        playSpellImpact(killedBig);
+      }
       g.burst(pr.x, pr.y, pr.element === 'fuego' ? '#ff9040' : pr.element === 'hielo' ? '#a0e8ff' : '#e8d0ff', 6, 40);
       // canto de sirena (8-c): al morir la nota suelta 3 destellos musicales
       // que ascienden (contra pared o contra el Portador)
@@ -707,6 +732,17 @@ export function updateGame(g: Game, dt: number) {
       }
     }
     if (w.r >= w.maxR) g.waves.splice(i, 1);
+  }
+  // R9-4: edad de los FX de hechizo (carga 0.22 s · impacto 0.45 s + residuo 1.0 s)
+  const scf = g.spellCastFx;
+  for (let i = 0; i < scf.length; i++) {
+    const s = scf[i];
+    if (s.active) { s.age += dt; if (s.age >= SPELL_CAST_TIME) s.active = false; }
+  }
+  const sif = g.spellImpactFx;
+  for (let i = 0; i < sif.length; i++) {
+    const s = sif[i];
+    if (s.active) { s.age += dt; if (s.age >= SPELL_IMPACT_TIME + SPELL_RESIDUE_TIME) s.active = false; }
   }
 
   // ---------------- telegrafías ----------------
@@ -964,9 +1000,13 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
       // primera vez que entra en aggro: banner del jefe (render lo dibuja)
       if (!g.flags.bossIntro) {
         g.flags.bossIntro = true;
-        g.bossBannerT = 3.2;
-        g.bossBannerText = 'GUARDIÁN HUECO';
-        g.bossBannerSub = 'Custodio del Eco de la Voz';
+        // R9-5: la intro cinematográfica ya muestra el nombre del jefe — el
+        // banner doble el mismo frame se elimina (fallback si la intro no activa)
+        if (!bossIntroActive()) {
+          g.bossBannerT = 3.2;
+          g.bossBannerText = 'GUARDIÁN HUECO';
+          g.bossBannerSub = 'Custodio del Eco de la Voz';
+        }
         addFlash(g, '#7ee8ff', 0.25);
         // sfx 'banner' es nuevo del contrato (3-a); no-op seguro hasta entonces
         audio.sfx('banner');

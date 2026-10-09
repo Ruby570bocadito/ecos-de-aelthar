@@ -17,6 +17,19 @@
 //   (g.particles, colores GUARDIAN_PHASE_GLOW) + flash breve (fxcore) +
 //   UNA sacudida leve (fxcore). Con fase ≥ 2 emite brasas ascendentes
 //   periódicas y deterministas (acumulador propio, sin Math.random).
+//   R9-5 · TELEGRAFÍA V4 (poses legibles):
+//   - VIENTO PREVIO AL ATAQUE (drawBossFx, capa suelo): con el jefe en
+//     ai='carga' (windup>0) dibuja un anillo que gira y CONVERGE + ráfagas
+//     de viento entrantes + núcleo que estalla en el último 25 % de la
+//     carga (pulso creciente claro: alpha y velocidad crecen con el
+//     progreso). 'onda' se distingue: giro INVERSO y radio que respira.
+//   - IMPACTO: al soltarse la carga (ai carga→ataca/recupera) añade
+//     destello del color de fase (más contundente: 0.22) + anillo de
+//     choque en suelo (dmg 0) + chispas. La subida de fase también
+//     destella más fuerte y lleva un 2º anillo interior.
+//   - CAMINATA: polvo de pasos al ritmo de la zancada (0.26 s) + vaivén
+//     sutil del aura (±1.2 px de mundo) — bob de SUELO sin tocar sprites
+//     (el bob del CUERPO vive en render.ts/sprites: ver enganche abajo).
 //
 //   drawBossFx: (a) aura de suelo elíptica DITHERED (bandas concéntricas con
 //   alpha escalonado + dropout por hash, sin gradientes) del color de fase,
@@ -49,6 +62,7 @@ import { VIEW_W, VIEW_H, ZOOM } from '../consts';
 import { hash2 } from '../world/palette';
 import { addFlash, addShake } from '../fxcore';
 import { GUARDIAN_PHASE_GLOW } from './enemies';
+import { ENEMY_DEFS } from '../data'; // R9-5: solo lectura (windup real del jefe)
 import type { Game } from '../engine';
 import type { Enemy } from '../types';
 
@@ -56,11 +70,17 @@ import type { Enemy } from '../types';
 
 let memRef: Enemy | null = null;   // identidad del jefe vista la última vez
 let memPhase = 0;                  // fase previa registrada (1..3)
+let memAi = '';                    // R9-5: ai previo (detección de impacto)
 let emberAcc = 0;                  // acumulador de brasas (s)
 let emberTick = 0;                 // contador determinista de ráfagas de brasa
+let stepAcc = 0;                   // R9-5: acumulador de polvo de pasos (s)
+let stepTick = 0;                  // R9-5: contador determinista de pasos
 
 const EMBER_INTERVAL = 0.14;       // s entre ráfagas de brasas (fase ≥ 2)
 const EMBER_PER_TICK = 2;          // brasas por ráfaga
+const STEP_INT = 0.26;             // R9-5: s entre pasos del jefe (polvo)
+const DUST_A = '#43405a';          // R9-5: polvo de piedra (tono cripta)
+const DUST_B = '#2e2b40';          // R9-5: polvo apagado
 
 /** hash2 normalizado: hash2 nativo SOLO cubre [0,0.5) → ×2 lleva a [0,1). */
 function h2(a: number, b: number): number {
@@ -104,14 +124,34 @@ export function updateBossFx(g: Game, dt: number): void {
     // identidad nueva: solo registra la fase actual (SIN ráfaga de activación)
     memRef = b;
     memPhase = normPhase(b.phase);
+    memAi = '';
     emberAcc = 0;
     emberTick = 0;
+    stepAcc = 0;
     return;
   }
 
   const ph = normPhase(b.phase);
   if (ph > memPhase) phaseBurst(g, b, ph);
   memPhase = ph;
+
+  // R9-5 · IMPACTO: la carga (viento previo) acaba de soltarse →
+  // destello contundente + anillo de choque en suelo + chispas.
+  // (El slam telegrafiado NO pasa por 'carga': tiene su propio aviso.)
+  const ai = b.ai;
+  if (memAi === 'carga' && (ai === 'ataca' || ai === 'recupera')) impactBurst(g, b, ph);
+  memAi = ai;
+
+  // R9-5 · CAMINATA: polvo al ritmo de la zancada (bob de suelo, sin sprites)
+  if (b.moving) {
+    stepAcc += dt;
+    while (stepAcc >= STEP_INT) {
+      stepAcc -= STEP_INT;
+      stepDust(g, b);
+    }
+  } else {
+    stepAcc = 0;
+  }
 
   // brasas ascendentes (fase ≥ 2): ritmo fijo, sin azar
   if (ph >= 2) {
@@ -155,8 +195,67 @@ function phaseBurst(g: Game, b: Enemy, ph: number): void {
     });
   }
 
-  addFlash(g, glow, 0.16);  // destello breve del color de la NUEVA fase
+  // R9-5: destello MÁS contundente (0.16 → 0.22) + 2º anillo interior rápido
+  addFlash(g, glow, 0.22);  // destello del color de la NUEVA fase
   addShake(g, 3);           // UNA sacudida leve (el cerebro ya sacude 5)
+  g.waves.push({ x: b.x, y: b.y, r: 20, maxR: 90, speed: 190, dmg: 0, hit: true });
+}
+
+/**
+ * R9-5 · Destello de IMPACTO del ataque del jefe: la telegrafía ('carga')
+ * acaba de resolverse → destello del color de fase + anillo de choque en
+ * el suelo (dmg 0, solo lectura) + chispas ascendentes. Determinista por
+ * hash (misma posición → mismas chispas). El motor ya sacude y burstea:
+ * esto AÑADE la lectura de COLOR y el golpe de luz que faltaban.
+ */
+function impactBurst(g: Game, b: Enemy, ph: number): void {
+  const glow = glowOf(ph);
+  const dim = dimOf(ph);
+  const sx = Math.round(b.x), sy = Math.round(b.y);
+
+  // anillo de choque en el suelo (dmg 0)
+  g.waves.push({ x: b.x, y: b.y, r: 4, maxR: 70, speed: 240, dmg: 0, hit: true });
+
+  // chispas del punto de impacto (10, 2 tonos de fase)
+  for (let i = 0; i < 10; i++) {
+    const h0 = h2(i * 37 + 1, sx);
+    const h1 = h2(i * 53 + 5, sy);
+    const h2v = h2(i * 71 + 9, sx + sy);
+    const ang = (i / 10) * 6.283185 + (h0 - 0.5) * 0.5;
+    const spd = 56 + h1 * 88;
+    g.particles.push({
+      x: b.x + Math.cos(ang) * 6,
+      y: b.y - 4 + Math.sin(ang) * 3,
+      vx: Math.cos(ang) * spd,
+      vy: Math.sin(ang) * spd * 0.55 - 42,
+      t: 0.32 + h0 * 0.3,
+      maxT: 0.62,
+      color: i % 3 === 2 ? dim : glow,
+      size: 1 + h2v * 1.4,
+      grav: 150,
+    });
+  }
+
+  addFlash(g, glow, 0.22);  // destello contundente del impacto
+}
+
+/** R9-5 · Polvo de pasos: la zancada del jefe levanta 1 mota apagada. */
+function stepDust(g: Game, b: Enemy): void {
+  const sx = Math.round(b.x), sy = Math.round(b.y);
+  const h0 = h2(stepTick * 29 + 3, sx);
+  const h1 = h2(stepTick * 47 + 7, sy);
+  g.particles.push({
+    x: b.x + (h0 - 0.5) * 18,
+    y: b.y + 2,
+    vx: (h0 - 0.5) * 16,
+    vy: -(5 + h1 * 9),
+    t: 0.35 + h1 * 0.25,
+    maxT: 0.6,
+    color: h0 < 0.55 ? DUST_A : DUST_B,
+    size: 1 + h1 * 0.8,
+    grav: 30,
+  });
+  stepTick++;
 }
 
 /** Brasas que ascienden desde el cuerpo del jefe (fase ≥ 2). */
@@ -187,8 +286,11 @@ function emitEmbers(g: Game, b: Enemy, ph: number): void {
 export function resetBossFx(): void {
   memRef = null;
   memPhase = 0;
+  memAi = '';
   emberAcc = 0;
   emberTick = 0;
+  stepAcc = 0;
+  stepTick = 0;
 }
 
 // ---------------- drawBossFx ----------------
@@ -230,8 +332,11 @@ export function drawBossFx(ctx: CanvasRenderingContext2D, g: Game): void {
   const rate = 2.4 + ph * 0.5;
   const pulse = 0.82 + 0.18 * Math.sin(t * rate);
 
+  // R9-5 · caminata: vaivén sutil del aura al ritmo de los pasos (±1.2 px mundo)
+  const sway = b.moving ? Math.sin(t * 12.1) * 1.2 : 0;
+
   // -------- (a) aura de suelo: 4 bandas elípticas escalaneadas + dropout --------
-  const baseR = (13 + ph * 3.5) * pulse;             // radio en px de MUNDO
+  const baseR = (13 + ph * 3.5) * pulse + sway;      // radio en px de MUNDO (+ paso)
   const ratio = 0.45;                                 // achatada (suelo en perspectiva)
   for (let k = 0; k < AURA_BAND_ALPHA.length; k++) {
     const rx = baseR * AURA_BAND_SCALE[k];
@@ -247,6 +352,52 @@ export function drawBossFx(ctx: CanvasRenderingContext2D, g: Game): void {
       if (h2(j * 13 + k * 7 + 1, seedX) < 0.22) continue;
       rect(ctx, fx - half * ZOOM, fy + j * ZOOM, half * ZOOM * 2, ZOOM);
     }
+  }
+
+  // -------- (d) R9-5 · VIENTO PREVIO AL ATAQUE: pulso creciente que converge --------
+  // Jefe en 'carga' (windup > 0): anillo que gira y CONVERGE (más rápido,
+  // cerca y brillante cuanto más cerca de soltar) + ráfagas de viento
+  // entrantes + núcleo que estalla en el último 25 % de la carga.
+  // 'onda' se distingue a golpe de vista: giro INVERSO y radio que respira.
+  if (b.ai === 'carga' && b.windup > 0) {
+    const onda = b.telegraphKind === 'onda';
+    const defW = ENEMY_DEFS[b.etype]?.windup;
+    const wmax = onda ? 0.9 : defW !== undefined ? defW * (ph >= 3 ? 0.7 : 1) : 0.8;
+    const frac = 1 - Math.min(1, Math.max(0, b.windup / wmax));   // 0 → 1
+    const wA = 0.16 + 0.5 * frac;                    // alpha creciente
+
+    // anillo que converge girando (10 segmentos)
+    const rr = (26 - 15 * frac + (onda ? 3 * Math.sin(t * 8) : 0)) * ZOOM;
+    const ryR = Math.max(2, rr * 0.42);
+    const spin = t * (1.6 + 3.4 * frac) * (onda ? -1 : 1);
+    ctx.fillStyle = glow;
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * 6.283185 + spin;
+      ctx.globalAlpha = Math.min(1, Math.max(0, wA * (0.55 + 0.45 * Math.sin(t * 7 + i * 2.1))));
+      rect(ctx, Math.round(fx + Math.cos(a) * rr) - 1, Math.round(fy + Math.sin(a) * ryR), 3, 1);
+    }
+
+    // ráfagas entrantes: 5 líneas de viento que se acercan al jefe
+    for (let i = 0; i < 5; i++) {
+      const u = (t * (0.7 + 1.1 * frac) + i * 0.203) % 1;
+      const d = ((1 - u) * (30 + 12 * (1 - frac)) + 6) * ZOOM;    // converge a 6 px
+      const side = i % 2 === 0 ? 1 : -1;
+      const sxp = Math.round(fx + side * d);
+      const syp = Math.round(fy + (h2(i * 17 + 1, seedX) - 0.5) * 12 * ZOOM);
+      ctx.globalAlpha = Math.min(1, Math.max(0, wA * u));
+      rect(ctx, side > 0 ? sxp - 4 : sxp, syp, 4, 1);
+    }
+
+    // núcleo de aviso: estalla (parpadeo rápido) en el último 25 % de la carga
+    if (frac > 0.75) {
+      const k = (frac - 0.75) / 0.25;
+      ctx.globalAlpha = Math.min(1, Math.max(0, k * (0.45 + 0.45 * Math.sin(t * 24))));
+      rect(ctx, fx - 2, fy - 2, 5, 3);
+      ctx.globalAlpha = Math.min(1, Math.max(0, k * 0.6));
+      rect(ctx, fx - 5, fy - 1, 11, 1);
+      rect(ctx, fx, fy - 4, 1, 7);
+    }
+    ctx.globalAlpha = 1;
   }
 
   // -------- (c) grietas de luz bajo los pies (crecen con la fase) --------

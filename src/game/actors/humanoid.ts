@@ -58,6 +58,31 @@
 //    entityFrame conservan firma y comportamiento. Suela oscura de
 //    bota y cinturón accent ya horneados se conservan. Canvas 16×H
 //    intacto y todos los flags de paleta se siguen respetando.
+//
+// R9-6 — portador animaciones fluidas (2.7): TODO horneado en los
+//  frames prerrenderizados (coste runtime 0, cero allocations, sin
+//  Math.random; firmas export intactas).
+//  · ANDAR con vida: balanceo de CADERA ±1px por fase (piernas y
+//    botas desplazan el anclaje, el torso contra-resta), bajo de la
+//    túnica que sigue 1 fase detrás (lag de tela), mechón/cabello y
+//    capa con 1-2 px de retraso respecto al cuerpo, punta de melena
+//    que lastra el giro y mechón de nuca de perfil al asentar el paso.
+//  · SILUETA: contorno 1px completo donde se perdía (columnas
+//    exteriores de ambos brazos, curva frontal de perfil, filas
+//    inferiores del cráneo), coronilla redondeada y hombros en
+//    trapecio (postura más erguida/elegante sin cambiar canvas ni
+//    índices: el retrato del creador usa los frames 6/7 tal cual).
+//  · IDLE: respiración real ~2 s — frame 8 NUEVO (torso arriba, ojos
+//    abiertos) alterna con el 6; el 7 conserva su rol de parpadeo
+//    (idleBlink intacto). 27 frames: 9 por bloque (6 andar + 3 idle).
+//  · ATAQUE/ESQUIVA (poses nuevas, export aditivo): buildAttackPoses
+//    devuelve [anticipación, golpe] × 3 direcciones — anticipación con
+//    el cuerpo girado 1px atrás y brazos en guardia (chispa accent en
+//    el arma), golpe con estirón, brazo extendido, puño contorneado y
+//    estela de movimiento 1px. buildRollPoses: pose inclinada de
+//    voltereta por dirección. render.ts ya consume getAttackFrames /
+//    getCastFrames (contrato R3-c) y fx.ts ya estela la rodadura:
+//    el enganche de 3 líneas queda documentado en cada builder.
 // ============================================================
 
 import { mkCanvas, px, type Frames } from './util';
@@ -165,7 +190,11 @@ function dreadOf(pal: HumanPal): boolean {
  *   0 zancada A · 1 contacto-medio · 2 pase (+1px de bamboleo)
  *   3 zancada B · 4 contacto-medio · 5 pase (+1px)
  *   6 idle neutro (ojos abiertos, pecho abajo)
- *   7 idle aire (pecho 1px arriba, ojos cerrados = parpadeo)
+ *   7 idle aire/parpadeo (pecho 1px arriba, ojos cerrados)
+ *   8 idle respiración (pecho 1px arriba, ojos abiertos)
+ *
+ * act (poses de acción, R9-6; 0 = andar/idle normal):
+ *   1 anticipación de ataque · 2 golpe · 3 voltereta (agachada).
  *
  * `bobFix` permite forzar el bamboleo (compatibilidad); si se omite se
  * deriva de la fase. El orden de dibujado es torso→cabeza→brazos→
@@ -175,20 +204,26 @@ function dreadOf(pal: HumanPal): boolean {
 function drawFrame(
   x: CanvasRenderingContext2D, pal: HumanPal,
   dir: 'down' | 'up' | 'side', ph: number, L: Layout, bobFix?: number,
+  act = 0,
 ): void {
   const dread = dreadOf(pal);
   const jawLoose = pal.jaw === true || pal.ribs === true;   // mandíbula suelta
   const hs = pal.hairS ?? pal.hair;
   const ls = pal.legsS ?? pal.legs;
-  const idle = ph >= 6;                                  // frames 6/7 de reposo
+  const idle = ph >= 6;                                  // frames 6/7/8 de reposo
   // R6-V9 · andar verificado: bob vertical 1px en las fases CENTRALES
-  // de cada paso (pase 2 y 5, más el aire idle 7) y swing de brazos
-  // OPUESTO entre ambos lados; frameIndex/entityFrame lo consumen igual.
-  const bob = bobFix ?? ((ph === 2 || ph === 5 || ph === 7) ? -1 : 0);
-  const hy = dread ? 1 : 0;                              // encorvado: cabeza 1px más baja
-  const hT = L.headTop + bob;                            // ancla de cabeza (con bamboleo)
-  const fT = L.faceTop + bob;
-  const bT = L.bodyTop + bob;                            // torso (las piernas quedan ancladas)
+  // de cada paso (pase 2 y 5, más los aires idle 7 y 8) y swing de
+  // brazos OPUESTO entre ambos lados; frameIndex/entityFrame lo consumen igual.
+  const bob = act === 3 ? 1 : bobFix ?? ((ph === 2 || ph === 5 || ph === 7 || ph === 8) ? -1 : 0);
+  // R9-6 · anticipación/golpe: el torso y la cabeza se inclinan 1px
+  // atrás (viento) o adelante (estirón); de perfil la inclinación es
+  // horizontal (translate del bloque superior, piernas ancladas).
+  const leanY = act === 1 ? (dir === 'down' ? -1 : dir === 'up' ? 1 : 0)
+    : act === 2 ? (dir === 'down' ? 1 : dir === 'up' ? -1 : 0) : 0;
+  const hy = (dread ? 1 : 0) + (act === 3 ? 1 : 0);      // encorvado + cabeza agachada en la voltereta
+  const hT = L.headTop + bob + leanY;                    // ancla de cabeza (con bamboleo)
+  const fT = L.faceTop + bob + leanY;
+  const bT = L.bodyTop + bob + leanY;                    // torso (las piernas quedan ancladas)
   const bodyBot = bT + L.bodyH - 1;                      // última fila del torso (contorno)
   const legY = bodyBot + 1;                              // piernas ancladas al suelo
   const bootY = L.H - 1;
@@ -214,8 +249,30 @@ function drawFrame(
     : (ph === 7 ? null : pal.eye);
 
   // balanceo de brazos (contrario entre izquierda y derecha); en idle, en guardia
-  const sw = idle ? 0 : [1, 0, 0, -1, 0, 0][ph];
-  const offL = sw, offR = -sw;
+  let sw = idle ? 0 : [1, 0, 0, -1, 0, 0][ph];
+  let offL = sw, offR = -sw;
+  // R9-6 · poses de acción: viento (brazos arriba/guardia, arma cargada
+  // atrás-arriba), golpe (brazos lanzados al frente/caída del arma) y
+  // voltereta (brazos recogidos al cuerpo).
+  if (act === 1) {
+    offL = dir === 'up' ? 1 : -1;
+    offR = dir === 'up' ? 2 : -2;
+    if (dir === 'side') sw = -1;
+  } else if (act === 2) {
+    offL = dir === 'down' ? 1 : -1;
+    offR = dir === 'down' ? 2 : -2;
+    sw = 0;
+  } else if (act === 3) {
+    offL = 1; offR = 1; sw = 1;
+  }
+
+  // R9-6 · balanceo de cadera (cross-lateral): el anclaje de piernas
+  // desplaza ±1px con la zancada mientras el torso contra-resta; el
+  // bajo de la túnica sigue 1 FASE detrás (tela con retraso).
+  const walking = act === 0 && !idle;
+  const hipDx = walking ? [-1, -1, 0, 1, 1, 0][ph] : 0;
+  const hemDx = walking ? [0, -1, -1, 0, 1, 1][ph] : 0;   // de frente/espalda
+  const hemDs = walking ? [1, 1, 0, -1, -1, 0][ph] : 0;   // de perfil
 
   // bota de 2 filas: cuero + suela oscura; lift=1 → pie recogido 1px
   const boot = (cx: number, w: number, lift: number) => {
@@ -227,15 +284,19 @@ function drawFrame(
     // ---------- torso (primero: la cabeza encorvada solapa el pecho) ----------
     // R6-V9: talle recto y CINTURA 1px más estrecha por lado — la fila
     // del cinturón (bT+bodyH-2) mide 6 px frente a las 8 del talle.
-    px(x, 4, bT, 8, L.bodyH - 2, pal.body);              // talle: hombros → cintura
+    // R9-6: hombros en TRAPECIO (fila superior 6 px) — postura más
+    // erguida/elegante sin cambiar canvas ni índices de frame.
+    px(x, 5, bT, 6, 1, pal.body);                        // trapecio: hombros caídos
+    px(x, 4, bT + 1, 8, L.bodyH - 3, pal.body);          // talle: hombros → cintura
     px(x, 5, bT + L.bodyH - 2, 6, 1, pal.body);          // fila de cintura (la cubre el cinturón)
-    px(x, 4, bT, 8, 1, pal.bodyS);
+    px(x, 5, bT, 6, 1, pal.bodyS);
     // doble contorno lateral: borde oscuro + medio tono interior
-    // (se detienen 1 fila antes para que la cintura afine)
-    px(x, 4, bT, 1, L.bodyH - 2, pal.outline);
-    px(x, 11, bT, 1, L.bodyH - 2, pal.outline);
-    px(x, 5, bT + 1, 1, L.bodyH - 3, halfB);
-    px(x, 10, bT + 1, 1, L.bodyH - 3, halfB);
+    px(x, 4, bT, 1, 1, pal.outline);                     // esquinas del trapecio
+    px(x, 11, bT, 1, 1, pal.outline);
+    px(x, 4, bT + 1, 1, L.bodyH - 3, pal.outline);
+    px(x, 11, bT + 1, 1, L.bodyH - 3, pal.outline);
+    px(x, 5, bT + 2, 1, L.bodyH - 4, halfB);
+    px(x, 10, bT + 2, 1, L.bodyH - 4, halfB);
     // sombra de cuello bajo la barbilla
     px(x, 6, bT, 4, 1, neckC);
     // costillas más marcadas (esqueleto): surco / hueso / surco
@@ -256,9 +317,9 @@ function drawFrame(
     // cinturón con hebilla 1px (ocupa toda la cintura estrechada)
     px(x, 5, bT + L.bodyH - 2, 6, 1, pal.accent);
     px(x, 7, bT + L.bodyH - 2, 2, 1, buckle);
-    px(x, 5, bodyBot, 6, 1, pal.outline);                // bajo de la túnica, alineado a la cintura
-    // brillo 1px en hombros (luz arriba-izquierda)
-    px(x, 4, bT, 2, 1, hiBody);
+    px(x, 5 + hemDx, bodyBot, 6, 1, pal.outline);        // bajo de la túnica, con lag de tela (R9-6)
+    // brillo de hombrera 1px (luz arriba-izquierda), sobre el trapecio
+    px(x, 5, bT, 2, 1, hiBody);
     if (pal.pauldrons) {
       px(x, 3, bT, 2, 2, pal.accent); px(x, 11, bT, 2, 2, pal.accent);
       px(x, 3, bT, 2, 1, tone(pal.accent, 1.3));
@@ -268,17 +329,22 @@ function drawFrame(
     // ---------- cabeza (hy baja la cabeza 1px en los encorvados) ----------
     const Hh = hT + hy, Ff = fT + hy;
     px(x, 4, Hh, 8, 1, pal.outline);
-    px(x, 3, Hh + 1, 10, 5, pal.hair);
-    px(x, 3, Hh + 1, 10, 1, hs);
-    // doble contorno de la silueta de la cabeza + medio tono interior
-    px(x, 3, Hh + 1, 1, 4, pal.outline);
-    px(x, 12, Hh + 1, 1, 4, pal.outline);
-    px(x, 4, Hh + 1, 1, 4, halfH);
-    px(x, 11, Hh + 1, 1, 4, halfH);
+    // R9-6: coronilla REDONDEADA (8 px en la fila superior) — cabeza
+    // algo menor/afilada; contorno lateral COMPLETO (5 filas) para que
+    // la silueta no se pierda contra fondos claros
+    px(x, 4, Hh + 1, 8, 1, pal.hair);
+    px(x, 3, Hh + 2, 10, 4, pal.hair);
+    px(x, 4, Hh + 1, 8, 1, hs);
+    px(x, 3, Hh + 1, 1, 1, pal.outline);                 // esquinas redondeadas
+    px(x, 12, Hh + 1, 1, 1, pal.outline);
+    px(x, 3, Hh + 2, 1, 4, pal.outline);                 // contorno lateral completo
+    px(x, 12, Hh + 2, 1, 4, pal.outline);
+    px(x, 4, Hh + 2, 1, 3, halfH);
+    px(x, 11, Hh + 2, 1, 3, halfH);
     px(x, 4, Hh + 1, 2, 1, hiHair);                      // brillo 1px en el cráneo
-    // mechón de vuelo 1px (R6-V9): rompe la silueta superior y se
-    // mece 1px en las fases de pase, acompañando al bob
-    px(x, ph === 2 || ph === 5 ? 6 : 7, Math.max(0, Hh - 1), 1, 1, pal.hair);
+    // mechón de vuelo 1px (R6-V9), con 1 FASE de retraso respecto al
+    // bob (R9-6): el cabello cae después de que el cuerpo asiente
+    px(x, ph === 0 || ph === 3 ? 6 : 7, Math.max(0, Hh - 1), 1, 1, pal.hair);
     if (pal.band) px(x, 5, Hh + 1, 6, 1, pal.accent);    // diadema/cinta 1px en accent (R2-A6)
     if (pal.hood) { px(x, 3, Ff + 2, 10, 2, pal.hair); px(x, 4, Ff + 3, 8, 1, hs); }
     if (dir === 'down') {
@@ -352,40 +418,70 @@ function drawFrame(
       px(x, 3, bT + ch - 1, 1, 1, tone(pal.accent, 1.3));
       px(x, 12, bT + ch - 1, 1, 1, tone(pal.accent, 1.3));
     }
+    // R9-6 · SILUETA: contorno exterior 1px de ambos brazos — antes las
+    // columnas 1/14 quedaban desnudas y el brazo se fundía con fondos claros
+    px(x, 1, bT + offL, 1, L.armLen + 1, pal.outline);
+    if (act === 2) {
+      // golpe: la estela de movimiento sustituye al contorno del brazo armado
+      px(x, 14, bT + offR, 1, L.armLen + 1, rgba('#e8eef8', 0.5));
+    } else {
+      px(x, 14, bT + offR, 1, L.armLen + 1, pal.outline);
+    }
+    if (act === 1) {
+      // chispa de tensión 1px junto al arma cargada: la anticipación se LEE
+      px(x, 12, bT + offR + (dir === 'down' ? L.armLen + 1 : -1), 1, 1, pal.accent);
+    }
+    // R9-6 · seguimiento con retraso: punta de melena y esquina de capa
+    // que quedan 1 fase por detrás del paso (contacto 1/4)
+    if (walking && (ph === 1 || ph === 4)) {
+      px(x, ph === 1 ? 13 : 2, Ff + 3, 1, 1, hs);
+      if (pal.cape) {
+        const ch = pal.capeLong ? L.bodyH - 1 : 3;
+        px(x, ph === 1 ? 13 : 2, bT + ch, 1, 1, pal.capeC ?? pal.bodyS);
+      }
+    }
 
-    // ---------- piernas: ciclo de 6 fases, bota + suela ----------
+    // ---------- piernas: ciclo de 6 fases + balanceo de cadera, bota + suela ----------
     const m1 = Math.max(1, legH2 - 1);
     if (ph === 0) {          // zancada A: izquierda adelante, derecha atrás
-      px(x, 4, legY, 3, legH2, pal.legs); boot(4, 3, 0);
-      px(x, 9, legY, 3, legH2, ls); boot(9, 3, 0);
+      px(x, 4 + hipDx, legY, 3, legH2, pal.legs); boot(4 + hipDx, 3, 0);
+      px(x, 9 + hipDx, legY, 3, legH2, ls); boot(9 + hipDx, 3, 0);
     } else if (ph === 1) {   // contacto-medio: la derecha se recoge 1px
-      px(x, 5, legY, 3, legH2, pal.legs); boot(5, 3, 0);
-      px(x, 9, legY + 1, 3, m1, ls); boot(9, 3, 1);
+      px(x, 5 + hipDx, legY, 3, legH2, pal.legs); boot(5 + hipDx, 3, 0);
+      px(x, 9 + hipDx, legY + 1, 3, m1, ls); boot(9 + hipDx, 3, 1);
     } else if (ph === 2) {   // pase: juntas, cuerpo elevado
-      px(x, 6, legY, 3, legH2, pal.legs); boot(6, 3, 0);
-      px(x, 8, legY, 3, legH2, ls); boot(8, 3, 0);
+      px(x, 6 + hipDx, legY, 3, legH2, pal.legs); boot(6 + hipDx, 3, 0);
+      px(x, 8 + hipDx, legY, 3, legH2, ls); boot(8 + hipDx, 3, 0);
     } else if (ph === 3) {   // zancada B: derecha adelante, izquierda atrás
-      px(x, 4, legY + 1, 3, m1, ls); boot(4, 3, 1);
-      px(x, 9, legY, 3, legH2, pal.legs); boot(9, 3, 0);
+      px(x, 4 + hipDx, legY + 1, 3, m1, ls); boot(4 + hipDx, 3, 1);
+      px(x, 9 + hipDx, legY, 3, legH2, pal.legs); boot(9 + hipDx, 3, 0);
     } else if (ph === 4) {   // contacto-medio: la izquierda se recoge 1px
-      px(x, 5, legY + 1, 3, m1, ls); boot(5, 3, 1);
-      px(x, 9, legY, 3, legH2, pal.legs); boot(9, 3, 0);
+      px(x, 5 + hipDx, legY + 1, 3, m1, ls); boot(5 + hipDx, 3, 1);
+      px(x, 9 + hipDx, legY, 3, legH2, pal.legs); boot(9 + hipDx, 3, 0);
     } else {                 // pase: juntas, cuerpo elevado
-      px(x, 6, legY, 3, legH2, ls); boot(6, 3, 0);
-      px(x, 8, legY, 3, legH2, pal.legs); boot(8, 3, 0);
+      px(x, 6 + hipDx, legY, 3, legH2, ls); boot(6 + hipDx, 3, 0);
+      px(x, 8 + hipDx, legY, 3, legH2, pal.legs); boot(8 + hipDx, 3, 0);
     }
   } else {
     // ---------- dir === 'side' (mirando a la derecha; render voltea para 'left') ----------
+    // R9-6 · inclinación horizontal de viento/golpe: el bloque superior
+    // completo se traslada 1px (translate) y las piernas quedan ancladas
+    const leanX = act === 1 ? -1 : act === 2 ? 1 : 0;
+    if (leanX !== 0) x.save();
+    if (leanX !== 0) x.translate(leanX, 0);
     // torso
     // R6-V9: cintura de perfil 1px más estrecha por lado (4 px de
-    // cinturón frente a las 6 del talle)
-    px(x, 5, bT, 6, L.bodyH - 2, pal.body);              // talle
+    // cinturón frente a las 6 del talle) · R9-6: hombro en trapecio
+    px(x, 6, bT, 4, 1, pal.body);                        // trapecio: hombro caído
+    px(x, 5, bT + 1, 6, L.bodyH - 3, pal.body);          // talle
     px(x, 6, bT + L.bodyH - 2, 4, 1, pal.body);          // fila de cintura (la cubre el cinturón)
-    px(x, 5, bT, 6, 1, pal.bodyS);
-    px(x, 5, bT, 1, L.bodyH - 2, pal.outline);           // doble contorno: espalda
-    px(x, 10, bT, 1, L.bodyH - 2, pal.outline);          // y pecho
-    px(x, 6, bT + 1, 1, L.bodyH - 3, halfB);
-    px(x, 9, bT + 1, 1, L.bodyH - 3, halfB);
+    px(x, 6, bT, 4, 1, pal.bodyS);
+    px(x, 5, bT, 1, 1, pal.outline);                     // esquinas del trapecio
+    px(x, 10, bT, 1, 1, pal.outline);
+    px(x, 5, bT + 1, 1, L.bodyH - 3, pal.outline);       // doble contorno: espalda
+    px(x, 10, bT + 1, 1, L.bodyH - 3, pal.outline);      // y pecho
+    px(x, 6, bT + 2, 1, L.bodyH - 4, halfB);
+    px(x, 9, bT + 2, 1, L.bodyH - 4, halfB);
     px(x, 7, bT, 3, 1, neckC);                           // sombra de cuello
     if (pal.ribs) {
       px(x, 6, bT + 1, 3, 1, tone(pal.bodyS, 0.62));
@@ -400,22 +496,26 @@ function drawFrame(
     }
     px(x, 6, bT + L.bodyH - 2, 4, 1, pal.accent);        // cinturón (toda la cintura)
     px(x, 9, bT + L.bodyH - 2, 1, 1, buckle);            // hebilla al frente
-    px(x, 6, bodyBot, 4, 1, pal.outline);                // bajo alineado a la cintura
-    px(x, 5, bT, 2, 1, hiBody);                          // brillo de hombro
+    px(x, 6 + hemDs, bodyBot, 4, 1, pal.outline);        // bajo con lag de tela (R9-6)
+    px(x, 6, bT, 2, 1, hiBody);                          // brillo de hombro (trapecio)
     if (pal.pauldrons) { px(x, 4, bT, 2, 2, pal.accent); px(x, 4, bT, 2, 1, tone(pal.accent, 1.3)); }
     if (pal.leafy) px(x, 4, bT, 2, 1, '#8ac05a');
 
     // cabeza
     const Hh = hT + hy, Ff = fT + hy;
     px(x, 5, Hh, 8, 1, pal.outline);
-    px(x, 4, Hh + 1, 9, 5, pal.hair);
-    px(x, 4, Hh + 1, 9, 1, hs);
-    px(x, 4, Hh + 1, 1, 4, pal.outline);                 // doble contorno: nuca
-    px(x, 12, Hh + 1, 1, 2, pal.outline);                // y curva frontal
-    px(x, 5, Hh + 1, 1, 3, halfH);
+    // R9-6: coronilla redondeada + contorno frontal COMPLETO (5 filas):
+    // la cara y la nariz no se funden con fondos claros
+    px(x, 5, Hh + 1, 8, 1, pal.hair);
+    px(x, 4, Hh + 2, 9, 4, pal.hair);
+    px(x, 5, Hh + 1, 8, 1, hs);
+    px(x, 4, Hh + 1, 1, 1, pal.outline);                 // esquina de la nuca
+    px(x, 4, Hh + 2, 1, 4, pal.outline);                 // nuca completa
+    px(x, 12, Hh + 1, 1, 5, pal.outline);                // curva frontal completa
+    px(x, 5, Hh + 2, 1, 3, halfH);
     px(x, 5, Hh + 1, 2, 1, hiHair);
-    // mechón de vuelo 1px de perfil (R6-V9), hacia la nuca
-    px(x, ph === 2 || ph === 5 ? 5 : 6, Math.max(0, Hh - 1), 1, 1, pal.hair);
+    // mechón de vuelo 1px de perfil (R6-V9), con 1 FASE de retraso (R9-6)
+    px(x, ph === 0 || ph === 3 ? 5 : 6, Math.max(0, Hh - 1), 1, 1, pal.hair);
     if (pal.band) px(x, 6, Hh + 1, 4, 1, pal.accent);    // diadema 1px de perfil (R2-A6)
     if (pal.hood) px(x, 4, Ff + 2, 8, 2, pal.hair);
     const faceH = jawLoose ? 3 : 4;
@@ -447,13 +547,30 @@ function drawFrame(
     if (pal.feather) px(x, 4, bT - 1, 1, 1, pal.accent); // pluma en el hombro trasero (R2-A6)
 
     // brazo delantero con balanceo + brazo trasero al tono sombreado
-    px(x, 8, bT + sw, 3, 3, pal.body);
-    px(x, 10, bT + sw + 2, 2, 2, pal.skin);              // mano 2×2
-    px(x, 5, bT - sw, 2, 3, pal.bodyS);
-    px(x, 5, bT - sw + 2, 2, 2, tone(pal.skin, 0.82));   // mano trasera en sombra
-    if (pal.hammer) {
-      px(x, 11, bT + sw - 2, 1, 5, '#7a5c3a');
-      px(x, 10, bT + sw - 4, 3, 2, '#9aa4b4');
+    if (act === 2) {
+      // R9-6 · golpe de perfil: brazo ESTIRADO (estirón), puño 2×2
+      // contorneado y estela de movimiento 1px al frente del arma
+      px(x, 8, bT, 4, 2, pal.body);
+      px(x, 11, bT, 2, 2, pal.skin);
+      px(x, 12, bT, 1, 2, pal.outline);                  // contorno del puño
+      px(x, 13, bT, 2, 1, rgba('#e8eef8', 0.5));         // estela de movimiento 1px
+      px(x, 5, bT + 1, 2, 3, pal.bodyS);
+      px(x, 5, bT + 3, 2, 2, tone(pal.skin, 0.82));      // mano trasera en sombra
+      if (pal.hammer) {
+        px(x, 11, bT + 1, 3, 1, '#7a5c3a');              // mango horizontal
+        px(x, 13, bT, 2, 3, '#9aa4b4');                  // cabeza al frente
+      }
+    } else {
+      px(x, 8, bT + sw, 3, 3, pal.body);
+      px(x, 10, bT + sw + 2, 2, 2, pal.skin);              // mano 2×2
+      px(x, 5, bT - sw, 2, 3, pal.bodyS);
+      px(x, 5, bT - sw + 2, 2, 2, tone(pal.skin, 0.82));   // mano trasera en sombra
+      if (pal.hammer) {
+        px(x, 11, bT + sw - 2, 1, 5, '#7a5c3a');
+        px(x, 10, bT + sw - 4, 3, 2, '#9aa4b4');
+      }
+      // contorno frontal de la mano delantera (R9-6 · silueta)
+      px(x, 12, bT + sw + 2, 1, 2, pal.outline);
     }
     // brillo de hombrera 1px trasero (R6-V9); pauldrons/leafy ya lo marcan
     if (!pal.pauldrons && !pal.leafy) px(x, 4, bT, 1, 1, hiBody);
@@ -464,6 +581,14 @@ function drawFrame(
       px(x, 4, bT, 1, ch, cc);
       px(x, 4, bT + ch - 1, 1, 1, tone(pal.accent, 1.3));
     }
+    // R9-6 · retraso de tela/cabello de perfil: esquina de capa al
+    // avanzar y mechón de nuca que asienta 1 fase detrás del paso
+    if (walking && pal.cape && ph === 1) {
+      px(x, 3, bT + (pal.capeLong ? L.bodyH - 1 : 3), 1, 1, pal.capeC ?? pal.bodyS);
+    }
+    if (walking && (ph === 0 || ph === 3)) px(x, 4, bT - 1, 1, 1, pal.hair);
+
+    if (leanX !== 0) x.restore();
 
     // piernas en zancada (6 fases, bota + suela)
     const m1 = Math.max(1, legH2 - 1);
@@ -500,8 +625,8 @@ function drawFrame(
     // punta de la melena que se mece 1px entre frames
     if (ph === 6) px(x, 3, bT + 1, 1, 1, hs);
     else px(x, 4, bT + 1, 1, 1, hs);
-  } else if (idle && pal.cape && ph === 7) {
-    // frame de aire: una esquina de la capa vuela 1px (R2-A6)
+  } else if (idle && pal.cape && (ph === 7 || ph === 8)) {
+    // frame de aire (parpadeo o respiración): una esquina de la capa vuela 1px (R2-A6/R9-6)
     px(x, 2, bT + 3, 1, 1, pal.capeC ?? pal.bodyS);
     px(x, 13, bT + 3, 1, 1, pal.capeC ?? pal.bodyS);
   }
@@ -529,32 +654,97 @@ export function drawHumanFrame(
 }
 
 /**
- * Construye los 24 frames del humanoide: por cada dirección (down,
- * up, side) 6 de andar [zancadaA, contacto, pase+1px, zancadaB,
- * contacto, pase+1px] y al FINAL del bloque 2 de idle (índices 6 y 7:
- * respiración + parpadeo). `big` escala ×2 (32×36, ≤ 40×40).
+ * Construye los 27 frames del humanoide (R9-6): por cada dirección
+ * (down, up, side) 6 de andar [zancadaA, contacto, pase+1px, zancadaB,
+ * contacto, pase+1px] y al FINAL del bloque 3 de idle (índices 6/7/8:
+ * 6 neutro ojos abiertos · 7 parpadeo+aire · 8 respiración, torso
+ * arriba ojos abiertos). El retrato del creador (EcosGame) usa los
+ * frames 6/7 directamente: contrato intacto. `big` escala ×2 (32×36).
  */
 export function buildHumanoid(pal: HumanPal): Frames {
   const frames: Frames = [];
   const dirs: ('down' | 'up' | 'side')[] = ['down', 'up', 'side'];
   const L = layoutFor(pal);
   for (const dir of dirs) {
-    for (let ph = 0; ph < 8; ph++) {   // 6 de andar + 2 de idle (6, 7)
+    for (let ph = 0; ph < 9; ph++) {   // 6 de andar + 3 de idle (6, 7, 8)
       const { c, x } = mkCanvas(16, L.H);
       drawFrame(x, pal, dir, ph, L);
       frames.push(c);
     }
   }
-  if (pal.big) {
-    // El Gran Inquisidor se dibuja a escala ×2 (32×36): imponente como el Guardián
-    return frames.map(fr => {
-      const { c, x } = mkCanvas(32, L.H * 2);
-      x.imageSmoothingEnabled = false;
-      x.drawImage(fr, 0, 0, 32, L.H * 2);
-      return c;
-    });
+  return pal.big ? bigScale(frames, L.H) : frames;
+}
+
+/** Escalado ×2 del Gran Inquisidor y otros `big` (32×H·2, nítido). */
+function bigScale(frames: Frames, H: number): Frames {
+  return frames.map(fr => {
+    const { c, x } = mkCanvas(32, H * 2);
+    x.imageSmoothingEnabled = false;
+    x.drawImage(fr, 0, 0, 32, H * 2);
+    return c;
+  });
+}
+
+/**
+ * R9-6 · Poses de COMBATE del Portador (export aditivo, se construyen
+ * una vez junto al resto de sprites — coste runtime 0).
+ *
+ * Devuelve 6 canvases 16×H en el orden:
+ *   [0] anticipación down  [1] golpe down
+ *   [2] anticipación up    [3] golpe up
+ *   [4] anticipación side  [5] golpe side
+ *
+ *  · Anticipación (viento): torso y cabeza girados 1px atrás, brazos
+ *    en guardia con el arma cargada y chispa accent 1px — se LEE.
+ *  · Golpe: estirón 1px al frente, brazo extendido/puño contorneado y
+ *    estela de movimiento 1px en el arma.
+ *
+ * ENGANCHA (contrato R3-c de render.ts:445-456, llamada opcional vía
+ * namespace): en sprites.ts, junto a initSprites:
+ *   const ATK: Record<string, Frames> = {};
+ *   ... dentro de initSprites():
+ *     for (const [name, pal] of Object.entries(PALS)) {
+ *       SPR[name] = buildHumanoid(pal); ATK[name] = buildAttackPoses(pal);
+ *     }
+ *   export function getAttackFrames(base: string, dir: string) {
+ *     const f = ATK[base]; if (!f) return null;
+ *     const i = dir === 'up' ? 2 : dir === 'down' ? 0 : 4;
+ *     return [f[i], f[i + 1]];
+ *   }
+ * render.ts ya llama SPRITES.getAttackFrames(pl.sprite, pl.dir) si
+ * existe; mientras tanto el fallback es el frame de andar (intacto).
+ */
+export function buildAttackPoses(pal: HumanPal): Frames {
+  const L = layoutFor(pal);
+  const frames: Frames = [];
+  for (const dir of ['down', 'up', 'side'] as const) {
+    for (const act of [1, 2] as const) {
+      const { c, x } = mkCanvas(16, L.H);
+      drawFrame(x, pal, dir, 6, L, 0, act);   // base idle neutra + pose
+      frames.push(c);
+    }
   }
-  return frames;
+  return pal.big ? bigScale(frames, L.H) : frames;
+}
+
+/**
+ * R9-6 · Pose INCLINADA de voltereta (esquiva), export aditivo: 3
+ * canvases 16×H [down, up, side] — cuerpo agachado 1px, cabeza metida,
+ * brazos recogidos. Pensada para el sprite durante rollT y para la
+ * estela: fx.ts ya guarda rollTrail ({x,y,dir,anim}) y render.ts la
+ * estampa tenue — el enganche es sustituir el frame de andar por esta
+ * pose en esos dos puntos (o reutilizarla como poseCv en drawEntity
+ * cuando p.rollT > 0). La estela de 1 frame tenue ya existe en fx.ts.
+ */
+export function buildRollPoses(pal: HumanPal): Frames {
+  const L = layoutFor(pal);
+  const frames: Frames = [];
+  for (const dir of ['down', 'up', 'side'] as const) {
+    const { c, x } = mkCanvas(16, L.H);
+    drawFrame(x, pal, dir, 6, L, 1, 3);       // agachada: bob +1, act 3
+    frames.push(c);
+  }
+  return pal.big ? bigScale(frames, L.H) : frames;
 }
 
 /**
@@ -563,9 +753,23 @@ export function buildHumanoid(pal: HumanPal): Frames {
  * unidad de anim y se repite cada 8/5 unidades → ~3-4 s con el ritmo
  * idle del motor (anim += dt·0.4 el jugador, dt·0.6 enemigos). El
  * desfase +4 evita parpadear justo al aparecer (anim≈0).
+ * (R9-6: se conserva EXACTA — sigue siendo el detector del parpadeo.)
  */
 function idleBlink(anim: number): number {
   return (Math.floor(anim * 5) + 4) % 8 === 0 ? 1 : 0;
+}
+
+/**
+ * R9-6 · Sub-índice de reposo para los sprites de 27 frames:
+ *   0 → frame 6 neutro (torso abajo) · 1 → frame 7 parpadeo
+ *   2 → frame 8 respiración (torso arriba, ojos abiertos).
+ * La respiración alterna neutro↔aire cada 0.4 unidades de anim →
+ * ciclo completo ~2 s al ritmo idle del Portador (anim += dt·0.4);
+ * determinista y sin estado. El parpadeo (idleBlink) tiene prioridad.
+ */
+function idlePose(anim: number): number {
+  if (idleBlink(anim) === 1) return 1;
+  return Math.floor(anim * 2.5) % 2 === 1 ? 2 : 0;
 }
 
 /**
@@ -573,23 +777,25 @@ function idleBlink(anim: number): number {
  *  · En movimiento: floor(anim·6) % 6 recorre el ciclo de 6 fases —
  *    el contador avanza al mismo ritmo por frame que el ciclo legacy
  *    floor(anim·6)%2, pero con 3× más pasos: zancada más suave.
- *  · En reposo: 6 (neutro, ojos abiertos) o 7 (aire, ojos cerrados).
- *    Los frames 6/7 son locales a cada bloque de dirección
- *    (base +6/+7).
+ *  · En reposo (R9-6): base+6+idlePose → 6 neutro, 7 parpadeo u
+ *    8 respiración; los frames 6/7/8 son locales a cada bloque de
+ *    dirección (base +6/+7/+8).
  *  · dir acepta el Dir del motor (down/up/left/right): todo lo que
  *    no es down/up cae en el bloque lateral (el sprite side mira a
  *    la derecha y render.ts lo voltea para 'left').
  */
 export function frameIndex(dir: string, moving: boolean, anim: number): number {
   const base = dir === 'down' ? 0 : dir === 'up' ? 8 : 16;
-  if (!moving) return base + 6 + idleBlink(anim);
+  if (!moving) return base + 6 + idlePose(anim);
   return base + (Math.floor(anim * 6) % 6);
 }
 
 /**
  * Selección robusta de fotograma para cualquier sprite (siempre
  * devuelve un índice DENTRO de spr.length — clamp explícito):
- *  · humanoids v2 (24 frames): ciclo de 6 + idle 6/7 por dirección.
+ *  · humanoids v3 (27 frames, R9-6): ciclo de 6 + idle 6/7/8
+ *    (neutro / parpadeo / respiración ~2 s) por dirección.
+ *  · humanoids v2 legacy de 24 frames: ciclo de 6 + idle 6/7.
  *  · humanoids legacy de 9 frames (3 por dirección): ciclo antiguo.
  *  · resto (lobo, guardián, wisp...): alternan su ciclo propio al moverse.
  *  · dir llega con el Dir del motor: down/up/left/right — left y
@@ -600,6 +806,11 @@ export function frameIndex(dir: string, moving: boolean, anim: number): number {
 export function entityFrame(spr: Frames, dir: string, moving: boolean, anim: number): number {
   const n = spr.length;
   const clamp = (i: number) => Math.max(0, Math.min(n - 1, i));
+  if (n === 27) {
+    const base = dir === 'up' ? 8 : dir === 'down' ? 0 : 16;
+    if (!moving) return clamp(base + 6 + idlePose(anim));
+    return clamp(base + (Math.floor(anim * 6) % 6));
+  }
   if (n === 24) {
     const base = dir === 'up' ? 8 : dir === 'down' ? 0 : 16;
     if (!moving) return clamp(base + 6 + idleBlink(anim));

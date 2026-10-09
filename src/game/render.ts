@@ -40,7 +40,7 @@ import { drawBossFx } from './actors/bossfx';
 import { wolfFrameAI, guardianFrame } from './actors/enemies';
 import type { GuardianState } from './actors/enemies';
 // Ronda 3 · Combate y Juice
-import { drawProjectileV2 } from './actors/spells';
+import { drawProjectileV2, drawSpellCast, drawSpellImpact, drawSpellResidue, SPELL_IMPACT_TIME } from './actors/spells';
 import { drawTelegraphV2, drawWaveCue, drawWindupCue } from './actors/telegraph';
 import { drawKillFx } from './actors/killfx';
 import { drawCompanionFx, drawMarkFx } from './actors/companfx';
@@ -450,6 +450,13 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
   // los frames de andar) o null. Llamada opcional vía namespace: mientras 9-b
   // no exista el fallback es el frame de andar — nunca rompe la compilación.
   let poseCv: HTMLCanvasElement | null = null;
+  if (e.kind === 'player' && g.player && g.player.rollT > 0) {
+    // R9-6: pose inclinada de voltereta durante la esquiva (buildRollPoses)
+    const pl = g.player;
+    const SP = SPRITES as unknown as { getRollFrames?: (base: string, dir: string) => HTMLCanvasElement | null };
+    const rf = SP.getRollFrames ? SP.getRollFrames(pl.sprite, pl.dir) : null;
+    if (rf) poseCv = rf;
+  }
   if (e.kind === 'player' && g.player && g.player.attackT > 0) {
     const pl = g.player;
     const dur = pl.chargedHit ? 0.4 : 0.26;
@@ -660,6 +667,23 @@ function drawCombatFx(g: Game, sx: (n: number) => number, sy: (n: number) => num
   }
   // anillos/cruces/columnas de muerte (Ronda 3)
   drawKillFx(ctx, g, sx, sy);
+  // R9-4 · magias espectaculares: carga convergente + impacto/residuo (pools del motor)
+  const scf = g.spellCastFx;
+  for (let i = 0; i < scf.length; i++) {
+    const f = scf[i];
+    if (!f.active) continue;
+    drawSpellCast(ctx, sx(f.x), sy(f.y), f.element, f.age, g.globalT, f.seed);
+  }
+  const sif = g.spellImpactFx;
+  for (let i = 0; i < sif.length; i++) {
+    const f = sif[i];
+    if (!f.active) continue;
+    if (f.age < SPELL_IMPACT_TIME) {
+      drawSpellImpact(ctx, sx(f.x), sy(f.y), f.element, f.age, f.seed, g.globalT);
+    } else {
+      drawSpellResidue(ctx, sx(f.x), sy(f.y), f.element, f.age - SPELL_IMPACT_TIME, f.seed, g.globalT);
+    }
+  }
 }
 
 // ---------------- Tintes de bioma y agua viva (R3-c) ----------------

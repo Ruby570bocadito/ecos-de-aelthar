@@ -1,5 +1,5 @@
 // ============================================================
-// ECOS DE AELTHAR — Iluminación dinámica v3 (R4-A3 · módulo world)
+// ECOS DE AELTHAR — Iluminación dinámica v4 (R4-A3 → R9-2 · módulo world)
 // Evoluciona la v2 (R1-A6) manteniendo el pipeline y las firmas
 // públicas EXACTAS (render.ts llama drawLightingV2(ctx, g)):
 //   · FLICKER ORGÁNICO: cada luz respira con 2 senos de frecuencias
@@ -60,6 +60,34 @@
 //     (hash/senos), viñeta/terror INTACTOS (horror.ts) y firmas export
 //     intactas. Los destellos de sol en el agua siguen siendo de water.ts
 //     (glints de render.ts + sparkle de PAL): aquí no se duplican.
+//
+// R9-2 (NOCHE PELIGROSA 5.3 + ILUMINACIÓN v4 5.5 — la luz cuenta la historia):
+//   · NOCHE PELIGROSA: la noche profunda pasa de "tinte" a "peligro" — la
+//     oscuridad de superficie gana +0.22 de alpha con curva crepúsculo→noche
+//     suave (campana C1 con wrap centrada en la medianoche de DAY_STOPS,
+//     dayT 0.865), color más frío y una respiración lenta de amenaza.
+//     El Portador pierde radio de visión (−42 %) y DEBE buscar faroles,
+//     ventanas y fogatas: los refugios se vuelven puntos de historia.
+//   · LUZ DEL PORTADOR: aura cálida personal TAMBIÉN en superficie de noche
+//     (antes solo cripta), parpadeo MUY sutil (±2.2 %/±3 %, semilla
+//     determinista de sesión/posición = mapa+época+rincón de 96 px) y se
+//     ENCOGE con la vida baja (hasta −16 %: tensión al huir herido).
+//   · FUENTES v4: faroles con halo más amplio (44→62) y núcleo más caliente
+//     (2.ª luz); fogatas (forja/quemados) con núcleo caliente y CHISPAS
+//     ascendentes deterministas (los Faroles del Recuerdo NO echan chispas:
+//     "no se encienden con fuego, se encienden con nombres"); ventanas de
+//     la aldea según hash — ~28 % apagadas de noche (casas dormidas);
+//     CUMBRES: la nieve refleja la luna — la luna fría REEMPLAZA parte de
+//     la oscuridad total (multiplicador recortado + gradiente moonlit).
+//   · REFLEJOS EN AGUA: de noche, toda fuente visible cerca de '~' proyecta
+//     un reflejo alargado vertical con vaivén determinista (sprite de
+//     estela cacheado por color; el camino de luna sigue siendo de water.ts).
+//   · EXPORT NUEVA ÚNICA: nightAggroMul(minuteOfDay) — multiplicador de
+//     agresión enemiga 1.0→1.35 con la MISMA curva del peligro nocturno
+//     (el integrador la cablea en update.ts; ver su docstring).
+//   · HIGIENE: sampleDay escribe en scratch de módulo (−3 alloc/frame) y la
+//     rama de cripta ya no aloca el DaySample. Flicker 'subtle' vía campo
+//     opcional de LightSrc (aditivo; consumidores intactos).
 // ============================================================
 
 import { VIEW_W, VIEW_H, ZOOM } from '../consts';
@@ -77,7 +105,12 @@ import { perfQuality } from '../perf';
  *  `flicker` es la semilla/fase de parpadeo (radianes): en v3 alimenta
  *  flickerOf() (2 senos inconmensurables + hash de la semilla) → radio
  *  ±8 % y alpha ±10 % con períodos de 0.4–0.9 s. */
-export interface LightSrc { x: number; y: number; r: number; color: string; flicker: number; }
+export interface LightSrc {
+  x: number; y: number; r: number; color: string; flicker: number;
+  /** R9-2 (aditivo): parpadeo MUY sutil (±2.2 % radio / ±3 % alpha) para la
+   *  aura del Portador y núcleos; el fuego grande respira ±8 %/±10 %. */
+  subtle?: boolean;
+}
 
 /** Ojo que brilla en la oscuridad (x/y en px de MUNDO, como las entidades). */
 export type EyeDot = { x: number; y: number; color: string };
@@ -142,6 +175,33 @@ const FLICK_W1 = (2 * Math.PI) / 0.65;
 const VIG_CELL = 3;
 const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
+// R9-2 — NOCHE PELIGROSA (5.3) + ILUMINACIÓN v4 (5.5) ----------------------
+// Campana del peligro nocturno: centro en la zona de medianoche de
+// DAY_STOPS (dayT 0.875, entre las paradas 0.86 y 1.00), semianchura 0.31
+// → crepúsculo dentro, día pleno fuera.
+// La MISMA curva gobierna oscuridad, radio de visión, luna de cumbres y
+// agresión enemiga: el jugador percibe lo que el motor aplica.
+const NIGHT_DANGER_C = 0.875;
+const NIGHT_DANGER_S = 0.31;
+const NIGHT_AGGRO_AMP = 0.35;     // nightAggroMul: 1.0 de día → 1.35 pico
+const NIGHT_DANGER_EXTRA = 0.22;  // oscuridad extra (medianoche 0.58 → 0.80)
+const NIGHT_DANGER_COL: RGB = [6, 9, 30];   // color de peligro (más frío)
+const NIGHT_DANGER_COL_UP = 0.55;           // cuánto tiñe el color
+const MOON_MUL_MAX = 0.30;        // cumbres: la luna recorta el oscurecido
+const MOON_COL: RGB = [24, 34, 60];         // azul lunar (nieve que refleja)
+const AURA_NIGHT_R = 78;          // radio base de visión del Portador (noche)
+const AURA_DANGER_SHRINK = 0.42;  // −42 % del radio en noche profunda
+const AURA_LOWHP_HP = 0.35;       // vida fraccional donde empieza la tensión
+const AURA_LOWHP_SHRINK = 0.16;   // hasta −16 % de radio con vida al 0
+const FIRE_CORE_COL = '#ffe0a0';  // núcleo caliente de fogata/farol (v4)
+const LAMP_HALO_R = 62;           // farol v4: halo más amplio (era 44)
+const LAMP_CORE_R = 20;           // farol v4: núcleo caliente
+const WIN_OFF_P = 0.28;           // ~28 % ventanas apagadas (casas dormidas)
+const REFL_MAX_LIGHTS = 14;       // reflejos en agua: techo de fuentes/frame
+const REFL_SCAN_TILES = 14;       // búsqueda de agua bajo la fuente (tiles)
+const REFL_NEAR_DIST = 96;        // px de mundo a la orilla con brillo pleno
+const SPARK_MAX_LIGHTS = 6;       // fogatas con chispas por frame
+
 // ---------------- Utilidades ----------------
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -183,15 +243,15 @@ function rgbaA(r: number, g: number, b: number, a: number): string {
   return `rgba(${r},${g},${b},${a.toFixed(3)})`;
 }
 
-function lerp3(A: RGB, B: RGB, u: number): RGB {
-  return [
-    A[0] + (B[0] - A[0]) * u,
-    A[1] + (B[1] - A[1]) * u,
-    A[2] + (B[2] - A[2]) * u,
-  ];
-}
+// lerp3 retirado (R9-2): sampleDay escribe el scratch de módulo in place —
+// cero allocations por frame (era su único consumidor).
 
 interface DaySample { a: number; col: RGB; w: number; wc: RGB; }
+
+/** Scratch de módulo (R9-2): sampleDay escribe AQUÍ — cero allocations por
+ *  frame (antes: 1 objeto + 2 arrays por llamada). Los consumidores solo
+ *  leen; las mutaciones del color de peligro/luna escriben sobre el scratch. */
+const dayScratch: DaySample = { a: 0, col: [0, 0, 0], w: 0, wc: [0, 0, 0] };
 
 /** Muestrea el ciclo día/noche interpolando los 2 keyframes adyacentes
  *  con easeInOut (C2). El wrap 1→0 es continuo (parada final = inicial). */
@@ -201,16 +261,25 @@ function sampleDay(d: number): DaySample {
     const A = DAY_STOPS[i], B = DAY_STOPS[i + 1];
     if (t >= A.t && t <= B.t) {
       const u = easeInOut((t - A.t) / Math.max(1e-6, B.t - A.t));
-      return {
-        a: A.a + (B.a - A.a) * u,
-        col: lerp3(A.col, B.col, u),
-        w: A.w + (B.w - A.w) * u,
-        wc: lerp3(A.wc, B.wc, u),
-      };
+      dayScratch.a = A.a + (B.a - A.a) * u;
+      dayScratch.w = A.w + (B.w - A.w) * u;
+      const c = dayScratch.col;
+      c[0] = A.col[0] + (B.col[0] - A.col[0]) * u;
+      c[1] = A.col[1] + (B.col[1] - A.col[1]) * u;
+      c[2] = A.col[2] + (B.col[2] - A.col[2]) * u;
+      const k = dayScratch.wc;
+      k[0] = A.wc[0] + (B.wc[0] - A.wc[0]) * u;
+      k[1] = A.wc[1] + (B.wc[1] - A.wc[1]) * u;
+      k[2] = A.wc[2] + (B.wc[2] - A.wc[2]) * u;
+      return dayScratch;
     }
   }
   const last = DAY_STOPS[DAY_STOPS.length - 1];
-  return { a: last.a, col: last.col, w: last.w, wc: last.wc };
+  dayScratch.a = last.a;
+  dayScratch.w = last.w;
+  dayScratch.col[0] = last.col[0]; dayScratch.col[1] = last.col[1]; dayScratch.col[2] = last.col[2];
+  dayScratch.wc[0] = last.wc[0]; dayScratch.wc[1] = last.wc[1]; dayScratch.wc[2] = last.wc[2];
+  return dayScratch;
 }
 
 // ---------------- Flicker orgánico (v3) ----------------
@@ -228,6 +297,38 @@ export function flickerOf(seed: number, t: number): { rf: number; af: number } {
   const bR = 0.6 * Math.sin(w1 * t + seed) + 0.4 * Math.sin(w2 * t + seed * 2.3);
   const bA = 0.6 * Math.sin(w1 * t + seed * 1.7 + 1.3) + 0.4 * Math.sin(w2 * t + seed * 3.1 + 0.7);
   return { rf: 1 + 0.08 * bR, af: 1 + 0.10 * bA };
+}
+
+// ---------------- R9-2: curva del peligro nocturno (5.3) ----------------
+
+/** 0..1: profundidad del peligro nocturno para un dayT (0..1). Campana C1
+ *  CON WRAP (distancia circular) centrada en la medinoche de DAY_STOPS
+ *  (dayT 0.865): 0 en día pleno, sube por el crepúsculo, pico 1 en la
+ *  medianoche, decae hacia el alba. Derivada continua — sin saltos. */
+function nightDangerF(dT: number): number {
+  let d = (dT - NIGHT_DANGER_C) % 1;
+  if (d > 0.5) d -= 1; else if (d < -0.5) d += 1;
+  const q = d / NIGHT_DANGER_S;
+  const v = 1 - q * q;
+  return v <= 0 ? 0 : v * v * (3 - 2 * v);
+}
+
+/** R9-2 (5.3) — ÚNICA export nueva del módulo. Multiplicador de AGRESIÓN
+ *  enemiga según la hora del mundo: 1.0 de día, curva suave
+ *  (crepúsculo→noche, misma campana del peligro nocturno) hasta ~1.35 en
+ *  noche profunda. Comparte forma con la oscuridad extra y con el
+ *  encogimiento del radio de visión: el jugador PERCIBE lo que el motor
+ *  aplica (la noche se siente más peligrosa y lo ES).
+ *
+ *  Contrato para el integrador (update.ts, sustituye al binario R5-O10):
+ *    - antes:  `curNightMult = isNight(g) ? 1.3 : 1;`
+ *    - ahora:  `curNightMult = nightAggroMul(g.dayT * 1440);`
+ *  minuteOfDay: minutos desde el inicio del ciclo = g.dayT × 1440
+ *  (0..1439; dayT 0.865 ≈ minuto 1246 = pico). Acepta cualquier número
+ *  (mod 1440 interno). Función PURA: sin estado, sin allocations. */
+export function nightAggroMul(minuteOfDay: number): number {
+  const dT = (((minuteOfDay / 1440) % 1) + 1) % 1;
+  return 1 + NIGHT_AGGRO_AMP * nightDangerF(dT);
 }
 
 /** ¿El tile es transitable (puede recibir luz frontal de muro)? */
@@ -340,6 +441,19 @@ function pushBurnLight(e: Entity, seed: number, out: LightSrc[]): void {
   }
 }
 
+/** Semilla determinista "de sesión/posición" (R9-2) para la luz personal del
+ *  Portador: hash del mapa + época + posición cuantizada a 96 px — el aura
+ *  respira distinto en cada rincón, sin azar de ejecución. La cuantización
+ *  salta la FASE (no el radio visible: ±2 % ≈ 1 px) al cruzar un bloque. */
+function sessionSeedOf(g: Game, p: Entity): number {
+  let h = 0;
+  const id = g.mapId;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  h = (h + (g.epoch === 'pasado' ? 7919 : 0)) | 0;
+  h = (h ^ (Math.round(p.x / 96) * 131 + Math.round(p.y / 96) * 197)) | 0;
+  return ((h >>> 0) % 628) * 0.01;   // 0..6.27 rad
+}
+
 /** Deduce TODAS las fuentes de luz visibles a partir del estado del juego.
  *  Determinista salvo pulsos/parpadeos derivados de g.globalT. */
 export function collectLights(g: Game): LightSrc[] {
@@ -357,21 +471,34 @@ export function collectLights(g: Game): LightSrc[] {
       const pulse = Math.sin(t * 2 + pr.x * 0.9) * 6;
       lights.push({ x: cx, y: cy - 4, r: 88 + pulse, color: LIGHT_PAL.sanctuaryCyan, flicker: pr.x * 1.31 });
     } else if (pr.kind === 'forge') {
+      // R9-2 v4 (fogata de la aldea): la hoguera de Toln gana núcleo caliente
       lights.push({ x: cx, y: cy - 5, r: 58, color: LIGHT_PAL.forgeEmber, flicker: 2.1 });
+      const core = expLight();
+      core.x = cx; core.y = cy - 6; core.r = 22;
+      core.color = FIRE_CORE_COL; core.flicker = 2.1 * 1.7 + 0.4; core.subtle = true;
+      lights.push(core);
     } else if (pr.kind === 'altarEcho' && g.mapId === 'cripta') {
       // el fragmento dorado brilla fuerte hasta recoger el Eco de la Voz
       const taken = !!g.flags.ecoVoz;
       lights.push({ x: cx, y: cy - 12, r: taken ? 44 : 80, color: LIGHT_PAL.altarGold, flicker: 0.7 });
     } else if (pr.kind === 'lamp' && !!g.flags[pr.id]) {
       // R7-V3 (aldea): Farol del Recuerdo ENCIENDIDO (flags lamp1..3 que
-      // escribe engine.lightLamp). Luz cálida de farol: el agujero en la
-      // oscuridad solo se ve de noche; el tinte aditivo, un sutil brillo.
+      // escribe engine.lightLamp). R9-2 v4: HALO MÁS AMPLIO (44→62) y
+      // NÚCLEO MÁS CALIENTE (2.ª luz) — el farol es un REFUGIO que se lee
+      // de noche a más distancia. Sin chispas: "no se encienden con fuego,
+      // se encienden con nombres" (lore, sign_al2).
       const L = expLight();
       L.x = cx; L.y = cy - 6;
-      L.r = 44;
+      L.r = LAMP_HALO_R;
       L.color = LAMP_WARM;
       L.flicker = pr.x * 2.3 + pr.y * 0.7;
+      L.subtle = false;   // pool reutilizable: limpiar flag de otro slot
       lights.push(L);
+      const core = expLight();
+      core.x = cx; core.y = cy - 6; core.r = LAMP_CORE_R;
+      core.color = FIRE_CORE_COL; core.flicker = pr.x * 2.3 + pr.y * 0.7 + 0.9;
+      core.subtle = true;
+      lights.push(core);
     }
   }
 
@@ -389,9 +516,16 @@ export function collectLights(g: Game): LightSrc[] {
   //     noche (mismo plan que village.ts) — coste cero de día.
   if (g.mapId === 'aldea') collectAldeaWindowLights(g, lights);
 
-  // 4) Jugador
+  // 4) Jugador — R9-2: luz personal con parpadeo MUY sutil (semilla de
+  //    sesión/posición) que se ENCOGE con la vida baja (tensión); en
+  //    superficie aparece SOLO de noche como radio de visión que la noche
+  //    profunda MUERDE (el Portador debe buscar faroles/fogatas/ventanas).
   const p = g.player;
   if (p && !p.dead) {
+    const hpFrac = p.maxHp > 0 ? p.hp / p.maxHp : 1;
+    const lowHp = hpFrac < AURA_LOWHP_HP ? (AURA_LOWHP_HP - hpFrac) / AURA_LOWHP_HP : 0;
+    const lowMul = 1 - AURA_LOWHP_SHRINK * lowHp;
+    const auraSeed = sessionSeedOf(g, p);
     // disciplina tejedor: aura violeta tenue
     if (p.discipline === 'tejedor') {
       lights.push({ x: p.x, y: p.y - 8, r: 48, color: LIGHT_PAL.weaverViolet, flicker: 4.4 });
@@ -404,8 +538,27 @@ export function collectLights(g: Game): LightSrc[] {
         const dx = torchPos[i].x - p.x, dy = torchPos[i].y - p.y;
         if (dx * dx + dy * dy <= PLAYER_GROW_DIST2) near++;
       }
-      const r = PLAYER_LIGHT_R + Math.min(PLAYER_GROW_MAX, near * PLAYER_GROW_STEP);
-      lights.push({ x: p.x, y: p.y - 6, r, color: PLAYER_LIGHT_COL, flicker: 0 });
+      const L = expLight();
+      L.x = p.x; L.y = p.y - 6;
+      L.r = (PLAYER_LIGHT_R + Math.min(PLAYER_GROW_MAX, near * PLAYER_GROW_STEP)) * lowMul;
+      L.color = PLAYER_LIGHT_COL;
+      L.flicker = auraSeed;
+      L.subtle = true;
+      lights.push(L);
+    } else {
+      // NOCHE PELIGROSA (5.3): aura de visión nocturna — nace en el
+      // crepúsculo y se encoge con la profundidad de la noche (gradiente
+      // suave, sin saltos; de día es un no-op con coste cero).
+      const danger = nightDangerF(g.dayT);
+      if (danger > 0.004) {
+        const L = expLight();
+        L.x = p.x; L.y = p.y - 6;
+        L.r = AURA_NIGHT_R * (1 - AURA_DANGER_SHRINK * danger) * lowMul;
+        L.color = PLAYER_LIGHT_COL;
+        L.flicker = auraSeed;
+        L.subtle = true;
+        lights.push(L);
+      }
     }
   }
 
@@ -608,12 +761,16 @@ function cullLights(lights: LightSrc[], camX: number, camY: number, t: number): 
   for (let i = 0; i < lights.length; i++) {
     const L = lights[i];
     const fk = flickerOf(L.flicker, t);
+    // R9-2: luces 'subtle' (aura del Portador, núcleos) respiran ±2.2 %/±3 %
+    // reutilizando la MISMA pareja de senos — determinismo intacto.
+    const rf = L.subtle ? 1 + (fk.rf - 1) * 0.28 : fk.rf;
+    const af = L.subtle ? 1 + (fk.af - 1) * 0.30 : fk.af;
     const rM = L.r * ZOOM * 1.08 + 2;   // rf ≤ 1.08 + margen del vaivén
     const x = Math.round(L.x * ZOOM) - camX, y = Math.round(L.y * ZOOM) - camY;
     if (x < -rM || y < -rM || x > VIEW_W + rM || y > VIEW_H + rM) continue;
     visLights.push(L);
-    visRf.push(fk.rf);
-    visAf.push(fk.af);
+    visRf.push(rf);
+    visAf.push(af);
   }
 }
 
@@ -632,6 +789,118 @@ function drawAdditive(ctx: CanvasRenderingContext2D, camX: number, camY: number)
     const x = Math.round(L.x * ZOOM) - camX, y = Math.round(L.y * ZOOM) - camY;
     ctx.globalAlpha = clamp(te.base * visAf[i], 0, 0.2);
     ctx.drawImage(te.cv, x - Math.round(r), y - Math.round(r), Math.round(r * 2), Math.round(r * 2));
+  }
+  ctx.restore();
+}
+
+// ---------------- R9-2 v4: reflejos alargados en agua (5.5) ----------------
+// De noche, toda fuente visible cerca de tiles '~' proyecta un reflejo
+// VERTICAL alargado con vaivén determinista (el agua cuenta dónde están los
+// refugios). El camino de luna general sigue siendo de water.ts (R4): aquí
+// solo los reflejos de las fuentes concretas. Sprite de estela cacheado por
+// color (mismo límite que el tinte aditivo); escaneo de columna O(luces×14
+// tileAt) — ~200 consultas en el peor caso, sin allocations.
+
+const reflCache = new Map<string, HTMLCanvasElement>();
+
+/** Estela vertical: alpha 0.85 arriba (junto a la orilla) → 0 abajo, con
+ *  bordes horizontales suaves (recorte destination-out). 32×128 px. */
+function getStreakSprite(color: string): HTMLCanvasElement {
+  let cv = reflCache.get(color);
+  if (cv) return cv;
+  if (reflCache.size >= TINT_CACHE_MAX) reflCache.clear();
+  cv = document.createElement('canvas');
+  cv.width = 32;
+  cv.height = 128;
+  const c = cv.getContext('2d')!;
+  const [cr, cg, cb] = hexRgb(color);
+  const gr = c.createLinearGradient(0, 0, 0, 128);
+  gr.addColorStop(0, rgbaA(cr, cg, cb, 0.85));
+  gr.addColorStop(0.35, rgbaA(cr, cg, cb, 0.38));
+  gr.addColorStop(1, rgbaA(cr, cg, cb, 0));
+  c.fillStyle = gr;
+  c.fillRect(0, 0, 32, 128);
+  const gx = c.createLinearGradient(0, 0, 32, 0);
+  gx.addColorStop(0, 'rgba(0,0,0,1)');      // destination-out: bordes fuera
+  gx.addColorStop(0.5, 'rgba(0,0,0,0)');    // centro intacto
+  gx.addColorStop(1, 'rgba(0,0,0,1)');
+  c.globalCompositeOperation = 'destination-out';
+  c.fillStyle = gx;
+  c.fillRect(0, 0, 32, 128);
+  reflCache.set(color, cv);
+  return cv;
+}
+
+/** Reflejos nocturnos en agua: 1 drawImage por fuente cercana a '~'
+ *  (techo REFL_MAX_LIGHTS). Solo de noche (darkA > 0.16) y en calidad
+ *  media/alta; la distancia a la orilla atenúa el brillo. */
+function drawWaterReflections(ctx: CanvasRenderingContext2D, g: Game, camX: number, camY: number, darkA: number): void {
+  // mapas dark: la cripta no tiene agua — el escaneo sería coste muerto
+  if (g.map.dark || darkA <= 0.16 || perfQuality() === 2 || visLights.length === 0) return;
+  const rows = g.rows.length >= g.map.h ? g.rows : g.map.rows;
+  const nightF = clamp((darkA - 0.12) / 0.5, 0, 1);
+  const n = Math.min(visLights.length, REFL_MAX_LIGHTS);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < n; i++) {
+    const L = visLights[i];
+    // columna de agua bajo la fuente (tileAt aplica bounds y epochDiffs)
+    const tx = Math.floor(L.x / TILE);
+    const ty0 = Math.floor(L.y / TILE) + 1;
+    let wy = -1;
+    for (let ty = ty0, end = ty0 + REFL_SCAN_TILES; ty < end; ty++) {
+      if (tileAt(g.map, rows, tx, ty, g.epoch) === '~') { wy = ty * TILE; break; }
+    }
+    if (wy < 0) continue;
+    const syTop = wy * ZOOM - camY;
+    if (syTop > VIEW_H || syTop < -8) continue;      // agua fuera de vista
+    const dist = wy - L.y;
+    if (dist > REFL_NEAR_DIST) continue;             // demasiado lejos de la orilla
+    const near = 1 - dist / REFL_NEAR_DIST;
+    const w = Math.max(6, L.r * ZOOM * 0.32);
+    const len = Math.min(VIEW_H - syTop, Math.max(24, L.r * ZOOM * 1.5) * (0.55 + 0.45 * near));
+    // vaivén determinista del reflejo (2 ondas lentas, sin estado)
+    const wob = Math.sin(g.globalT * 1.35 + L.x * 0.045) * 2 + Math.sin(g.globalT * 2.6 + L.y * 0.11) * 1.2;
+    ctx.globalAlpha = Math.min(0.5, (0.05 + 0.30 * near) * visAf[i] * nightF);
+    ctx.drawImage(getStreakSprite(L.color), Math.round(L.x * ZOOM) - camX + wob - w * 0.5, syTop, w, len);
+  }
+  ctx.restore();
+}
+
+// ---------------- R9-2 v4: chispas ascendentes de las fogatas (5.5) --------
+// Ascas que se desprenden de las fogatas (forja, quemados) y antorchas de
+// la cripta: 1-2 por fuente, aparición/vida deterministas por hash+t (sin
+// estado, sin sistema de partículas). Los Faroles del Recuerdo NO echan
+// chispas (lore: se encienden con nombres). Dibujadas SOBRE la oscuridad
+// ('lighter') para que brille el ascua; techo SPARK_MAX_LIGHTS fuentes.
+
+function drawSparks(ctx: CanvasRenderingContext2D, g: Game, camX: number, camY: number): void {
+  if (perfQuality() === 2 || visLights.length === 0) return;
+  const t = g.globalT;
+  let n = 0;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < visLights.length && n < SPARK_MAX_LIGHTS; i++) {
+    const L = visLights[i];
+    if (L.color !== LIGHT_PAL.forgeEmber && L.color !== LIGHT_PAL.burnOrange &&
+        L.color !== LIGHT_PAL.torchAmber) continue;
+    const sx0 = Math.round(L.x * ZOOM) - camX, sy0 = Math.round(L.y * ZOOM) - camY;
+    if (sx0 < -8 || sy0 < -8 || sx0 > VIEW_W + 8 || sy0 > VIEW_H + 8) continue;
+    n++;
+    for (let s = 0; s < 2; s++) {
+      const hh = h2(i * 17 + s * 5 + 3, 71);
+      const per = 1.9 + hh * 2.7;                                   // 1.9..4.6 s
+      const life = 0.5 + h2(i * 23 + s * 7 + 1, 53) * 0.35;         // 0.50..0.85 s
+      const u = (t + h2(i * 29 + s * 11 + 5, 97) * per) % per;
+      if (u >= life) continue;
+      const k = u / life;                                           // 0..1 vida
+      const rise = (9 + hh * 9) * k;                                // px de mundo
+      const sway = Math.sin(k * 6.8 + hh * 12.6) * (1.2 + hh * 1.6);
+      ctx.globalAlpha = (1 - k) * (0.35 + 0.45 * h2(i * 31 + s * 13 + 7, 11));
+      ctx.fillStyle = hh < 0.5 ? '#ffd98a' : '#ff9a4a';
+      const sz = k < 0.5 ? 2 : 1;                                   // se apaga encogiéndose
+      ctx.fillRect(Math.round((L.x + sway) * ZOOM) - camX, Math.round((L.y - 4 - rise) * ZOOM) - camY, sz, sz);
+    }
   }
   ctx.restore();
 }
@@ -757,8 +1026,10 @@ function cumbresDayF(dayT: number): number {
 }
 
 /** Hornea el grade frío de cumbres: azul claro arriba (luz de altura),
- *  sombra azulada profunda abajo — el "contraste alto" del perfil. */
-function ensureCumbresBake(dayT: number): void {
+ *  sombra azulada profunda abajo — el "contraste alto" del perfil.
+ *  R9-2: `moon` (0..1, profundidad de la noche) añade el LAVADO LUNAR —
+ *  la nieve refleja la luna: cielo frío arriba y rebote de nieve abajo. */
+function ensureCumbresBake(dayT: number, moon: number): void {
   const stage = Math.floor(dayT * STAGE_STEPS);
   const dayF = cumbresDayF(dayT);
   const env = 0.3 + 0.7 * dayF;
@@ -773,6 +1044,17 @@ function ensureCumbresBake(dayT: number): void {
   gr.addColorStop(1, `rgba(18,30,54,${(0.14 * env).toFixed(3)})`);
   c.fillStyle = gr;
   c.fillRect(0, 0, W, H);
+  // R9-2 (luna en cumbres): solo dentro de la noche (moon > 0) — re-bake
+  // por etapa como el resto (≈7.5 s), mismo convenio de invalidación.
+  if (moon > 0.004) {
+    const mg = c.createLinearGradient(0, 0, 0, H);
+    mg.addColorStop(0, `rgba(168,196,238,${(0.12 * moon).toFixed(3)})`);
+    mg.addColorStop(0.5, `rgba(168,196,238,${(0.03 * moon).toFixed(3)})`);
+    mg.addColorStop(0.78, `rgba(150,178,226,${(0.02 * moon).toFixed(3)})`);
+    mg.addColorStop(1, `rgba(196,212,244,${(0.07 * moon).toFixed(3)})`);
+    c.fillStyle = mg;
+    c.fillRect(0, 0, W, H);
+  }
 }
 
 /** Vuelca el bake de etapa a pantalla completa (1 drawImage con suavizado). */
@@ -794,6 +1076,7 @@ const WIN_ANCH_MAX = 256;
 const winAx = new Float64Array(WIN_ANCH_MAX);
 const winAy = new Float64Array(WIN_ANCH_MAX);
 const winSeed = new Float64Array(WIN_ANCH_MAX);
+const winOff = new Float64Array(WIN_ANCH_MAX);  // R9-2: hash de "casa dormida"
 let winAn = 0;
 let winCacheId: string | null = null;
 let winCacheRows: string[] | null = null;
@@ -830,6 +1113,10 @@ function rebuildWindowAnchors(g: Game): void {
       winAx[winAn] = tx * TILE + 8;        // centro del cristal (wx+4+... = +8)
       winAy[winAn] = ty * TILE + 8;
       winSeed[winAn] = vhVillage(tx * 7 + 3, ty * 5 + 1); // fase del parpadeo
+      // R9-2 (hash independiente del de la fase): ~28 % de ventanas se
+      // quedan APAGADAS de noche — casas dormidas. El apagón es estable por
+      // (mapa, época): la misma casa duerme toda la noche.
+      winOff[winAn] = vhVillage(tx * 11 + 5, ty * 23 + 9);
       winAn++;
     }
   }
@@ -866,8 +1153,9 @@ function collectAldeaWindowLights(g: Game, lights: LightSrc[]): void {
     rebuildWindowAnchors(g);
   }
   const camX = Math.round(g.camX), camY = Math.round(g.camY);
-  const m = 44 * ZOOM;                 // margen = radio máx × flicker + vaivén
+  const m = LAMP_HALO_R * ZOOM;        // margen = radio máx × flicker + vaivén
   for (let i = 0; i < winAn; i++) {
+    if (winOff[i] < WIN_OFF_P) continue;  // R9-2: casa dormida — ventana apagada
     const sx = winAx[i] * ZOOM - camX;
     const sy = winAy[i] * ZOOM - camY;
     if (sx < -m || sy < -m || sx > VIEW_W + m || sy > VIEW_H + m) continue;
@@ -877,19 +1165,23 @@ function collectAldeaWindowLights(g: Game, lights: LightSrc[]): void {
     L.r = 26 + winSeed[i] * 10;        // 26..36 px de mundo
     L.color = WINDOW_WARM;
     L.flicker = winSeed[i] * 6.1;
+    L.subtle = false;                  // pool reutilizable: limpiar flag de otro slot
     lights.push(L);
   }
 }
 
 // ---------------- Pipeline principal ----------------
 
-/** Iluminación dinámica v3. Dibuja SOBRE ctx (canvas principal, espacio de
- *  vista 960×540): franja del ciclo día/noche → capa de oscuridad (vetas
- *  por tile en la cripta) con recortes ESCALONADOS por luz, pintada en un
- *  buffer a MEDIA RESOLUCIÓN (VIEW/2) y compuesta escalada ×2 (R5-O3) →
- *  tinte cálido aditivo → viñeta de ojo dithered → ojos que brillan en la
+/** Iluminación dinámica v4 (R9-2). Dibuja SOBRE ctx (canvas principal,
+ *  espacio de vista 960×540): franja del ciclo día/noche → capa de
+ *  oscuridad — con PELIGRO NOCTURNO (+0.22 de alpha y color más frío en
+ *  noche profunda, curva crepúsculo→noche sin saltos; cumbres: la luna
+ *  fría reemplaza parte de la oscuridad) — con recortes ESCALONADOS por
+ *  luz, pintada en un buffer a MEDIA RESOLUCIÓN (VIEW/2) y compuesta
+ *  escalada ×2 (R5-O3) → tinte cálido aditivo → reflejos en agua y
+ *  chispas de fogata → viñeta de ojo dithered → ojos que brillan en la
  *  oscuridad. En mapas dark usa oscuridad base 0.82 con vetas ±0.04,
- *  antorchas ámbar y luz propia del Portador (r 70→94). */
+ *  antorchas ámbar y luz propia del Portador (r 70→94, ×vida baja). */
 export function drawLightingV2(ctx: CanvasRenderingContext2D, g: Game): void {
   const camX = Math.round(g.camX), camY = Math.round(g.camY);
   const t = g.globalT;
@@ -897,20 +1189,41 @@ export function drawLightingV2(ctx: CanvasRenderingContext2D, g: Game): void {
   const darkMap = !!g.map.dark;
 
   // ---- a) oscuridad y tinte según día/noche (o cripta) ----
-  let dark: DaySample;
+  // R9-2: dark ahora es el scratch de módulo (cero alloc); las ramas
+  // escriben sus valores y el peligro nocturno muta el color in place.
+  const dark: DaySample = dayScratch;
+  const danger = darkMap ? 0 : nightDangerF(g.dayT);
   if (darkMap) {
     // la cripta "respira" como brasas lejanas (más sutil que en v2:
     // las vetas por tile ya aportan la variación fina)
-    const a = CRYPT_DARK + Math.sin(g.globalT * 9) * 0.012 + Math.sin(g.globalT * 19.3 + 1.7) * 0.008;
-    dark = { a, col: CRYPT_COL, w: 0, wc: [255, 148, 74] };
+    dark.a = CRYPT_DARK + Math.sin(g.globalT * 9) * 0.012 + Math.sin(g.globalT * 19.3 + 1.7) * 0.008;
+    dark.col[0] = CRYPT_COL[0]; dark.col[1] = CRYPT_COL[1]; dark.col[2] = CRYPT_COL[2];
+    dark.w = 0;
+    dark.wc[0] = 255; dark.wc[1] = 148; dark.wc[2] = 74;
   } else {
-    dark = sampleDay(g.dayT);
-    // R7-V3 (cumbres): noche más PROFUNDA y azulada que la global — el
-    // contraste alto del perfil solo toca este mapa (resto de paradas intacto).
-    if (g.mapId === 'cumbres' && dark.a > 0.02) {
-      dark.a = Math.min(0.92, dark.a * CUMBRES_NIGHT_MUL);
-      dark.col = CUMBRES_NIGHT_COL;
+    sampleDay(g.dayT);
+    // R9-2 NOCHE PELIGROSA (5.3): la noche profunda pasa de "tinte" a
+    // "peligro" — +0.22 de alpha con la campana crepúsculo→noche (C1 con
+    // wrap, sin saltos), color más frío y respiración lenta de amenaza.
+    if (danger > 0) {
+      dark.a += NIGHT_DANGER_EXTRA * danger + Math.sin(g.globalT * 0.9) * 0.012 * danger;
+      const u = NIGHT_DANGER_COL_UP * danger;
+      dark.col[0] += (NIGHT_DANGER_COL[0] - dark.col[0]) * u;
+      dark.col[1] += (NIGHT_DANGER_COL[1] - dark.col[1]) * u;
+      dark.col[2] += (NIGHT_DANGER_COL[2] - dark.col[2]) * u;
     }
+    // R7-V3 (cumbres) + R9-2 luna: noche más profunda y azulada que la
+    // global, PERO la nieve refleja la luna — en noche profunda la luna
+    // fría REEMPLAZA parte de la oscuridad total (multiplicador recortado
+    // por danger + color moonlit + lavado horneado en ensureCumbresBake).
+    if (g.mapId === 'cumbres' && dark.a > 0.02) {
+      dark.a = Math.min(0.93, dark.a * (CUMBRES_NIGHT_MUL - MOON_MUL_MAX * danger));
+      const u = 0.55 * danger;
+      dark.col[0] = CUMBRES_NIGHT_COL[0] + (MOON_COL[0] - CUMBRES_NIGHT_COL[0]) * u;
+      dark.col[1] = CUMBRES_NIGHT_COL[1] + (MOON_COL[1] - CUMBRES_NIGHT_COL[1]) * u;
+      dark.col[2] = CUMBRES_NIGHT_COL[2] + (MOON_COL[2] - CUMBRES_NIGHT_COL[2]) * u;
+    }
+    if (dark.a > 0.90) dark.a = 0.90;   // techo de seguridad en superficie
   }
 
   // tinte de franja (amanecer rosa / tarde ámbar), 'source-over' simulando
@@ -934,7 +1247,7 @@ export function drawLightingV2(ctx: CanvasRenderingContext2D, g: Game): void {
       ensureAldeaBake(g.dayT);
       drawBakedGrade(ctx, aldeaBake);
     } else if (g.mapId === 'cumbres') {
-      ensureCumbresBake(g.dayT);
+      ensureCumbresBake(g.dayT, danger);
       drawBakedGrade(ctx, cumbresBake);
     }
   }
@@ -1006,6 +1319,12 @@ export function drawLightingV2(ctx: CanvasRenderingContext2D, g: Game): void {
 
   // ---- d) tinte cálido aditivo por luz (sprites cacheados por color) ----
   drawAdditive(ctx, camX, camY);
+
+  // ---- d2) R9-2 v4: reflejos alargados en agua + chispas de fogata ----
+  //      ambos SOBRE la oscuridad ('lighter'): el agua señala los refugios
+  //      y las ascuas suben dentro de la noche. La viñeta sigue después.
+  drawWaterReflections(ctx, g, camX, camY, dark.a);
+  drawSparks(ctx, g, camX, camY);
 
   // ---- e) viñeta v2: forma de ojo, dithered (pre-pintada; más cerrada
   //      por los 4 lados en la cripta) ----
