@@ -204,6 +204,28 @@ const SPELL_ARP: readonly number[] = [587.33, 739.99, 880, 1174.66, 1479.98];
 // Frecuencia base del shimmer (≈C7): sine agudo con vibrato creciente.
 const SPELL_SHIMMER_F = 2093;
 
+// ============================================================
+// R10-7 · constantes de cripta/interiores/eventos (épicas 6.4/6.5/6.6).
+// Hoisted a módulo: cero allocations por disparo (política R7-O2).
+// ============================================================
+
+// Multiplicador al que queda el bus de la capa nocturna mientras se está
+// DENTRO de una casa (exterior apagado). Ver interiorAmbience/nightAmbience.
+const INTERIOR_NIGHT_MUL = 0.28;
+
+// Dron de cripta: raíz (La1) + batido de 2.ª menor (1.5 Hz de batido, inquietud
+// constante) + tritono (Mi♭2) muy flojo. Tabla hoisted — el bus la recorre UNA
+// vez al crearse.
+const CRYPT_DRONE: readonly { f: number; type: OscType; g: number }[] = [
+  { f: 55.0, type: 'sine', g: 0.055 },
+  { f: 56.5, type: 'sawtooth', g: 0.02 },
+  { f: 77.78, type: 'triangle', g: 0.017 },
+];
+
+// Ratios de afinación de las 3 voces de la manada (raíz / cuarta justa arriba /
+// sexta menor abajo) — entrelazadas suenan a coro de bestias, no a eco.
+const PACK_RATIO: readonly number[] = [1, 1.189, 0.891];
+
 export class AudioEngine {
   ctx: AudioContext | null = null;
   master!: GainNode;
@@ -249,6 +271,22 @@ export class AudioEngine {
   private nightTimer: number | null = null;
   private nightStep = 0;
   private howlN = 0;
+
+  // ---- R10-7 · estado de cripta, interior y eventos ----
+  // cryptOn/cryptGain/cryptTimer/cryptStep: capa de cripta (idempotente, mismo
+  // patrón de bus+scheduler que la capa nocturna). interiorOn/interiorGain/
+  // interiorTimer/interiorStep: capa cálida de hogar. packN/lineN: contadores
+  // para variación DETERMINISTA de aullidos de manada y blips del viajero.
+  private cryptOn = false;
+  private cryptGain: GainNode | null = null;
+  private cryptTimer: number | null = null;
+  private cryptStep = 0;
+  private interiorOn = false;
+  private interiorGain: GainNode | null = null;
+  private interiorTimer: number | null = null;
+  private interiorStep = 0;
+  private packN = 0;
+  private lineN = 0;
 
   musicVol = 0.7;
   sfxVol = 0.8;
@@ -896,7 +934,10 @@ export class AudioEngine {
     g.cancelScheduledValues(now);
     g.setValueAtTime(Math.max(0.0001, g.value), now);
     if (on) {
-      g.linearRampToValueAtTime(1, now + 2.4);   // crossfade de entrada
+      // R10-7: dentro de una casa el exterior se oye APAGADO — el target del
+      // crossfade respeta el pato de interior (invariante en CUALQUIER orden
+      // de llamada respecto a interiorAmbience, que también programa el bus).
+      g.linearRampToValueAtTime(this.interiorOn ? INTERIOR_NIGHT_MUL : 1, now + 2.4);   // crossfade de entrada
       if (this.nightTimer === null) {
         this.nightStep = 0;                       // fraseo determinista desde 0
         this.nightTimer = window.setInterval(() => this.nightTick(), 120);
@@ -1053,6 +1094,342 @@ export class AudioEngine {
       }
     }
   }
+
+  // ============================================================
+  // R10-7 · CRIPTA ZELDA + INTERIORES + EVENTOS (épicas 6.4/6.5/6.6)
+  // Métodos internos del engine (reutilizan sharedNoise/sTone/sNoise/rl y los
+  // buses existentes — NADA de buffers nuevos por disparo). Las EXPORT
+  // playCryptAmbience / playSpikeUp / playLeverPull / playDoorOpen /
+  // playPackHowl / playEchoFind / playInteriorAmbience / playTravelerLine
+  // (al final del archivo) son envoltorios delgados sobre el singleton:
+  // el orquestador cablea esas export, no estos métodos.
+  // ============================================================
+
+  // ---- 1) Capa de cripta: dron grave disonante + goteo + susurro.        ----
+  // ----    IDEMPOTENTE (no-op si ya está en el estado), crossfade suave.  ----
+  // Coste en reposo con la capa on: 3 osciladores del dron + LFO + filtro
+  // (nodos FIJOS creados UNA vez, corren siempre que el bus existe — mismo
+  // patrón que el viento nocturno) + setInterval 140 ms de goteo/susurro
+  // (solo mientras on). El goteo y el susurro se conectan AL BUS de la capa,
+  // así el crossfade los abrazó al salir (nada sigue sonando fuera).
+  cryptAmbience(on: boolean) {
+    this.init();
+    if (!this.ctx || !this.sfxGain) return;
+    if (on === this.cryptOn) return; // ya en el estado pedido → no-op seguro
+    this.cryptOn = on;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    if (!this.cryptGain) {
+      // Bus de la capa (se crea UNA vez; reutilizado en on/off posteriores).
+      // Va al bus sfx existente → respeta el volumen de SFX del jugador.
+      const bus = ctx.createGain();
+      bus.gain.value = 0.0001;
+      bus.connect(this.sfxGain);
+      // Dron disonante: tabla CRYPT_DRONE (raíz + batido + tritono) pasando
+      // por lowpass grave; LFO muy lento (0.05 Hz) hace que "respire".
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass'; lp.frequency.value = 250; lp.Q.value = 0.4;
+      const droneG = ctx.createGain(); droneG.gain.value = 0.88;
+      const lfo = ctx.createOscillator();
+      lfo.type = 'sine'; lfo.frequency.value = 0.05;
+      const lg = ctx.createGain(); lg.gain.value = 0.12;
+      lfo.connect(lg); lg.connect(droneG.gain);
+      lp.connect(droneG); droneG.connect(bus);
+      for (let i = 0; i < CRYPT_DRONE.length; i++) {
+        const d = CRYPT_DRONE[i];
+        const o = ctx.createOscillator();
+        o.type = d.type;
+        o.frequency.value = d.f;
+        const og = ctx.createGain(); og.gain.value = d.g;
+        o.connect(og); og.connect(lp);
+        o.start(now);
+      }
+      lfo.start(now);
+      this.cryptGain = bus;
+    }
+    const g = this.cryptGain.gain;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(Math.max(0.0001, g.value), now);
+    if (on) {
+      g.linearRampToValueAtTime(1, now + 2.6);   // crossfade de entrada
+      if (this.cryptTimer === null) {
+        this.cryptStep = 0;                      // fraseo determinista desde 0
+        this.cryptTimer = window.setInterval(() => this.cryptTick(), 140);
+      }
+    } else {
+      g.linearRampToValueAtTime(0.0001, now + 1.8); // crossfade de salida
+      if (this.cryptTimer !== null) { clearInterval(this.cryptTimer); this.cryptTimer = null; }
+    }
+  }
+
+  /** Paso del scheduler de cripta (SOLO con la capa on): goteo ocasional
+   *  (~1 cada 4 s) y susurro filtrado más raro (~1 cada 10 s), fraseo
+   *  DETERMINISTA por det01 (mismo arranque → misma secuencia). */
+  private cryptTick() {
+    if (!this.ctx || !this.cryptOn || !this.cryptGain) return;
+    const ctx = this.ctx;
+    const s = this.cryptStep++;
+    if (det01(s * 3 + 13) < 0.035) {
+      const f = 500 + Math.floor(det01(s * 5 + 29) * 4) * 180;   // 500..1040 Hz
+      this.cryptDrip(ctx.currentTime + 0.02 + det01(s * 7 + 31) * 0.08, f, 0.05);
+    }
+    if (det01(s * 11 + 17) < 0.014) {
+      this.cryptWhisper(ctx.currentTime + 0.05, 0.026, det01(s * 13 + 19));
+    }
+  }
+
+  /** Un goteo: "plip" de agua — sine con subida rápida de pitch (la gota
+   *  acelera al caer) + rebote más flojo en el charco. 4 nodos, desechables. */
+  private cryptDrip(t: number, f: number, gain: number) {
+    const ctx = this.ctx;
+    if (!ctx || !this.cryptGain) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(f, t);
+    o.frequency.exponentialRampToValueAtTime(f * 2.4, t + 0.07);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+    o.connect(g); g.connect(this.cryptGain);
+    o.start(t); o.stop(t + 0.14);
+    // rebote en el charco (más flojo y agudo, determinista)
+    const o2 = ctx.createOscillator();
+    const g2 = ctx.createGain();
+    const t2 = t + 0.16;
+    o2.type = 'sine';
+    o2.frequency.setValueAtTime(f * 1.15, t2);
+    o2.frequency.exponentialRampToValueAtTime(f * 2.6, t2 + 0.05);
+    g2.gain.setValueAtTime(0.0001, t2);
+    g2.gain.linearRampToValueAtTime(gain * 0.35, t2 + 0.005);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t2 + 0.07);
+    o2.connect(g2); g2.connect(this.cryptGain);
+    o2.start(t2); o2.stop(t2 + 0.1);
+  }
+
+  /** Susurro filtrado: ráfaga de ruido COMPARTIDO por bandpass estrecho que
+   *  sube y se apaga (como alguien que respira al fondo del pasillo).
+   *  Offset del buffer por det01 (determinista, ver política del archivo). */
+  private cryptWhisper(t: number, gain: number, seed: number) {
+    const ctx = this.ctx;
+    if (!ctx || !this.cryptGain) return;
+    const buf = this.sharedNoise();
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    const f0 = 700 + seed * 500;
+    bp.frequency.setValueAtTime(f0, t);
+    bp.frequency.linearRampToValueAtTime(f0 * 1.6, t + 1.1);
+    bp.Q.value = 2.5;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + 0.5);
+    g.gain.linearRampToValueAtTime(0.0001, t + 1.4);
+    src.connect(bp); bp.connect(g); g.connect(this.cryptGain);
+    const need = 1.5;
+    const off = need < buf.duration ? det01(seed * 997 + 3) * (buf.duration - need) : 0;
+    src.start(t, off); src.stop(t + need);
+  }
+
+  // ---- 2) Pincho: "shk" metálico corto — ruido filtrado con pitch       ----
+  // ----    descendente + parcial metálico + golpe de mecanismo.          ----
+  // Rate-limit AGRESIVO de 90 ms: el jugador puede pisar varios pinchos en
+  // pocos frames y no debe ametrallar (política rl(), clave propia).
+  spikeUp() {
+    this.init();
+    if (!this.ctx || !this.rl('spikeUp', 0.09)) return;
+    this.sNoise(0.09, 5400, 0.13, 'bandpass', 0, 1400);  // shk (barrido ↓)
+    this.sTone(2900, 2100, 0.05, 'square', 0.035, 0.005); // ring metálico
+    this.sNoise(0.05, 900, 0.06, 'lowpass', 0.01);        // clunk del mecanismo
+  }
+
+  // ---- 3) Palanca: clac-clac mecánico + resollo de puerta LEJANA (el     ----
+  // ----    mecanismo despierta algo al otro lado de la cripta).           ----
+  leverPull() {
+    this.init();
+    if (!this.ctx || !this.rl('leverPull', 0.18)) return;
+    this.sNoise(0.025, 2800, 0.16, 'bandpass');            // clac
+    this.sTone(320, 150, 0.05, 'square', 0.1);             // cuerpo del clac
+    this.sNoise(0.04, 1900, 0.13, 'bandpass', 0.08);       // clac-clac
+    this.sNoise(1.0, 210, 0.09, 'lowpass', 0.16, 65);      // resollo lejano
+    this.sTone(66, 36, 0.9, 'sine', 0.07, 0.18);           // masa de piedra
+  }
+
+  // ---- 4) Puerta de piedra abriéndose: rumble grave largo + fricción +   ----
+  // ----    chillido agudo corto del eje + asentamiento final.            ----
+  doorOpen() {
+    this.init();
+    if (!this.ctx || !this.rl('doorOpen', 0.45)) return;
+    this.sNoise(1.5, 170, 0.15, 'lowpass', 0, 75);         // rumble de piedra
+    this.sTone(58, 30, 1.3, 'sine', 0.13);                 // masa grave
+    this.sNoise(1.1, 480, 0.05, 'bandpass', 0.1, 240);     // fricción media
+    this.sTone(1750, 3300, 0.14, 'sawtooth', 0.04, 0.22);  // chillido del eje
+    this.sNoise(0.16, 4600, 0.045, 'highpass', 0.22);      // brillo del chillido
+    this.sNoise(0.2, 300, 0.12, 'lowpass', 1.25, 90);      // asienta al parar
+  }
+
+  // ---- 5) Manada: 3 aullidos ENTRELAZADOS con entradas escalonadas       ----
+  // ----    deterministas (contadores → la n-ésima llamada suena igual,    ----
+  // ----    pero consecutivas no se clonan). Volumen moderado (pico ≤0.04  ----
+  // ----    por voz; el coro suma sin tapar la música). Rate-limit 1.4 s.  ----
+  packHowl() {
+    this.init();
+    if (!this.ctx || !this.rl('packHowl', 1.4)) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const n = this.packN++;
+    const base = 210 + det01(n * 3 + 23) * 60;   // 210..270 Hz por llamada
+    for (let i = 0; i < 3; i++) {
+      const d = i * 0.36 + det01(n * 5 + i * 7 + 31) * 0.14;          // escalonado
+      const m = PACK_RATIO[i] * (0.96 + det01(n * 11 + i * 13 + 37) * 0.08);
+      this.packVoice(t + d, base * m, 0.038 - i * 0.006, det01(n * 17 + i * 19 + 41));
+    }
+    // aliento de la manada bajo el coro (ruido COMPARTIDO, muy flojo)
+    this.sNoise(2.2, 520, 0.018, 'bandpass', 0.2, 260);
+  }
+
+  /** Una voz del coro: contorno sube-meseta-baja (mismo gesto que el aullido
+   *  lejano R9-8, más corto) con vibrato barato. 4 nodos por voz. */
+  private packVoice(t0: number, f: number, gain: number, seed: number) {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(f * 0.62, t0);
+    o.frequency.exponentialRampToValueAtTime(f, t0 + 0.5);          // sube
+    o.frequency.setValueAtTime(f, t0 + 1.05);                      // meseta
+    o.frequency.exponentialRampToValueAtTime(f * 0.55, t0 + 1.9);  // cae y muere
+    const vib = ctx.createOscillator();
+    vib.type = 'sine'; vib.frequency.value = 4.8 + seed * 1.4;
+    const vg = ctx.createGain(); vg.gain.value = f * 0.012;
+    vib.connect(vg); vg.connect(o.frequency);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(gain, t0 + 0.28);
+    g.gain.setValueAtTime(gain, t0 + 1.1);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.9);
+    o.connect(g); g.connect(this.sfxGain);
+    o.start(t0); o.stop(t0 + 2.1);
+    vib.start(t0); vib.stop(t0 + 2.1);
+  }
+
+  // ---- 6) Hallazgo del Eco: campanita cálida (2 armónicos ascendentes)   ----
+  // ----    + eco corto. El eco se hace RE-DISPARANDO sTone más flojo      ----
+  // ----    (cero nodos extra, determinista). Rate-limit 0.3 s.            ----
+  echoFind() {
+    this.init();
+    if (!this.ctx || !this.rl('echoFind', 0.3)) return;
+    this.sTone(880, 880, 0.5, 'sine', 0.11);               // La5 (campana)
+    this.sTone(1320, 1320, 0.42, 'sine', 0.055, 0.1);      // Mi6 (armónico ↑)
+    this.sTone(2793, 2793, 0.2, 'sine', 0.02, 0.02);       // brillo inarmónico
+    this.sTone(880, 880, 0.3, 'sine', 0.04, 0.24);         // eco 1
+    this.sTone(1320, 1320, 0.26, 'sine', 0.02, 0.34);      // eco 2
+  }
+
+  // ---- 7) Interior de casa: capa cálida de hogar (cuerpo de fuego grave   ----
+  // ----    + crepitar determinista) y EXTERIOR APAGADO vía el bus de la   ----
+  // ----    capa nocturna EXISTENTE (mismo acceso de clase): al entrar baja ----
+  // ----    a INTERIOR_NIGHT_MUL; al salir lo restaura si sigue de noche.   ----
+  // ----    nightAmbience también respeta el pato al (re)programar SU       ----
+  // ----    crossfade → invariante en cualquier orden de llamada.           ----
+  // IDEMPOTENTE (no-op si ya está en el estado), crossfade suave.
+  interiorAmbience(on: boolean) {
+    this.init();
+    if (!this.ctx || !this.sfxGain) return;
+    if (on === this.interiorOn) return; // ya en el estado pedido → no-op seguro
+    this.interiorOn = on;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    if (this.nightGain) {
+      const ng = this.nightGain.gain;
+      ng.cancelScheduledValues(now);
+      ng.setValueAtTime(Math.max(0.0001, ng.value), now);
+      if (on) ng.linearRampToValueAtTime(INTERIOR_NIGHT_MUL, now + 1.4);      // exterior apagado
+      else if (this.nightOn) ng.linearRampToValueAtTime(1, now + 1.4);        // restaurar exterior
+    }
+    if (!this.interiorGain) {
+      // Bus de la capa (creado UNA vez; reutilizado en on/off posteriores).
+      const bus = ctx.createGain();
+      bus.gain.value = 0.0001;
+      bus.connect(this.sfxGain);
+      // Cuerpo del fuego: ruido COMPARTIDO en loop, lowpass grave con LFO
+      // muy lento (0.11 Hz) — la hoguera "respira" sin tocar la envolvente.
+      const body = ctx.createBufferSource();
+      body.buffer = this.sharedNoise();
+      body.loop = true;
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass'; lp.frequency.value = 150; lp.Q.value = 0.4;
+      const bg = ctx.createGain(); bg.gain.value = 0.05;
+      const lfo = ctx.createOscillator();
+      lfo.type = 'sine'; lfo.frequency.value = 0.11;
+      const lg = ctx.createGain(); lg.gain.value = 45;
+      lfo.connect(lg); lg.connect(lp.frequency);
+      body.connect(lp); lp.connect(bg); bg.connect(bus);
+      body.start(now); lfo.start(now);
+      this.interiorGain = bus;
+    }
+    const g = this.interiorGain.gain;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(Math.max(0.0001, g.value), now);
+    if (on) {
+      g.linearRampToValueAtTime(1, now + 1.8);   // crossfade de entrada
+      if (this.interiorTimer === null) {
+        this.interiorStep = 0;                   // fraseo determinista desde 0
+        this.interiorTimer = window.setInterval(() => this.interiorTick(), 130);
+      }
+    } else {
+      g.linearRampToValueAtTime(0.0001, now + 1.2); // crossfade de salida
+      if (this.interiorTimer !== null) { clearInterval(this.interiorTimer); this.interiorTimer = null; }
+    }
+  }
+
+  /** Paso del scheduler del hogar (SOLO con la capa on): crepitar de brasas
+   *  DETERMINISTA — pops cortos de ruido filtrado, doble pop ocasional. */
+  private interiorTick() {
+    if (!this.ctx || !this.interiorOn || !this.interiorGain) return;
+    const ctx = this.ctx;
+    const s = this.interiorStep++;
+    if (det01(s * 3 + 43) < 0.3) {
+      const t = ctx.currentTime + 0.01 + det01(s * 5 + 47) * 0.09;
+      const f = 380 + Math.floor(det01(s * 7 + 53) * 4) * 160;  // 380..860 Hz
+      this.interiorCrackle(t, f, 0.02 + det01(s * 11 + 59) * 0.03);
+    }
+    if (det01(s * 13 + 61) < 0.06) {   // rama menuda que se quiebra (2 pops)
+      const t = ctx.currentTime + 0.06;
+      this.interiorCrackle(t, 900, 0.022);
+      this.interiorCrackle(t + 0.07, 640, 0.016);
+    }
+  }
+
+  /** Un pop de crepitar: ráfaga de ruido COMPARTIDO por bandpass, 45 ms.
+   *  Offset del buffer por det01 (determinista, ver política del archivo). */
+  private interiorCrackle(t: number, f: number, gain: number) {
+    const ctx = this.ctx;
+    if (!ctx || !this.interiorGain) return;
+    const buf = this.sharedNoise();
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = 1.4;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.045);
+    src.connect(bp); bp.connect(g); g.connect(this.interiorGain);
+    const need = 0.06;
+    const off = need < buf.duration ? det01(Math.floor(t * 1000) * 7 + f) * (buf.duration - need) : 0;
+    src.start(t, off); src.stop(t + need);
+  }
+
+  // ---- 8) Línea del viajero: blip de diálogo suave y discreto (2 notas   ----
+  // ----    triangle) con leve variación determinista por contador.        ----
+  travelerLine() {
+    this.init();
+    if (!this.ctx || !this.rl('travelerLine', 0.14)) return;
+    const f = 620 + Math.floor(det01(this.lineN++ * 5 + 3) * 4) * 40; // 620..740
+    this.sTone(f, f * 1.02, 0.055, 'triangle', 0.045);          // nota 1
+    this.sTone(f * 1.335, f * 1.335, 0.075, 'triangle', 0.04, 0.07); // nota 2 ↑
+  }
 }
 
 export const audio = new AudioEngine();
@@ -1092,3 +1469,56 @@ export function playHowlDistant(): void { audio.howlDistant(); }
  *  hash). Cablear en bossintro/bossfx o donde hoy suena sfx('roar'),
  *  pasando el seed de la entidad/encuentro (p.ej. boss.id o hash de sala). */
 export function playBossRoarVariant(seed: number): void { audio.bossRoarVariant(seed); }
+
+// ============================================================
+// R10-7 · API EXPORT para el orquestador (envoltorios delgados sobre
+// el singleton `audio`). Nombres EXACTOS pactados para el cableado.
+// ============================================================
+
+/** Capa ambiental de CRIPTA (épica 6.4): dron grave disonante (raíz + batido
+ *  de 2.ª menor + tritono, con respiración lenta) + goteo determinista
+ *  ocasional + susurro filtrado esporádico, con crossfade suave. IDEMPOTENTE:
+ *  seguro de llamar CADA FRAME (p.ej. playCryptAmbience(g.mapId === 'cripta');)
+ *  — si ya está en el estado pedido es no-op y no programa nada. El orquestador
+ *  la activa al entrar en 'cripta' y la apaga al salir. */
+export function playCryptAmbience(on: boolean): void { audio.cryptAmbience(on); }
+
+/** "Shk" metálico corto del pincho al salir (épica 6.4): ruido filtrado con
+ *  pitch descendente + ring metálico + clunk de mecanismo. Rate-limit
+ *  agresivo de 90 ms — el jugador puede pisar varios pinchos seguidos.
+ *  Cablear en el momento en que la trampa SE ACTIVA (pinchos suben). */
+export function playSpikeUp(): void { audio.spikeUp(); }
+
+/** Palanca activada (épica 6.4): clac-clac mecánico + resollo de puerta
+ *  lejana (el mecanismo despierta piedra al otro lado). Cablear cuando la
+ *  palanca pasa a estado activado (ONCE por activación). */
+export function playLeverPull(): void { audio.leverPull(); }
+
+/** Puerta de piedra abriéndose (épica 6.4): rumble grave largo + fricción +
+ *  chillido agudo corto del eje + asentamiento final (~1.5 s). Cablear en
+ *  el evento de apertura de puerta (bosque→cripta y puertas Zelda). */
+export function playDoorOpen(): void { audio.doorOpen(); }
+
+/** Aullidos MÚLTIPLES entrelazados de la manada (épica 6.6): 3 voces con
+ *  entradas escalonadas y afinación DETERMINISTAS (contadores internos),
+ *  volumen moderado (pico ≤0.04 por voz). Cablear al aparecer/agro de la
+ *  manada (evento aleatorio) o por ventana de tiempo mientras esté viva. */
+export function playPackHowl(): void { audio.packHowl(); }
+
+/** Hallazgo del Eco (épica 6.6): campanita cálida — 2 armónicos ascendentes
+ *  (La5→Mi6) + brillo inarmónico + eco corto (re-disparos atenuados).
+ *  Cablear al recoger/hallar el Eco en el evento aleatorio de hallazgo. */
+export function playEchoFind(): void { audio.echoFind(); }
+
+/** Interior de casa (épica 6.5): capa cálida de hogar (cuerpo de fuego grave
+ *  + crepitar determinista) y EXTERIOR APAGADO bajando el bus de la capa
+ *  nocturna EXISTENTE a 0.28 mientras dure (se restaura al salir si sigue de
+ *  noche; nightAmbience respeta el pato en cualquier orden de llamada).
+ *  IDEMPOTENTE: seguro de llamar CADA FRAME (p.ej.
+ *  playInteriorAmbience(estoyDentroDeCasa);). */
+export function playInteriorAmbience(on: boolean): void { audio.interiorAmbience(on); }
+
+/** Blip de diálogo del viajero (épica 6.6): 2 notas triangle suaves y
+ *  discretas con leve variación determinista. Cablear al pintar cada línea
+ *  de diálogo del viajero (evento aleatorio de encuentro). */
+export function playTravelerLine(): void { audio.travelerLine(); }

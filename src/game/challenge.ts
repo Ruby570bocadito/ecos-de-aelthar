@@ -87,7 +87,7 @@ export interface ChallengeSnap {
   playTime: number;
   hp: number; sta: number; res: number;
   questIdx: number; questStep: number;
-  flags: Record<string, number | boolean>;
+  flags: Record<string, number | boolean | string>;
   memories: string[];
   repFacciones: Record<string, number> | undefined;
   deadGolds: Game['deadGolds'];

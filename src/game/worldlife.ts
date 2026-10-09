@@ -46,11 +46,33 @@
 //   la fauna nueva (sin Math.random), pool fijo sin allocations por frame
 //   (los bursts de nieve son eventos), y densidad escalada con
 //   perfQuality() vía qMul ×1/×0.6/×0.35 (caps por familia, mín. 1).
+//
+// R10-4 · EVENTOS ALEATORIOS DEL ECO (deterministas por hash de tiempo):
+//   cada 70-120 s de juego puede ocurrir UNO (hash del reloj, sin
+//   Math.random en la selección; máx 1 activo):
+//     MANADA    — 3-5 enemigos del bioma actual aparecen FORMADOS en el borde
+//                 de pantalla y buscan al Portador (aggro compartido: flag
+//                 aggro=true al spawn, el mismo que marca update.ts). El push
+//                 replica el patrón del motor (makeEnemy+enemies.push, como
+//                 spawnEventRing/summonNeumo) SIN tocar engine.
+//     HALLAZGO  — destello del Eco en suelo transitable: XP pequeña + 1-2
+//                 coronas por las MISMAS APIs que los cofres (gainXp/gold).
+//     FENÓMENO  — el mundo contiene el aliento: requestSlowmo(2 s, fxcore,
+//                 solo lectura) + partículas musicales. El coro lejano es un
+//                 ENGANCHE DE AUDIO DOCUMENTADO (no se llama desde aquí).
+//     VIAJERO   — el errante decorativo ya existente ahora lleva una línea de
+//                 lore determinista y responde a (E) vía worldInteract + toast
+//                 (el sistema de diálogo del motor escribe estado de campaña:
+//                 fuera de alcance, se documenta como enganche).
+//   NUNCA con jefe/intro de jefe/combate/diálogo/desafío; solo en biomas con
+//   fauna (SPAWN_OK) y en el presente (la manada también evita 'pasado').
+//   REGLA DE ORO: todo se APAGA con perfQuality()==2; nada toca flags de
+//   historia ni stats del jugador salvo el hallazgo.
 // ============================================================
 
 import type { Game } from './engine';
 import { VIEW_W, VIEW_H, ZOOM } from './engine';
-import type { Npc, ToneKind } from './types';
+import type { Npc, ToneKind, Enemy } from './types';
 import { TILE, SOLID_CHARS } from './sprites';
 import { tileAt } from './maps';
 import { isNight } from './update'; // solo lectura (propiedad del agente 3-b)
@@ -58,6 +80,8 @@ import { dominantTone } from './hooks'; // tono dominante del Portador (3-b)
 import { audio } from './audio';
 import { perfQuality } from './perf'; // escalón de calidad (R5-O1): 0 alta · 1 media · 2 baja
 import { hash2 } from './world/palette'; // hash determinista (fauna nueva SIN Math.random)
+import { requestSlowmo } from './fxcore'; // R10-4: fenómeno del Eco (API de fxcore, solo lectura)
+import { bossIntroActive } from './actors/bossintro'; // R10-4: NUNCA durante la intro de un jefe
 
 // ---------------- Fauna: pool fijo ----------------
 
@@ -111,11 +135,17 @@ interface WLState {
   evtIn: number;              // segundos hasta el próximo evento callejero
   evtCount: number;
   forced: 'eco' | 'rafaga' | 'viajero' | null; // clase fijada por dev/smoke
-  trav: { active: boolean; x: number; y: number; dir: number; t: number };
+  trav: { active: boolean; x: number; y: number; dir: number; t: number; lore: string; spoke: boolean }; // R10-4: lore + «ya habló»
   rumorNext: Map<string, number>; // cooldown por NPC (nid → reloj)
   rot: number;                // rotación determinista de rumores
   rumorsShown: number;
   lastRumor: string;
+  // R10-4: eventos aleatorios del Eco (hash de tiempo, máx 1 activo)
+  r10Next: number;            // reloj del próximo evento grande (70-120 s)
+  r10Count: number;           // eventos grandes disparados (stats dev)
+  r10Forced: R10Kind | null;  // clase fijada por dev/smoke
+  find: { active: boolean; map: string; x: number; y: number; t: number; tw: number }; // hallazgo
+  pack: { t: number; refs: (Enemy | null)[] }; // manada viva (máx 5 refs)
 }
 
 const STATES = new WeakMap<Game, WLState>();
@@ -126,8 +156,11 @@ function stateFor(g: Game): WLState {
     s = {
       clock: 0, spawnAcc: 0, fishAcc: 0, fishTries: 0, evtIn: 38 + Math.random() * 22, evtCount: 0,
       forced: null,
-      trav: { active: false, x: 0, y: 0, dir: 1, t: 0 },
+      trav: { active: false, x: 0, y: 0, dir: 1, t: 0, lore: '', spoke: false },
       rumorNext: new Map(), rot: 0, rumorsShown: 0, lastRumor: '',
+      r10Next: 70 + hash2(911, 337) * 50, r10Count: 0, r10Forced: null, // primer evento: 70-120 s (hash)
+      find: { active: false, map: '', x: 0, y: 0, t: 0, tw: 0 },
+      pack: { t: 0, refs: [null, null, null, null, null] },
     };
     STATES.set(g, s);
   }
@@ -573,14 +606,8 @@ function fireEvent(g: Game, st: WLState, kind?: 'eco' | 'rafaga' | 'viajero'): v
   }
   if (roll === 'viajero') {
     // viajante errante: entidad decorativa propia que cruza la pantalla
-    const dir = Math.random() < 0.5 ? 1 : -1;
-    const b = viewBounds(g);
-    st.trav.active = true;
-    st.trav.dir = dir;
-    st.trav.x = dir > 0 ? b[0] - 24 : b[2] + 24;
-    st.trav.y = p.y - 4; // camina por el terreno del Portador (siempre pisable)
-    st.trav.t = 0;
-    g.toast('Un viajante errante cruza el camino, sin levantar la vista...', '#c8b0e8');
+    // (R10-4: ahora lleva lore determinista y responde a E vía worldInteract)
+    spawnTraveler(g, st, Math.floor(st.clock) * 31 + 5);
     return;
   }
   // ráfaga de viento con hojas/polvo/nieve por bioma
@@ -614,6 +641,293 @@ function tickEvents(g: Game, dt: number, st: WLState): void {
   st.evtIn = 45 + Math.random() * 45; // cada 45-90 s
 }
 
+// ---------------- R10-4 · Eventos aleatorios del Eco ----------------
+//
+// Selección DETERMINISTA por hash del reloj del mundo (sin Math.random):
+// cada 70-120 s puede ocurrir UNO. Máx 1 activo (el hallazgo es el único que
+// persiste; la manada se autobloquea por combatActive, el fenómeno es
+// instantáneo y el viajero es exclusivo de st.trav). Nada de esto cuenta en
+// stats/flags del jugador salvo el hallazgo (APIs del motor, patrón cofres).
+
+type R10Kind = 'manada' | 'fenomeno' | 'hallazgo' | 'viajero';
+
+const R10_MIN_GAP = 70;      // s de juego entre eventos grandes
+const R10_MAX_GAP = 120;
+const R10_RETRY = 5;         // posponer si las condiciones no dan (jefe/combate/…)
+
+const PACK_GUARD = 0.45;     // gracia de spawn (update.ts congela la IA mientras >0)
+const PACK_MIN_DIST = 150;   // px mínimos del Portador al punto de aparición
+const PACK_MAX_ALIVE = 34;   // margen bajo el tope duro del motor (MAX_MAP_ENEMIES = 40)
+const PACK_CHASE = 25;       // s totales de búsqueda (luego el leash del motor los suelta)
+// NOTA: el leash de update.ts corta el aggro a >2.4×aggroR (lobo: 228 px — MENOS
+// que el borde de pantalla). tickPack re-arma aggro y fija home=Portador cada
+// frame mientras dure la ventana: fuera de leash la PATRULLA camina hacia la
+// presa (22 px/s) y al entrar en rango el persigue nativo corre a velocidad
+// plena (comportamiento 100 % del motor, sin tocarlo).
+
+/** Enemigo del bioma (mismo reparto que los spawns de maps/maps_expansion). */
+const PACK_DEFS: Record<string, {
+  etype: Enemy['etype']; min: number; max: number; toast: string; color: string; sfx: string;
+}> = {
+  lunaris: { etype: 'lobo', min: 3, max: 5, toast: 'Aullidos en el valle... vienen hacia ti.', color: '#e8a0a0', sfx: 'whoosh' },
+  bosque: { etype: 'lobo', min: 3, max: 5, toast: 'El Bosque cruje: la manada caza. Vienen hacia ti.', color: '#e8a0a0', sfx: 'whoosh' },
+  costa: { etype: 'espectro', min: 3, max: 4, toast: 'La bruma canta con voces prestadas: espectros buscándote.', color: '#a8d8f0', sfx: 'wraith' },
+  aldea: { etype: 'espectro', min: 3, max: 4, toast: 'Los patios susurran: espectros entre las casas. Vienen hacia ti.', color: '#a8d8f0', sfx: 'wraith' },
+  cumbres: { etype: 'arpi', min: 3, max: 4, toast: 'Sombra sobre las cumbres: arpías en vuelo de caza.', color: '#d8c8f0', sfx: 'wraith' },
+};
+
+/** Lore corto del viajero (puro ambiente: sin flags de historia). */
+const VIAJERO_LORE: string[] = [
+  'Viajante: «Este camino era de fiesta, antes de la Niebla. Camina despacio.»',
+  'Viajante: «Los lobos no atacan a quien canta. Pero la Niebla no escucha.»',
+  'Viajante: «He visto luces en la Cripta. No eran velas.»',
+  'Viajante: «El mar devuelve lo que ama. Cuidado con lo que no.»',
+  'Viajante: «Las Cumbres cuentan pasos. No dejes que cuenten el tuyo dos veces.»',
+  'Viajante: «Los faroles de Merrow guardan nombres. El tuyo aún pesa poco.»',
+  'Viajante: «Si oyes un coro sin boca, no respondas: escucha.»',
+  'Viajante: «La Orden firma rutas en mapas. El Eco firma las mías.»',
+];
+
+const PHEN_COLORS: string[] = ['#c8b0e8', '#8ef0ff', '#ffe9a0', '#b8f0d8'];
+
+/**
+ * Viajero errante (compartido 13-b/R10-4): cruza la pantalla por el terreno del
+ * Portador con una línea de lore determinista (hash del tick de spawn).
+ */
+function spawnTraveler(g: Game, st: WLState, sd: number): void {
+  const dir = hash2(sd, 7717) < 0.5 ? 1 : -1;
+  const b = viewBounds(g);
+  st.trav.active = true;
+  st.trav.dir = dir;
+  st.trav.x = dir > 0 ? b[0] - 24 : b[2] + 24;
+  st.trav.y = g.player!.y - 4; // camina por el terreno del Portador (siempre pisable)
+  st.trav.t = 0;
+  st.trav.spoke = false;
+  st.trav.lore = VIAJERO_LORE[Math.floor(hash2(sd + 9, 991) * VIAJERO_LORE.length) % VIAJERO_LORE.length];
+  g.toast('Un viajante errante cruza el camino, sin levantar la vista...', '#c8b0e8');
+}
+
+/** R10-4 viajero con lore: false si ya hay uno (→ fallback fenómeno). */
+function fireTravelerLore(g: Game, st: WLState, sd: number): boolean {
+  if (st.trav.active) return false;
+  spawnTraveler(g, st, sd);
+  return true;
+}
+
+/**
+ * R10-4 · MANADA (incursión): 3-5 enemigos del bioma actual aparecen FORMADOS
+ * (línea en cuña perpendicular a la dirección al Portador) en el borde de
+ * pantalla y lo BUSCAN: aggro=true al spawn (el mismo flag que marca el motor
+ * en update.ts — aggro compartido). Push replicado del patrón del motor
+ * (g.makeEnemy + g.enemies.push, idéntico a spawnEventRing/summonNeumo) SIN
+ * tocar engine. Devuelve true si la incursión salió.
+ */
+function firePack(g: Game, st: WLState, sd: number): boolean {
+  const def = PACK_DEFS[g.mapId];
+  if (!def || g.epoch !== 'presente') return false; // el pasado es un festival: sin incursiones
+  const p = g.player!;
+  let alive = 0;
+  for (let i = 0; i < g.enemies.length; i++) if (!g.enemies[i].dead) alive++;
+  if (alive >= PACK_MAX_ALIVE) return false; // margen bajo el tope duro del motor
+  const rng = mulberry32(sd);
+  const n = def.min + Math.floor(rng() * (def.max - def.min + 1)); // 3-5
+  const b = viewBounds(g);
+  const need = Math.max(2, n - 1);
+  const spots: { x: number; y: number }[] = []; // allocation OK: evento raro y local
+  for (let att = 0; att < 20 && spots.length < need; att++) {
+    const side = Math.floor(rng() * 4);
+    const bx = side === 1 ? b[2] - 8 : side === 3 ? b[0] + 8 : b[0] + rng() * (b[2] - b[0]);
+    const by = side === 0 ? b[1] + 8 : side === 2 ? b[3] - 8 : b[1] + rng() * (b[3] - b[1]);
+    const ang = Math.atan2(p.y - by, p.x - bx);
+    const fx = Math.cos(ang), fy = Math.sin(ang);
+    spots.length = 0;
+    for (let i = 0; i < n; i++) {
+      const off = (i - (n - 1) / 2) * 26;              // línea perpendicular a la carga
+      const ahead = i * 12 + (rng() - 0.5) * 8;        // cuña: punta hacia el Portador
+      const x = bx - fy * off + fx * ahead;
+      const y = by + fx * off + fy * ahead;
+      if (x < 8 || y < 8 || x > g.map.w * TILE - 8 || y > g.map.h * TILE - 8) continue;
+      if (g.tileSolidAt(x, y)) continue;
+      const dx = x - p.x, dy = y - p.y;
+      if (dx * dx + dy * dy < PACK_MIN_DIST * PACK_MIN_DIST) continue; // nunca encima
+      let spaced = true;
+      for (let k = 0; k < g.enemies.length; k++) {
+        const e2 = g.enemies[k];
+        if (!e2.dead && Math.abs(e2.x - x) < 22 && Math.abs(e2.y - y) < 22) { spaced = false; break; }
+      }
+      if (!spaced) continue;
+      spots.push({ x, y });
+    }
+  }
+  if (spots.length < need) return false; // sin hueco formado: fallback en fireR10
+  const pk = st.pack;
+  pk.t = PACK_CHASE; // ventana total de búsqueda (luego el leash del motor manda)
+  for (let i = 0; i < pk.refs.length; i++) pk.refs[i] = null;
+  for (let i = 0; i < spots.length; i++) {
+    const s = g.makeEnemy(def.etype, spots[i].x, spots[i].y, 1, 'evento');
+    s.aggro = true;             // buscan al Portador desde que aparecen (aggro compartido)
+    s.spawnGuard = PACK_GUARD;  // IA congelada 0.45 s: se lee el estallido de llegada
+    g.enemies.push(s);
+    if (i < pk.refs.length) pk.refs[i] = s;
+    g.burst(s.x, s.y, def.color, 7, 55);
+  }
+  g.toast(def.toast, def.color);
+  audio.sfx(def.sfx);
+  return true;
+}
+
+/**
+ * Mantiene la búsqueda de la manada: el leash de update.ts (persigue →
+ * patrulla a >2.4×aggroR — 228 px en el lobo, MENOS que el borde de pantalla)
+ * des-aggroa a los recién llegados; mientras dure PACK_CHASE re-armamos el
+ * flag aggro + el hogar EN EL PORTADOR cada frame (el MISMO flag que marca el
+ * motor): fuera del leash la patrulla camina hacia su "casa" (la presa, 22
+ * px/s) y al entrar en rango el persigue nativo corre a velocidad plena. Al
+ * agotarse la ventana, el leash vuelve a mandar: escapar ES posible (y el
+ * propio motor re-aggroa por proximidad nativa).
+ */
+function tickPack(g: Game, dt: number, st: WLState): void {
+  const pk = st.pack;
+  if (pk.t <= 0) return;
+  pk.t -= dt;
+  if (g.state !== 'play') return;
+  const es = g.enemies;
+  const p = g.player!;
+  for (let i = 0; i < pk.refs.length; i++) {
+    const e = pk.refs[i];
+    if (!e) continue;
+    if (e.dead) { pk.refs[i] = null; continue; }
+    let enMapa = false;
+    for (let k = 0; k < es.length; k++) if (es[k] === e) { enMapa = true; break; }
+    if (!enMapa) { pk.refs[i] = null; continue; } // cambió de mapa: ref huérfana
+    if (!e.aggro) e.aggro = true;   // re-arma el corte del leash (el motor alterna patrulla/persigue)
+    e.homeX = p.x; e.homeY = p.y;   // el hogar ES la presa: fuera de leash, la patrulla
+                                    // (22 px/s hacia casa) las acerca hasta el rango de caza
+  }
+}
+
+/**
+ * R10-4 · HALLAZGO: un destello del Eco titila en suelo transitable cercano;
+ * al tocarlo da XP pequeña + 1-2 coronas (mismas APIs del motor que los cofres:
+ * gainXp + player.gold). Devuelve true si apareció.
+ */
+function fireFinding(g: Game, st: WLState, sd: number): boolean {
+  if (st.find.active) return false; // máx 1 activo
+  const p = g.player!;
+  const rng = mulberry32(sd * 3 + 17);
+  for (let i = 0; i < 24; i++) {
+    const a = rng() * TAU;
+    const d = 140 + rng() * 150; // 140-290 px: visible o asomando en el borde
+    const x = p.x + Math.cos(a) * d, y = p.y + Math.sin(a) * d;
+    const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
+    if (tx < 1 || ty < 1 || tx >= g.map.w - 1 || ty >= g.map.h - 1) continue;
+    const ch = tileAt(g.map, g.rows, tx, ty, g.epoch);
+    if (SOLID_CHARS.has(ch) || ch === '~' || ch === 'w') continue; // suelo transitable
+    st.find.active = true;
+    st.find.map = g.mapId;
+    st.find.x = tx * TILE + TILE / 2;
+    st.find.y = ty * TILE + TILE / 2;
+    st.find.t = 0; st.find.tw = 0;
+    g.toast('Un destello del Eco titila cerca...', '#ffe9a0');
+    return true;
+  }
+  return false;
+}
+
+function tickFinding(g: Game, dt: number, st: WLState): void {
+  const f = st.find;
+  if (!f.active) return;
+  if (f.map !== g.mapId) { f.active = false; return; } // cambiaste de mapa: se desvanece
+  f.t += dt; f.tw -= dt;
+  const p = g.player!;
+  const dx = f.x - p.x, dy = f.y - p.y;
+  if (dx * dx + dy * dy < 16 * 16) {
+    // recompensa determinista por posición (hash): XP 6-10, coronas 1-2
+    const h1 = hash2((f.x | 0) + 3, 5171);
+    const xp = 6 + Math.floor(h1 * 5);
+    const gold = hash2((f.x | 0) + 9, 5177) < 0.5 ? 1 : 2;
+    g.gainXp(xp);
+    g.player!.gold += gold;
+    g.burst(f.x, f.y, '#ffe9a0', 12, 60);
+    g.floatAt(f.x, f.y - 14, `+${xp} XP`, '#ffe9a0', 7);
+    g.toast(`Hallazgo del Eco: +${xp} XP, +${gold} coronas`, '#f0c84a');
+    f.active = false;
+    return;
+  }
+  if (f.tw <= 0 && perfQuality() < 2) { // titileo (apagado por calidad)
+    f.tw = 0.5;
+    g.particles.push({
+      x: f.x + (Math.random() - 0.5) * 10, y: f.y - 4 - Math.random() * 8,
+      vx: 0, vy: -14, t: 0.5, maxT: 0.5, color: '#ffe9a0', size: 1.4, grav: 0,
+    });
+  }
+  if (f.t > 45) f.active = false; // nadie lo recogió: vuelve al silencio
+}
+
+/**
+ * R10-4 · FENÓMENO DEL ECO: el mundo contiene el aliento 2 s (slowmo suave vía
+ * requestSlowmo de fxcore — el motor decae dt×0.35 mientras dure) y partículas
+ * musicales ascienden alrededor del Portador.
+ * ENGANCHE R10-4 (AUDIO — deliberadamente NO llamado desde aquí): audio.ts
+ * puede añadir p.ej. playChoirDistant() y el orquestador cablearlo en este
+ * punto exacto (marcado abajo). audio.sfx('coro') sería no-op seguro hoy.
+ */
+function firePhenomenon(g: Game, sd: number): void {
+  const p = g.player!;
+  requestSlowmo(g, 2);
+  // ↑ aquí iría el enganche de audio del coro lejano (documentado, no llamado)
+  g.floats.push({ x: p.x, y: p.y - 34, text: '...un coro lejano canta entre mundos...', t: 2.6, color: '#c8b0e8', vy: -7, size: 8 });
+  const n = Math.max(4, Math.round(12 * qMul())); // partículas escaladas por calidad
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU + sd * 0.017;
+    const r = 36 + (i % 3) * 24;
+    g.particles.push({
+      x: p.x + Math.cos(a) * r, y: p.y + Math.sin(a) * r * 0.6 - 8,
+      vx: Math.cos(a) * 9, vy: -24 - (i % 4) * 7,
+      t: 1.3 + (i % 3) * 0.3, maxT: 1.9,
+      color: PHEN_COLORS[i % PHEN_COLORS.length], size: 1.6, grav: 5,
+    });
+  }
+  g.floats.push({ x: p.x - 18, y: p.y - 20, text: '♪', t: 1.6, color: '#c8b0e8', vy: -16, size: 9 });
+  g.floats.push({ x: p.x + 14, y: p.y - 30, text: '♪', t: 1.9, color: '#8ef0ff', vy: -12, size: 7 });
+  g.floats.push({ x: p.x + 2, y: p.y - 42, text: '♪', t: 1.5, color: '#ffe9a0', vy: -20, size: 8 });
+}
+
+/** REGLA DE ORO: condiciones para que ocurra CUALQUIER evento R10. */
+function r10Allowed(g: Game): boolean {
+  if (perfQuality() >= 2) return false;           // apagable por calidad
+  if (g.state !== 'play' || g.challengeRun) return false; // ni diálogo ni desafío
+  if (g.bossActive || bossIntroActive()) return false;    // nunca con jefe/intro de jefe
+  if (combatActive(g)) return false;              // ni con combate vivo
+  if (!SPAWN_OK.has(g.mapId)) return false;       // solo biomas con fauna (cripta/arena fuera)
+  return true;
+}
+
+/** Dispara el evento que toca (hash de tiempo) con escalera de fallbacks. */
+function fireR10(g: Game, st: WLState, sd: number): void {
+  st.r10Count++;
+  let want: R10Kind;
+  if (st.r10Forced) { want = st.r10Forced; st.r10Forced = null; }
+  else {
+    const r = hash2(sd, 4421); // determinista: mismo reloj ⇒ mismo evento
+    want = r < 0.34 ? 'manada' : r < 0.58 ? 'fenomeno' : r < 0.84 ? 'hallazgo' : 'viajero';
+  }
+  if (want === 'manada' && firePack(g, st, sd)) return;
+  if (want === 'hallazgo' && fireFinding(g, st, sd)) return;
+  if (want === 'viajero' && fireTravelerLore(g, st, sd)) return;
+  firePhenomenon(g, sd); // fenómeno pedido directamente o fallback: siempre disponible
+}
+
+function tickR10(g: Game, dt: number, st: WLState): void {
+  tickPack(g, dt, st);
+  tickFinding(g, dt, st);
+  if (st.clock < st.r10Next) return;
+  if (!r10Allowed(g)) { st.r10Next = st.clock + R10_RETRY; return; }
+  const sd = Math.floor(st.clock) * 131 + 7;
+  fireR10(g, st, sd);
+  st.r10Next = st.clock + R10_MIN_GAP + hash2(sd + 55, 6421) * (R10_MAX_GAP - R10_MIN_GAP);
+}
+
 // ---------------- Tick principal ----------------
 
 /** Tick de vida del mundo (fauna, eventos, rumores). O(1) fuera de juego. */
@@ -626,6 +940,7 @@ export function worldTick(g: Game, dt: number): void {
   tickTraveler(g, dt, st);
   tickRumors(g, st);
   tickEvents(g, dt, st);
+  tickR10(g, dt, st); // R10-4: manadas, hallazgos, fenómenos y viajeros con lore
 }
 
 // ---------------- Micro-interacciones (worldInteract) ----------------
@@ -739,6 +1054,23 @@ export function worldInteract(g: Game): boolean {
       g.burst(tx * TILE + 8, ty * TILE + 8, '#a8d8f0', 10, 50);
       audio.sfx('splash');
       say(g, g.epoch === 'pasado' ? line.past : line.now, '#a8d0e0');
+      return true;
+    }
+  }
+
+  // 3) R10-4: el viajero errante responde si le hablas (E). Va AL FINAL:
+  //    nunca roba props/tiles del motor; solo atiende su propia entidad.
+  //    Toast en vez del sistema de diálogo: startDialogue escribe estado de
+  //    campaña (fuera del alcance solo-lectura de este módulo) — enganche
+  //    documentado para el integrador si quiere convertirlo en nodo real.
+  const st10 = STATES.get(g);
+  if (st10 && st10.trav.active && !st10.trav.spoke) {
+    const tdx = st10.trav.x - p.x, tdy = st10.trav.y - p.y;
+    if (tdx * tdx + tdy * tdy < 30 * 30) {
+      st10.trav.spoke = true;
+      g.burst(st10.trav.x, st10.trav.y - 8, '#8a7ab0', 6, 32);
+      g.floats.push({ x: st10.trav.x, y: st10.trav.y - 26, text: st10.trav.lore, t: 2.8, color: '#c8b0e8', vy: -6, size: 7 });
+      g.toast(st10.trav.lore, '#c8b0e8');
       return true;
     }
   }
@@ -859,6 +1191,20 @@ export function drawWorldLife(g: Game, sx?: (n: number) => number, sy?: (n: numb
     return sxx > -pad && sxx < VIEW_W + pad && syy > -pad && syy < VIEW_H + pad;
   };
 
+  // R10-4: hallazgo — destello del Eco esperando en el suelo (bajo entidades)
+  const fd = st.find;
+  if (fd.active && vis(fd.x, fd.y, 40)) {
+    const pu = 0.5 + 0.5 * Math.sin(fd.t * 5 + 1);
+    ctx.globalAlpha = 0.35 + 0.65 * pu;
+    ctx.fillStyle = '#ffe9a0';
+    const gs = (2.2 + pu * 1.6) * ZOOM;
+    ctx.fillRect(ox(fd.x) - gs, oy(fd.y) - 1.5, gs * 2, 3);
+    ctx.fillRect(ox(fd.x) - 1.5, oy(fd.y) - gs, 3, gs * 2);
+    ctx.fillStyle = '#fff8e0';
+    ctx.fillRect(ox(fd.x) - 1.5, oy(fd.y) - 1.5, 3, 3);
+    ctx.globalAlpha = 1;
+  }
+
   // viajero errante (detrás de la fauna)
   const tv = st.trav;
   if (tv.active && cacheTrav && vis(tv.x, tv.y, 48)) {
@@ -921,10 +1267,16 @@ export function drawWorldLife(g: Game, sx?: (n: number) => number, sy?: (n: numb
 export function worldlifeStats(g: Game): {
   count: number; aves: number; mariposas: number; luciernagas: number; peces: number;
   viajero: boolean; rumorsShown: number; lastRumor: string; eventCount: number;
+  r10Count: number; hallazgo: boolean; manada: number; // R10-4
   critters: { x: number; y: number; kind: number }[];
 } | null {
   const st = STATES.get(g);
   if (!st) return null;
+  let manada = 0;
+  for (let i = 0; i < st.pack.refs.length; i++) {
+    const e = st.pack.refs[i];
+    if (e && !e.dead) manada++;
+  }
   const critters: { x: number; y: number; kind: number }[] = [];
   const k = [0, 0, 0, 0];
   for (let i = 0; i < POOL_CAP; i++) {
@@ -937,7 +1289,9 @@ export function worldlifeStats(g: Game): {
     count: critters.length, aves: k[AVE], mariposas: k[MARIPOSA],
     luciernagas: k[LUCIERNAGA], peces: k[PEZ], viajero: st.trav.active,
     rumorsShown: st.rumorsShown, lastRumor: st.lastRumor,
-    eventCount: st.evtCount, critters,
+    eventCount: st.evtCount, r10Count: st.r10Count, hallazgo: st.find.active,
+    manada,
+    critters,
   };
 }
 
@@ -946,6 +1300,13 @@ export function __wlArmEvent(g: Game, inSec: number, kind?: 'eco' | 'rafaga' | '
   const st = stateFor(g);
   st.evtIn = inSec;
   st.forced = kind ?? null;
+}
+
+/** R10-4: arma el próximo evento grande y (opcional) fija su clase (dev/smoke). */
+export function __wlArmR10(g: Game, inSec: number, kind?: R10Kind): void {
+  const st = stateFor(g);
+  st.r10Next = st.clock + Math.max(0, inSec);
+  st.r10Forced = kind ?? null;
 }
 
 /** Pool vigente de rumores de un NPC (solo smokes/dev). */

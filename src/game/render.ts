@@ -28,6 +28,8 @@ import { drawLightingV2, setEyesVisible } from './world/lighting';
 import { updateWeather, drawWeatherWorld, drawWeatherSky } from './world/weather';
 import { drawDayNightGrade, drawCloudShadows } from './world/sky';
 import { waterOverlay, setWaterNight } from './world/water';
+import { spikesOverlay, leversOverlay, doorsOverlay } from './world/stone'; // R10-8: cripta Zelda
+import { cryptDoorOpen } from './update'; // R10-3: estado de la puerta del puzzle
 import { drawPropV2 } from './world/props';
 import { drawTreeCanopy } from './world/trees';
 import { setVillageNight, drawVillageWindowsNight } from './world/village';
@@ -180,6 +182,12 @@ function drawWorld(g: Game) {
     // copas que se mecen (Ronda 4): puntas de árbol animadas sobre el terreno
     drawTreeCanopy(octx, camX, camY, g.mapId, g.globalT,
       (tx, ty) => tileAt(g.map, g.rows, tx, ty, g.epoch));
+    // R10-8 · cripta Zelda: pinchos animados (peligro real) + palancas activadas
+    // (flags 'cripta_lever_*') + puerta abierta (cryptDoorOpen de R10-3)
+    spikesOverlay(octx, camX, camY, g.globalT, g.mapId,
+      (tx, ty) => tileAt(g.map, g.rows, tx, ty, g.epoch));
+    leversOverlay(octx, camX, camY, g.rows, g.flags);
+    doorsOverlay(octx, camX, camY, g.rows, cryptDoorOpen(g));
 
     // agua viva: brillos especulares sobre los tiles '~' visibles (R3-c)
     drawWaterGlints(g, sx, sy);
@@ -385,6 +393,7 @@ function drawProps(g: Game, sx: (n: number) => number, sy: (n: number) => number
     switch (pr.kind) {
       case 'sanctuary': case 'forge': case 'fragment':
       case 'altarEcho': case 'sign': case 'gate':
+      case 'plaque': case 'remains': case 'altarMinor': case 'woodsign': case 'waypost': // R10-6: lore
         drawPropV2(g.ctx, pr.kind, px, py, g, selected, pr.id);
         break;
       case 'wreck': case 'faro': case 'lamp':

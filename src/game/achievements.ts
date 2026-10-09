@@ -210,7 +210,7 @@ function acto4FlagDe(g: Game): string | null {
 }
 
 /** Nº de jefes de campaña derrotados (usa el mapa del motor: cubre futuros). */
-function bossFlagsCount(f: Record<string, number | boolean>): number {
+function bossFlagsCount(f: Record<string, number | boolean | string>): number {
   let n = 0;
   for (const flag of Object.values(BOSS_DEFEAT_FLAG)) if (f[flag]) n++;
   return n;

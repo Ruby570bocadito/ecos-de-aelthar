@@ -132,6 +132,7 @@ export function drawTile(
     case '~': case 'B': case 'x':
       paintWater(x, ch, tx, ty, mapId, t, at); break;
     case ':': case '_': case '#': case 'P': case 'A': case 'V':
+    case '^': case 'L': case 'D': // R10-8: pinchos/palanca/puerta de la cripta Zelda
       paintStone(x, ch, tx, ty, mapId, t, at); break;
     case 'H': case 'r': case 'd': case 'F': case 'w': case 'g': case 'R':
       paintVillage(x, ch, tx, ty, mapId, t, at); break;

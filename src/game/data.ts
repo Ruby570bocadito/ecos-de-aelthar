@@ -3,7 +3,8 @@
 // Todo el contenido vive en datos (arquitectura del GDD)
 // ============================================================
 
-import type { QuestDef, DialogueNode, DialogueOption, EnemyType, Element, ToneKind } from './types';
+import type { QuestDef, DialogueNode, DialogueOption, EnemyType, Element, ToneKind, SpawnDef } from './types';
+import { INTERIOR_NPC_DIALOGUES } from './maps_interiores'; // R10-5: diálogos de interiores
 
 // ---------------- Misiones (cadena principal de la demo) ----------------
 
@@ -23,7 +24,7 @@ export const QUESTS: QuestDef[] = [
 
 // ---------------- Diálogos ----------------
 
-export interface DialogueCtx { questIdx: number; questStep: number; flags: Record<string, number | boolean>; companion: boolean }
+export interface DialogueCtx { questIdx: number; questStep: number; flags: Record<string, number | boolean | string>; companion: boolean }
 
 // ---------------- Memorias del Portador (biblia: cada Eco devuelve un recuerdo) ----------------
 // Contrato: screens.ts (pestaña Diario) y hooks.ts (overlay memoryReveal) leen esta tabla.
@@ -692,6 +693,8 @@ const D: Record<string, DialogueNode> = {
 export function getDialogue(nid: string, ctx: DialogueCtx): string {
   const q = ctx.questIdx, s = ctx.questStep;
   const td = toneOf(ctx.flags);
+  // R10-5: diálogos de los INTERIORES (claves int_*) se resuelven a sí mismos
+  if (nid.startsWith('int_') && DIALOGUES[nid]) return nid;
   if (nid === 'brisa') {
     // variantes por tono dominante (biblia: los PNJ tratan distinto al Portador)
     const idle = td === 'empatico' ? 'brisa_idle_emp' : td === 'amenazante' ? 'brisa_idle_amenaz' : 'brisa_idle';
@@ -741,12 +744,16 @@ export function getDialogue(nid: string, ctx: DialogueCtx): string {
 }
 
 /** Lee el tono dominante de las flags (hooks lo guarda como string en runtime). */
-function toneOf(flags: Record<string, number | boolean>): ToneKind | null {
+function toneOf(flags: Record<string, number | boolean | string>): ToneKind | null {
   const v = flags.tonoDominante;
   return typeof v === 'string' ? (v as ToneKind) : null;
 }
 
 export const DIALOGUES = D;
+
+// R10-5: nodos de diálogo de los NPCs de los INTERIORES (claves int_*) —
+// getDialogue los resuelve a sí mismos; los NPCs spawnnean al loadMap del interior.
+Object.assign(DIALOGUES, INTERIOR_NPC_DIALOGUES);
 
 // ---------------- Enemigos ----------------
 
@@ -1959,4 +1966,176 @@ function getDialogueR7V5(nid: string, ctx: DialogueCtx): string {
 getDialogue = getDialogueR7V5;
 
 // ═══════ FIN DEL BLOQUE R7-V5 ═══════
+
+// ============================================================
+// ═══════ R10-9 (agente minijefe-data) — BLOQUE AÑADIDO ═══════
+// RONDA 10 · soporte de la épica 6.4 — EL SEPULCRO, mini-jefe de la
+// ENTRADA de la Cripta del Primer Canto. La cripta rediseñada (R10-1)
+// tiene una antesala antes de la sala del Guardián: allí espera este
+// caballero sepulcral hundido en su tumba, que se alza cuando el
+// Portador cruza el umbral y GATEA el paso a la sala del jefe.
+// Contenido de este bloque (APPEND puro: nada de arriba se edita):
+//   1) ENEMY_DEFS_R10A — el def 'sepulcro' (mismo formato que
+//      ENEMY_DEFS/14A/16A, inyectado vía Object.assign: makeEnemy,
+//      damagePlayer, killEnemy, la barra de jefe y la telegrafía leen
+//      ENEMY_DEFS[etype] por índice y funcionan sin cambios).
+//   2) SPAWN_SEPULCRO_R10 — spawn listo para maps.ts (enganche
+//      documentado abajo; no se edita maps.ts desde aquí).
+//   3) SEPULCRO_BOTIN — recompensa garantizada para la rama killEnemy.
+//   4) Los ENGANCHES EXACTOS (spawn / activación / flag / toast /
+//      recompensa / audio), como comentarios de esta cabecera.
+// ARCHIVOS AJENOS (SOLO LECTURA — los edita el orquestador u otros
+// agentes R10): maps.ts (spawn), update.ts (watcher de activación),
+// engine.ts (BOSS_DEFEAT_FLAG + rama killEnemy), types.ts (unión
+// EnemyType), balance.ts (TIPOS_JEFE), interaccion.ts (BOSS_TYPES del
+// señuelo), bossintro.ts (nombre/subtítulo de la intro).
+// ------------------------------------------------------------
+// BALANCE (auditable, coherente con el balanceador 12-c/R8):
+//   guardian (post-buff 14-a)  hp 345 · dmg 14 · windup 0.80 · speed 40 · xp 220 · quiebre 80
+//   SEPULCRO                   hp 210 · dmg 12 · windup 0.65 · speed 36 · xp  90 · quiebre 55
+//   → hp = 60.9 % del Guardián (345×0.609≈210, pedido de misión ~60 %);
+//     daño notable (86 % del jefe, muy por encima del élite de mapa 11);
+//     windup LEGIBLE 0.65 s (rango pedido 0.55-0.7, aún más lento que
+//     el esqueleto 0.6 pero pesado); SIN FASES (el cerebro genérico de
+//     update.ts no multiplica dmg por e.phase — solo el 'guardian' lo
+//     hace: phase queda 1 para siempre); lento-amenazante (36 px/s,
+//     más rápido que el Gólem 30, más lento que el Guardián 40);
+//     aggroR medio 120 (el Guardián 150); XP/oro generosos sin robar
+//     al jefe (90 xp ≈ 3-4 enemigos de mapa · [45,70] coronas vs
+//     [120,160] del Guardián). Quiebre 55 = mini-jefe con la mecánica
+//     QUEBRADO (barra de jefe visible al ser bossRef, como los jefes).
+//     HP final de spawn pasa por makeEnemy → recibe el multiplicador
+//     del mundo (igual que TODOS los spawns; sin doble escala).
+// ------------------------------------------------------------
+// ENGANCHES EXACTOS (copiar-pegar; ninguno editado desde este archivo):
+//
+// (A) SPAWN — maps.ts · BASE_MAPS.cripta.spawns (R10-1 coloca la
+//     coordenada en SU antesala; con el layout actual, un hueco válido
+//     entre el santuario (19,23) y la sala del Guardián es ~(19,18)):
+//       { type: 'sepulcro', x: 19, y: 18, patrol: 0, zone: 'antesala' },
+//     IMPORTANTE — NO usar zone 'boss' para el Sepulcro:
+//     update.ts:571 hace `g.map.spawns.find(s => s.zone === 'boss')`,
+//     que devuelve SOLO EL PRIMER spawn de zona 'boss' del mapa. Dos
+//     spawns 'boss' en la cripta romperían al Guardián (tras caer el
+//     Sepulcro, el bloque seguiría apuntando al Sepulcro muerto y el
+//     Guardián quedaría para siempre sin barra, sin intro y sin música
+//     de jefe). El Sepulcro usa su zona propia 'antesala' (zone es string
+//     libre en SpawnDef)
+//     y el Guardián conserva su spawn `zone: 'boss'` intacto.
+//     El cast de SPAWN_SEPULCRO_R10 desaparece cuando types.ts añada
+//     'sepulcro' a la unión EnemyType (mismo camino que 14-a/16-a).
+//
+// (B) ACTIVACIÓN — update.ts (watcher junto al bloque zone 'boss',
+//     tras update.ts:600, patrón acto3_subir de hooks.ts:303-320):
+//       const sepSpawn = g.map.spawns.find(s => s.zone === 'antesala');
+//       if (sepSpawn && !g.flags.sepulcroDefeated && !g.bossActive) {
+//         const sep = g.enemies.find(e => e.etype === 'sepulcro');
+//         if (sep && dist2(p.x, p.y, sep.x, sep.y) < 190 * 190) {
+//           g.bossRef = sep; g.bossActive = true;      // barra + QUIEBRE en HUD
+//           audio.playTrack('boss');
+//           dreadInit(); dreadStinger('boss'); startBossIntro(g);
+//           g.toast('EL SEPULCRO se alza de su tumba: ROMPE SU BARRA DE QUIEBRE', '#9ab8c8');
+//           audio.sfx('roar');                          // enganche R10-7 opcional
+//           g.burst(sep.x, sep.y, '#5a6a7a', 26, 90);   // tierra de la tumba
+//         }
+//       }
+//     El radio 190 px es el MISMO del bloque zone 'boss' (entra en la
+//     antesala = se alza). Si se prefiere cero código nuevo, el
+//     Sepulcro también funciona SIN watcher como élite mayor: aggro
+//     orgánico a 120 px con el cerebro genérico (patrulla → persigue →
+//     carga telegrafiada → mandoble), solo pierde barra/intro/música.
+//
+// (C) FLAG DE DERROTA — engine.ts · BOSS_DEFEAT_FLAG (línea ~83):
+//       sepulcro: 'sepulcroDefeated',
+//     Con la clave en el mapa del motor se activan GRATIS:
+//       · spawnEnemies (engine.ts:770-771): el derrotado no renace.
+//       · killEnemy (engine.ts:2272): cuenta en stats.jefesDerrotados.
+//       · challenge.ts:2290: los clones de duelo no escriben campaña.
+//       · loadMap (engine.ts:622-626): restauración de bossHp_cripta
+//         apunta al primer enemigo con flag — con el Sepulcro listado
+//         ANTES que el Guardián en spawns, el HP memorizado vuelve al
+//         dueño correcto de la pelea activa.
+//
+// (D) VICTORIA — engine.ts · killEnemy, rama propia tras la de
+//     'heraldo' (mismo estilo que coro/vult):
+//       } else if (e.etype === 'sepulcro') {
+//         // R10-9: la antesala cede el paso — la tumba vuelve a cerrarse
+//         this.flags.sepulcroDefeated = true;
+//         delete this.flags.bossHp_cripta; // si el watcher le dio bossRef
+//         this.bossActive = false;
+//         audio.setCombat(false);
+//         audio.playTrack('crypt');
+//         this.shake = 8;
+//         audio.sfx('roar');
+//         this.toast('El Sepulcro se hunde de nuevo en su tumba: el umbral es libre', '#9ab8c8');
+//         this.toast('La sala del Guardián espera al norte', '#ffe9a0');
+//         p.potions += SEPULCRO_BOTIN.potions;
+//         p.gold += SEPULCRO_BOTIN.gold;
+//         this.floatAt(e.x, e.y - 34, `Botín del guarda: +${SEPULCRO_BOTIN.gold} coronas, +${SEPULCRO_BOTIN.potions} poción`, '#f0c84a');
+//       }
+//
+// (E) HP DE DISEÑO (opcional, balance.ts) — TIPOS_JEFE (~línea 260):
+//     añadir 'sepulcro' para que NO reciba la curva de agresividad
+//     (+2 %/nivel) en su HP, igual que los demás jefes. Solo tiene
+//     efecto si el motor pasa etype a enemyStatMult (engine.ts:848).
+//
+// (F) SEÑUELO (opcional, interaccion.ts:90) — BOSS_TYPES: añadir
+//     'sepulcro' (jefes inmunes al señuelo de caza).
+//
+// (G) HITBOX DE JEFE (opcional, engine.ts:852-853) — makeEnemy da
+//     22×16 solo a guardian/sirena/golem/vult/coro; el Sepulcro nace
+//     12×10 (jugable). Añadir `|| type === 'sepulcro'` si se quiere
+//     caja grande de mini-jefe.
+//
+// (H) INTRO CON NOMBRE (opcional, bossintro.ts, tabla R9-5 por
+//     g.bossRef.etype): sepulcro → { name: 'EL SEPULCRO',
+//     sub: 'Guarda del umbral' }. Sin ella, la intro muestra el
+//     fallback del Guardián (el banner del bloque zone 'boss' genérico
+//     sí usaría ENEMY_DEFS.sepulcro.name).
+//
+// (I) AUDIO (R10-7, sin llamar aún): rugido de alzamiento = audio.sfx('roar')
+//     en la activación (B) y en la muerte (D); si R10-7 expone una
+//     variante (playBossRoarVariant de R9-8), usarla con seed por
+//     etype 'sepulcro'.
+//
+// (J) SPRITE — decisión documentada: reutiliza 'guardian' (ver def).
+// ============================================================
+
+/** Defs R10-9 (mismo formato que ENEMY_DEFS/ENEMY_DEFS_14A/ENEMY_DEFS_16A). */
+export const ENEMY_DEFS_R10A: Record<string, EnemyDef> = {
+  // ── MINI-JEFE de la entrada de la Cripta (épica 6.4) · spawn: ver
+  //    enganche (A) — maps.ts, antesala previa a la sala del Guardián.
+  sepulcro: {
+    name: 'El Sepulcro', hp: 210, dmg: 12, speed: 36, xp: 90, gold: [45, 70],
+    sprite: 'guardian', aggroR: 120, atkR: 28, windup: 0.65, atkCd: 2.0,
+    element: 'sombra', weakTo: 'sagrado', breakBar: 55,
+    desc: 'El caballero que juró guardar el umbral del Primer Canto y cumplió después de la muerte: hundido en su tumba de la antesala, espera a que un paso vivo despierte el juramento. Se alza lento, empuña de nuevo el mandoble y golpea como cae la losa de un sepulcro. Quiebra su barra y la tumba volverá a cerrarse. Débil a la luz.',
+  },
+};
+// Inyección en carga (mismo patrón que 14-a/16-a): extiende ENEMY_DEFS sin
+// tocar types.ts. makeEnemy/damagePlayer/killEnemy/render leen la tabla en
+// runtime → ven 'sepulcro' en cuanto este módulo termina de cargar.
+Object.assign(ENEMY_DEFS, ENEMY_DEFS_R10A);
+void ENEMY_DEFS_R10A; // (la referencia viva es ENEMY_DEFS; exportada para el smoke)
+
+/**
+ * Spawn listo para maps.ts · BASE_MAPS.cripta.spawns (enganche A).
+ * Coordenada (19,18) = hueco sugerido con el layout ACTUAL de la cripta
+ * (entre el santuario (19,23) y la sala del Guardián (19,8)); R10-1 debe
+ * ajustarla a SU antesala rediseñada. spread directo:
+ *   import { SPAWN_SEPULCRO_R10 } from './data';
+ *   spawns: [ ..., SPAWN_SEPULCRO_R10, { guardian...zone 'boss' } ]
+ * El cast se elimina cuando types.ts añada 'sepulcro' a EnemyType.
+ */
+export const SPAWN_SEPULCRO_R10: SpawnDef = {
+  type: 'sepulcro' as unknown as EnemyType, // TODO R10: unión EnemyType += 'sepulcro'
+  x: 19, y: 18,
+  patrol: 0,          // guarda casi estática: el cerebro genérico deambula ±60 px (la tumba lo retiene)
+  zone: 'antesala',   // zona PROPIA: nunca 'boss' (ver enganche A — find() de update.ts:571)
+};
+
+/** Recompensa garantizada del mini-jefe (enganche D, rama killEnemy). */
+export const SEPULCRO_BOTIN = { potions: 1, gold: 50 } as const;
+
+// ═══════ FIN DEL BLOQUE R10-9 ═══════
 

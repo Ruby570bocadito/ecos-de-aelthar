@@ -10,7 +10,7 @@ export type MapId = 'lunaris' | 'bosque' | 'cripta' | 'costa' | 'aldea' | 'cumbr
 export type Epoch = 'presente' | 'pasado';
 export type TrackName = 'village' | 'forest' | 'crypt' | 'boss' | 'title' | 'costa' | 'aldea' | 'cumbres';
 
-export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian' | 'neumo' | 'espectro' | 'arpi' | 'sirena' | 'golem' | 'vult' | 'coro' | 'ecodesg' | 'satiro' | 'heraldo'; // 16-a: jefe final del Acto IV
+export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian' | 'neumo' | 'espectro' | 'arpi' | 'sirena' | 'golem' | 'vult' | 'coro' | 'ecodesg' | 'satiro' | 'heraldo' | 'sepulcro'; // 16-a: jefe final del Acto IV · R10-9: mini-jefe de la cripta
 export type Element = 'fuego' | 'hielo' | 'rayo' | 'sombra' | 'sagrado' | 'ninguno';
 export type StatusKind = 'quemado' | 'congelado' | 'aturdido' | 'marcado';
 
@@ -61,7 +61,7 @@ export interface ExitDef {
   label?: string;
 }
 
-export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'altarEcho' | 'sign' | 'gate' | 'wreck' | 'faro' | 'lamp';
+export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'altarEcho' | 'sign' | 'gate' | 'wreck' | 'faro' | 'lamp' | 'plaque' | 'remains' | 'altarMinor' | 'woodsign' | 'waypost'; // R10-6: lore en el mundo
 
 export interface PropDef {
   id: string; kind: PropKind; x: number; y: number;
@@ -242,7 +242,7 @@ export interface SaveData {
   map: MapId;
   x: number; y: number;
   epoch: Epoch;
-  flags: Record<string, number | boolean>;
+  flags: Record<string, number | boolean | string>;
   questIdx: number; questStep: number;
   openedChests: string[];
   takenEchoes: string[];

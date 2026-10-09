@@ -2,6 +2,7 @@
 // ECOS DE AELTHAR — Props v3 (módulo world · R1-A10 + R4-A4)
 // Sistema autocontenido de props del mapa. Kinds reales:
 //   'sanctuary' · 'forge' · 'fragment' · 'altarEcho' · 'sign' · 'gate'
+//   + lore R10-6: 'plaque' · 'remains' · 'altarMinor' · 'woodsign' · 'waypost'
 // Todo dibujo es directo por rects (sin caché SPR de sprites.ts)
 // para que el módulo no dependa de sprites ni de render.
 //
@@ -25,6 +26,25 @@
 //     del yunque.
 //   · selected (jugador <24 px): TODOS los kinds reciben un
 //     contorno claro de 1 px en el suelo que pulsa sutilmente.
+//
+// NOVEDAD v5 (R10-6 · épica 6.3, aditivo, firmas intactas):
+//   · CINCO KINDS DE LORE AMBIENTAL que pueblan el mundo sin estorbar
+//     (no bloquean: props nunca colisionan; no interactúan: el motor
+//     nearestInteract ignora kinds desconocidos): plaque (placas
+//     conmemorativas de piedra grabada), remains (restos de guerra:
+//     armaduras vencidas, carros rotos, huesos, estandartes caídos),
+//     altarMinor (altares menores del Eco con vela encendida y motas
+//     doradas), woodsign (carteles de madera con flechas, avisos y el
+//     aspa rota de «NO ENTRES» pintada) y waypost (mojones de camino).
+//   · 4 VARIANTES deterministas por kind vía hash2 de coords (patrón
+//     v4 del archivo). Todo por rects, cero Math.random, cero alloc
+//     por frame; cada draw nuevo sale temprano si el prop queda fuera
+//     de vista (offscreen(), solo en los kinds v5).
+//   · lorePropsForMap(): SPAWN DETERMINISTA (ver final del archivo)
+//     que decide DÓNDE aparecen: 2-4 % de tiles elegibles, sesgo hacia
+//     caminos/plazas, nunca sobre sólidos ni junto a puertas, sin
+//     pisar props/cofres/NPCs existentes y con pesos por bioma.
+//     Contrato de integración documentado junto a la función.
 //
 // NOVEDAD v4 (R7-V2 · aditivo, firmas intactas):
 //   · VARIANTES POR FAMILIA vía hash2 (3-4 looks por prop, cero
@@ -902,6 +922,395 @@ function drawGate(): void {
   }
 }
 
+// ---------------- Props de lore ambientales (v5 · R10-6) ----------------
+// Familia de props pequeños que cuentan historia SIN estorbar: no
+// bloquean (los props nunca colisionan) y no interactúan (el motor
+// ignora estos kinds en nearestInteract). Dibujados 100 % por rects
+// con los materiales del archivo (piedra/madera/hueso de PAL y
+// PAL_PROP + 3 hex locales). Cada draw sale temprano si el prop está
+// fuera de vista: los mapas llevan ~20 de estos props y el guard
+// convierte su coste por frame en 4 comparaciones.
+
+/** Materiales locales de la familia lore (v5): pintura vieja y hueso. */
+const PAINT_RED = '#94382a';      // aspa rota pintada («NO ENTRES»)
+const PAINT_RED_DK = '#6e2820';   // trazo en sombra de la pintura
+const BONE = '#d8d2c0';           // hueso iluminado
+const BONE_DK = '#b8b2a0';        // hueso en sombra
+
+/** Guard de vista: los kinds v5 son pequeños (≤ ±24 px del ancla). */
+function offscreen(margin: number): boolean {
+  const c = _ctx!;
+  return _ox < -margin || _oy < -margin ||
+    _ox > c.canvas.width + margin || _oy > c.canvas.height + margin;
+}
+
+/**
+ * Líneas de «inscripción» grabadas: guiones oscuros de 2-5 px con
+ * hueco (palabras vistas de lejos). Determinista por (seed, fila).
+ */
+function ENGRAVE(x: number, y: number, rows: number, seed: number, col: string, a: number): void {
+  for (let r = 0; r < rows; r++) {
+    const h = h2(seed + r * 17, r * 29 + 3);
+    const w = 2 + Math.floor(h * 4);
+    const off = Math.floor(h2(seed * 3 + r * 5, r * 13 + 1) * 2);
+    PA(x + off, y + r * 2, w, 1, col, a);
+    if (h > 0.55) PA(x + off + w + 1, y + r * 2, 1, 1, col, a * 0.8);
+  }
+}
+
+/** Glifo 3×5 de la letra N (pintado en la tablilla de prohibición). */
+function GLYPH_N(x: number, y: number): void {
+  P(x, y, 1, 5, '#3c2c18'); P(x + 2, y, 1, 5, '#3c2c18');
+  P(x + 1, y + 1, 1, 1, '#3c2c18'); P(x + 1, y + 3, 1, 1, '#3c2c18');
+}
+
+/** Glifo 3×5 de la letra O (pintado en la tablilla de prohibición). */
+function GLYPH_O(x: number, y: number): void {
+  P(x, y, 3, 1, '#3c2c18'); P(x, y + 4, 3, 1, '#3c2c18');
+  P(x, y + 1, 1, 3, '#3c2c18'); P(x + 2, y + 1, 1, 3, '#3c2c18');
+}
+
+/**
+ * PLACA conmemorativa de piedra grabada. 4 variantes: estela con
+ * sigilo, losa tumbada con inscripción, pedestal con placa embutida
+ * (nombre en oro viejo) y estela rota con fragmento caído.
+ */
+function drawPlaque(): void {
+  if (offscreen(48)) return;
+  const v = Math.floor(h2(_tx * 13 + 7, _ty * 7 + 5) * 4); // 0..3
+  const mossSeed = h2(_tx * 5 + 2, _ty * 11 + 3);
+  PROP_SHADOW(_ctx!, _ox, _oy + 4 * ZOOM, 8, 2.5, 0.2);
+  if (v === 0) {
+    // ESTELA: losa vertical de punta redondeada sobre bancal
+    P(-7, 2, 14, 2, PAL.stoneDark);
+    P(-7, 2, 14, 1, PAL.stone);
+    P(-3, -13, 6, 1, PAL.stoneLight);            // remate redondeado
+    P(-4, -12, 8, 13, PAL.stone);                // cuerpo
+    P(-4, -12, 2, 13, PAL.stoneLight);           // cara iluminada
+    P(2, -12, 2, 13, PAL.stoneDark);             // cara en sombra
+    P(-4, -1, 8, 1, PAL.stoneDeep);
+    RUNE(Math.floor(h2(_tx + 9, _ty + 4) * 4), 0, -10, PAL.stoneDeep, 0.9); // sigilo
+    ENGRAVE(-2, -7, 3, _tx * 3 + _ty, PAL.stoneDeep, 0.8);                  // texto
+    PA(-1, -4, 1, 1, PAL_PROP.crackGoldDeep, 0.4 + Math.sin(_t * 1.3) * 0.15); // nombre
+  } else if (v === 1) {
+    // LOSA TUMBADA: pizarra a ras con la inscripción a plena vista
+    P(-7, 0, 14, 4, PAL.stoneLight);             // cara superior
+    P(-7, 4, 14, 2, PAL.stoneDark);              // canto frontal
+    P(-7, 0, 1, 4, PAL.stoneHi);
+    P(6, 0, 1, 4, PAL.stoneDeep);
+    ENGRAVE(-5, 1, 2, _tx * 5 + _ty * 3, PAL.stoneDeep, 0.85);
+    P(4, 3, 2, 1, PAL.stoneDeep);                // esquina desportillada
+    P(5, 2, 1, 1, PAL.stoneDeep);
+  } else if (v === 2) {
+    // PEDESTAL: bloque con placa embutida y tapa voladiza
+    P(-6, -9, 12, 2, PAL.stoneHi);               // tapa
+    P(-6, -8, 12, 1, PAL.stoneDeep);
+    P(-5, -7, 10, 9, PAL.stone);
+    P(-5, -7, 2, 9, PAL.stoneLight);
+    P(3, -7, 2, 9, PAL.stoneDark);
+    P(-3, -5, 6, 5, PAL.stoneDeep);              // placa embutida
+    ENGRAVE(-2, -5, 1, _tx * 7 + _ty, PAL.stoneLine, 0.7);
+    PA(-1, -3, 2, 1, PAL_PROP.crackGoldDeep, 0.55); // nombre en oro viejo
+    if (mossSeed > 0.6) P(-6, -9, 4, 1, PAL_PROP.moss); // musgo en la tapa
+  } else {
+    // ESTELA ROTA: mitad en pie ladeada + fragmento caído junto al pie
+    P(-2, -13, 2, 1, PAL.stoneLight);            // pico roto
+    P(-4, -12, 7, 3, PAL.stone);
+    P(-5, -9, 8, 3, PAL.stone);
+    P(-5, -9, 2, 3, PAL.stoneLight);
+    P(-6, -6, 8, 3, PAL.stone);
+    P(-6, -6, 2, 3, PAL.stoneLight);
+    P(-6, -4, 8, 1, PAL.stoneDeep);
+    ENGRAVE(-4, -11, 2, _tx * 3 + _ty * 7, PAL.stoneDeep, 0.75);
+    P(4, 1, 5, 2, PAL.stone);                    // fragmento caído
+    P(4, 1, 2, 1, PAL.stoneLight);
+    PA(6, 1, 1, 1, PAL_PROP.crackGoldDeep, 0.45);
+  }
+  // liquen/musgo y guijarros comunes al pie (hash por posición)
+  if (mossSeed < 0.35) P(-7 + Math.floor(mossSeed * 20), 3, 3, 1, PAL_PROP.moss);
+  if (mossSeed > 0.8) P(4, 3, 2, 1, PAL_PROP.mossDark);
+  PEBBLE(6, 3, '#6a6a7a', '#8a8a9a', 0.9);
+}
+
+/**
+ * RESTOS de lo que dejó la Niebla y las guerras del Canto. 4
+ * variantes: armadura vencida, carro roto, huesos y estandarte caído.
+ * Todo bajo (≤ 7 px de alto) y ancho (no estorba la lectura del paso).
+ */
+function drawRemains(): void {
+  if (offscreen(48)) return;
+  const v = Math.floor(h2(_tx * 11 + 3, _ty * 13 + 2) * 4);
+  const rust = h2(_tx * 3 + 8, _ty * 5 + 6);
+  PROP_SHADOW(_ctx!, _ox, _oy + 3 * ZOOM, 10, 2.2, 0.18);
+  PA(-9, 1, 18, 3, '#1e1a14', 0.14);             // polvillo bajo el conjunto
+  if (v === 0) {
+    // ARMADURA VENCIDA: peto hundido + yelmo volcado + rodela + asta rota
+    P(-6, -5, 7, 6, '#6a6a7a');                  // peto medio enterrado
+    P(-6, -5, 2, 6, '#8a8a9a');
+    P(-1, -5, 2, 6, '#4a4a58');
+    P(-4, -6, 3, 1, '#3a3a48');                  // escote
+    P(-5, -2, 1, 2, '#5a5a6a');                  // abolladuras
+    P(-2, -1, 2, 1, '#5a5a6a');
+    if (rust < 0.5) P(-6, -4, 2, 1, RUST_A);     // óxido del peto
+    P(2, -3, 5, 3, '#7a7a8a');                   // yelmo volcado
+    P(2, -3, 5, 1, '#9aa0ac');
+    P(3, -2, 3, 1, '#2a2a34');                   // ranura del visor
+    P(9, -2, 4, 4, '#5a5a6a');                   // rodela abollada
+    P(9, -2, 4, 1, '#7a7a8a');
+    P(10, -1, 1, 1, '#9aa0ac');                  // umbo
+    P(9, -2, 1, 1, '#3a3a48');                   // muesca rota
+    P(-10, 0, 1, 4, PAL.trunkDeep);              // asta de lanza rota
+    P(-9, -3, 1, 3, PAL.trunkDeep);
+    P(-9, -4, 1, 1, '#9aa0ac');                  // regatón
+  } else if (v === 1) {
+    // CARRO ROTO: rueda vencida + caja desplomada + saco derramado
+    for (let i = 0; i < 10; i++) {               // aro de la rueda (10 px)
+      const ang = (i / 10) * Math.PI * 2;
+      P(-6 + Math.round(Math.cos(ang) * 5), -3 + Math.round(Math.sin(ang) * 4), 1, 1, '#4a4a58');
+    }
+    P(-6, -3, 1, 1, '#7a7a8a'); P(-2, -3, 1, 1, '#7a7a8a'); // radios
+    P(-4, -4, 2, 2, '#5a5a6a');                  // buje
+    P(-8, -1, 8, 2, PAL.plankWet);               // caja desplomada
+    P(-8, -2, 7, 1, PAL.woodMid);
+    P(0, -2, 6, 2, PAL.woodDark);                // tabla suelta
+    P(5, -3, 1, 2, PAL.woodDark);                // extremo astillado
+    if (rust > 0.4) P(-8, -1, 2, 1, RUST_B);     // herrumbre del herraje
+    P(6, 0, 5, 4, SACK_C); P(6, 0, 5, 1, SACK_HI); P(6, 3, 5, 1, SACK_DK);
+    P(5, 4, 2, 1, SACK_HI);                      // grano derramado
+  } else if (v === 2) {
+    // HUESOS: cráneo + caja torácica + fémur al sol
+    P(1, -5, 4, 4, BONE);                        // cráneo
+    P(2, -6, 2, 1, BONE);                        // bóveda
+    P(2, -4, 1, 1, '#2a2a30');                   // órbitas
+    P(4, -4, 1, 1, '#2a2a30');
+    P(2, -2, 2, 1, BONE_DK);                     // mandíbula
+    P(-5, -4, 1, 4, BONE);                       // costillas
+    P(-3, -5, 1, 5, BONE);
+    P(-1, -4, 1, 4, BONE);
+    P(-6, 0, 7, 1, BONE_DK);                     // columna
+    P(-10, 2, 5, 1, BONE);                       // fémur
+    P(-11, 1, 1, 1, BONE); P(-11, 3, 1, 1, BONE); // epífisis
+    P(5, 2, 3, 1, BONE_DK);                      // hueso suelto
+    if (h2(_tx + 4, _ty + 9) < 0.5) P(0, -5, 1, 1, '#2a2a30'); // fractura
+  } else {
+    // ESTANDARTE CAÍDO: asta quebrada + tela con sigilo desvaído + adarga
+    P(-8, -6, 2, 9, PAL.woodDark);               // tramo en pie
+    P(-8, -7, 2, 1, '#9aa0ac');                  // remate metálico
+    P(-6, -8, 5, 1, PAL.woodDark);               // tramo caído
+    P(-1, -9, 3, 1, PAL.woodDark);
+    P(-2, -1, 9, 4, CLOTH);                      // tela tendida en el suelo
+    P(-2, -1, 9, 1, CLOTH_HI);
+    P(-2, 2, 9, 1, CLOTH_DK);
+    P(0, 0, 1, 1, CLOTH_DK); P(4, 0, 1, 1, CLOTH_DK); // pliegues
+    RUNE(1, 2, -1, PAL_PROP.runeDim, 0.5);       // sigilo desvaído
+    P(8, -4, 3, 3, '#5a5a6a');                   // adarga partida
+    P(8, -4, 3, 1, '#7a7a8a');
+    P(10, -4, 1, 1, '#3a3a48');
+  }
+}
+
+/**
+ * ALTAR MENOR del Eco: humilde pila/ara con VELA ENCENDIDA (CANDLE
+ * comparte la llama animada determinista de los altares grandes) y
+ * 2 motas doradas que ascienden — el Eco escucha también en la cuneta.
+ * 4 variantes: cairn de vía, losa con cuenco, monolito menor y tronco.
+ */
+function drawAltarMinor(): void {
+  if (offscreen(48)) return;
+  const t = _t;
+  const v = Math.floor(h2(_tx * 17 + 5, _ty * 5 + 9) * 4);
+  PROP_SHADOW(_ctx!, _ox, _oy + 4 * ZOOM, 7, 2.2, 0.2);
+  ELL(0, -3, 7, 4, PAL_PROP.flame2, 0.05 + Math.sin(t * 2.1) * 0.03); // calor
+  if (v === 0) {
+    // CAIRN DE VÍA: piedras apiladas con la vela en la cima
+    P(-6, 1, 12, 3, PAL.stoneDark);
+    P(-6, 1, 12, 1, PAL.stone);
+    P(-4, -2, 8, 3, PAL.stone);
+    P(-4, -2, 8, 1, PAL.stoneLight);
+    P(-2, -4, 4, 2, PAL.stoneHi);
+    CANDLE(-1, -7, 2);
+  } else if (v === 1) {
+    // LOSA CON CUENCO: ofrenda de cera a un lado, vela al otro
+    P(-6, -1, 12, 4, PAL.stoneLight);
+    P(-6, 3, 12, 2, PAL.stoneDark);
+    P(-6, -1, 1, 4, PAL.stoneHi);
+    P(-5, -3, 4, 2, PAL.stoneDark);              // cuenco
+    P(-4, -3, 2, 1, PAL_PROP.wax);               // cera ofrendada
+    CANDLE(3, -4, 5);
+  } else if (v === 2) {
+    // MONOLITO MENOR inclinado con runa y vela en repisa al pie
+    P(-5, -12, 3, 1, PAL.stoneLight);
+    P(-4, -11, 4, 2, PAL.stone);
+    P(-3, -9, 4, 9, PAL.stone);
+    P(-3, -9, 1, 9, PAL.stoneLight);
+    P(0, -9, 1, 9, PAL.stoneDark);
+    RUNE(2, -2, -7, PAL.stoneDeep, 0.8);
+    P(2, 0, 5, 1, PAL.stoneDark);                // repisa
+    CANDLE(3, -3, 7);
+  } else {
+    // TRONCO TOSCO: ara de leñador con marcas de hacha
+    P(-5, -4, 10, 2, PAL.wood);                  // cara superior
+    P(-5, -2, 10, 4, PAL.woodMid);
+    P(-5, 2, 10, 1, PAL.woodDark);
+    P(3, -4, 2, 4, PAL.woodDark);                // veta terminal
+    P(4, -3, 1, 1, PAL.woodLight);               // anillo del tronco
+    P(-2, -5, 1, 1, PAL.woodDark);               // marcas de hacha
+    P(1, -5, 1, 1, PAL.woodDark);
+    CANDLE(-1, -7, 4);
+  }
+  // musgo al pie + 2 motas doradas que ascienden y se disipan
+  const mo = h2(_tx * 7 + 1, _ty * 3 + 8);
+  if (mo < 0.4) P(-6 + Math.floor(mo * 10), 3, 2, 1, PAL_PROP.moss);
+  PEBBLE(-8, 3, '#6a6a7a', '#8a8a9a', 0.9);
+  for (let i = 0; i < 2; i++) {
+    const cyc = (t * 0.3 + h2(_tx * 3 + i * 5, _ty * 9 + i) + i * 0.5) % 1;
+    PA(-2 + i * 4, -Math.round(cyc * 9), 1, 1, PAL_PROP.crackGoldHi, Math.sin(cyc * Math.PI) * 0.55);
+  }
+}
+
+/**
+ * CARTEL DE MADERA ambiental (no interactivo; los legibles son kind
+ * 'sign' de maps.ts). Flechas de camino, avisos con letra corrida y
+ * el clásico «NO ENTRES» con aspa rota pintada. 4 variantes.
+ */
+function drawWoodsign(): void {
+  if (offscreen(48)) return;
+  const t = _t;
+  const v = Math.floor(h2(_tx * 7 + 9, _ty * 17 + 4) * 4);
+  const sway = Math.round(Math.sin(t * 1.1 + h2(_tx, _ty) * 6.283)); // vaivén 1 px
+  PROP_SHADOW(_ctx!, _ox, _oy + 5 * ZOOM, 6, 2.2, 0.2);
+  // poste común (madera vieja clavada a la tierra)
+  P(-1 + sway, -14, 2, 18, PAL.woodDark);
+  P(-1 + sway, -14, 1, 18, PAL.woodMid);
+  P(-2, 3, 4, 1, '#3a3524');                     // tierra apisonada
+  if (v === 0) {
+    // FLECHA DE CAMINO: tablón en punta que señala (izq/der por hash)
+    const dir = h2(_tx * 3 + 5, _ty * 7 + 2) < 0.5 ? 1 : -1;
+    if (dir > 0) {
+      P(-6 + sway, -18, 11, 4, '#8a5a2b');
+      P(-6 + sway, -18, 11, 1, '#a8703a');
+      P(-6 + sway, -15, 11, 1, PAL.door);
+      P(5 + sway, -18, 2, 1, '#8a5a2b'); P(6 + sway, -17, 2, 2, '#8a5a2b');
+      P(5 + sway, -14, 2, 1, '#8a5a2b');         // punta de flecha →
+      P(-5 + sway, -18, 1, 1, '#9aa0ac'); P(3 + sway, -14, 1, 1, '#9aa0ac'); // clavos
+      ENGRAVE(-4 + sway, -17, 1, _tx * 5 + _ty, '#4a2d16', 0.9);
+      PA(-3 + sway, -16, 4, 1, '#4a2d16', 0.8);  // segunda palabra
+    } else {
+      P(-5 + sway, -18, 11, 4, '#8a5a2b');
+      P(-5 + sway, -18, 11, 1, '#a8703a');
+      P(-5 + sway, -15, 11, 1, PAL.door);
+      P(-7 + sway, -18, 2, 1, '#8a5a2b'); P(-8 + sway, -17, 2, 2, '#8a5a2b');
+      P(-7 + sway, -14, 2, 1, '#8a5a2b');        // punta de flecha ←
+      P(-4 + sway, -18, 1, 1, '#9aa0ac'); P(4 + sway, -14, 1, 1, '#9aa0ac');
+      ENGRAVE(-2 + sway, -17, 1, _tx * 5 + _ty, '#4a2d16', 0.9);
+      PA(-1 + sway, -16, 4, 1, '#4a2d16', 0.8);
+    }
+  } else if (v === 1) {
+    // AVISO: tabla enmarcada con letra corrida y raya de pintura vieja
+    P(-5 + sway, -19, 10, 8, '#8a5a2b');
+    P(-5 + sway, -19, 10, 1, '#a8703a');
+    P(-5 + sway, -12, 10, 1, PAL.door);
+    P(-5 + sway, -19, 1, 8, PAL.door);
+    P(4 + sway, -19, 1, 8, PAL.door);
+    ENGRAVE(-3 + sway, -17, 2, _tx * 9 + _ty * 3, '#3c2c18', 0.95);
+    PA(-3 + sway, -13, 6, 1, PAINT_RED, 0.75);   // subrayado desvaído
+    P(3 + sway, -19, 2, 1, '#54381e');           // esquina rasgada
+    P(3 + sway, -17, 1, 2, '#a8703a');           // astilla colgando
+    P(-4 + sway, -19, 1, 1, '#9aa0ac'); P(2 + sway, -12, 1, 1, '#9aa0ac');
+  } else if (v === 2) {
+    // PROHIBIDO: aspa rota pintada + tablilla «NO» (glifos 3×5)
+    P(-6 + sway, -20, 12, 8, '#8a5a2b');
+    P(-6 + sway, -20, 12, 1, '#a8703a');
+    P(-6 + sway, -13, 12, 1, PAL.door);
+    for (let i = 0; i < 6; i++) {                // aspa de pintura vieja
+      PA(-4 + i + sway, -19 + i, 2, 1, PAINT_RED, 0.8);
+      PA(-4 + i + sway, -14 - i, 2, 1, PAINT_RED_DK, 0.8);
+    }
+    P(-4 + sway, -11, 9, 7, '#8a5a2b');          // tablilla inferior
+    P(-4 + sway, -11, 9, 1, '#a8703a');
+    P(-4 + sway, -5, 9, 1, PAL.door);
+    GLYPH_N(-3 + sway, -10);
+    GLYPH_O(1 + sway, -10);
+    P(4 + sway, -8, 1, 1, '#4a2d16');            // punto final
+  } else {
+    // DIRECCIONAL DOBLE: dos tablones con flechas opuestas (cruce)
+    P(-7 + sway, -19, 9, 3, '#8a5a2b');
+    P(-7 + sway, -19, 9, 1, '#a8703a');
+    P(-7 + sway, -17, 9, 1, PAL.door);
+    PA(-5 + sway, -18, 4, 1, '#4a2d16', 0.9);    // flecha ←
+    PA(-7 + sway, -18, 1, 1, '#4a2d16', 0.9);
+    PA(-6 + sway, -19, 1, 1, '#4a2d16', 0.9);
+    PA(-6 + sway, -17, 1, 1, '#4a2d16', 0.9);
+    P(0 + sway, -14, 9, 3, '#8a5a2b');
+    P(0 + sway, -14, 9, 1, '#a8703a');
+    P(0 + sway, -12, 9, 1, PAL.door);
+    PA(4 + sway, -13, 4, 1, '#4a2d16', 0.9);     // flecha →
+    PA(9 + sway, -13, 1, 1, '#4a2d16', 0.9);
+    PA(8 + sway, -14, 1, 1, '#4a2d16', 0.9);
+    PA(8 + sway, -12, 1, 1, '#4a2d16', 0.9);
+    P(-6 + sway, -19, 1, 1, '#9aa0ac'); P(6 + sway, -12, 1, 1, '#9aa0ac');
+  }
+  // musgo del pie (el poste más viejo lo crió entero)
+  if (h2(_tx * 5 + 3, _ty * 3 + 6) < 0.3) {
+    P(-1 + sway, -2, 2, 1, PAL_PROP.moss);
+    P(0 + sway, -1, 1, 1, PAL_PROP.mossDark);
+  }
+}
+
+/**
+ * MOJÓN DE CAMINO: hito piedrino pequeño que marca el sendero. 4
+ * variantes: hito cónico, pila de pastor, hito con flecha grabada y
+ * viejo hundido comido de musgo. El más barato de la familia.
+ */
+function drawWaypost(): void {
+  if (offscreen(48)) return;
+  const v = Math.floor(h2(_tx * 5 + 1, _ty * 19 + 8) * 4);
+  PROP_SHADOW(_ctx!, _ox, _oy + 4 * ZOOM, 5, 1.8, 0.18);
+  if (v === 0) {
+    // HITO CÓNICO clásico de los caminos del valle
+    P(-1, -8, 2, 2, PAL.stoneLight);             // punta
+    P(-2, -6, 4, 9, PAL.stone);
+    P(-2, -6, 1, 9, PAL.stoneLight);
+    P(1, -6, 1, 9, PAL.stoneDark);
+    P(-3, 2, 6, 2, PAL.stoneDark);               // asiento hundido
+    P(-3, 2, 6, 1, PAL.stone);
+    P(-1, -4, 2, 1, PAL.stoneDeep);              // marca del cantero
+  } else if (v === 1) {
+    // APILADO: tres piedras del pastor
+    P(-3, 0, 7, 3, PAL.stoneDark);
+    P(-3, 0, 7, 1, PAL.stone);
+    P(-2, -3, 5, 3, PAL.stone);
+    P(-2, -3, 5, 1, PAL.stoneLight);
+    P(-1, -5, 3, 2, PAL.stoneHi);
+    P(4, 2, 1, 1, '#6f695c');                    // piedrecilla suelta
+  } else if (v === 2) {
+    // HITO-FLECHA: bloque con flecha grabada hacia el sendero
+    P(-4, -7, 9, 2, PAL.stoneHi);                // remate
+    P(-3, -5, 7, 9, PAL.stone);
+    P(-3, -5, 1, 9, PAL.stoneLight);
+    P(3, -5, 1, 9, PAL.stoneDark);
+    P(-3, 3, 7, 1, PAL.stoneDeep);
+    const dir = h2(_tx * 9 + 4, _ty * 3 + 7) < 0.5 ? 1 : -1;
+    if (dir > 0) {                               // flecha grabada →
+      PA(-1, -2, 3, 1, PAL.stoneDeep, 0.9);
+      PA(2, -3, 1, 1, PAL.stoneDeep, 0.9); PA(2, -1, 1, 1, PAL.stoneDeep, 0.9);
+    } else {                                     // flecha grabada ←
+      PA(-2, -2, 3, 1, PAL.stoneDeep, 0.9);
+      PA(-3, -3, 1, 1, PAL.stoneDeep, 0.9); PA(-3, -1, 1, 1, PAL.stoneDeep, 0.9);
+    }
+  } else {
+    // VIEJO HUNDIDO: la tierra se lo come, el musgo lo recuerda
+    P(-3, -5, 3, 1, PAL.stoneLight);             // punta ladeada
+    P(-2, -4, 4, 7, PAL.stoneDark);
+    P(-2, -4, 1, 7, PAL.stone);
+    P(-1, 2, 3, 1, '#3a3524');                   // hundido en la tierra
+    P(-2, -2, 2, 1, PAL.stoneDeep);              // grieta
+    P(-3, -1, 3, 1, PAL_PROP.moss);              // musgo viejo
+    P(2, 3, 2, 1, PAL_PROP.mossDark);
+    P(3, 1, 1, 2, PAL.grassBlade);               // brizna al pie
+  }
+}
+
 // ---------------- Entrada principal ----------------
 
 /**
@@ -936,6 +1345,12 @@ export function drawPropV2(
       case 'altarEcho': drawAltarEcho(g); break;
       case 'sign': drawSign(selected); break;
       case 'gate': drawGate(); break;
+      // —— v5 (R10-6): lore ambiental — no interactúan, no bloquean ——
+      case 'plaque': drawPlaque(); break;
+      case 'remains': drawRemains(); break;
+      case 'altarMinor': drawAltarMinor(); break;
+      case 'woodsign': drawWoodsign(); break;
+      case 'waypost': drawWaypost(); break;
       default: break; // kinds desconocidos: no-op seguro
     }
     // v3: contorno de selección para todos los kinds (tras el prop,
@@ -945,4 +1360,233 @@ export function drawPropV2(
     ctx.restore();
     _ctx = null;
   }
+}
+
+// ============================================================
+// R10-6 · SPAWN DETERMINISTA DE PROPS DE LORE (épica 6.3)
+// ============================================================
+// Hasta aquí props.ts solo DIBUJABA (los props vivían declarados a mano
+// en maps.ts/maps_expansion.ts). Esta sección añade el SEMBRADO: una
+// pasada de carga por mapa que decide en qué tiles aparecen los cinco
+// kinds de lore, con densidad baja, sesgo hacia caminos y garantías
+// anti-estorbo. Todo con hash2 (cero Math.random, cero tiempo): dos
+// ejecuciones producen EXACTAMENTE el mismo mundo.
+//
+// CONTRATO DE INTEGRACIÓN (para el orquestador — 2 líneas):
+//   1. types.ts:64 — añadir los kinds a la unión PropKind:
+//      | 'plaque' | 'remains' | 'altarMinor' | 'woodsign' | 'waypost'
+//      (alternativa sin tocar types.ts: hacer cast en el enganche:
+//       `... lorePropsForMap(m) as unknown as PropDef[]`).
+//   2. maps.ts, justo tras `export const MAPS ... = { ...BASE_MAPS,
+//      ...EXPANSION_MAPS };` (maps.ts:423):
+//        for (const m of Object.values(MAPS)) m.props.push(...lorePropsForMap(m));
+//      (import { lorePropsForMap } from './world/props';)
+//   3. render.ts:386-388 — extender el dispatch de drawProps con los
+//      5 kinds nuevos para que caigan en drawPropV2:
+//        case 'plaque': case 'remains': case 'altarMinor':
+//        case 'woodsign': case 'waypost':
+//   La cripta y la arena devuelven [] (la cripta ya tiene nichos/velas
+//   de world/stone.ts y la arena debe quedar limpia para el desafío),
+//   igual que los interiores (ids 'interior_*' de maps_interiores.ts y
+//   cualquier mapa menor de 16 tiles: los recintos cerrados no llevan
+//   lore de intemperie).
+
+export type LorePropKind = 'plaque' | 'remains' | 'altarMinor' | 'woodsign' | 'waypost';
+
+export interface LorePropDef {
+  id: string;
+  kind: LorePropKind;
+  x: number;
+  y: number;
+  needPast?: boolean;          // solo existe en el pasado (tile sólido hoy)
+  needPresent?: boolean;       // solo existe en el presente
+}
+
+/** Forma estructural mínima que cualquier MapDef satisface tal cual
+ *  (props.ts no importa types.ts para seguir siendo hermético). */
+export interface LoreMapShape {
+  id: string;
+  w: number; h: number;
+  rows: string[];
+  epochDiffs: readonly { x: number; y: number; char: string }[];
+  exits: readonly { x: number; y: number; w: number; h: number }[];
+  props: readonly { x: number; y: number }[];
+  chests: readonly { x: number; y: number }[];
+  npcs: readonly { x: number; y: number }[];
+}
+
+// Espejos LOCALES de sprites.ts (mismo patrón que DAY_ALPHA espeja a
+// lighting.ts; props no importa sprites por diseño del módulo):
+//  · LORE_SOLID = SOLID_CHARS (sprites.ts:156)
+//  · LORE_WALK  = transitables CONOCIDOS ('s'/'S'/'i' de la expansión,
+//    'B' puente, 'm' bruma baja, '='/'_'/':' camino/losa, 'c' cultivo).
+// Ante un char desconocido (mapas nuevos de R10) el tile NO es elegible:
+// lista blanca → jamás sembramos sobre un tile que no entendemos.
+const LORE_SOLID = 'tp#HrFRwgPAV~dxn';
+const LORE_WALK = '.,cm=:_sSiB';
+
+/** Densidad (fracción de tiles elegibles): 4 % junto a camino/plaza,
+ *  2 % en campo abierto (pedido de la épica 6.3: DENSIDAD BAJA). */
+const LORE_DENS_ROAD = 0.04;
+const LORE_DENS_OPEN = 0.02;
+
+// Pesos de kind por bioma (el hash de cada tile elige dentro de la tabla;
+// junto a camino doblan mojón ×2 y cartel ×1.5, a campo abierto los
+// restos ×1.5 — la historia nace donde pasaba la gente).
+const LORE_WEIGHTS: Record<string, readonly (readonly [LorePropKind, number])[]> = {
+  lunaris: [['plaque', 3], ['remains', 2], ['waypost', 2], ['woodsign', 2], ['altarMinor', 1]],
+  bosque: [['woodsign', 3], ['remains', 2], ['waypost', 2], ['altarMinor', 1], ['plaque', 1]],
+  costa: [['remains', 3], ['waypost', 2], ['plaque', 2], ['woodsign', 2], ['altarMinor', 1]],
+  aldea: [['woodsign', 3], ['plaque', 2], ['altarMinor', 2], ['waypost', 1], ['remains', 1]],
+  cumbres: [['waypost', 3], ['altarMinor', 2], ['woodsign', 2], ['plaque', 1], ['remains', 1]],
+};
+const LORE_WEIGHTS_FALLBACK: readonly (readonly [LorePropKind, number])[] =
+  [['waypost', 2], ['woodsign', 2], ['plaque', 2], ['remains', 2], ['altarMinor', 1]];
+
+/** Tile elegible: transitable conocido y NUNCA el camino '=' en sí
+ *  (los caminos quedan limpios: los props se rodean, no estorban). */
+function loreOkTile(ch: string): boolean {
+  return ch !== '=' && LORE_WALK.indexOf(ch) >= 0 && LORE_SOLID.indexOf(ch) < 0;
+}
+
+/**
+ * Devuelve los props de lore de un mapa (0..24 según su tamaño). Se
+ * llama UNA vez por mapa en carga (no por frame): la salida se funde
+ * en m.props y a partir de ahí el mundo la trata como cualquier prop.
+ * Determinista: solo hash2 de (x, y, id del mapa).
+ */
+export function lorePropsForMap(m: LoreMapShape): LorePropDef[] {
+  const out: LorePropDef[] = [];
+  // cripta: nichos de stone.ts (otro agente) · arena: desafío limpio ·
+  // interiores ('interior_*' o recinto < 16 tiles): sin lore de exterior
+  if (m.id === 'cripta' || m.id === 'arena' || m.id.startsWith('interior')) return out;
+  if (m.w < 16 || m.h < 16) return out;
+
+  // semilla del mapa (hash del id) para desfasar los hashes entre mapas
+  let seed = 0;
+  for (let i = 0; i < m.id.length; i++) seed = (seed * 31 + m.id.charCodeAt(i)) | 0;
+
+  // filas rellenadas (mapRows de maps.ts hace lo mismo: espejo local)
+  const rows: string[] = [];
+  for (let y = 0; y < m.h; y++) {
+    const r = m.rows[y] ?? '';
+    rows.push(r.length >= m.w ? r.slice(0, m.w) : r + '.'.repeat(m.w - r.length));
+  }
+  const hasPast = m.epochDiffs.length > 0;
+  const diff = new Map<number, string>();
+  if (hasPast) for (const d of m.epochDiffs) diff.set(d.y * m.w + d.x, d.char);
+
+  // tiles ocupados: salidas con MARGEN 1 (nunca junto a puertas) +
+  // props/NPCs existentes en 3×3 (ni solaparse ni pisarse auras) +
+  // cofres en 5×5 (el motor MUEVE los cofres nacidos en tile malo con
+  // búsqueda por anillos — validateChests —, así que reservamos holgura)
+  const busy = new Set<number>();
+  const markBox = (cx: number, cy: number, r: number): void => {
+    for (let y = cy - r; y <= cy + r; y++) {
+      for (let x = cx - r; x <= cx + r; x++) {
+        if (x >= 0 && y >= 0 && x < m.w && y < m.h) busy.add(y * m.w + x);
+      }
+    }
+  };
+  for (const e of m.exits) {
+    for (let y = e.y - 1; y < e.y + e.h + 1; y++) {
+      for (let x = e.x - 1; x < e.x + e.w + 1; x++) markBox(x, y, 0);
+    }
+  }
+  for (const p of m.props) markBox(p.x, p.y, 1);
+  for (const n of m.npcs) markBox(n.x, n.y, 1);
+  for (const c of m.chests) markBox(c.x, c.y, 2);
+
+  // 1.er pase: nº de tiles elegibles → presupuesto por mapa (~3 % de
+  // los elegibles, clamp 6..24) para que la densidad absoluta escale
+  // con el tamaño del mapa sin inundar los pequeños
+  let eligible = 0;
+  for (let y = 2; y < m.h - 2; y++) {
+    for (let x = 2; x < m.w - 2; x++) {
+      if (loreOkTile(rows[y][x]) && !busy.has(y * m.w + x)) eligible++;
+    }
+  }
+  const cap = Math.max(6, Math.min(24, Math.round(eligible * 0.03)));
+
+  // 2.º pase: colocación completa (sin cortar en el cap: si se cortara
+  // aquí, la mitad inferior de los mapas grandes quedaría vacía) y
+  // ADELGAZADO final uniforme (se quitan por índice par) hasta el
+  // presupuesto — determinista y reparte por TODO el mapa.
+  const placedKeys: number[] = [];
+  for (let y = 2; y < m.h - 2; y++) {
+    for (let x = 2; x < m.w - 2; x++) {
+      const key = y * m.w + x;
+      const chP = rows[y][x];
+      const dq = hasPast ? diff.get(key) : undefined;
+      const chQ = dq !== undefined ? dq : chP;
+      const okP = loreOkTile(chP);
+      const okQ = loreOkTile(chQ);
+      if ((!okP && !okQ) || busy.has(key)) continue;
+
+      // existe donde el tile es transitable; si solo lo es en una época,
+      // el flag needPresent/needPast lo apaga en la otra (contrato PropDef)
+      let needPresent = false;
+      let needPast = false;
+      if (!okQ) needPresent = true;
+      else if (!okP) needPast = true;
+
+      // scattering: nada de props de lore vecinos (dist.² ≤ 2 = ortogonal
+      // o diagonal) para que cada pieza respire y se lea como hallazgo
+      let crowded = false;
+      for (const k2 of placedKeys) {
+        const dx2 = (k2 % m.w) - x;
+        const dy2 = Math.floor(k2 / m.w) - y;
+        if (dx2 * dx2 + dy2 * dy2 <= 2) { crowded = true; break; }
+      }
+      if (crowded) continue;
+
+      // ¿junto a camino/plaza? (vecinos 4 del presente; los caminos no
+      // cambian entre épocas en los mapas actuales)
+      const nb =
+        rows[y][x - 1] === '=' || rows[y][x + 1] === '=' ||
+        rows[y - 1][x] === '=' || rows[y + 1][x] === '=' ||
+        rows[y][x - 1] === ':' || rows[y][x + 1] === ':' ||
+        rows[y - 1][x] === ':' || rows[y + 1][x] === ':';
+
+      // densidad + elección de kind por hash espacial determinista
+      const h1 = h2(x * 3 + seed, y * 5 + seed * 2 + 1);
+      if (h1 >= (nb ? LORE_DENS_ROAD : LORE_DENS_OPEN)) continue;
+      const weights = LORE_WEIGHTS[m.id] ?? LORE_WEIGHTS_FALLBACK;
+      const h3 = h2(x * 7 + seed * 3 + 5, y * 11 + seed + 3);
+      let total = 0;
+      const acc: number[] = [];
+      for (const [k, w0] of weights) {
+        const wi = nb
+          ? (k === 'waypost' ? w0 * 2 : k === 'woodsign' ? w0 * 1.5 : w0)
+          : (k === 'remains' ? w0 * 1.5 : w0);
+        acc.push(wi);
+        total += wi;
+      }
+      let pick = weights[0][0];
+      let acc2 = h3 * total;
+      for (let i = 0; i < weights.length; i++) {
+        acc2 -= acc[i];
+        if (acc2 < 0) { pick = weights[i][0]; break; }
+      }
+
+      const def: LorePropDef = { id: `lore_${m.id}_${out.length}`, kind: pick, x, y };
+      if (needPresent) def.needPresent = true;
+      if (needPast) def.needPast = true;
+      out.push(def);
+      placedKeys.push(key);
+    }
+  }
+  // adelgazado uniforme si nos pasamos del presupuesto: muestreo por
+  // índice con paso constante (floor(i·paso), estrictamente creciente
+  // para paso ≥ 1) — reparte los props por TODO el mapa en vez de
+  // truncar la mitad inferior; determinista y más separado todavía.
+  if (out.length > cap) {
+    const step = out.length / cap;
+    const kept: LorePropDef[] = [];
+    for (let i = 0; i < cap; i++) kept.push(out[Math.floor(i * step)]);
+    for (let i = 0; i < kept.length; i++) kept[i].id = `lore_${m.id}_${i}`; // ids únicos
+    out.length = 0;
+    for (const d of kept) out.push(d);
+  }
+  return out;
 }

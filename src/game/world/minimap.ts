@@ -108,7 +108,10 @@ function catOf(ch: string): Cat {
  * caché y para elegir la variante de paleta (hierba/árboles del bosque).
  */
 function kindFromSize(w: number, h: number): string {
-  if (w === 52 && h === 38) return 'lunaris';
+  if (w === 64 && h === 44) return 'lunaris';   // R10-1: lunaris ampliado
+  if (w === 64 && h === 50) return 'bosque';    // R10-1: bosque ampliado
+  if (w === 48 && h === 54) return 'cripta';    // R10-1: cripta Zelda por secciones
+  if (w === 52 && h === 38) return 'lunaris';   // legacy (saves con mapa viejo en memoria)
   if (w === 56 && h === 44) return 'bosque';
   if (w === 40 && h === 34) return 'cripta';
   return `${w}x${h}`;
