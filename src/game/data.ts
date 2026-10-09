@@ -1829,3 +1829,134 @@ export const SENNUEL = {
   desc: 'Atrae a los enemigos no-jefe cercanos durante 5 s (tecla 8). Los jefes lo ignoran.',
 } as const;
 
+// ============================================================
+// ═══════ R7-V5 (agente dialogos-terror) — BLOQUE AÑADIDO ═══════
+// CAPA DE EXPANSIÓN de terror para los NPC de los mapas de expansión.
+// Todo lo anterior queda INTACTO. Inventario previo (maps_expansion.ts,
+// solo lectura): costa → mara, vult · aldea → mera · cumbres → ivo —
+// los cuatro ya tenían diálogo, pero los huecos eran: (a) tonos sin
+// variante (mara sin pragmático/amenazante, vult sin empático/amenazante,
+// mera sin empático/sarcástico tras el Eco, ivo sin pragmático/amenazante);
+// (b) la re-visita neutra no carryaba presagio del jefe del mapa;
+// (c) los jefes de expansión no tenían voz (los intros viven en update.ts,
+// fuera de este archivo).
+// Este bloque SOLO AÑADE:
+//   1) 12 nodos de diálogo nuevos (APPEND puro vía Object.assign; las
+//      claves previas quedan byte a byte). Presagios del mundo ya
+//      establecidos: la marea que devuelve cosas que no se echaron
+//      (costa), las ventanas que se abren solas al alba (aldea), la
+//      ventisca que repite tu nombre (cumbres).
+//   2) Las AMENAZAS de los jefes de expansión, contadas por el NPC que
+//      custodia su mapa y conectadas con su historia visual:
+//      sirena (cadena rota en la muñeca, corona torcida) → Mara ·
+//      gólem (cadena helada cruzando el pecho) → Ivo ·
+//      coro (tres máscaras cosidas con la nota del revés) → Mera ·
+//      vult (autoprofecía del cartógrafo + cierre tras su caída).
+//   3) Tercer ENVOLTORIO de getDialogue (patrón 13-a → 16-a): captura la
+//      función vigente y SOLO intercepta cuando la capa anterior resuelve
+//      el idle NEUTRO del NPC (mara_idle/vult_idle/mera_idle/ivo_idle).
+//      Primeras visitas (*_intro), variantes de tono existentes (R6),
+//      estados de faroles, rutas del Acto III/IV y relatos tras jefe
+//      caído (mara_react/mara_faro, ivo_after) delegan intactos —
+//      regresión 0; GET_DIALOGUE_BASE sigue igual para el smoke.
+// ============================================================
+
+const D_R7V5: Record<string, DialogueNode> = {
+  // ----- Mara · Costa de Bruma (la marea que devuelve cosas que no se echaron) -----
+  mara_idle_prag: {
+    name: 'Mara, la farera', portrait: 'maelis',
+    text: 'El mar es un libro de cuentas, Portador, y esta costa lleva trescientos años descuadrada: la marea baja deja paso al naufragio hasta que sube la luna; la subida te lo quita. Cuenta los faroles del pueblo al salir: si mañana hay uno más, no fue Mara. Lleva sal. Lo que no se nombra se respeta... y lo que se nombra dos veces, responde.',
+  },
+  mara_idle_amenaz: {
+    name: 'Mara, la farera', portrait: 'maelis',
+    text: '...(cubre la lámpara con la mano) Más bajo, Portador. El mar apunta con el dedo a los que llegan rugiendo: primero les devuelve el sombrero, después el bote, después a ellos — del revés y sonriendo. Yo enciendo la luz; tú aprieta la voz. Hasta la bruma de aquí pide permiso. Y encima cobra.',
+  },
+  mara_presagio_sirena: {
+    name: 'Mara, la farera', portrait: 'maelis',
+    text: 'Anoche la marea dejó en la arena un remo que nadie echó, seco por el extremo que no toca el agua. Es de ella, Portador: la que canta bajo la quilla lleva la muñeca atada a una cadena rota —la arrastró trescientos años, y la noche que se rompió empezó a cantar lo que oía por dentro—. Corona de coral torcida, perlas de los ahogados. Si la oyes decir tu nombre con voz de quien te espera, no contestes con la letra: rompele el canto antes de que te rompa el oído.',
+  },
+  // ----- Vult · Costa de Bruma (el cartógrafo que aún no firma) -----
+  vult_idle_emp: {
+    name: 'Vult, cartógrafo de la Liga', portrait: 'corvin',
+    text: 'Sabe usted de inventarios, Portador, pues apunte este descuadro: la costa devuelve más de lo que recibe. Boyas de barcos que no existen. Un zapato derecho por amanecer. Y junto al naufragio, un muñeco con la cara vuelta hacia el faro, todas las noches, como si esperara que alguien lo llamara a casa. La Liga paga por datos y no por escalofríos: esto va por su cuenta. Alguien allá abajo está devolviendo lo que guardó. Todo. Hasta el cariño.',
+  },
+  vult_idle_amenaz: {
+    name: 'Vult, cartógrafo de la Liga', portrait: 'corvin',
+    text: '...(cierra la libreta despacio) Le diré una cosa a solas, Portador: algunas noches la bruma me ofrece un contrato mejor que el de la Liga. Paga en mapas de pasos ajenos —el suyo, por ejemplo, con todas sus vueltas y todas sus dudas— y yo solo tendría que dejar de dibujar para empezar a cobrar. Todavía no he firmado. Si un día me encuentra usted lejos de esta costa, con otro título y sin libreta... no salude. Y no corra: dice el encargo que le encanta que corran.',
+  },
+  vult_despues: {
+    name: 'Vult, cartógrafo de la Liga', portrait: 'corvin',
+    text: '...(la libreta cerrada sobre la mesa; por primera vez, sin tinta en los dedos) Terminó el contrato, Portador. Lo sé porque anoche soñé los pasos que robé y esta mañana los he dibujado TODOS, aunque la Liga solo paga los que van a sitios. El que me compró con un mapa de suyos ya no cobra: dígaselo a la bruma de mi parte, con la letra que quiera. Yo me quedo con la costa. A nadie le enseñaré el camino del naufragio... ese ya se lo sabe la bruma. Y la bruma no compra.',
+  },
+  // ----- Espectro de Merrow · Aldea (las ventanas que se abren solas) -----
+  mera_idle_emp: {
+    name: 'Espectro de Merrow', portrait: 'nimue',
+    text: 'Merrow duerme mejor, Portador. Pero no duerme solo: al alba las ventanas se abren solas, todas a la vez, como cuando una madre abre la casa para que entre el nombre de los hijos... y las sombras de dentro saludan antes de que se cierren. Ya no me asustan: son vecinos. Solo te pido una cosa: si una ventana se abre a tu paso, déjala. Cerrarla sería cerrarle la mañana a alguien que lleva trescientos años sin tenerla.',
+  },
+  mera_idle_sarc: {
+    name: 'Espectro de Merrow', portrait: 'nimue',
+    text: '(sonríe sin dientes) Ríete, ríete. En Merrow también reíamos, ¿sabes? Ahora las risas salen por las ventanas de noche y vuelven por la chimenea... y no siempre vuelven en el mismo orden. Este es pueblo de costumbres, Portador: las nuestras y las de la Niebla, que también es vecina y aprende a todo. Ríete bajito. La noche copia lo que oye, y aquí las copias salen torcidas.',
+  },
+  mera_presagio_coro: {
+    name: 'Espectro de Merrow', portrait: 'nimue',
+    text: '...(se queda muy quieta, como quien escucha un piso de abajo) ¿Oyes coser, Portador? Aguja y hilo. Aguja y hilo. Debajo de Velmora, en la cripta que respira: la Niebla está uniendo tres máscaras a pulso, cosidas con la nota del revés que la primera Portadora dejó caer. Cuando acaben la costura van a cantar las tres a la vez. Yo cosí pañales toda mi vida y te digo lo que están haciendo ahí: no es un rostro. Es un coro al que no le dejan terminar la palabra.',
+  },
+  // ----- Ivo · Cumbres Heladas (la ventisca que repite tu nombre) -----
+  ivo_idle_prag: {
+    name: 'Ivo, cazador de cumbres', portrait: 'brokk',
+    text: 'Tres consejos de altura, que no cobro: el fuego antes que la prisa, la ladera antes que la cresta, y mi refugio abierto mientras arda la hoguera. Lo demás ya lo sabe la ventisca: esta mañana repetía tu nombre por el paso, Portador, y no lo decía como yo. Lo probaba. Como quien prueba una llave que no es suya. Cuando la oigas decirlo bien, cambia de ladera — la cresta escucha, y lo que escucha, guarda.',
+  },
+  ivo_idle_amenaz: {
+    name: 'Ivo, cazador de cumbres', portrait: 'brokk',
+    text: '...(tensando la cuerda de la ballesta) Di lo que quieras a mí, Portador: yo rugí mucho y aquí sigo, con el pan duro y la casa a medias. Pero a lo que espera ahí arriba no le hables. El Gólem del altar lleva una cadena helada cruzada al pecho: le llegó rodando desde el fondo del mundo, un día tiró de él hacia la cumbre... y obedeció. La montaña no perdona dos veces. Tú serás la primera. O no serás.',
+  },
+  ivo_presagio_golem: {
+    name: 'Ivo, cazador de cumbres', portrait: 'brokk',
+    text: 'Escucha antes de subir, que subiendo no se escucha: el Gólem no duerme, cuenta. Trescientos años contando los pasos de todo el que subió y no bajó, y le faltan los tuyos. Cuando lo veas, mira la cadena que le cruza el vientre: cada eslabón es un invierno que la montaña no quiso decir en voz alta, y el último, el que cuelga sin nada, es el que te toca a ti. Pega al quiebre y parte el hielo por la mitad. Y si la ventisca se queda quieta en el aire, no es que pare: es que te está mirando de frente.',
+  },
+};
+// Los nodos previos quedan intactos: este assign SOLO añade claves nuevos.
+Object.assign(DIALOGUES, D_R7V5);
+
+// ---------------- Capa de ruteo R7-V5 (envoltorio #3) ----------------
+/**
+ * Intercepción MÍNIMA: la capa previa (Acto IV → Acto III → Acto I/II) decide
+ * SIEMPRE primero. Esta capa solo sustituye el resultado en los huecos neutrales
+ * de los 4 NPC de expansión; cualquier otra ruta (intros, tonos R6, faroles,
+ * actos, tras-jefe-caído) sale tal cual de la capa anterior.
+ */
+const GET_DIALOGUE_R7V5 = getDialogue;
+
+function getDialogueR7V5(nid: string, ctx: DialogueCtx): string {
+  // Fast path: solo mara/vult/mera/ivo llevan capa; el resto delega tal cual.
+  if (nid !== 'mara' && nid !== 'vult' && nid !== 'mera' && nid !== 'ivo') return GET_DIALOGUE_R7V5(nid, ctx);
+  const base = GET_DIALOGUE_R7V5(nid, ctx);
+  if (base !== 'mara_idle' && base !== 'vult_idle' && base !== 'mera_idle' && base !== 'ivo_idle') return base;
+  const q = ctx.questIdx, td = toneOf(ctx.flags);
+  if (nid === 'mara') {
+    if (q === 6 && !ctx.flags.sirenaDefeated) return 'mara_presagio_sirena'; // caza de la Sirena en curso (q7)
+    if (td === 'pragmatico') return 'mara_idle_prag';
+    if (td === 'amenazante') return 'mara_idle_amenaz';
+  } else if (nid === 'vult') {
+    if (ctx.flags.vultDefeated) return 'vult_despues'; // el contrato de la Niebla terminó
+    if (td === 'empatico') return 'vult_idle_emp';
+    if (td === 'amenazante') return 'vult_idle_amenaz';
+  } else if (nid === 'mera') {
+    if (q >= 10 && !ctx.flags.coroDefeated && td === null) return 'mera_presagio_coro'; // tras el Canto al Revés, antes de que el Coro termine su costura
+    if (td === 'empatico') return 'mera_idle_emp';
+    if (td === 'sarcastico') return 'mera_idle_sarc';
+  } else { // ivo
+    if (q === 8 && !ctx.flags.golemDefeated) return 'ivo_presagio_golem'; // caza del Gólem en curso (q9)
+    if (td === 'pragmatico') return 'ivo_idle_prag';
+    if (td === 'amenazante') return 'ivo_idle_amenaz';
+  }
+  return base;
+}
+// @ts-expect-error R7-V5: reasignación deliberada del binding de función (capa
+// R7 sobre la capa del Acto IV). El binding exportado es vivo: engine.talkTo
+// resuelve SIEMPRE por aquí, y toda ruta no cubierta delega en la capa vigente
+// (GET_DIALOGUE_BASE queda intacta para el smoke de regresión).
+getDialogue = getDialogueR7V5;
+
+// ═══════ FIN DEL BLOQUE R7-V5 ═══════
+
