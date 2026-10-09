@@ -33,13 +33,42 @@
 //     por luz (antes 2) y compartido por ambas pasadas.
 //   · Cero arrays nuevos por frame (reutilizables) y rejilla de antorchas
 //     cacheada por mapa (solo se recalcula al cambiar de mapa).
+//
+// R7-V3 (PERFILES DE LUZ DE LA EXPANSIÓN — despacho por g.mapId dentro de
+// este módulo; render.ts intacto): mapId SÍ llega a drawLightingV2 y a
+// collectLights vía g, así que NO queda ningún punto de enganche pendiente.
+//   · COSTA: luz cálida dorada de sol bajo (amanecer/atardecer) con
+//     resplandor lateral (este al alba, oeste al ocaso) — gradiente horneado
+//     UNA vez por ETAPA del ciclo (dayT cuantizado a 32 etapas ⇒ re-bake
+//     ≈1/7.5 s y SOLO dentro de la ventana de sol bajo), invalidado si
+//     cambia VIEW (patrón viñeta de horror/R5-O3) y pintado a media
+//     resolución (1 drawImage escalado ×2 con suavizado, como el buffer).
+//   · ALDEA: amanecer PROGRESIVO (frente cálido que entra desde el este y
+//     avanza al oeste según dayT; horneado por etapa) + de NOCHE charcos de
+//     luz cálida en ventanas y faroles: MISMO plan de ventanas que
+//     village.ts (windowPlanAbs + hash splitmix32 "vh" replicados al
+//     carácter) cacheado por (mapId, rows, epoch) — mismo patrón que la
+//     rejilla de antorchas — y faroles de props kind 'lamp' encendidos
+//     (g.flags). Puerta binaria IDÉNTICA a setVillageNight (dayT>0.7 ||
+//     dayT<0.08): coste cero de día y coherencia píxel con la capa
+//     drawVillageWindowsNight de village v3.
+//   · CUMBRES: luz fría azulada de contraste alto — grade vertical horneado
+//     por etapa (luz de altura arriba / sombra profunda abajo) + noche más
+//     profunda y azulada (color y alpha propios SOLO en este mapa).
+//   · Reglas: cero allocations por frame (bakes reutilizados, pool de
+//     LightSrc de expansión, Float64Array de anclas), determinismo total
+//     (hash/senos), viñeta/terror INTACTOS (horror.ts) y firmas export
+//     intactas. Los destellos de sol en el agua siguen siendo de water.ts
+//     (glints de render.ts + sparkle de PAL): aquí no se duplican.
 // ============================================================
 
 import { VIEW_W, VIEW_H, ZOOM } from '../consts';
 import { TILE } from '../sprites';
 import type { Game } from '../engine';
 import type { Entity, StatusFx } from '../types';
+import { tileAt } from '../maps';
 import { hash2, LIGHT_PAL } from './palette';
+import { perfQuality } from '../perf';
 
 // ---------------- API pública ----------------
 
@@ -117,6 +146,14 @@ const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+// R7-V3: factor de calidad [1, 0.6, 0.35] (mismo criterio que horror.ts
+// R6-V5). En este módulo solo participa en la CLAVE del horneado (los
+// perfiles son 1 drawImage por frame; la escala real de FX vive en weather).
+const Q_SCALE = [1, 0.6, 0.35] as const;
+function qNow(): number {
+  return Q_SCALE[perfQuality()];
 }
 
 /** ease-in-out C2 (smootherstep): derivada también continua entre
@@ -308,6 +345,7 @@ function pushBurnLight(e: Entity, seed: number, out: LightSrc[]): void {
 export function collectLights(g: Game): LightSrc[] {
   const lights: LightSrc[] = [];
   const t = g.globalT;
+  expN = 0; // R7-V3: el pool de luces de expansión vuelve a cero (cero alloc)
 
   // 1) Props: santuarios (cian pulsante), forja (naranja), altar de la cripta (dorado)
   for (const pr of g.map.props) {
@@ -324,6 +362,16 @@ export function collectLights(g: Game): LightSrc[] {
       // el fragmento dorado brilla fuerte hasta recoger el Eco de la Voz
       const taken = !!g.flags.ecoVoz;
       lights.push({ x: cx, y: cy - 12, r: taken ? 44 : 80, color: LIGHT_PAL.altarGold, flicker: 0.7 });
+    } else if (pr.kind === 'lamp' && !!g.flags[pr.id]) {
+      // R7-V3 (aldea): Farol del Recuerdo ENCIENDIDO (flags lamp1..3 que
+      // escribe engine.lightLamp). Luz cálida de farol: el agujero en la
+      // oscuridad solo se ve de noche; el tinte aditivo, un sutil brillo.
+      const L = expLight();
+      L.x = cx; L.y = cy - 6;
+      L.r = 44;
+      L.color = LAMP_WARM;
+      L.flicker = pr.x * 2.3 + pr.y * 0.7;
+      lights.push(L);
     }
   }
 
@@ -336,6 +384,10 @@ export function collectLights(g: Game): LightSrc[] {
   //    del Portador crece con las antorchas cercanas (reflejo de su fuego).
   let torchPos: { x: number; y: number }[] = [];
   if (g.map.dark) torchPos = collectCryptTorches(g, lights);
+
+  // 3b) R7-V3 (aldea): charcos de luz cálida en ventanas encendidas de
+  //     noche (mismo plan que village.ts) — coste cero de día.
+  if (g.mapId === 'aldea') collectAldeaWindowLights(g, lights);
 
   // 4) Jugador
   const p = g.player;
@@ -584,6 +636,251 @@ function drawAdditive(ctx: CanvasRenderingContext2D, camX: number, camY: number)
   ctx.restore();
 }
 
+// ---------------- R7-V3: perfiles de luz de la expansión ----------------
+
+// Colores locales de la expansión (palette.ts es SOLO lectura: aditivo aquí).
+// WINDOW_WARM = NIGHT_WARM de village.ts → los charcos caen sobre el mismo
+// cristal que pinta drawVillageWindowsNight, con el mismo tono.
+const WINDOW_WARM = '#ffb054';
+const LAMP_WARM = '#ffca6a';       // farol del recuerdo encendido
+
+// Noche cumbres: más profunda y azulada que la global (contraste alto).
+const CUMBRES_NIGHT_COL: RGB = [7, 11, 28];
+const CUMBRES_NIGHT_MUL = 1.12;
+
+/** Cuantización del ciclo en etapas para el horneado (re-bake ≤ 1/STAGE_S).
+ *  dayT avanza dt/240 (update.ts) ⇒ ciclo de 240 s ⇒ etapa ≈ 7.5 s. */
+const STAGE_STEPS = 32;
+
+/** Campana suave 0..1 centrada en c con semianchura s (0 fuera). */
+function bell(x: number, c: number, s: number): number {
+  const d = (x - c) / s;
+  const v = 1 - d * d;
+  return v <= 0 ? 0 : v * v * (3 - 2 * v);
+}
+
+// — Bakes de etapa (UN canvas por perfil; se repintan SOLO al cambiar de
+//   etapa del ciclo, de VIEW o de escalón de calidad — patrón viñeta) —
+interface StageBake {
+  cv: HTMLCanvasElement | null;
+  ok: boolean;                      // false = env invisible en esta etapa
+  stage: number;
+  vw: number; vh: number;
+  q: number;                        // perfQuality con el que se horneó
+}
+const costaBake: StageBake = { cv: null, ok: false, stage: -1, vw: 0, vh: 0, q: -1 };
+const aldeaBake: StageBake = { cv: null, ok: false, stage: -1, vw: 0, vh: 0, q: -1 };
+const cumbresBake: StageBake = { cv: null, ok: false, stage: -1, vw: 0, vh: 0, q: -1 };
+
+/** Prepara el canvas del bake a MEDIA RESOLUCIÓN (como el buffer R5-O3). */
+function stageBakeCv(b: StageBake, stage: number): CanvasRenderingContext2D | null {
+  if (!b.cv) {
+    try {
+      b.cv = document.createElement('canvas');
+    } catch { return null; }        // headless/SSR: sin bake, sin overlay
+    b.vw = 0;
+  }
+  if (b.stage !== stage || b.vw !== VIEW_W || b.vh !== VIEW_H || b.q !== qNow()) {
+    b.stage = stage;
+    b.vw = VIEW_W; b.vh = VIEW_H;
+    b.q = qNow();
+    b.cv.width = Math.max(1, Math.ceil(VIEW_W / 2));
+    b.cv.height = Math.max(1, Math.ceil(VIEW_H / 2));
+  }
+  const c = b.cv.getContext('2d');
+  if (!c) return null;
+  c.clearRect(0, 0, b.cv.width, b.cv.height);
+  return c;
+}
+
+/** 0..1: intensidad del dorado costero en horas bajas del sol. */
+function costaGoldenEnv(dayT: number): number {
+  return Math.min(1, bell(dayT, 0.16, 0.10) + bell(dayT, 0.54, 0.12));
+}
+
+/** Hornea el dorado de la costa para la etapa dada (amanecer 0.16 / ocaso 0.54). */
+function ensureCostaBake(dayT: number): void {
+  const stage = Math.floor(dayT * STAGE_STEPS);
+  const env = costaGoldenEnv(dayT);
+  costaBake.ok = env > 0.004;
+  if (!costaBake.ok) return;
+  const c = stageBakeCv(costaBake, stage);
+  if (!c) { costaBake.ok = false; return; }
+  const W = costaBake.cv!.width, H = costaBake.cv!.height;
+  // banda cálida que rastrella el suelo: nace en el horizonte (sur) y baja
+  const gr = c.createLinearGradient(0, 0, 0, H);
+  gr.addColorStop(0, 'rgba(255,176,88,0)');
+  gr.addColorStop(0.52, `rgba(255,176,88,${(0.11 * env).toFixed(3)})`);
+  gr.addColorStop(0.8, `rgba(255,148,74,${(0.14 * env).toFixed(3)})`);
+  gr.addColorStop(1, `rgba(255,132,64,${(0.1 * env).toFixed(3)})`);
+  c.fillStyle = gr;
+  c.fillRect(0, 0, W, H);
+  // resplandor del sol bajo: ESTE al alba, OESTE al ocaso (reflejo en el aire)
+  const sunX = dayT < 0.35 ? W : 0;
+  const rg = c.createRadialGradient(sunX, H * 0.62, 0, sunX, H * 0.62, Math.max(W, H) * 0.9);
+  rg.addColorStop(0, `rgba(255,198,112,${(0.1 * env).toFixed(3)})`);
+  rg.addColorStop(1, 'rgba(255,198,112,0)');
+  c.fillStyle = rg;
+  c.fillRect(0, 0, W, H);
+}
+
+/** 0..1: intensidad del amanecer de la aldea (ventana dayT 0.09..0.27). */
+function aldeaDawnEnv(dayT: number): number {
+  return bell(dayT, 0.18, 0.09);
+}
+
+/** Hornea el amanecer PROGRESIVO de la aldea: el frente cálido entra desde
+ *  el este y avanza al oeste dentro de la ventana (horneado por etapa). */
+function ensureAldeaBake(dayT: number): void {
+  const stage = Math.floor(dayT * STAGE_STEPS);
+  const env = aldeaDawnEnv(dayT);
+  aldeaBake.ok = env > 0.004;
+  if (!aldeaBake.ok) return;
+  const c = stageBakeCv(aldeaBake, stage);
+  if (!c) { aldeaBake.ok = false; return; }
+  const W = aldeaBake.cv!.width, H = aldeaBake.cv!.height;
+  // progreso dentro del amanecer: el frente viaja de este (x=W) a oeste
+  const prog = Math.min(1, Math.max(0, (dayT - 0.09) / 0.18));
+  const front = W * (1.05 - 0.9 * prog);
+  const gr = c.createLinearGradient(front - W * 0.7, 0, front + W * 0.25, 0);
+  gr.addColorStop(0, `rgba(255,214,150,${(0.12 * env).toFixed(3)})`);
+  gr.addColorStop(0.55, `rgba(255,206,140,${(0.05 * env).toFixed(3)})`);
+  gr.addColorStop(1, 'rgba(255,206,140,0)');
+  c.fillStyle = gr;
+  c.fillRect(0, 0, W, H);
+}
+
+/** 0..1: luz de altura de cumbres (día pleno 1, madrugada/noche 0). */
+function cumbresDayF(dayT: number): number {
+  const s = Math.sin(dayT * 6.2831853);
+  return s <= 0 ? 0 : Math.min(1, s * 1.25);
+}
+
+/** Hornea el grade frío de cumbres: azul claro arriba (luz de altura),
+ *  sombra azulada profunda abajo — el "contraste alto" del perfil. */
+function ensureCumbresBake(dayT: number): void {
+  const stage = Math.floor(dayT * STAGE_STEPS);
+  const dayF = cumbresDayF(dayT);
+  const env = 0.3 + 0.7 * dayF;
+  cumbresBake.ok = true;            // el grade frío vive también de noche (tenue)
+  const c = stageBakeCv(cumbresBake, stage);
+  if (!c) { cumbresBake.ok = false; return; }
+  const W = cumbresBake.cv!.width, H = cumbresBake.cv!.height;
+  const gr = c.createLinearGradient(0, 0, 0, H);
+  gr.addColorStop(0, `rgba(196,226,248,${(0.1 * env).toFixed(3)})`);
+  gr.addColorStop(0.45, `rgba(196,226,248,${(0.02 * env).toFixed(3)})`);
+  gr.addColorStop(0.75, `rgba(24,38,64,${(0.1 * env).toFixed(3)})`);
+  gr.addColorStop(1, `rgba(18,30,54,${(0.14 * env).toFixed(3)})`);
+  c.fillStyle = gr;
+  c.fillRect(0, 0, W, H);
+}
+
+/** Vuelca el bake de etapa a pantalla completa (1 drawImage con suavizado). */
+function drawBakedGrade(ctx: CanvasRenderingContext2D, b: StageBake): void {
+  if (!b.ok || !b.cv) return;
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;  // gradiente a media resolución → bilinear
+  ctx.drawImage(b.cv, 0, 0, VIEW_W, VIEW_H);
+  ctx.restore();
+}
+
+// — Ventanas encendidas de la aldea (charcos de luz de noche) —
+// Réplica EXACTA del plan de village.ts: hash splitmix32 "vh" + windowPlanAbs
+// (rejilla del muro + regla junto a la puerta). Así las luces caen píxel a
+// píxel sobre el cristal que pintó paintWindow y que ilumina de noche
+// drawVillageWindowsNight. Caché por (mapId, rows, epoch) — las epochDiffs
+// pueden cambiar el muro — con el mismo patrón que la rejilla de antorchas.
+const WIN_ANCH_MAX = 256;
+const winAx = new Float64Array(WIN_ANCH_MAX);
+const winAy = new Float64Array(WIN_ANCH_MAX);
+const winSeed = new Float64Array(WIN_ANCH_MAX);
+let winAn = 0;
+let winCacheId: string | null = null;
+let winCacheRows: string[] | null = null;
+let winCacheEpoch = '';
+
+/** Hash local de village.ts (splitmix32): réplica al carácter — el hash2
+ *  compartido SESGA en la rejilla de la aldea (ver village.ts). */
+function vhVillage(x: number, y: number): number {
+  let h = (Math.imul(x, 0x27d4eb2d) ^ Math.imul(y, 0x165667b1)) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 1 | h) >>> 0;
+  h = (h ^ (h + Math.imul(h ^ (h >>> 7), 61 | h))) >>> 0;
+  return ((h ^ (h >>> 14)) >>> 0) / 4294967296;
+}
+
+function rebuildWindowAnchors(g: Game): void {
+  winAn = 0;
+  const rows = g.rows.length >= g.map.h ? g.rows : g.map.rows;
+  const epoch = g.epoch;
+  const at = (tx: number, ty: number): string => tileAt(g.map, rows, tx, ty, epoch);
+  for (let ty = 0; ty < g.map.h; ty++) {
+    for (let tx = 0; tx < g.map.w; tx++) {
+      if (at(tx, ty) !== 'H') continue;
+      // === réplica literal de windowPlanAbs (village.ts) ===
+      const q = (a: number): boolean => vhVillage(a * 9 + 1, ty * 13 + 7) < 0.34;
+      let lx = tx, rx = tx;
+      while (at(lx - 1, ty) === 'H') lx--;
+      while (at(rx + 1, ty) === 'H') rx++;
+      const winAt = (a: number): boolean => at(a, ty) === 'H' && q(a) && !(at(a - 1, ty) === 'H' && q(a - 1));
+      let count = 0;
+      for (let a = lx; a <= rx; a++) if (winAt(a)) count++;
+      const has = count > 0 ? winAt(tx) : at(tx - 1, ty) === 'd';
+      if (!has) continue;
+      if (winAn >= WIN_ANCH_MAX) return;   // techo de seguridad del pool
+      winAx[winAn] = tx * TILE + 8;        // centro del cristal (wx+4+... = +8)
+      winAy[winAn] = ty * TILE + 8;
+      winSeed[winAn] = vhVillage(tx * 7 + 3, ty * 5 + 1); // fase del parpadeo
+      winAn++;
+    }
+  }
+}
+
+// Pool de LightSrc de la expansión (ventanas + faroles): cero alloc por frame.
+// NOTA (contrato): collectLights devuelve un array fresco por llamada, pero
+// los LightSrc de expansión son objetos REUTILIZADOS entre llamadas — los
+// consumidores (cullLights/drawAdditive/LIGHT_DEBUG) solo los leen dentro
+// del mismo frame, como el resto de pools del módulo.
+const expLights: LightSrc[] = [];
+let expN = 0;
+
+function expLight(): LightSrc {
+  let L = expLights[expN];
+  if (!L) {
+    L = { x: 0, y: 0, r: 0, color: '', flicker: 0 };
+    expLights[expN] = L;
+  }
+  expN++;
+  return L;
+}
+
+/** Emite las luces de ventanas encendidas de la aldea (solo de noche).
+ *  Puerta binaria IDÉNTICA a setVillageNight en render.ts (dayT>0.7||<0.08)
+ *  → coherencia exacta con la capa de cristales encendidos. */
+function collectAldeaWindowLights(g: Game, lights: LightSrc[]): void {
+  if (!(g.dayT > 0.7 || g.dayT < 0.08)) return;   // de día: coste cero
+  const rows = g.rows.length >= g.map.h ? g.rows : g.map.rows;
+  if (winCacheId !== g.mapId || winCacheRows !== rows || winCacheEpoch !== g.epoch) {
+    winCacheId = g.mapId;
+    winCacheRows = rows;
+    winCacheEpoch = g.epoch;
+    rebuildWindowAnchors(g);
+  }
+  const camX = Math.round(g.camX), camY = Math.round(g.camY);
+  const m = 44 * ZOOM;                 // margen = radio máx × flicker + vaivén
+  for (let i = 0; i < winAn; i++) {
+    const sx = winAx[i] * ZOOM - camX;
+    const sy = winAy[i] * ZOOM - camY;
+    if (sx < -m || sy < -m || sx > VIEW_W + m || sy > VIEW_H + m) continue;
+    const L = expLight();
+    L.x = winAx[i];
+    L.y = winAy[i] + 2;                // charco justo bajo el cristal
+    L.r = 26 + winSeed[i] * 10;        // 26..36 px de mundo
+    L.color = WINDOW_WARM;
+    L.flicker = winSeed[i] * 6.1;
+    lights.push(L);
+  }
+}
+
 // ---------------- Pipeline principal ----------------
 
 /** Iluminación dinámica v3. Dibuja SOBRE ctx (canvas principal, espacio de
@@ -608,6 +905,12 @@ export function drawLightingV2(ctx: CanvasRenderingContext2D, g: Game): void {
     dark = { a, col: CRYPT_COL, w: 0, wc: [255, 148, 74] };
   } else {
     dark = sampleDay(g.dayT);
+    // R7-V3 (cumbres): noche más PROFUNDA y azulada que la global — el
+    // contraste alto del perfil solo toca este mapa (resto de paradas intacto).
+    if (g.mapId === 'cumbres' && dark.a > 0.02) {
+      dark.a = Math.min(0.92, dark.a * CUMBRES_NIGHT_MUL);
+      dark.col = CUMBRES_NIGHT_COL;
+    }
   }
 
   // tinte de franja (amanecer rosa / tarde ámbar), 'source-over' simulando
@@ -616,6 +919,24 @@ export function drawLightingV2(ctx: CanvasRenderingContext2D, g: Game): void {
   if (dark.w > 0.004) {
     ctx.fillStyle = rgba(dark.wc, dark.w);
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  }
+
+  // ---- a2) R7-V3: perfiles de luz de la expansión (horneados por etapa) —
+  //      1 drawImage por mapa activo y SOLO dentro de su ventana del ciclo
+  //      (costa/aldea: env > 0.004; cumbres: grade frío siempre, env por fase).
+  //      Se dibuja ANTES de la oscuridad: los agujeros de luz recortan sobre
+  //      el escenario ya graduado (la luz del ciclo respira con él).
+  if (!darkMap) {
+    if (g.mapId === 'costa') {
+      ensureCostaBake(g.dayT);
+      drawBakedGrade(ctx, costaBake);
+    } else if (g.mapId === 'aldea') {
+      ensureAldeaBake(g.dayT);
+      drawBakedGrade(ctx, aldeaBake);
+    } else if (g.mapId === 'cumbres') {
+      ensureCumbresBake(g.dayT);
+      drawBakedGrade(ctx, cumbresBake);
+    }
   }
 
   // ---- b) culling por rect expandido, UNA vez por frame (R5-O3) ----

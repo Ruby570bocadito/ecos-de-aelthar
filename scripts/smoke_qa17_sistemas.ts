@@ -653,7 +653,10 @@ console.log('\n--- 5) Desafío (arena) ---');
   check('duelo: sin pociones (una sola vida)', p.potions === 0, J(p.potions));
   const bossHp0 = runD.bossEnemy!.maxHp;
   g.damageEnemy(runD.bossEnemy!, 999999, 'sagrado', 0);
-  check('killEnemy del duelo canta victoria de CAMPAÑA (se deshace solo)', !!g.flags.sirenaDefeated && p.gold > gold0b);
+  // R7-Q1 #2: el clon del jefe NO marca flag de campaña (limpieza en origen);
+  // el oro que paga es de ARENA y finish lo disuelve (lo verifica el check de
+  // restauración de abajo); el endBeat arranca en el golpe
+  check('killEnemy del duelo NO contamina campaña (limpieza en origen R7-Q1)', !g.flags.sirenaDefeated && p.gold >= gold0b);
   check('endBeat dramático antes del panel', runD.phase === 'jugando' && (runD.endBeat ?? 0) > 0);
   for (let i = 0; i < 130; i++) g.update(1 / 60); // 1.7 s de endBeat
   check('victoria: panel de resultado', g.state === 'title' && runD.phase === 'resultado' && runD.resultWin === true);
@@ -687,7 +690,8 @@ console.log('\n--- 5) Desafío (arena) ---');
   g.flags.fantasma = true;
   g.stats.coronasGanadas; // (solo lectura: los guards evitan contaminación)
   const rawSave1 = rawLs('ecos-aelthar-save')!;
-  check('estado contaminado listo para el aborto', !!g.flags.guardianDefeated && p.gold > gold0);
+  // la contaminación del kill ya NO ocurre (R7-Q1): la que cuenta es la manual
+  check('estado contaminado listo para el aborto (solo manual)', !g.flags.guardianDefeated && p.gold > gold0c);
   g.loadMap('lunaris', 25, 19); // la puerta sur del arena hace esto (fade)…
   g.update(1 / 60);             // …challengeTick detecta el aborto 1
   check('aborto 1: reto cerrado', g.challengeRun === null);

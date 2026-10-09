@@ -14,6 +14,21 @@ import { audio } from './audio';
 
 const TONES: ToneKind[] = ['empatico', 'pragmatico', 'sarcastico', 'amenazante'];
 
+// R7-O4: tablas de módulo para los contadores de flags por-categoría. Antes
+// eran literales `as const` reconstruidos en CADA llamada (recs ×3, ecos, cams);
+// la ruta es por-evento (acción de diálogo), no por-frame, pero así
+// handleCustomAction queda con CERO allocations en todas sus ramas.
+const RECS = ['recMera', 'recMara', 'recIvo', 'recVult'] as const;
+const ECOS_INV = ['ecoInvTeo', 'ecoInvDoran', 'ecoInvMara'] as const;
+const CAMS = ['camMera', 'camCumbres'] as const;
+
+// Contrato de rendimiento de este módulo (R7-O4, verificado): TODO lo de aquí
+// es por-EVENTO (engine.applyAction→handleCustomAction, engine.advanceDialogue→
+// recordDialogueTone, worldlife.fireRumor→dominantTone) — NADA corre dentro del
+// RAF del motor. dominantTone es O(4) sin allocations (bucle sobre TONES);
+// sus únicos consumidores por-frame son el panel de personaje abierto
+// (screens.ts) y el disparo de rumores (cada 8-14 s por NPC) → sin memo.
+
 const FAC_LABEL: Record<string, string> = {
   guardianes: 'Guardianes del Canto',
   orden: 'Orden de Vesh',
@@ -190,7 +205,7 @@ export function handleCustomAction(g: Game, action: string): boolean {
     g.flags[action === 'acto3_eco1' ? 'ecoInvTeo' : action === 'acto3_eco2' ? 'ecoInvDoran' : 'ecoInvMara'] = true;
     audio.sfx('echo');
     if (g.player) g.burst(g.player.x, g.player.y - 8, '#ffe9a0', 18, 70);
-    const n = (['ecoInvTeo', 'ecoInvDoran', 'ecoInvMara'] as const).filter(k => g.flags[k]).length;
+    const n = ECOS_INV.filter(k => g.flags[k]).length;
     if (g.questIdx === 10 && g.questStep === 1 && n >= 3) {
       g.questAdvance();
       g.toast('Los tres ecos enderezados: vuelve con la Anciana Brisa', '#8ef0b0');
@@ -215,7 +230,7 @@ export function handleCustomAction(g: Game, action: string): boolean {
     g.flags.recMera = true;
     audio.sfx('echo');
     if (g.questIdx === 11 && g.questStep === 0) g.questAdvance();
-    const recs = (['recMera', 'recMara', 'recIvo', 'recVult'] as const).filter(k => g.flags[k]).length;
+    const recs = RECS.filter(k => g.flags[k]).length;
     if (g.questIdx === 11 && g.questStep === 1 && recs >= 3) {
       g.questAdvance();
       g.toast('Tres recuerdos devueltos: vuelve con la Anciana Brisa', '#8ef0b0');
@@ -230,7 +245,7 @@ export function handleCustomAction(g: Game, action: string): boolean {
   if (action === 'acto3_rec_mara' || action === 'acto3_rec_ivo' || action === 'acto3_rec_vult') {
     g.flags[action === 'acto3_rec_mara' ? 'recMara' : action === 'acto3_rec_ivo' ? 'recIvo' : 'recVult'] = true;
     audio.sfx('echo');
-    const recs = (['recMera', 'recMara', 'recIvo', 'recVult'] as const).filter(k => g.flags[k]).length;
+    const recs = RECS.filter(k => g.flags[k]).length;
     if (g.questIdx === 11 && g.questStep === 1 && recs >= 3) {
       g.questAdvance();
       g.toast('Tres recuerdos devueltos: vuelve con la Anciana Brisa', '#8ef0b0');
@@ -378,7 +393,7 @@ export function handleCustomAction(g: Game, action: string): boolean {
     g.flags[action === 'acto4_cam_mera' ? 'camMera' : 'camCumbres'] = true;
     audio.sfx('echo');
     if (g.player) g.burst(g.player.x, g.player.y - 8, '#ffe9a0', 18, 70);
-    const n = (['camMera', 'camCumbres'] as const).filter(k => g.flags[k]).length;
+    const n = CAMS.filter(k => g.flags[k]).length;
     if (g.questIdx === 13 && g.questStep === 1 && n >= 2) {
       g.questAdvance();
       g.toast('El coro de antes acompaña a la campana: vuelve con la Anciana Brisa', '#8ef0b0');
@@ -603,7 +618,7 @@ function acto3CatchUp(g: Game): void {
     g.toast('Los tres ecos enderezados: vuelve con la Anciana Brisa', '#8ef0b0');
   }
   if (g.questIdx === 11 && g.questStep === 1 &&
-      (['recMera', 'recMara', 'recIvo', 'recVult'] as const).filter(k => f[k]).length >= 3) {
+      RECS.filter(k => f[k]).length >= 3) {
     g.questAdvance();
     g.toast('Tres recuerdos devueltos: vuelve con la Anciana Brisa', '#8ef0b0');
   }

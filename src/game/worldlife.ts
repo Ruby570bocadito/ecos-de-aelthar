@@ -31,6 +31,21 @@
 // allocations por frame (los pushes a floats/particles son eventos, no
 // per-frame). Estado en WeakMap<Game,…>: 1 Game por página, no se
 // serializa (es ambiente, no progreso).
+//
+// R7-V4 · VIDA AMBIENTE EN LA EXPANSIÓN (aditivo, firmas intactas):
+//   costa   : gaviotas en vuelo circular sobre el mar (silueta 3 frames ×
+//             2 tonos) · cangrejos laterales en la arena que se entierran
+//             al acercarte · pez determinista (hash+tiempo, ya existía).
+//   aldea   : gallinas/palomas picoteando con vuelo corto de huida (el
+//             humo/vahos de village.ts NO se duplica).
+//   cumbres : rapaces planeando en círculos altos (1 frame lento) + NIEVE
+//             DEL SUELO a ráfagas puntuales (solo levanta motas de tiles
+//             'S'/'='; la VENTISCA GLOBAL es de weather.ts/R7-V3 — no se
+//             invade su terreno: ≤5 motas/1.15 s, radio ±11×±8 tiles).
+//   REGLAS: spawn/despawn determinista por hash(mapa, tick de reloj) para
+//   la fauna nueva (sin Math.random), pool fijo sin allocations por frame
+//   (los bursts de nieve son eventos), y densidad escalada con
+//   perfQuality() vía qMul ×1/×0.6/×0.35 (caps por familia, mín. 1).
 // ============================================================
 
 import type { Game } from './engine';
@@ -41,16 +56,22 @@ import { tileAt } from './maps';
 import { isNight } from './update'; // solo lectura (propiedad del agente 3-b)
 import { dominantTone } from './hooks'; // tono dominante del Portador (3-b)
 import { audio } from './audio';
+import { perfQuality } from './perf'; // escalón de calidad (R5-O1): 0 alta · 1 media · 2 baja
+import { hash2 } from './world/palette'; // hash determinista (fauna nueva SIN Math.random)
 
 // ---------------- Fauna: pool fijo ----------------
 
 const AVE = 0;        // posa en árboles ('t'/'p'), huye al acercarte
 const MARIPOSA = 1;   // de día (g.dayT), deambula cerca del suelo
 const LUCIERNAGA = 2; // de noche (isNight), brillo pulsante
-const PEZ = 3;        // Costa: salta en el mar/estanque y salpica
+const PEZ = 3;        // Costa: salta en el mar y salpica (R7-V4: hash+tiempo)
+const GAVIOTA = 4;    // Costa: vuelo circular sobre el mar (silueta 3 frames × 2 tonos)
+const CANGREJO = 5;   // Costa: paseo lateral en la arena; se entierra al acercarte
+const GALLINA = 6;    // Aldea: picoteo + vuelo corto de huida (gallina/paloma)
+const RAPAZ = 7;      // Cumbres: planea en círculos altos (1 frame, lento)
 
-const POOL_CAP = 12;          // presupuesto duro de criaturas vivas
-const KIND_CAPS = [4, 6, 6, 3]; // aves, voladoras, voladoras, peces
+const POOL_CAP = 12;                          // presupuesto duro de criaturas vivas
+const KIND_CAPS = [4, 6, 6, 3, 3, 4, 4, 2];  // aves, voladoras, voladoras, peces, gaviotas, cangrejos, gallinas, rapaces
 
 interface Critter {
   active: boolean;
@@ -60,17 +81,21 @@ interface Critter {
   ax: number; ay: number;     // ancla (vuelta al nido / nivel del agua)
   t: number;                  // edad
   life: number;               // vida útil
-  state: number;              // 0 posada/quieto/oculto · 1 huyendo/salto
+  state: number;              // 0 posada/quieto/oculto · 1 huyendo/salto · 2 retirada (gaviota/rapaz)
   st: number;                 // temporizador de estado
-  seed: number;               // fase aleatoria fija por criatura
+  seed: number;               // fase fija por criatura (hash en la fauna nueva)
+  r: number;                  // R7-V4: radio del círculo de vuelo (gaviota/rapaz)
+  w: number;                  // R7-V4: velocidad angular rad/s con signo (círculos)
+  n: number;                  // R7-V4: contador de ciclos (pez: saltos · gallina: variante)
+  f: number;                  // R7-V4: orientación de dibujo (+1 derecha / −1 izquierda)
 }
 
 // Pool fijo: ranuras reutilizadas, cero GC por frame (patrón fx.ts)
 const POOL: Critter[] = Array.from({ length: POOL_CAP }, () => ({
   active: false, kind: 0, x: 0, y: 0, vx: 0, vy: 0, ax: 0, ay: 0,
-  t: 0, life: 1, state: 0, st: 0, seed: 0,
+  t: 0, life: 1, state: 0, st: 0, seed: 0, r: 0, w: 0, n: 0, f: 1,
 }));
-const kindCount = [0, 0, 0, 0];
+const kindCount = [0, 0, 0, 0, 0, 0, 0, 0];
 let liveCount = 0; // criaturas vivas (O(1) para el cap)
 
 /** Mapas con fauna (cripta = fuera del tiempo, arena = desafío). */
@@ -81,6 +106,8 @@ const SPAWN_OK = new Set<string>(['lunaris', 'bosque', 'costa', 'aldea', 'cumbre
 interface WLState {
   clock: number;              // reloj propio (no depende de g.globalT)
   spawnAcc: number;
+  fishAcc: number;            // R7-V4: acumulador del repositor del pez de costa
+  fishTries: number;          // R7-V4: nº de intentos (determinismo por hash)
   evtIn: number;              // segundos hasta el próximo evento callejero
   evtCount: number;
   forced: 'eco' | 'rafaga' | 'viajero' | null; // clase fijada por dev/smoke
@@ -97,7 +124,7 @@ function stateFor(g: Game): WLState {
   let s = STATES.get(g);
   if (!s) {
     s = {
-      clock: 0, spawnAcc: 0, evtIn: 38 + Math.random() * 22, evtCount: 0,
+      clock: 0, spawnAcc: 0, fishAcc: 0, fishTries: 0, evtIn: 38 + Math.random() * 22, evtCount: 0,
       forced: null,
       trav: { active: false, x: 0, y: 0, dir: 1, t: 0 },
       rumorNext: new Map(), rot: 0, rumorsShown: 0, lastRumor: '',
@@ -109,9 +136,17 @@ function stateFor(g: Game): WLState {
 
 // ---------------- Helpers de cámara (mundo px) ----------------
 
+// R7-V4: tupla RASPA de módulo (cero allocations por frame — viewBounds se
+// llama 1-2 veces por frame). Todos los consumidores la leen AL MOMENTO
+// (verificados: tickCritter/trySpawn/tickTraveler/fireEvent/tickExpansion);
+// no guardar el resultado entre llamadas.
+const VIEW_B: [number, number, number, number] = [0, 0, 0, 0];
 function viewBounds(g: Game): [number, number, number, number] {
-  const x0 = g.camX / ZOOM, y0 = g.camY / ZOOM;
-  return [x0, y0, (g.camX + VIEW_W) / ZOOM, (g.camY + VIEW_H) / ZOOM];
+  VIEW_B[0] = g.camX / ZOOM;
+  VIEW_B[1] = g.camY / ZOOM;
+  VIEW_B[2] = (g.camX + VIEW_W) / ZOOM;
+  VIEW_B[3] = (g.camY + VIEW_H) / ZOOM;
+  return VIEW_B;
 }
 
 function inView(x: number, y: number, b: [number, number, number, number], margin: number): boolean {
@@ -133,6 +168,31 @@ function capFor(g: Game): number {
   return g.epoch === 'pasado' ? POOL_CAP : 8; // más vida en el pasado
 }
 
+// R7-V4 · escalado por calidad (mismo criterio que R6-V10): ×1/×0.6/×0.35.
+// En calidad baja la fauna nueva deja de repoñense por encima del cap
+// reducido ⇒ coste ~0.35 del régimen (mínimo 1 criatura por familia).
+const Q_MUL = [1, 0.6, 0.35] as const;
+function qMul(): number {
+  return Q_MUL[perfQuality()];
+}
+/** Cap efectivo de una familia a la calidad actual (mín. 1). */
+function kindCap(kind: number): number {
+  return Math.max(1, Math.round(KIND_CAPS[kind] * qMul()));
+}
+
+/** PRNG determinista (mismo patrón que challenge.ts/maps.ts): misma semilla
+ *  ⇒ misma secuencia. El repositor del pez lo usa en vez de hash2 porque los
+ *  hashes de seeds pequeños CLUSTERIZAN (0/54 puntos en agua en la Costa). */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 function spawnInterval(g: Game): number {
   return g.epoch === 'pasado' ? 1.35 : 2.4;
 }
@@ -149,9 +209,32 @@ function spawnAt(g: Game, kind: number, x: number, y: number, life: number): boo
   c.x = x; c.y = y; c.vx = 0; c.vy = 0; c.ax = x; c.ay = y;
   c.t = 0; c.life = life; c.state = 0; c.st = 1 + Math.random() * 4;
   c.seed = Math.random() * Math.PI * 2;
+  c.r = 0; c.w = 0; c.n = 0; c.f = 1;
   kindCount[kind]++;
   liveCount++;
   return true;
+}
+
+/**
+ * R7-V4 · spawn determinista (hash+tiempo): como spawnAt pero fase,
+ * temporizador inicial y vida salen del hash de la posición y del tick de
+ * spawn (`sd`). Sin Math.random: misma (mapa, reloj, calidad) ⇒ mismo spawn.
+ * Devuelve la ranura (para configurar r/w/n) o null si el pool está lleno.
+ */
+function spawnDet(
+  kind: number, x: number, y: number, life: number, sd: number,
+): Critter | null {
+  const c = freeSlot();
+  if (!c) return null;
+  c.active = true; c.kind = kind;
+  c.x = x; c.y = y; c.vx = 0; c.vy = 0; c.ax = x; c.ay = y;
+  c.t = 0; c.life = life; c.state = 0;
+  c.st = 1.5 + hash2(sd * 7 + 1, 613) * 4;   // espera inicial determinista
+  c.seed = hash2(sd * 11 + 3, 617) * TAU;    // fase fija por criatura
+  c.r = 0; c.w = 0; c.n = 0; c.f = 1;
+  kindCount[kind]++;
+  liveCount++;
+  return c;
 }
 
 /** Un intento de spawn: samplea hasta 5 puntos de cámara y valida el tile. */
@@ -165,12 +248,9 @@ function trySpawn(g: Game): void {
     const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
     if (tx < 0 || ty < 0 || tx >= g.map.w || ty >= g.map.h) continue;
     const ch = tileAt(g.map, g.rows, tx, ty, g.epoch);
-    if (ch === '~') {
-      // pez: solo Costa (mar/estanque/laguna visibles en cámara)
-      if (g.mapId === 'costa' && kindCount[PEZ] < KIND_CAPS[PEZ]) {
-        if (spawnAt(g, PEZ, tx * TILE + 8, ty * TILE + 12, 24 + Math.random() * 20)) return;
-      }
-    } else if (ch === 't' || ch === 'p') {
+    // R7-V4: el pez de costa lo cría el repositor DETERMINISTA (tickExpansion,
+    // hash+tiempo); legacy trySpawn ya no lo instancia.
+    if (ch === 't' || ch === 'p') {
       // ave posada en la copa de un árbol
       if (kindCount[AVE] < KIND_CAPS[AVE]) {
         if (spawnAt(g, AVE, tx * TILE + 8, ty * TILE + 5, 14 + Math.random() * 12)) return;
@@ -272,6 +352,29 @@ function tickFauna(g: Game, dt: number, st: WLState): void {
     if (st.spawnAcc >= spawnInterval(g)) {
       st.spawnAcc = 0;
       trySpawn(g);
+    }
+  }
+  // R7-V4 + 17 (qa): repositor DETERMINISTA del pez de costa. El legacy
+  // trySpawn ya no cría peces y el repositor prometido por el comentario
+  // nunca llegó (la Costa se quedaba sin vida marina). PRNG sembrado con el
+  // reloj del mundo: misma (mapa, reloj, calidad) ⇒ mismo pez, sin allocs.
+  if (g.mapId === 'costa' && kindCount[PEZ] < kindCap(PEZ)) {
+    st.fishAcc += dt;
+    if (st.fishAcc >= 2.2) {
+      st.fishAcc = 0;
+      st.fishTries++;
+      const sd = Math.floor(st.clock) * 31 + st.fishTries * 7919;
+      const rng = mulberry32(sd);
+      const m = 20; // margen como el legacy trySpawn
+      for (let i = 0; i < 10; i++) {
+        const wx = b[0] - m + rng() * (b[2] - b[0] + m * 2);
+        const wy = b[1] - m + rng() * (b[3] - b[1] + m * 2);
+        const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
+        if (tx < 0 || ty < 0 || tx >= g.map.w || ty >= g.map.h) continue;
+        const ch = tileAt(g.map, g.rows, tx, ty, g.epoch);
+        if (ch !== '~' && ch !== 'w') continue; // solo mar/estanque
+        if (spawnDet(PEZ, tx * TILE + TILE / 2, ty * TILE + TILE / 2, 18 + rng() * 14, sd)) break;
+      }
     }
   }
 }

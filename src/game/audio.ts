@@ -25,12 +25,16 @@ interface Pattern {
 
 const NOTE_RE = /^([A-G])(#|b)?(-?\d)$/;
 
+// R7-O2: tabla de semitonos hoistada a módulo. Antes se alocaba el literal
+// { C:-9, ... } en CADA llamada a noteFreq (~19/s con el secuenciador a
+// 138 BPM). Función pura: mismos valores → mismo resultado, cero cambio audible.
+const NOTE_SEMI: Record<string, number> = { C: -9, D: -7, E: -5, F: -4, G: -2, A: 0, B: 2 };
+
 function noteFreq(n: string): number | null {
   if (n === '-' || n === '.') return null;
   const m = NOTE_RE.exec(n);
   if (!m) return null;
-  const base: Record<string, number> = { C: -9, D: -7, E: -5, F: -4, G: -2, A: 0, B: 2 };
-  let semi = base[m[1]];
+  let semi = NOTE_SEMI[m[1]];
   if (m[2] === '#') semi += 1;
   if (m[2] === 'b') semi -= 1;
   const oct = parseInt(m[3], 10);
@@ -175,6 +179,10 @@ const TRACKS: Record<TrackName, Pattern> = {
 // +1 semitono (micro-variación de melodía 1 de cada 4 loops — Task 10-c)
 const SEMI_UP = Math.pow(2, 1 / 12);
 
+// R7-O2: duración (s) del buffer de ruido blanco COMPARTIDO. Debe superar el
+// ruido más largo del juego (sNoise máx. actual: 1.2 s en 'song').
+const NOISE_BUF_S = 2;
+
 export class AudioEngine {
   ctx: AudioContext | null = null;
   master!: GainNode;
@@ -193,6 +201,17 @@ export class AudioEngine {
   // (p.ej. varios enemigos mueren a la vez). Mapa de tamaño fijo (1 entrada
   // por clave usada, nunca acumula nodos ni voces).
   private lastSfx = new Map<string, number>();
+  // R7-O2: buffer de ruido blanco COMPARTIDO, creado perezosamente UNA vez.
+  // Antes noiseBurst/sNoise alocaban y rellenaban un AudioBuffer nuevo con
+  // Math.random() POR GOLPE (hats del patrón cada ~0.22 s en 'boss'; los SFX
+  // de combate encadenan 2-6 ruidos por evento: hit/crit/kill/finisher...).
+  // Cada golpe reproduce una porción DISTINTA (offset aleatorio uniforme) de
+  // ruido blanco estacionario → estadísticamente idéntico al buffer dedicado
+  // de antes: misma densidad espectral, mismo carácter "ruido nuevo cada vez",
+  // mismas envolventes/filtros/tiempos/ganancias. noiseBufCtx permite
+  // regenerarlo si el ctx fuera recreado algún día (hoy init() es 1 sola vez).
+  private noiseBuf: AudioBuffer | null = null;
+  private noiseBufCtx: AudioContext | null = null;
   // Task 10-c: loop absoluto en curso (step/32) para la micro-variación de
   // melodía, y fundido 0→1 del "tambor de tensión" de combate.
   private loopNo = 0;
@@ -321,6 +340,12 @@ export class AudioEngine {
     }
   }
 
+  // R7-O2 (auditoría): 1 nota = osc + gain desechables es la práctica ESTÁNDAR
+  // de WebAudio (el runtime recicla los nodos tras o.stop) — sin pool: los
+  // envolventes ya programados impiden reutilizar osciladores sin cambiar el
+  // sonido. El secuenciador ya usa lookahead (tick 40 ms, ventana 0.18 s) y
+  // solo lee ctx.currentTime en el while del tick; los SFX por evento lo leen
+  // 1 vez por disparo (necesario: el disparo se ancla al momento real).
   private tone(freq: number, t: number, dur: number, type: OscType, gain: number, bus: GainNode, attack = 0.01, decay?: number) {
     if (!this.ctx) return;
     const o = this.ctx.createOscillator();
@@ -364,12 +389,26 @@ export class AudioEngine {
     o.start(t); o.stop(t + 0.12);
   }
 
+  /** R7-O2: buffer de ruido blanco compartido (NOISE_BUF_S segundos), creado
+   *  y rellenado UNA vez; cada golpe reproduce una porción distinta vía offset
+   *  aleatorio uniforme en start(t, off). Un slice de ruido blanco ES ruido
+   *  blanco: mismas propiedades estadísticas que el buffer dedicado de antes,
+   *  sin alocar ni rellenar nada por golpe. */
+  private sharedNoise(): AudioBuffer {
+    const ctx = this.ctx!;
+    if (!this.noiseBuf || this.noiseBufCtx !== ctx) {
+      const len = Math.floor(ctx.sampleRate * NOISE_BUF_S);
+      this.noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+      const data = this.noiseBuf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+      this.noiseBufCtx = ctx;
+    }
+    return this.noiseBuf;
+  }
+
   private noiseBurst(t: number, dur: number, freq: number, gain: number, filter: BiquadFilterType) {
     if (!this.ctx) return;
-    const len = Math.max(1, Math.floor(this.ctx.sampleRate * dur));
-    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const buf = this.sharedNoise();
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     const f = this.ctx.createBiquadFilter();
@@ -378,7 +417,11 @@ export class AudioEngine {
     g.gain.setValueAtTime(gain, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     src.connect(f); f.connect(g); g.connect(this.musicGain);
-    src.start(t); src.stop(t + dur + 0.02);
+    // R7-O2: porción aleatoria distinta por golpe del buffer compartido
+    // (ruido blanco estacionario → "ruido nuevo" idéntico al buffer dedicado
+    // de antes; envolvente/filtro/tiempos/ganancia intactos).
+    const off = dur < buf.duration ? Math.random() * (buf.duration - dur) : 0;
+    src.start(t, off); src.stop(t + dur + 0.02);
   }
 
   // ---------------- SFX ----------------
@@ -419,6 +462,11 @@ export class AudioEngine {
     p.start(t); p.stop(t + dur + 0.05);
     g.connect(this.sfxGain);
     // reverb fake: tap con delay corto + realimentación suave
+    // R7-O2 (auditoría): la cadena de reverb es POR LLAMADA a propósito.
+    // Compartirla como bus haría que la cola del ping anterior (delay 0.085 s
+    // + feedback 0.3 ≈ 1 s de tail) sangrara en el eco del siguiente parry →
+    // cambio audible en parries encadenados. Paridad > ahorro de 3 nodos en
+    // un SFX no-caliente (rate-limit 60 ms ya lo acota).
     if (typeof this.ctx.createDelay === 'function') {
       const dl = this.ctx.createDelay(0.4);
       if (dl.delayTime) dl.delayTime.value = 0.085;
@@ -449,10 +497,7 @@ export class AudioEngine {
   private sNoise(dur: number, freq: number, gain: number, filter: BiquadFilterType = 'bandpass', delay = 0, sweepTo?: number) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime + delay;
-    const len = Math.max(1, Math.floor(this.ctx.sampleRate * dur));
-    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const buf = this.sharedNoise();
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     const f = this.ctx.createBiquadFilter();
@@ -463,7 +508,9 @@ export class AudioEngine {
     g.gain.setValueAtTime(gain, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     src.connect(f); f.connect(g); g.connect(this.sfxGain);
-    src.start(t); src.stop(t + dur + 0.02);
+    // R7-O2: buffer compartido con offset aleatorio (ver sharedNoise/noiseBurst).
+    const off = dur < buf.duration ? Math.random() * (buf.duration - dur) : 0;
+    src.start(t, off); src.stop(t + dur + 0.02);
   }
 
   /** Tono de sirena: sine largo con vibrato real (LFO sobre la frecuencia). */

@@ -237,6 +237,10 @@ function restoreCampaign(g: Game, run: ChallengeRun): void {
   let raw: string | null = null;
   try { raw = localStorage.getItem(SAVE_KEY); } catch { /* noop */ }
   if (raw !== s.saveRaw) run.resave = s.saveRaw === null ? 'remove' : 'rewrite';
+  // R7-Q1 #6: la arena nunca es mapa visitable de campaña — si un save
+  // residual la dejó en visitedMaps, fuera (el santuario no ofrece Viajar
+  // a la Arena del Eco).
+  if (g.visitedMaps[ARENA_MAP_ID]) delete g.visitedMaps[ARENA_MAP_ID];
 }
 
 // ---------------- composición y spawn de oleadas ----------------

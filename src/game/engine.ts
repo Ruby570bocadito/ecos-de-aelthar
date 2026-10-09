@@ -482,9 +482,9 @@ export class Game {
     this.visitedMaps = { lunaris: true };
     if (this.flags.visitedBosque) this.visitedMaps.bosque = true;
     if (this.flags.visitedCripta) this.visitedMaps.cripta = true;
-    // ==== 17-a (qa): mapas de la expansión (Ronda 14) reconstruidos al cargar
-    // (sus marcas visited_* se escriben desde loadMap); el Acto II termina en
-    // la Cripta pasando por el Bosque, así que acto2Done los implica ====
+    // ==== 17-a (qa) + R7-Q1 #5: mapas de la expansión (Ronda 14) reconstruidos
+    // al cargar (sus marcas visited_* se escribe desde loadMap); el Acto II
+    // termina en la Cripta pasando por el Bosque, así que acto2Done los implica ====
     for (const m of ['costa', 'aldea', 'cumbres'] as const) {
       if (this.flags[`visited_${m}`]) this.visitedMaps[m] = true;
     }
@@ -507,9 +507,11 @@ export class Game {
 
   save() {
     if (!this.player) return;
-    // ==== 17-a (qa): la arena NO toca el disco. Dentro de un reto ni el
-    // guardado manual ni ningún autoguardado pueden contaminar el save de
-    // campaña: restoreCampaign lo devuelve byte-idéntico al salir ====
+    // ==== 17-a (qa) + R7-Q1 #1 (ALTA): la arena NO toca el disco. Guardar
+    // desde la pausa DENTRO del desafío serializaría mapId 'arena' + Portador
+    // temporal sobre el save de campaña: ni el guardado manual ni ningún
+    // autoguardado escriben con un reto en marcha (la reparación resave de
+    // restoreCampaign queda como segunda línea de defensa) ====
     if (this.challengeRun) return;
     const p = this.player;
     const d: SaveData = {
@@ -916,8 +918,10 @@ export class Game {
     const targetY = this.player.y * ZOOM - VIEW_H / 2;
     const maxX = this.map.w * TILE * ZOOM - VIEW_W;
     const maxY = this.map.h * TILE * ZOOM - VIEW_H;
-    const cx = Math.max(0, Math.min(maxX, targetX));
-    const cy = Math.max(0, Math.min(maxY, targetY));
+    // R7-Q1 #7: mapa más estrecho/alto que la vista (aspecto extremo, maxX<0)
+    // → centrar el mundo en pantalla en vez de dejar banda negra a la derecha.
+    const cx = maxX < 0 ? maxX / 2 : Math.max(0, Math.min(maxX, targetX));
+    const cy = maxY < 0 ? maxY / 2 : Math.max(0, Math.min(maxY, targetY));
     if (snap) { this.camX = cx; this.camY = cy; }
     else { this.camX += (cx - this.camX) * 0.14; this.camY += (cy - this.camY) * 0.14; }
   }
@@ -1329,6 +1333,10 @@ export class Game {
     if (s) return [s.x, s.y + 1];
     if (id === 'lunaris') return [25, 19];
     if (id === 'bosque') return [38, 27];
+    // R7-Q1 #4: santuarios de la expansión (maps_expansion: sanc_co/sanc_a/sanc_cu)
+    if (id === 'costa') return [22, 21];
+    if (id === 'aldea') return [17, 21];
+    if (id === 'cumbres') return [14, 24];
     return [19, 24];
   }
 
@@ -2002,7 +2010,22 @@ export class Game {
     audio.sfx('kill');
     audio.sfx('enemyDie');
     // cuenta de lobos para la misión
-    if (e.etype === 'lobo' && this.questIdx === 1 && this.questStep === 0) {
+    // R7-Q1 #2 (ALTA): en duelos de arena el clon del jefe NO escribe campaña
+    // (flags de derrota, botín, misiones, música del mapa): el reto gestiona su
+    // propio flujo y restoreCampaign restaura el estado al terminar. Antes,
+    // matar al clon fijaba guardianDefeated/sirenaDefeated/... + questAdvance
+    // + playTrack sobre la campaña viva → con un save en la ventana endBeat
+    // (1,7 s) la cripta quedaba sin Guardián y q4 bloqueable.
+    if (this.challengeRun && BOSS_DEFEAT_FLAG[e.etype] !== undefined) {
+      this.bossActive = false;
+      audio.setCombat(false);
+      this.shake = 8;
+      // ==== 17-a (qa): la pausa dramática del duelo arranca EN EL MISMO golpe
+      // que cae al jefe (challengeTick solo corría en el update siguiente) ====
+      if (this.challengeRun.bossEnemy === e) this.challengeRun.endBeat = 1.7;
+      return;
+    }
+    if (e.etype === 'lobo' && !this.challengeRun && this.questIdx === 1 && this.questStep === 0) {
       const n = Number(this.flags.wolfKills ?? 0) + 1;
       this.flags.wolfKills = n;
       this.toast(`Lobo de Niebla cazado (${n}/3)`, '#8ef0b0');
