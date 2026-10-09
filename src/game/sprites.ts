@@ -5,7 +5,7 @@
 // ============================================================
 
 import { mkCanvas, px, type Frames } from './actors/util';
-import { buildHumanoid } from './actors/humanoid';
+import { buildHumanoid, buildAttackPoses, buildRollPoses } from './actors/humanoid';
 import { buildWolf, buildGuardian } from './actors/enemies';
 import { buildChest, buildSanctuary, buildFragment, buildWisp } from './actors/objects';
 import { PALS } from './actors/palettes';
@@ -23,6 +23,12 @@ export { frameIndex, entityFrame, type HumanPal } from './actors/humanoid';
 export { drawPortrait, drawSlashArc } from './actors/portraits';
 
 const SPR: Record<string, Frames> = {};
+
+// R9-6 · poses de combate del Portador (contrato R3-c con render.ts):
+// ATK = [anticipación, golpe] ×3 direcciones (down/up/side) · ROLL = pose
+// inclinada de voltereta ×3 direcciones. Se hornean 1× en initSprites.
+const ATK: Record<string, Frames> = {};
+const ROLL: Record<string, Frames> = {};
 
 function buildPickups(): void {
   {
@@ -47,7 +53,11 @@ function buildPickups(): void {
 }
 
 export function initSprites(): void {
-  for (const [name, pal] of Object.entries(PALS)) SPR[name] = buildHumanoid(pal);
+  for (const [name, pal] of Object.entries(PALS)) {
+    SPR[name] = buildHumanoid(pal);
+    ATK[name] = buildAttackPoses(pal); // R9-6
+    ROLL[name] = buildRollPoses(pal);  // R9-6
+  }
   SPR['lobo'] = buildWolf();
   SPR['guardian'] = buildGuardian();
   const chest = buildChest();
@@ -61,6 +71,28 @@ export function initSprites(): void {
 
 export function getSpr(name: string): Frames {
   return SPR[name] ?? SPR['hero_alba'];
+}
+
+// R9-6 · poses de combate consumidas por render.ts (drawEntity, contrato R3-c).
+// getAttackFrames devuelve [frameAnticipación, frameGolpe] para la dirección.
+export function getAttackFrames(base: string, dir: string): HTMLCanvasElement[] | null {
+  const f = ATK[base];
+  if (!f || f.length < 6) return null;
+  const i = dir === 'up' ? 2 : dir === 'down' ? 0 : 4;
+  return [f[i], f[i + 1]];
+}
+
+// La carga del hechizo comparte la pose de anticipación (el tejedor levanta
+// el instrumento igual que el golpe — se lee como canalizar el Eco).
+export function getCastFrames(base: string, dir: string): HTMLCanvasElement[] | null {
+  return getAttackFrames(base, dir);
+}
+
+// Pose inclinada de voltereta (1 canvas según dirección).
+export function getRollFrames(base: string, dir: string): HTMLCanvasElement | null {
+  const f = ROLL[base];
+  if (!f || f.length < 3) return null;
+  return f[dir === 'up' ? 1 : dir === 'down' ? 0 : 2];
 }
 
 /** Registro tardío de sprites (los usa sprites_expansion.ts: jefes y

@@ -35,6 +35,53 @@
 //   enemigo (from 'enemy')    : orbe violeta con núcleo oscuro y anillo
 //            pulsante (miedo, no juguete).
 //   fallback                  : gema flotante facetada con brillo alterno.
+//
+// ---------------- R9-4 · MAGIAS ESPECTACULARES (contrato para el integrador) ----------------
+//
+// CARGA VISIBLE (drawSpellCast): en castSkill (engine.ts) para 'ascuas' /
+//   'escarcha' / 'chispa' / 'cantomayor', registrar una entrada en un pool
+//   (p.ej. g.spellFx: { x: p.x + nx*8, y: p.y - 6 + ny*8, element, age: 0,
+//   seed }) y en drawCombatFx (render.ts) llamar por cada entrada:
+//
+//     drawSpellCast(ctx, sx(f.x), sy(f.y), f.element, f.age, g.globalT, f.seed)
+//
+//   avanzando f.age += dt y liberando el slot al pasar SPELL_CAST_TIME (0.22 s).
+//   Opción A (recomendada, sin tocar gameplay): el proyectil sale en castT=0 y
+//   la carga se dibuja como arranque convergente (el Eco "se libera").
+//   Opción B (retraso real): retrasar el push del proyectil SPELL_CAST_TIME.
+//   El punto de casteo ES la punta del instrumento (spawn del proyectil), así
+//   que el brillo creciente ya lee como "el arma se enciende".
+//
+// IMPACTO + RESIDUO (una entrada, dos fases): donde el proyectil del jugador
+//   muere al golpear (update.ts, rama `dead` del loop de proyectiles, junto al
+//   g.burst existente — y también en aoeHit para 'cantomayor'), registrar
+//   { x: pr.x, y: pr.y, element, seed: (pr.x * 3 + pr.y * 5) | 0, age: 0 }.
+//   En drawCombatFx:
+//
+//     if (f.age < SPELL_IMPACT_TIME)
+//       drawSpellImpact(ctx, sx(f.x), sy(f.y), f.element, f.age, f.seed, g.globalT);
+//     else if (f.age < SPELL_IMPACT_TIME + SPELL_RESIDUE_TIME)
+//       drawSpellResidue(ctx, sx(f.x), sy(f.y), f.element,
+//                        f.age - SPELL_IMPACT_TIME, f.seed, g.globalT);
+//
+//   El seed debe fijarse UNA vez al morir el proyectil (posiciones/ángulos de
+//   las chispas estables entre frames). Pool con el mismo patrón WeakMap que
+//   UiHit en ui.ts (slots reescritos, cero alloc por frame).
+//
+// MICRO-SACUDIDA AL MATAR (screenshake del motor — solo consumo, no se
+//   implementa aquí): spells.ts es draw-only y no toca g. En el sitio donde el
+//   golpe de hechizo REMATA (damageEnemy → muerte), el orquestador ya tiene el
+//   patrón exacto: addShake(g, 2.5) de fxcore.ts (update.ts ya lo importa).
+//
+// ESTELA MUSICAL: NO requiere integración — vive dentro de drawFire/drawIce/
+//   drawBolt/drawGem (drawEcoTrail), ya cableado vía drawProjectileV2.
+//
+// ENGANCHES DE AUDIO (APIs YA creadas por R9-8 en audio.ts — cablearlas es del
+//   orquestador; spells.ts NO las llama todavía):
+//   playSpellCast()       — arranque del casteo (carga convergente)
+//   playSpellImpact(big)  — impacto contundente (flash + onda); big = true si
+//                           el golpe MATA (empareja con el addShake de remate)
+//   (el residuo no lleva sonido propio — deliberado: es ambiente)
 // ============================================================
 
 import type { Projectile } from '../types';
@@ -72,6 +119,267 @@ const BOLT_Y = new Int32Array(4);
 
 // posiciones del destello del hielo (rotación en pasos discretos de 90°)
 const ICE_GLINT = [5, 0, 0, 5, -5, 0, 0, -5];
+
+// ---------------- R9-4 · TABLAS Y GLIFOS DEL ECO (module-level, cero alloc) ----------------
+
+/** Duración del casteo visible (s): ventana de drawSpellCast (~150-250 ms). */
+export const SPELL_CAST_TIME = 0.22;
+/** Duración del impacto (s): flash + onda expansiva + chispas que caen. */
+export const SPELL_IMPACT_TIME = 0.45;
+/** Duración del residuo mágico flotante (s): notas que se disuelven. */
+export const SPELL_RESIDUE_TIME = 1.0;
+
+/** Color núcleo brillante por elemento (flash / núcleo de carga). */
+export function spellCoreColor(element: string): string {
+  switch (element) {
+    case 'fuego': return '#fff8f0';
+    case 'hielo': return '#ffffff';
+    case 'rayo': return '#fffbe0';
+    case 'sombra': return '#e8d0ff';
+    case 'sagrado': return '#fffdf0';
+    default: return '#ffffff';
+  }
+}
+
+/** Color halo suave por elemento (ondas del Eco, halos de estela). */
+export function spellHaloColor(element: string): string {
+  switch (element) {
+    case 'fuego': return '#ff9a40';
+    case 'hielo': return '#8ad4f0';
+    case 'rayo': return '#ffe86a';
+    case 'sombra': return '#9a6ae0';
+    case 'sagrado': return '#f0c84a';
+    default: return '#b48ae8';
+  }
+}
+
+/** Anillo pixelado: 16 puntos en radio `r` (2π/16 = 0.3927 rad por punto). */
+function drawRing(
+  ctx: CanvasRenderingContext2D, X: number, Y: number, r: number,
+  color: string, alpha: number, phase: number, every: number,
+): void {
+  if (alpha <= 0.02) return;
+  setA(ctx, alpha);
+  ctx.fillStyle = color;
+  const rr = Math.round(r);
+  // dash rotatorio determinista (step normalizado a positivo: JS % con negativos)
+  const step = every > 0 ? ((Math.floor(phase * 16) % 16) + 16) % 16 : 0;
+  for (let i = 0; i < 16; i++) {
+    if (every > 0 && (i + step) % every !== 0) continue;
+    const a = i * 0.3927 + phase;
+    ctx.fillRect(X + Math.round(Math.cos(a) * rr), Y + Math.round(Math.sin(a) * rr), 1, 1);
+  }
+}
+
+/** Corchea pixel (~3×6) centrada en (X,Y) — deben ser enteros redondeados.
+ *  `parts` es máscara de disolución: 1 cabeza · 2 asta · 4 banderín.
+ *  (3 = nota mini, 7 = nota completa; el residuo muere cabeza al final). */
+function drawNotaGlyph(
+  ctx: CanvasRenderingContext2D, X: number, Y: number, col: string, alpha: number, parts: number,
+): void {
+  if (alpha <= 0.02) return;
+  setA(ctx, alpha);
+  ctx.fillStyle = col;
+  if (parts & 1) ctx.fillRect(X - 2, Y, 3, 2);       // cabeza
+  if (parts & 2) ctx.fillRect(X + 1, Y - 4, 1, 5);   // asta
+  if (parts & 4) { ctx.fillRect(X + 1, Y - 5, 2, 1); ctx.fillRect(X + 2, Y - 4, 1, 1); } // banderín
+}
+
+/** R9-4 · Estela musical del Eco detrás de un proyectil del jugador: 4
+ *  segmentos en onda senoidal PERPENDICULAR determinista (fase que viaja hacia
+ *  atrás, sin hash: función pura de globalT) + nota de cierre + núcleo que
+ *  respira. Añadida a fuego/hielo/rayo/gema tras su dibujo propio.
+ *  ux,uy = dirección de viaje; px,py = perpendicular (px=-uy, py=ux). */
+function drawEcoTrail(
+  ctx: CanvasRenderingContext2D, X: number, Y: number,
+  ux: number, uy: number, px: number, py: number, el: string, gT: number,
+): void {
+  const core = spellCoreColor(el), mid = projectileColor(el), soft = spellHaloColor(el);
+  // onda perpendicular: segmentos que se encogen y desvanecen hacia atrás
+  for (let k = 0; k < 4; k++) {
+    const d = 7 + k * 4;
+    const w = Math.sin(gT * 11 - k * 1.35) * (2.2 - k * 0.42);
+    const sx = Math.round(X - ux * d + px * w);
+    const sy = Math.round(Y - uy * d + py * w);
+    setA(ctx, 0.5 - k * 0.11);
+    ctx.fillStyle = k < 2 ? mid : soft;
+    if (k < 2) ctx.fillRect(sx - 1, sy - 1, 2, 2);
+    else ctx.fillRect(sx, sy, k === 2 ? 2 : 1, 1);
+  }
+  // nota de cierre: la estela ES una frase musical (mini nota al final)
+  const wn = Math.sin(gT * 11 - 5.4) * 0.6;
+  drawNotaGlyph(ctx, Math.round(X - ux * 24 + px * wn), Math.round(Y - uy * 24 + py * wn), mid, 0.3, 3);
+  // núcleo que respira (el Eco late en la punta: brillo con pulso senoidal)
+  const br = 0.2 + 0.14 * Math.sin(gT * 13);
+  setA(ctx, br);
+  ctx.fillStyle = core;
+  ctx.fillRect(X - 2, Y - 2, 4, 4);
+  setA(ctx, br + 0.5 > 1 ? 1 : br + 0.5);
+  ctx.fillRect(X - 1, Y - 1, 2, 2);
+}
+
+// ---------------- R9-4 · CAST: CARGA VISIBLE ----------------
+
+/** Carga del hechizo en el punto de casteo (punta del instrumento): 2 ondas
+ *  del Eco que CONVERGEN (dash rotatorio inverso al de la onda expansiva),
+ *  7 notas que cierran en espiral hacia el núcleo, círculo de carga creciente
+ *  y núcleo que se enciende; tramo final con cruz blanca de anticipación.
+ *  Llamar cada frame con castT ∈ [0, SPELL_CAST_TIME] mientras dura el casteo.
+ *  seed opcional (determinista por defecto a partir de la posición). */
+export function drawSpellCast(
+  ctx: CanvasRenderingContext2D, x: number, y: number, element: string,
+  castT: number, globalT: number, seed?: number,
+): void {
+  const X = Math.round(x), Y = Math.round(y);
+  if (X < -32 || X > VIEW_W + 32 || Y < -32 || Y > VIEW_H + 32) return;
+  const sd = seed !== undefined ? seed | 0 : (Math.imul(X, 73856093) ^ Math.imul(Y, 19349663)) | 0;
+  const p = castT <= 0 ? 0 : castT >= SPELL_CAST_TIME ? 1 : castT / SPELL_CAST_TIME;
+  const pe = p * p * (3 - 2 * p); // smoothstep: arranca suave, remata fuerte
+  const core = spellCoreColor(element), mid = projectileColor(element), soft = spellHaloColor(element);
+
+  // 1) ondas del Eco que convergen (lo INVERSO de la onda expansiva del golpe)
+  for (let k = 0; k < 2; k++) {
+    const r = (26 - k * 8) * (1 - pe) + 3;
+    drawRing(ctx, X, Y, r, k === 0 ? mid : soft, 0.1 + pe * 0.24, -globalT * (2.4 + k) + k * 0.5, 2);
+  }
+
+  // 2) notas que convergen en espiral (radio inicial escalonado 13..22 px)
+  for (let i = 0; i < 7; i++) {
+    const a0 = h2(sd + i * 97 + 13, i * 53 + 71) * 6.2832;
+    const r0 = 13 + h2(sd + i * 41, i * 29 + 7) * 9;
+    const r = r0 * (1 - pe);
+    if (r < 1.5) continue; // ya llegó: se funde con el núcleo
+    const sw = a0 + pe * (2.2 + (i & 1) * 0.9); // giro determinista al cerrar
+    const nx = Math.round(X + Math.cos(sw) * r);
+    const ny = Math.round(Y + Math.sin(sw) * r * 0.85); // elipse sutil
+    const near = r < 8;
+    const tw = 0.55 + 0.45 * Math.sin(globalT * (9 + (i & 3) * 2.3) + i * 1.7); // titila por nota
+    drawNotaGlyph(ctx, nx, ny, near ? core : mid, (0.25 + pe * 0.75) * tw, near ? 7 : 3);
+  }
+
+  // 3) círculo de carga creciente + núcleo/halo que crecen ("esto va a doler")
+  drawRing(ctx, X, Y, 3 + 6 * pe, core, 0.25 + 0.55 * pe, globalT * 3.1, 0);
+  const hs = 4 + ((pe * 7) | 0); // halo 4..11 px
+  setA(ctx, 0.1 + 0.22 * pe);
+  ctx.fillStyle = soft;
+  ctx.fillRect(X - (hs >> 1), Y - (hs >> 1), hs, hs);
+  const cs = 1 + ((pe * 3) | 0); // núcleo 1..4 px
+  setA(ctx, 0.5 + 0.5 * pe);
+  ctx.fillStyle = core;
+  ctx.fillRect(X - (cs >> 1), Y - (cs >> 1), cs, cs);
+
+  // 4) anticipación: cruz blanca en el tramo final del casteo
+  if (pe > 0.82) {
+    const fa = (pe - 0.82) / 0.18;
+    setA(ctx, fa * 0.9);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(X - 3, Y, 7, 1);
+    ctx.fillRect(X, Y - 3, 1, 7);
+    setA(ctx, fa * 0.5);
+    ctx.fillRect(X - 2, Y - 2, 5, 5);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---------------- R9-4 · IMPACTO CONTUNDENTE ----------------
+
+/** Impacto de hechizo en (x,y): flash blanco 2-3 frames → doble onda
+ *  expansiva (anillo principal + eco retrasado = "acorde") + 8 chispas de
+ *  residuo mágico con gravedad (ángulos/velocidades deterministas por seed).
+ *  Llamar cada frame con age ∈ [0, SPELL_IMPACT_TIME]; seed FIJADO 1 vez al
+ *  morir el proyectil. La micro-sacudida al matar es del motor (addShake).
+ *  Continúa con drawSpellResidue para el residuo flotante. */
+export function drawSpellImpact(
+  ctx: CanvasRenderingContext2D, x: number, y: number, element: string,
+  age: number, seed: number, globalT: number,
+): void {
+  const X = Math.round(x), Y = Math.round(y);
+  if (X < -32 || X > VIEW_W + 32 || Y < -32 || Y > VIEW_H + 32) return;
+  const a = age <= 0 ? 0 : age >= SPELL_IMPACT_TIME ? 1 : age / SPELL_IMPACT_TIME;
+  const core = spellCoreColor(element), mid = projectileColor(element);
+
+  // 1) FLASH blanco (age < 0.05 s ≈ 2-3 frames): el golpe antes de la onda
+  if (age < 0.05) {
+    const fa = 1 - age / 0.05;
+    setA(ctx, 0.25 * fa);
+    ctx.fillStyle = mid;
+    ctx.fillRect(X - 6, Y - 6, 12, 12);
+    setA(ctx, 0.9 * fa);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(X - 3, Y - 3, 7, 7);
+    ctx.fillRect(X - 5, Y - 1, 11, 3);
+    ctx.fillRect(X - 1, Y - 5, 3, 11);
+  }
+
+  // 2) onda expansiva doble: anillo principal (solid) + eco retrasado (dash)
+  const e1 = 1 - (1 - a) * (1 - a); // easeOut
+  drawRing(ctx, X, Y, 3 + 13 * e1, core, (1 - a) * 0.8, 0, 0);
+  if (age > 0.06) {
+    const a2 = age >= SPELL_IMPACT_TIME + 0.06 ? 1 : (age - 0.06) / SPELL_IMPACT_TIME;
+    const e2 = 1 - (1 - a2) * (1 - a2);
+    drawRing(ctx, X, Y, 2 + 9 * e2, mid, (1 - a2) * 0.45, 0.39, 2);
+  }
+  // peso cardinal en la primera mitad (la onda "empuja")
+  if (a < 0.5) {
+    const rr = Math.round(3 + 13 * e1);
+    setA(ctx, (1 - a * 2) * 0.7);
+    ctx.fillStyle = core;
+    ctx.fillRect(X - rr - 1, Y - 1, 2, 2);
+    ctx.fillRect(X + rr, Y - 1, 2, 2);
+    ctx.fillRect(X - 1, Y - rr - 1, 2, 2);
+    ctx.fillRect(X - 1, Y + rr, 2, 2);
+  }
+
+  // 3) residuo mágico que cae: 8 chispas balísticas (deterministas por seed)
+  for (let i = 0; i < 8; i++) {
+    if (((Math.floor(globalT * 18) + i * 5) & 7) === 0) continue; // parpadeo
+    const an = h2(seed + i * 37, i * 53 + 11) * 6.2832;
+    const sp = 26 + h2(seed + i * 17 + 3, i * 91 + 29) * 34;
+    const qx = Math.round(X + Math.cos(an) * sp * age);
+    const qy = Math.round(Y + Math.sin(an) * sp * age * 0.8 + 46 * age * age); // caen
+    const sz = age < 0.22 ? 2 : 1;
+    setA(ctx, (1 - a) * 0.85);
+    ctx.fillStyle = (i & 1) === 0 ? core : mid;
+    ctx.fillRect(qx - (sz >> 1), qy - (sz >> 1), sz, sz);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---------------- R9-4 · RESIDUO MÁGICO ----------------
+
+/** Tras el impacto quedan 2 notas tenues flotando ~1 s que se DISUELVEN
+ *  (cabeza → asta → banderín) mientras ascienden y balancean. Barato: ~10
+ *  rects pico. Llamar con age ∈ [0, SPELL_RESIDUE_TIME] (age ya descontado
+ *  del IMPACT, ver contrato). */
+export function drawSpellResidue(
+  ctx: CanvasRenderingContext2D, x: number, y: number, element: string,
+  age: number, seed: number, globalT: number,
+): void {
+  const X = Math.round(x), Y = Math.round(y);
+  if (X < -32 || X > VIEW_W + 32 || Y < -32 || Y > VIEW_H + 32) return;
+  if (age < 0) return;
+  const a = age >= SPELL_RESIDUE_TIME ? 1 : age / SPELL_RESIDUE_TIME;
+  if (a >= 1) return;
+  const mid = projectileColor(element), core = spellCoreColor(element);
+  const fadeIn = age * 10 < 1 ? age * 10 : 1;
+  for (let i = 0; i < 2; i++) {
+    const ox = (h2(seed + i * 31, i * 57 + 77) - 0.5) * 12;
+    const oy = -3 - h2(seed + i * 19 + 5, i * 23 + 41) * 5 - age * 4; // flota y sube
+    const bob = Math.sin(globalT * 3.1 + i * 2.6 + h2(seed + i, 7) * 6.28) * 1.5;
+    const nx = Math.round(X + ox), ny = Math.round(Y + oy + bob);
+    const parts = a < 0.55 ? 7 : a < 0.8 ? 3 : 1; // se deshace por piezas
+    const al = fadeIn * (1 - a) * (1 - a) * 0.55;  // tenue, disolución cuadrática
+    drawNotaGlyph(ctx, nx, ny, i === 0 ? mid : core, al, parts);
+    // brillito de disolución (parpadeo determinista)
+    if (((Math.floor(globalT * 14) + i * 3) & 3) === 0) {
+      const sa = al * 1.4 > 1 ? 1 : al * 1.4;
+      setA(ctx, sa);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(nx + (i === 0 ? -2 : 2), ny - 1, 1, 1);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
 
 // ---------------- R5-O8 · CUERPOS HORNEADOS (sprites prerrenderizados) ----------------
 /**
@@ -263,6 +571,9 @@ function drawFire(ctx: CanvasRenderingContext2D, X: number, Y: number, pr: Proje
   setA(ctx, 0.2);
   ctx.fillRect(X - ux * 14 + px * w3, Y - uy * 14 + py * w3, 1, 1);
 
+  // R9-4: estela musical del Eco (onda perpendicular + nota + núcleo late)
+  drawEcoTrail(ctx, X, Y, ux, uy, px, py, 'fuego', gT);
+
   ctx.globalAlpha = 1;
 }
 
@@ -328,6 +639,9 @@ function drawIce(ctx: CanvasRenderingContext2D, X: number, Y: number, pr: Projec
     }
   }
 
+  // R9-4: estela musical del Eco (onda perpendicular + nota + núcleo late)
+  drawEcoTrail(ctx, X, Y, ux, uy, px, py, 'hielo', gT);
+
   ctx.globalAlpha = 1;
 }
 
@@ -384,6 +698,9 @@ function drawBolt(ctx: CanvasRenderingContext2D, X: number, Y: number, pr: Proje
     ctx.fillRect(BOLT_X[i] - 1, BOLT_Y[i] - 1, 1, 1);
     ctx.fillRect(BOLT_X[i] + (i & 1), BOLT_Y[i] - (i & 1), 1, 1);
   }
+
+  // R9-4: estela musical del Eco (el zigzag ya ES la onda: nota + latido)
+  drawEcoTrail(ctx, X, Y, ux, uy, px, py, 'rayo', gT);
 
   ctx.globalAlpha = 1;
 }
@@ -549,6 +866,10 @@ export function drawProjectileV2(
   if (pr.sprite === 'p_fire' || pr.element === 'fuego') { drawFire(ctx, X, Y, pr, globalT); return; }
   if (pr.sprite === 'p_ice' || pr.element === 'hielo') { drawIce(ctx, X, Y, pr, globalT); return; }
   if (pr.element === 'rayo') { drawBolt(ctx, X, Y, pr, globalT); return; }
+  // R9-4: la gema (fallback) también lleva su estela musical del Eco
+  const octG = travel(pr, 0);
+  const uxG = OCT_X[octG], uyG = OCT_Y[octG];
+  drawEcoTrail(ctx, X, Y, uxG, uyG, -uyG, uxG, pr.element, globalT);
   drawGem(ctx, X, Y, globalT);
 }
 

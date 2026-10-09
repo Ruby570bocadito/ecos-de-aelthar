@@ -264,3 +264,15 @@ export interface Projectile {
 }
 export interface Shockwave { x: number; y: number; r: number; maxR: number; speed: number; dmg: number; hit: boolean }
 export interface TeleGraph { x: number; y: number; r: number; t: number; maxT: number; dmg: number; kind: 'slam' | 'aro' }
+
+// R9-4 · MAGIAS ESPECTACULARES: ranura de FX de hechizo (carga visible /
+// impacto + residuo). Pools FIJOS del motor (slots reescritos — cero alloc
+// por frame); el seed se fija UNA vez para que las chispas sean estables.
+export interface SpellFxSlot {
+  active: boolean;
+  x: number; y: number;
+  element: Element;
+  age: number;
+  seed: number;
+  big: boolean;
+}

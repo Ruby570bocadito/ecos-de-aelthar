@@ -1,17 +1,22 @@
 // ============================================================
-// ECOS DE AELTHAR — Enemigos pixel (módulo actors) · R2-A2
-// Lobo de Niebla (24×16 · 6 frames) y Guardián Hueco (40×44 · 8 frames).
+// ECOS DE AELTHAR — Enemigos pixel (módulo actors) · R2-A2 + R9-7
+// Lobo de Niebla (24×16 · 11 frames) y Guardián Hueco (40×44 · 8 frames).
 // Pixel art 100% procedural: sin assets, sin anti-aliasing, píxeles enteros.
 // ------------------------------------------------------------
 // CONTRATO DE FRAMES (para el integrador):
 //   LOBO      0 acecho-bajo · 1 acecho-medio · 2 zancada A · 3 zancada B
 //             4 preparación (agachado, orejas atrás) · 5 zambida (boca abierta, estirado)
+//   LOBO R9-7 6 galope-estirado · 7 galope-recogido (estira-compresión 1px)
+//             8 acecho-alza · 9 acecho-baja (pata alzada, paso denso)
+//             10 impacto de la zambida (rebote legible tras el ataque)
+//             → los índices 0..5 del contrato original quedan INTACTOS;
+//               los nuevos son solo intermedios/poses extra (additivo).
 //   GUARDIÁN  0-1 idle flotante (bob ±1px) · 2-3 grito (visera abierta, glow crece)
 //             4-5 invocación (fragmentos orbitan) · 6-7 colapso (grietas, glow rojo)
 //
 // HELPERS EXPORTADOS:
-//   wolfFrame(anim)                      → índice recomendado 0..5 (ciclo de marcha)
-//   wolfFrameAI(ai, anim)                → índice 0..5 según la IA del lobo (conexión fina)
+//   wolfFrame(anim)                      → índice recomendado 0..10 (paso denso R9-7)
+//   wolfFrameAI(ai, anim)                → índice 0..10 según la IA del lobo (conexión fina)
 //   guardianFrame(estado, t)             → índice 0..7 según estado del jefe
 //   GUARDIAN_PHASE_GLOW                  → ['#7ee8ff','#ffd24a','#ff5a4a']
 //     (color de glow por FASE del jefe: el integrador lo usa en partículas,
@@ -170,6 +175,7 @@ const LOBO_POSES: LoboPose[] = [
     brumas: [[5, 2, 2], [8, 1, 2], [11, 3, 2], [14, 4, 2]],
   },
   { // 5 · zambida — cuerpo estirado en vuelo, boca abierta, orejas al rastrillo
+  //   (R9-7: la fauces cerradas del impacto viven en la pose 10, ver abajo)
     top: [6, 6, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
     bot: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 10, 10, 10],
     headX: 16, headY: 3, boca: 'zambida', orejas: 'atras', ojoAlto: true,
@@ -183,20 +189,99 @@ const LOBO_POSES: LoboPose[] = [
     brumas: [[5, 3, 2], [9, 2, 2], [12, 3, 3], [15, 2, 2]],
     estelas: true,
   },
+
+  // ——— R9-7 · intermedios y poses nuevas (índices 0..5 INTACTOS) ———
+  // Colas con RETARDO DE FASE: cada intermedio conserva la forma de cola de
+  // la pose previa del ciclo (follow-through), el cuerpo se mueve primero.
+  { // 6 · galope-estirado — zancada A estirada 1px: delanteras alcanzan más
+    //   allá, traseras empujan 1px más atrás; lomo aplanado hacia adelante.
+    top: [4, 4, 4, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5],
+    bot: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 10, 10, 10],
+    headX: 16, headY: 4, boca: 'cerrada', orejas: 'arriba', ojoAlto: false,
+    cola: [[4, 6], [3, 7], [2, 9], [1, 10], [0, 11]],
+    patas: [
+      { pts: [[14, 8], [16, 9], [17, 10], [18, 11], [19, 12], [19, 13]], paw: [19, 14], cerca: true },
+      { pts: [[13, 8], [12, 9], [10, 10], [9, 11], [9, 12], [9, 13]], paw: [9, 14], cerca: false },
+      { pts: [[7, 8], [8, 9], [5, 10], [4, 11], [3, 12], [3, 13]], paw: [3, 14], cerca: true },
+      { pts: [[6, 8], [7, 9], [9, 10], [10, 11], [11, 12], [11, 13]], paw: [11, 14], cerca: false },
+    ],
+    brumas: [[6, 2, 2], [9, 1, 3], [12, 2, 2], [15, 3, 2]],
+  },
+  { // 7 · galope-recogido — compresión 1px: lomo baja, vientre carga, patas
+    //   recogidas bajo el cuerpo (fase aérea del galope que precede al impacto).
+    top: [7, 7, 6, 6, 5, 5, 5, 5, 6, 6, 6, 6, 7],
+    bot: [10, 10, 10, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11],
+    headX: 16, headY: 5, boca: 'cerrada', orejas: 'arriba', ojoAlto: false,
+    cola: [[4, 6], [3, 6], [2, 7], [1, 8], [0, 8]],
+    patas: [
+      { pts: [[14, 9], [14, 10], [13, 11], [13, 12], [13, 13]], paw: [13, 14], cerca: true },
+      { pts: [[13, 9], [14, 10], [15, 11], [15, 12], [15, 13]], paw: [15, 14], cerca: false },
+      { pts: [[7, 9], [8, 10], [8, 11], [9, 12], [9, 13]], paw: [9, 14], cerca: true },
+      { pts: [[6, 9], [5, 10], [5, 11], [5, 12], [5, 13]], paw: [5, 14], cerca: false },
+    ],
+    brumas: [[7, 3, 2], [10, 2, 3], [13, 3, 2], [15, 4, 2]],
+  },
+  { // 8 · acecho-alza — entre 0 y 1: el lomo sube y la pata delantera cercana
+    //   se ALZA 1px del suelo (paso tentativo denso para la patrulla).
+    top: [6, 6, 5, 5, 4, 4, 4, 4, 5, 5, 5, 5, 6],
+    bot: [10, 10, 10, 9, 9, 9, 9, 9, 9, 9, 10, 10, 10],
+    headX: 16, headY: 4, boca: 'cerrada', orejas: 'arriba', ojoAlto: false,
+    cola: [[4, 6], [3, 7], [2, 8], [1, 9], [0, 9]],
+    patas: [
+      { pts: [[14, 8], [15, 9], [15, 10], [15, 11], [14, 12], [14, 13]], paw: [13, 13], cerca: true },
+      { pts: [[13, 8], [12, 9], [12, 10], [12, 11], [12, 12], [12, 13]], paw: [12, 14], cerca: false },
+      { pts: [[7, 8], [8, 9], [6, 10], [7, 11], [7, 12], [7, 13]], paw: [8, 14], cerca: true },
+      { pts: [[6, 8], [6, 9], [5, 10], [5, 11], [5, 12], [5, 13]], paw: [5, 14], cerca: false },
+    ],
+    brumas: [[6, 3, 2], [9, 2, 2], [12, 2, 3], [14, 3, 2]],
+  },
+  { // 9 · acecho-baja — entre 1 y 0: vuelve al ras del suelo mientras la
+    //   trasera lejana flota (par diagonal de la pose 8).
+    top: [6, 6, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6],
+    bot: [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 11, 11, 10],
+    headX: 16, headY: 4, boca: 'cerrada', orejas: 'arriba', ojoAlto: false,
+    cola: [[4, 6], [3, 6], [2, 7], [1, 8], [0, 8]],
+    patas: [
+      { pts: [[14, 8], [15, 9], [15, 10], [15, 11], [15, 12], [15, 13]], paw: [15, 14], cerca: true },
+      { pts: [[13, 8], [13, 9], [12, 10], [12, 11], [12, 12], [12, 13]], paw: [12, 14], cerca: false },
+      { pts: [[7, 8], [8, 9], [6, 10], [7, 11], [7, 12], [7, 13]], paw: [8, 14], cerca: true },
+      { pts: [[6, 8], [5, 9], [5, 10], [4, 11], [4, 12], [4, 13]], paw: [3, 13], cerca: false },
+    ],
+    brumas: [[6, 3, 2], [9, 2, 2], [12, 3, 3], [14, 4, 2]],
+  },
+  { // 10 · impacto — rebote de la zambida: cabeza arriba, fauces cerradas de
+    //   golpe, pecho alzado y patas en braceo: el retroceso que el Portador
+    //   lee como "ya me atacó, ventana de parry/golpe".
+    top: [5, 5, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5],
+    bot: [9, 9, 9, 9, 9, 9, 9, 9, 10, 10, 10, 10, 10],
+    headX: 16, headY: 2, boca: 'cerrada', orejas: 'atras', ojoAlto: true,
+    cola: [[4, 5], [3, 6], [2, 6], [1, 7], [0, 8]],
+    patas: [
+      { pts: [[14, 8], [16, 9], [17, 10], [18, 11], [18, 12], [18, 13]], paw: [18, 14], cerca: true },
+      { pts: [[13, 8], [13, 9], [12, 10], [12, 11], [12, 12], [12, 13]], paw: [12, 14], cerca: false },
+      { pts: [[7, 8], [8, 9], [9, 10], [10, 11], [10, 12], [10, 13]], paw: [10, 14], cerca: true },
+      { pts: [[6, 8], [5, 9], [4, 10], [3, 11], [3, 12], [3, 13]], paw: [3, 14], cerca: false },
+    ],
+    brumas: [[5, 3, 2], [9, 2, 2], [12, 3, 3], [16, 12, 3]],
+  },
 ];
 
-/** Silueta del "perro guardián" que fue: doble exposición tenue, +1px abajo/derecha. */
-function perroFantasma(x: CanvasRenderingContext2D, alza: boolean): void {
-  const hy = alza ? 4 : 6;                       // en el aullido, su cabeza también sube
+/**
+ * Silueta del "perro guardián" que fue: doble exposición tenue, +1px abajo/derecha.
+ * R9-7: flota 1px FUERA de fase con el lobo real (f impar) y su cuenca vacía
+ * parpadea por hash — el fantasma no copia el ritmo del cuerpo vivo.
+ */
+function perroFantasma(x: CanvasRenderingContext2D, alza: boolean, f: number): void {
+  const hy = (alza ? 4 : 6) + (f % 2);           // en el aullido, su cabeza también sube
   px(x, 5, 8, 13, 4, WOLF.gh);                   // tronco fantasma
   px(x, 17, hy, 6, 4, WOLF.gh);                  // cráneo fantasma
   px(x, 21, hy + 2, 2, 2, WOLF.gh);              // hocico fantasma
-  px(x, 19, hy + 1, 1, 1, WOLF.ghE);             // cuenca del ojo (vacía)
+  if (rnd(f * 5.17 + 1.3) > 0.3) px(x, 19, hy + 1, 1, 1, WOLF.ghE);  // cuenca (parpadeo hash)
   px(x, 6, 12, 1, 3, WOLF.gh);                   // patas fantasma
   px(x, 9, 12, 1, 3, WOLF.gh);
   px(x, 13, 12, 1, 3, WOLF.gh);
   px(x, 15, 12, 1, 3, WOLF.gh);
-  px(x, 2, 8, 3, 2, WOLF.gh);                    // cola fantasma
+  px(x, 2, 8 + (f % 2), 3, 2, WOLF.gh);          // cola fantasma (retraso de fase)
 }
 
 /** Torso: relleno por columnas + lomo claro + vientre en sombra + pecho profundo. */
@@ -260,22 +345,35 @@ function loboCola(x: CanvasRenderingContext2D, pts: [number, number][]): void {
   px(x, tip[0], tip[1], 1, 1, WOLF.D2);
 }
 
-/** OJO BRASA: brasa naranja 2×2 con ascua dorada de 1px dentro + halo cálido rgba. */
-function loboOjo(x: CanvasRenderingContext2D, hx: number, hy: number): void {
+/**
+ * OJO BRASA: brasa naranja 2×2 con ascua dorada de 1px dentro + halo cálido rgba.
+ * R9-7: `pulso` hornea por frame la respiración del ascua (1px de halo extra
+ * arriba/abajo) — al ciclar frames, la brasa late sin coste por frame.
+ */
+function loboOjo(x: CanvasRenderingContext2D, hx: number, hy: number, pulso: boolean): void {
   px(x, hx + 2, hy + 1, 2, 2, WOLF.E);           // brasa (#ff7830)
   px(x, hx + 2, hy + 1, 1, 1, WOLF.EC);          // ascua dorada (#ffd24a)
   px(x, hx + 1, hy + 1, 1, 1, WOLF.e);           // halo cálido
   px(x, hx + 4, hy + 1, 1, 1, WOLF.e);
+  if (pulso) {
+    px(x, hx + 2, hy, 1, 1, WOLF.e);             // halo que sube (pulso alto)
+    px(x, hx + 3, hy + 3, 1, 1, WOLF.e);         // halo que baja
+  }
 }
 
-/** Cabeza de lobo real: cráneo 6×4, hocico 3px con trufa, orejas, ojo brasa. */
+/** Cabeza de lobo real: cráneo 6×4, hocico 3px con trufa, orejas, ojo brasa.
+ *  R9-7: f solo alimenta el PULSO del ojo (frames de esfuerzo → brasa alta). */
 function loboCabeza(
   x: CanvasRenderingContext2D,
   hx: number, hy: number,
   boca: 'cerrada' | 'aullido' | 'zambida',
   orejas: 'arriba' | 'atras',
   ojoAlto: boolean,
+  f: number,
 ): void {
+  // la brasa arde fuerte en los frames de esfuerzo (zancada, estirón, zambida,
+  // impacto) y en algún twinkle por hash — determinista, sin reloj:
+  const ojoPulso = f === 2 || f === 5 || f === 6 || f === 10 || rnd(f * 7.31 + 2.9) > 0.8;
   // orejas triangulares
   if (orejas === 'arriba') {
     px(x, hx + 1, hy - 2, 1, 1, WOLF.H);         // puntas que captan la luz
@@ -300,7 +398,7 @@ function loboCabeza(
 
   if (boca === 'aullido') {
     // hocico alzado al cielo, boca entreabierta cantando
-    loboOjo(x, hx, hy);                          // ojo brasa (arde al aullar)
+    loboOjo(x, hx, hy, ojoPulso);                // ojo brasa (arde al aullar)
     px(x, hx + 5, hy - 1, 2, 1, WOLF.B);         // puente del hocico (diagonal arriba)
     px(x, hx + 7, hy - 2, 1, 1, WOLF.N);         // trufa al aire
     px(x, hx + 5, hy, 2, 1, WOLF.O);             // apertura del aullido
@@ -308,7 +406,7 @@ function loboCabeza(
     px(x, hx + 4, hy + 2, 2, 1, WOLF.B);         // barbilla
   } else if (boca === 'zambida') {
     // fauces abiertas: interior oscuro + colmillos de 1px + ojo furioso 2×2
-    loboOjo(x, hx, hy);                          // ojo brasa en furia
+    loboOjo(x, hx, hy, ojoPulso);                // ojo brasa en furia
     px(x, hx + 2, hy, 1, 1, WOLF.e); px(x, hx + 3, hy, 1, 1, WOLF.e);  // resplandor que sube
     px(x, hx + 4, hy + 1, 3, 1, WOLF.B);         // hocico superior
     px(x, hx + 7, hy + 1, 1, 1, WOLF.N);         // trufa
@@ -321,7 +419,7 @@ function loboCabeza(
   } else {
     // hocico cerrado de 3px (hy+1..hy+3) con trufa y línea de boca
     if (ojoAlto) px(x, hx + 2, hy, 2, 1, WOLF.D);  // ceño fruncido (preparación)
-    loboOjo(x, hx, hy);                          // OJO BRASA 2×2 con ascua
+    loboOjo(x, hx, hy, ojoPulso);                // OJO BRASA 2×2 con ascua
     px(x, hx + 4, hy + 2, 4, 1, WOLF.B);         // hocico
     px(x, hx + 7, hy + 2, 1, 1, WOLF.N);         // trufa
     px(x, hx + 4, hy + 3, 3, 1, WOLF.D);         // labio inferior
@@ -331,16 +429,23 @@ function loboCabeza(
   }
 }
 
-/** Niebla: emana del lomo y se arrastra por el suelo entre las patas. */
+/** Niebla: emana del lomo y se arrastra por el suelo entre las patas.
+ *  R9-7: briznas y penachos con FASE POR HASH — cada frame de la hoja lleva
+ *  su propia niebla, así el ciclado la hace rodar sin coste por frame. */
 function loboNiebla(x: CanvasRenderingContext2D, P: LoboPose, f: number): void {
   for (const [bx, by, bw] of P.brumas) {
     px(x, bx, by, bw, 1, WOLF.f2);
     px(x, bx + 1, by - 1, 1, 1, WOLF.f1);        // brizna que asciende
+    if (by > 2 && rnd(bx * 7.7 + f * 1.9) > 0.55) {
+      px(x, bx + bw, by - 2, 1, 1, WOLF.f1);     // segunda brizna, fase por hash
+    }
   }
   // bruma rasante bajo el vientre, con huecos deterministas
   for (let X = 2; X < 20; X++) {
     if (rnd(X * 3.1 + f * 5.7) > 0.45) {
       px(x, X, 13, 1, 1, rnd(X + f * 2) > 0.6 ? WOLF.f2 : WOLF.f1);
+    } else if (rnd(X * 9.7 + f * 2.1) > 0.86) {
+      px(x, X, 12, 1, 2, WOLF.f1);               // penacho de 2px en los huecos
     }
   }
   if (P.estelas) {
@@ -352,18 +457,19 @@ function loboNiebla(x: CanvasRenderingContext2D, P: LoboPose, f: number): void {
   }
 }
 
-/** LOBO DE NIEBLA — 24×16 · 6 frames (ver contrato en la cabecera). */
+/** LOBO DE NIEBLA — 24×16 · 11 frames (0..5 contrato clásico intacto;
+ *  6..10 intermedios de galope/acecho + impacto, ver cabecera). */
 export function buildWolf(): Frames {
   const frames: Frames = [];
-  for (let f = 0; f < 6; f++) {
+  for (let f = 0; f < 11; f++) {
     const { c, x } = mkCanvas(24, 16);
     const P = LOBO_POSES[f];
-    perroFantasma(x, !!P.fantasmaAlza);                     // doble exposición (fondo)
+    perroFantasma(x, !!P.fantasmaAlza, f);                  // doble exposición (fondo, fase propia)
     loboCola(x, P.cola);
     for (const p of P.patas) if (!p.cerca) loboPata(x, p);  // patas lejanas
     loboTorso(x, P.top, P.bot);
     loboCresta(x, P.top, f);
-    loboCabeza(x, P.headX, P.headY, P.boca, P.orejas, P.ojoAlto);
+    loboCabeza(x, P.headX, P.headY, P.boca, P.orejas, P.ojoAlto, f);
     for (const p of P.patas) if (p.cerca) loboPata(x, p);   // patas cercanas
     loboNiebla(x, P, f);                                    // niebla del lomo y del suelo
     frames.push(c);
@@ -373,36 +479,46 @@ export function buildWolf(): Frames {
 
 /**
  * Índice RECOMENDADO de frame del lobo para un reloj continuo `anim`
- * (e.anim, g.globalT…): ciclo de marcha en diagonal (acecho intercalado
- * entre zancadas). Apto para cualquier uso genérico del integrador;
- * para selección fina por estado de IA existe wolfFrameAI().
- * Devuelve siempre 0..5.
+ * (e.anim, g.globalT…): paso diagonal DENSO en 8 fases (R9-7) — acecho
+ * intercalado entre zancadas con intermedios de subida/bajada y de
+ * galope (estira-recoge). Apto para cualquier uso genérico del
+ * integrador; para selección fina por estado de IA existe wolfFrameAI().
+ * Devuelve siempre 0..10.
  */
+const WOLF_SEQ_PACE = [0, 8, 2, 6, 1, 9, 3, 7];    // paso diagonal denso (R9-7)
+const WOLF_SEQ_GALOPE = [2, 6, 3, 7];              // galope: estira → recoge (1px)
+const WOLF_SEQ_ACECHO = [0, 8, 1, 9];              // acecho denso de patrulla
+// (secuencias a nivel de módulo: CERO allocations por llamada)
+
 export function wolfFrame(anim: number): number {
-  const seq = [0, 2, 1, 3];                        // paso diagonal: acecho entre zancadas
-  return seq[Math.floor(Math.max(0, anim) * 5) % 4];
+  return WOLF_SEQ_PACE[Math.floor(Math.max(0, anim) * 10) % 8];
 }
 
 /**
  * Índice de frame del lobo según su IA (conexión fina para el integrador).
  * ai ∈ 'patrulla' | 'persigue' | 'carga' (windup) | 'ataca' | 'recupera' |
  *      'huye' | 'aturdido'  — los mismos estados de update.ts.
- * anim = e.anim (fase continua del enemigo). Devuelve siempre 0..5.
+ * anim = e.anim (fase continua del enemigo). Devuelve siempre 0..10.
  *
  * Sugerencia de conexión en render.ts:
  *   const fi = e.etype === 'lobo' ? wolfFrameAI(e.ai, e.anim)
  *                                 : entityFrame(spr, e.dir, e.moving, e.anim);
+ *
+ * R9-7: persigue/huye galopan en 4 fases (estira-recoge, mismo ritmo de
+ * ciclado que antes pero con poses de estiramiento y compresión de 1px);
+ * patrulla acecha en 4 fases (pata alzada); recupera muestra el IMPACTO
+ * (rebote de la zambida) alternando con la recomposición. Devuelve 0..10.
  */
 export function wolfFrameAI(ai: string, anim: number): number {
   const a = Math.max(0, anim);
   switch (ai) {
-    case 'persigue': return 2 + (Math.floor(a * 8) % 2);   // galope
-    case 'huye': return 2 + (Math.floor(a * 10) % 2);      // galope frenético
+    case 'persigue': return WOLF_SEQ_GALOPE[Math.floor(a * 8) % 4];   // galope estira-recoge
+    case 'huye': return WOLF_SEQ_GALOPE[Math.floor(a * 10) % 4];      // galope frenético
     case 'carga': return 4;                                // preparación agachada (telegrafía)
     case 'ataca': return 5;                                // zambida con las fauces abiertas
-    case 'recupera': return 1;                             // se recompone
+    case 'recupera': return Math.floor(a * 8) % 2 === 0 ? 10 : 1;  // IMPACTO → se recompone
     case 'aturdido': return 0;                             // vencido, pegado al suelo
-    default: return Math.floor(a * 3) % 2;                 // patrulla: acecho 0/1
+    default: return WOLF_SEQ_ACECHO[Math.floor(a * 3.6) % 4];         // patrulla: acecho denso
   }
 }
 

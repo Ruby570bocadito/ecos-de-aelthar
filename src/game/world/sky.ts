@@ -1,5 +1,5 @@
 // ============================================================
-// ECOS DE AELTHAR — Cielo y ciclo día/noche (R1-A8 · v2 R4-A2 · v3 R8-8)
+// ECOS DE AELTHAR — Cielo y ciclo día/noche (R1-A8 · v2 R4-A2 · v3 R8-8 · v4 R9-3)
 // drawSkyBackdrop  : fondo de cielo completo (TITLE SCREEN y transiciones)
 // drawDayNightGrade: grading de dayT sobre el mundo (se dibuja antes del HUD)
 //                    + nubes v3 (3 capas), banda de amanecer/anochecer,
@@ -48,8 +48,12 @@
 //    variable por zona), umbral de aparición por estrella (entran al
 //    atardecer, todas de noche) y DESTELLO DE COLOR en el pico del seno
 //    (azulada/cálida según su temperatura). ≤40 fillRect por frame.
-//  · ESTRELLA FUGAZ (conservada): estela mejorada — 7 eslabones que se
-//    afinan y enfrían (blanco → azul pálido) con fade sinusoidal.
+//  · DENSIDAD v4 (R9-3): al hornear, un campo de densidad agrupa las
+//    estrellas hacia la Vía Láctea y abre vacíos suaves; la banda lechosa
+//    gana cúmulos granulares y su Gran Grieta oscura.
+//  · ESTRELLA FUGAZ v3 (R9-3): brillo que DECAE (vida 0.55-1.0 s), cabeza
+//    con halo + cruz de destello, 10 eslabones que se afinan/enfrían y
+//    3 chispas rezagadas. Sigue: ≤1 visible (vida ≪ ventana de 40 s).
 //  En el MUNDO la vía láctea + titileo corren dentro de drawDayNightGrade
 //  (bajo drawAmbient 'sky' de fx.ts, módulo intocado, que pinta después).
 //
@@ -64,6 +68,10 @@
 //  R8-8 : nubes en 3 capas con viento del mundo, halo dither + cara al sol,
 //         penumbra en sombras, vía láctea, titileo individual, fugaz v2,
 //         presupuestos por perfQuality.
+//  R9-3 : fugaz v3 (decae, halo + cruz + chispas), densidad por bandas
+//         (clústeres + vacíos), Vía Láctea con cúmulos y Gran Grieta,
+//         vientre cálido de nubes al alba/atardecer y luna FASEADA por
+//         día del mundo (moonPhaseIndexAt, enganche de lectura para fx.ts).
 //
 // Calibración con el motor (update.ts / engine.ts / render.ts):
 //  - dayT avanza dt/240  → ciclo completo de 240 s.
@@ -111,7 +119,7 @@ export const DAY_STAGES: readonly DayStage[] = [
     from: 0.06, to: 0.22,
     tint: [255, 158, 108, 0.10],            // ámbar-rosa
     sky: ['#191634', '#241e42', '#382850', '#5a3a58', '#8a5462', '#c87a6c'],
-    cloudBody: '#6a4a66', cloudHi: '#9a6a78', cloudLo: '#4e3652',
+    cloudBody: '#7c5a70', cloudHi: '#e0a08a', cloudLo: '#54405c',
     desc: 'alba del motor (dayT 0.15 inicial · Shift+T espera hasta 0.22)',
   },
   {
@@ -135,7 +143,7 @@ export const DAY_STAGES: readonly DayStage[] = [
     from: 0.52, to: 0.68,
     tint: [98, 86, 172, 0.14],              // violeta-azul
     sky: ['#0b0a20', '#12102c', '#1a1838', '#262148', '#342c54', '#443a60'],
-    cloudBody: '#3a3260', cloudHi: '#4c4278', cloudLo: '#2c264c',
+    cloudBody: '#453a6a', cloudHi: '#8a5f7c', cloudLo: '#312a54',
     desc: 'caída de la luz hacia la meseta nocturna del motor',
   },
   {
@@ -150,6 +158,13 @@ export const DAY_STAGES: readonly DayStage[] = [
 
 const NOCHE = DAY_STAGES.length - 1;        // índice de la franja nocturna
 const TAU = Math.PI * 2;
+
+// R9-3 — VIENTRE CÁLIDO de las nubes en horas de sol bajo: la luz rasante
+// del alba/atardecer tiñe la panza (arco inferior horneado + línea de base
+// en las planas). null = sin vientre (mediodía/noche). Lado hacia el sol.
+const BELLY: (string | null)[] = ['#d98a6e', null, '#e8b083', '#8a5a6e', null];
+const BELLY_DX = [1, 0, -1, -1, 0];
+
 // R4-A2: semiancho de transición entre franjas — ensanchado de 0.018 a 0.06
 // (~14.4 s del ciclo de 240 s) y con interpolación CONTINUA rgba: el grading
 // ya no salta, se funde.
@@ -160,6 +175,17 @@ const ZERO_TINT: SkyTint = [0, 0, 0, 0];
 /** Modulo positivo (para derivas y parallax que envuelven). */
 function mod(a: number, n: number): number {
   return ((a % n) + n) % n;
+}
+
+/**
+ * hash2 devuelve SIEMPRE en [0, 0.5) (el producto float del hash deja el
+ * bit alto estructuralmente a 0). hnorm re-escala a [0, 1) para que los
+ * UMBRALES comparados contra hash2 (colores cálidos, excepciones, lado de
+ * caída de la fugaz, densidad…) se comporten como fueron escritos — varios
+ * comparaban contra >0.5 y eran rama muerta. Determinista, coste 0.
+ */
+function hnorm(v: number): number {
+  return v * 2;
 }
 
 /**
@@ -344,9 +370,24 @@ function ditherPattern(ctx: CanvasRenderingContext2D, color: string, mask: numbe
   return p;
 }
 
-// ---------------- Luna pre-pintada (cuerpo escalonado + halo dithered) ----------------
+// ---------------- Luna (halo dithered + FASE por día del mundo, R9-3) ----------------
+// El HALO es atmósfera: circular siempre (3 anillos dither, más suave que la
+// v1). El DISCO se hornea por FASE (8 fases, determinista por el día del
+// mundo: floor(globalT/240) — ciclo de 240 s del motor) con terminador
+// pixelado: sobre una copia del cuerpo se BORRA (destination-out) un disco
+// del mismo radio desplazado, dejando iluminado el ancho 2R·MOON_LIT[p].
+// Luna nueva: disco casi invisible con "luz de ceniza" (alpha 0.16).
+// NOTA: la luna del MUNDO la pinta fx.ts (drawAmbient 'sky', módulo ajeno);
+// esta es la del BACKDROP (título/transiciones). moonPhaseIndexAt queda
+// exportada como enganche de lectura para que fx.ts alinee su fase.
 
-let moonCanvas: HTMLCanvasElement | null = null;
+const MOON_R = 22;                                        // radio del disco
+const MOON_LIT = [1, 0.78, 0.5, 0.25, 0, 0.25, 0.5, 0.78]; // fracción iluminada por fase
+const MOON_GLOW = [1, 1, 1, 1, 0.16, 1, 1, 1];             // alpha del disco (4 = ceniza)
+
+let moonHaloCv: HTMLCanvasElement | null = null;
+let moonBodyCv: HTMLCanvasElement | null = null;
+const moonPhaseCv: (HTMLCanvasElement | null)[] = [null, null, null, null, null, null, null, null];
 
 /** Círculo pixelado por filas de 2 px (borde en escalones, NO arc liso). */
 function stepCircle(x: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
@@ -356,20 +397,29 @@ function stepCircle(x: CanvasRenderingContext2D, cx: number, cy: number, r: numb
   }
 }
 
-function buildMoon(): HTMLCanvasElement {
+function buildMoonHalo(): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = 120; c.height = 120;
   const cc = c.getContext('2d')!;
-  const cx = 60, cy = 60;
-  // halo dithered: dos anillos escalonados con cobertura 25% y 50%
+  // halo dithered: 3 anillos escalonados (corona 25% + 25% + 50% interior)
+  cc.fillStyle = ditherPattern(cc, 'rgba(208,220,255,0.05)', 0b0001);
+  stepCircle(cc, 60, 60, 52);
   cc.fillStyle = ditherPattern(cc, 'rgba(208,220,255,0.10)', 0b0001);
-  stepCircle(cc, cx, cy, 46);
+  stepCircle(cc, 60, 60, 46);
   cc.fillStyle = ditherPattern(cc, 'rgba(208,220,255,0.16)', 0b0011);
-  stepCircle(cc, cx, cy, 34);
+  stepCircle(cc, 60, 60, 34);
+  return c;
+}
+
+function buildMoonBody(): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = MOON_R * 2; c.height = MOON_R * 2;
+  const cc = c.getContext('2d')!;
+  const cx = MOON_R, cy = MOON_R;
   // cuerpo escalonado
   cc.fillStyle = '#e9edf5';
-  stepCircle(cc, cx, cy, 22);
-  // cráteres
+  stepCircle(cc, cx, cy, MOON_R);
+  // cráteres (mismos de la v1)
   cc.fillStyle = 'rgba(172,184,208,0.85)';
   cc.fillRect(cx - 12, cy - 6, 8, 6);
   cc.fillRect(cx + 2, cy + 4, 7, 5);
@@ -382,9 +432,49 @@ function buildMoon(): HTMLCanvasElement {
   return c;
 }
 
-function getMoon(): HTMLCanvasElement {
-  if (!moonCanvas) moonCanvas = buildMoon();
-  return moonCanvas;
+/** Disco horneado para la fase p (0 llena … 4 nueva … 7 gibosa creciente).
+ *  Terminador: se borra (destination-out) un disco del mismo radio centrado
+ *  de modo que el ancho iluminado sea 2R·MOON_LIT[p]; la menguante (1-3)
+ *  ilumina por el oeste (izquierda) y la creciente (5-7) por el este — la
+ *  misma convención este/oeste del sol en lighting.ts. Borde pixelado. */
+function getMoonPhase(p: number): HTMLCanvasElement {
+  const hit = moonPhaseCv[p];
+  if (hit) return hit;
+  if (!moonBodyCv) moonBodyCv = buildMoonBody();
+  const c = document.createElement('canvas');
+  c.width = MOON_R * 2; c.height = MOON_R * 2;
+  const cc = c.getContext('2d')!;
+  cc.drawImage(moonBodyCv, 0, 0);
+  const lit = MOON_LIT[p];
+  if (lit > 0.005 && lit < 0.995) {
+    const d = 2 * MOON_R * lit;                            // ancho iluminado
+    const sx = p >= 5 ? MOON_R - d : MOON_R + d;           // centro del disco de sombra
+    cc.globalCompositeOperation = 'destination-out';
+    cc.fillStyle = '#000';
+    stepCircle(cc, sx, MOON_R, MOON_R);
+    cc.globalCompositeOperation = 'source-over';
+  }
+  moonPhaseCv[p] = c;
+  return c;
+}
+
+/** Luna con halo y fase (backdrop): 2 drawImage, alpha por fase. */
+function drawMoon(ctx: CanvasRenderingContext2D, mx: number, my: number, alpha: number, phase: number): void {
+  if (alpha <= 0.01) return;
+  if (!moonHaloCv) moonHaloCv = buildMoonHalo();
+  ctx.globalAlpha = alpha * 0.9;
+  ctx.drawImage(moonHaloCv, mx - 60, my - 60);
+  ctx.globalAlpha = alpha * MOON_GLOW[phase];
+  ctx.drawImage(getMoonPhase(phase), mx - MOON_R, my - MOON_R);
+  ctx.globalAlpha = 1;
+}
+
+/** Fase lunar determinista por DÍA DEL MUNDO (ciclo de 240 s → 8 fases):
+ *  0 llena · 1-3 mengvante · 4 nueva · 5-7 creciente. Enganche de lectura
+ *  opcional para fx.ts (la luna del mundo) — coste 0. */
+export function moonPhaseIndexAt(globalT: number): number {
+  const day = Math.floor(Math.max(0, globalT) / 240);
+  return day % 8;
 }
 
 // ============================================================
@@ -448,6 +538,19 @@ function stepCapTop(x: CanvasRenderingContext2D, cx: number, cy: number, rx: num
   if (rx <= 2 || ry <= 2) return;
   for (let dy = -ry; dy < -1; dy += 2) {
     const k = 1 - ((dy + 1) * (dy + 1)) / (ry * ry);
+    if (k <= 0) continue;
+    const half = Math.floor((rx * Math.sqrt(k)) / 2) * 2;
+    if (half <= 0) continue;
+    x.fillRect(cx - half, cy + dy, half * 2, 2);
+  }
+}
+
+/** Arco INFERIOR elíptico (vientre cálido de la nube en horas de sol bajo,
+ *  R9-3): 2 filas de 2 px pegadas al borde bajo de la elipse. */
+function stepCapBottom(x: CanvasRenderingContext2D, cx: number, cy: number, rx: number, ry: number): void {
+  if (rx <= 2 || ry <= 5) return;
+  for (let dy = ry - 2; dy >= ry - 4; dy -= 2) {
+    const k = 1 - (dy * dy) / (ry * ry);
     if (k <= 0) continue;
     const half = Math.floor((rx * Math.sqrt(k)) / 2) * 2;
     if (half <= 0) continue;
@@ -558,6 +661,18 @@ function getCloudBody(seed: number, j: number, layer: number, stIdx: number): HT
         const rx = Math.max(3, b.rx - 2), ry = Math.max(2, b.ry - 1);
         stepCapTop(cc, b.cx + Math.round(b.rx * 0.22) * hx, b.cy + hy, rx, ry);
       }
+    }
+    // 4) VIENTRE CÁLIDO (R9-3): al alba/atardecer la luz rasante tiñe la
+    //    panza — arco inferior hacia el sol bajo + línea de base cálida en
+    //    las nubes planas. Horneado: coste por frame = 0.
+    const belly = BELLY[stIdx];
+    if (belly) {
+      cc.fillStyle = belly;
+      const bdx = BELLY_DX[stIdx];
+      for (const b of gm.blobs) {
+        stepCapBottom(cc, b.cx + Math.round(b.rx * 0.16) * bdx, b.cy, Math.max(3, b.rx - 3), b.ry + 1);
+      }
+      if (gm.flat) cc.fillRect(CLOUD_PAD + 2, gm.baseY - 1, gm.w - CLOUD_PAD * 2 - 4, 2);
     }
     cloudBodyCache.set(key, c);
   }
@@ -689,10 +804,12 @@ function drawCloudBlend(
   ctx.globalAlpha = 1;
 }
 
-// ---------------- Estrella fugaz (R4-A2 · estela v2 R8-8) ----------------
+// ---------------- Estrella fugaz (R4-A2 · v2 R8-8 · v3 R9-3) ----------------
 // Ventana temporal determinista: cada SHOOT_PERIOD s de globalT hay a lo sumo
-// UNA estrella fugaz (instante, posición y dirección por hash de la ventana).
-// ~1 por ~40 s de noche. NOTA: las estrellas fijas viven en fx.ts
+// UNA estrella fugaz (instante, duración, posición, dirección y chispas por
+// hash de la ventana k). Vida 0.55-1.0 s ≪ ventana ⇒ NUNCA hay dos en
+// pantalla. El brillo DECAE (rampa de entrada + caída (1-u)^1.35, ya no el
+// seno simétrico de la v2). NOTA: las estrellas fijas viven en fx.ts
 // (drawAmbient 'sky', módulo no editable aquí); drawDayNightGrade corre
 // ANTES de esa capa, así que la fugaz queda por debajo de las fijas.
 
@@ -707,38 +824,70 @@ const SHOOT_RES: ShootStar = { x: 0, y: 0, dx: 0, dy: 0, u: 0 };
 export function shootingStarAt(globalT: number): ShootStar | null {
   const T = Math.max(0, globalT);
   const k = Math.floor(T / SHOOT_PERIOD);
-  const t0 = hash2(k * 7 + 1, 991) * (SHOOT_PERIOD - 1.2);     // instante dentro de la ventana
-  const dur = 0.9;                                             // vida del trazo (s)
+  const dur = 0.55 + hnorm(hash2(k * 7 + 1, 991)) * 0.45;             // vida 0.55..1.0 s (R9-3)
+  const t0 = hnorm(hash2(k * 11 + 3, 993)) * (SHOOT_PERIOD - dur - 1.2); // instante (margen 1.2 s)
   const u = (T - k * SHOOT_PERIOD - t0) / dur;
   if (u < 0 || u > 1) return null;
-  const dir = hash2(k * 17 + 7, 1009) > 0.5 ? 1 : -1;          // caída a izq. o der.
-  const spd = 130 + hash2(k * 19 + 9, 1013) * 60;              // px/s
-  SHOOT_RES.x = 60 + hash2(k * 11 + 3, 993) * (VIEW_W - 220);
-  SHOOT_RES.y = 24 + hash2(k * 13 + 5, 997) * 130;
+  const dir = hnorm(hash2(k * 17 + 7, 1009)) > 0.5 ? 1 : -1;   // caída a izq. o der.
+  const spd = 150 + hnorm(hash2(k * 19 + 9, 1013)) * 80;       // 150..230 px/s
+  SHOOT_RES.x = 70 + hnorm(hash2(k * 13 + 5, 997)) * (VIEW_W - 240);
+  SHOOT_RES.y = 20 + hnorm(hash2(k * 23 + 15, 1019)) * 120;
   SHOOT_RES.dx = dir * spd * 0.86;
   SHOOT_RES.dy = spd * 0.5;
   SHOOT_RES.u = u;
   return SHOOT_RES;
 }
 
-/** Trazo v2 (R8-8): cabeza blanca + estela de 7 eslabones que se afinan y
- *  enfrían (blanco → azul pálido) con fade sinusoidal de entrada/pico/salida. */
+// Trazo v3 (R9-3): cabeza blanca con halo blando + cruz de destello en el
+// primer tramo, estela de 10 eslabones que se afinan y enfrían (blanco →
+// azul pálido) y 3 chispas rezagadas con deriva perpendicular (hash de la
+// ventana). El BRILLO DECAE: entrada rápida (~0.11 s) y caída (1-u)^1.35.
+// ≤17 fillRect SOLO mientras vive (≈1 s cada 40 s); cero allocations.
+const SS_SEG_A = [1, 0.74, 0.55, 0.4, 0.28, 0.19, 0.12, 0.07, 0.04, 0.02]; // alpha cabeza→cola
+const SS_SEG_W = [2, 2, 2, 1, 1, 1, 1, 1, 1, 1];                           // se afina
+const SS_SEG_C = ['#ffffff', '#ffffff', '#eaf1ff', '#dbe7ff', '#c9d9fa', '#b6cbf2', '#a4bce6', '#93aed8', '#84a0c8', '#7590b8'];
+const SS_SPARK = [10, 17, 26];                                             // retardo de chispas (px)
+
 function drawShootingStar(ctx: CanvasRenderingContext2D, globalT: number, gate: number): void {
   const s = shootingStarAt(globalT);
   if (!s || gate <= 0.01) return;
-  const fade = Math.sin(Math.PI * s.u);                        // entra, pico y fade
+  const k = Math.floor(Math.max(0, globalT) / SHOOT_PERIOD);
+  const fade = Math.min(1, s.u * 9) * Math.pow(1 - s.u, 1.35) * gate;  // brillo que decae
+  if (fade <= 0.012) return;
   const len = Math.hypot(s.dx, s.dy);
   const ux = s.dx / len, uy = s.dy / len;
-  const hx = s.x + s.dx * s.u, hy = s.y + s.dy * s.u;
-  const SEG_A = [0.95, 0.68, 0.46, 0.3, 0.18, 0.1, 0.05];      // alpha cabeza→cola
-  const SEG_W = [2, 2, 1, 1, 1, 1, 1];                         // se afina hacia la cola
-  for (let j = 0; j < 7; j++) {
-    const a = SEG_A[j] * fade * gate;
-    if (a <= 0.01) break;
+  const p = Math.round(s.x + s.dx * s.u), q = Math.round(s.y + s.dy * s.u);
+  // halo blando de la cabeza
+  ctx.globalAlpha = fade * 0.22;
+  ctx.fillStyle = '#8fa8dc';
+  ctx.fillRect(p - 2, q - 1, 5, 3);
+  // cabeza 2×2 + cruz de destello en el primer tramo
+  ctx.globalAlpha = fade;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(p - 1, q - 1, 2, 2);
+  if (s.u < 0.45) {
+    ctx.globalAlpha = fade * 0.5;
+    ctx.fillRect(p - 3, q, 7, 1);
+    ctx.fillRect(p, q - 3, 1, 7);
+  }
+  // estela: se aleja de la cabeza afinándose y enfriándose
+  for (let j = 0; j < 10; j++) {
+    const a = SS_SEG_A[j] * fade * 0.9;
+    if (a <= 0.012) break;
+    const d = 3 + j * 2.6;
     ctx.globalAlpha = a;
-    ctx.fillStyle = j === 0 ? '#ffffff' : j < 3 ? '#e4eeff' : '#b9cdf2';
-    const d = j * 2.2;
-    ctx.fillRect(Math.round(hx - ux * d) - 1, Math.round(hy - uy * d) - 1, SEG_W[j], SEG_W[j]);
+    ctx.fillStyle = SS_SEG_C[j];
+    ctx.fillRect(Math.round(p - ux * d), Math.round(q - uy * d), SS_SEG_W[j], SS_SEG_W[j]);
+  }
+  // chispas rezagadas (deriva perpendicular por hash de la ventana)
+  ctx.fillStyle = '#cfe0ff';
+  for (let e = 0; e < 3; e++) {
+    const a = fade * 0.4 * (1 - e * 0.27);
+    if (a <= 0.012) break;
+    const d = SS_SPARK[e] + hash2(k * 31 + e * 7 + 3, 1031) * 8;
+    const jw = (hash2(k * 37 + e * 11 + 5, 1033) - 0.5) * 5;
+    ctx.globalAlpha = a;
+    ctx.fillRect(Math.round(p - ux * d - uy * jw), Math.round(q - uy * d + ux * jw), 1, 1);
   }
   ctx.globalAlpha = 1;
 }
@@ -891,6 +1040,20 @@ const TWIN_BUDGET = [40, 28, 16];
 
 let milkyCv: HTMLCanvasElement | null = null;
 
+/** Campo de DENSIDAD estelar en coords normalizadas (R9-3, SOLO horneado):
+ *  más denso hacia el eje sinusoidal de la Vía Láctea (misma forma que
+ *  buildMilky, escalada por el fracY de la capa) + un vacío suave de baja
+ *  frecuencia (frecuencia entera ⇒ el campo envuelve en X sin costura).
+ *  Devuelve la probabilidad de que una candidata sobreviva al horneado. */
+function starFieldDensity(nx: number, ny: number, fracY: number): number {
+  const ax = (0.44 + Math.sin(nx * TAU) * 0.34) * fracY;      // eje de la banda
+  const d = Math.abs(ny - ax) / (0.5 * fracY);
+  let den = 0.4 + 0.55 * Math.max(0, 1 - d);                  // 0.4 base … 0.95 eje
+  const v = Math.sin(nx * TAU * 2 + 0.9) * Math.sin((ny / fracY) * Math.PI * 1.7 + 0.4);
+  if (v > 0.68) den *= 0.2;                                   // zona casi vacía
+  return den;
+}
+
 /** Hornea la banda de VÍA LÁCTEA: motas diminutas acumuladas en un eje
  *  sinusoidal de 1 periodo por ancho (y(x+span)=y(x) ⇒ envuelve limpio)
  *  con caída de densidad desde el eje + polvo general muy tenue. */
@@ -913,13 +1076,40 @@ function buildMilky(): HTMLCanvasElement {
     const fall = 1 - Math.abs(d) / (HALF * 1.15);
     const a = (0.05 + hash2(k * 11 + 7, 229) * 0.09) * Math.max(0.15, fall);
     cc.globalAlpha = a;
-    cc.fillStyle = hash2(k * 13 + 9, 233) > 0.82 ? '#efe6f2' : '#ccd6ec';
+    cc.fillStyle = hnorm(hash2(k * 13 + 9, 233)) > 0.82 ? '#efe6f2' : '#ccd6ec';
     cc.fillRect(x, y, 1, 1);
-    if (hash2(k * 17 + 11, 239) > 0.93) {                    // mota brillante suelta
+    if (hnorm(hash2(k * 17 + 11, 239)) > 0.93) {                    // mota brillante suelta
       cc.globalAlpha = Math.min(1, a * 1.5);
       cc.fillStyle = '#e8eeff';
       cc.fillRect(x, y, 2, 1);
     }
+  }
+  // CÚMULOS GRANULARES (R9-3): 14 noditos de 5-9 motas pegados al eje —
+  // la banda deja de ser niebla uniforme y gana "star-clouds".
+  for (let cN = 0; cN < 14; cN++) {
+    const cx2 = Math.floor(hash2(cN * 41 + 3, 263) * span);
+    const ax2 = MID + Math.sin((cx2 / span) * TAU) * A;
+    const cy2 = Math.round(ax2 + (hash2(cN * 43 + 7, 269) - 0.5) * HALF * 0.7);
+    const n2 = 5 + Math.floor(hash2(cN * 47 + 11, 271) * 5);
+    for (let q = 0; q < n2; q++) {
+      const x = cx2 + Math.round((hash2(cN * 53 + q, 277) - 0.5) * 14);
+      const y = cy2 + Math.round((hash2(cN * 59 + q, 281) - 0.5) * 8);
+      if (x < 0 || x >= span || y < 0 || y >= H) continue;
+      cc.globalAlpha = 0.07 + hash2(cN * 61 + q, 283) * 0.08;
+      cc.fillStyle = hnorm(hash2(cN * 67 + q, 293)) > 0.8 ? '#efe6f2' : '#ccd6ec';
+      cc.fillRect(x, y, 1, 1);
+    }
+  }
+  // GRAN GRIETA (R9-3): polvo OSCURO pegado al eje — el rift realista de la
+  // Vía Láctea (motas que oscurecen el cielo bajo ellas, alpha bajo).
+  for (let k = 0; k < 42; k++) {
+    const x = Math.floor(hash2(k * 71 + 5, 307) * span);
+    const ax3 = MID + Math.sin((x / span) * TAU) * A;
+    const y = Math.round(ax3 + (hash2(k * 73 + 9, 311) - 0.5) * HALF * 0.5);
+    if (y < 0 || y >= H) continue;
+    cc.globalAlpha = 0.14 + hash2(k * 79 + 13, 317) * 0.12;
+    cc.fillStyle = '#070a18';
+    cc.fillRect(x, y, 2, 1);
   }
   // polvo de relleno (pega la banda al resto del cielo, alpha muy bajo)
   for (let k = 0; k < 90; k++) {
@@ -941,7 +1131,7 @@ function buildTwinklers(): void {
   const A = bandH * 0.34, MID = bandH * 0.44, HALF = bandH * 0.2;
   for (let k = 0; k < 44; k++) {
     const x = Math.round(TWIN_PAD + hash2(k * 7 + 3, 271) * (span - TWIN_PAD * 2));
-    const inBand = hash2(k * 11 + 5, 277) < 0.55;            // densidad por zona
+    const inBand = hnorm(hash2(k * 11 + 5, 277)) < 0.55;     // densidad por zona
     let y: number;
     if (inBand) {
       const ax = MID + Math.sin((x / span) * TAU) * A;
@@ -950,9 +1140,9 @@ function buildTwinklers(): void {
       y = Math.round(Math.pow(hash2(k * 13 + 7, 281), 1.3) * bandH); // más denso al cenit
     }
     if (y < 0) y = 0; else if (y >= bandH) y = bandH - 1;
-    const h = hash2(k * 19 + 11, 293);
+    const h = hnorm(hash2(k * 19 + 11, 293));
     const warm = h > 0.76;
-    const flash = hash2(k * 23 + 13, 307) > 0.7 ? (warm ? '#ffd9a0' : '#a9c8ff') : null;
+    const flash = hnorm(hash2(k * 23 + 13, 307)) > 0.7 ? (warm ? '#ffd9a0' : '#a9c8ff') : null;
     TWIN.push({
       x, y,
       sz: h > 0.78 ? 2 : 1,
@@ -970,7 +1160,9 @@ function buildStarLayers(): void {
   starVW = VIEW_W; starVH = VIEW_H;
   for (let L = 0; L < 3; L++) {
     const far = L === 0;
-    const n = far ? 44 : 13;                       // cercanas: 26 partida en 2 sub-capas
+    // R9-3: candidatas ×~2.6 — el campo de densidad (clústeres + vacíos)
+    // filtra al hornear; las supervivientes dan un cielo con masa y calvas.
+    const n = far ? 112 : 36;                      // cercanas: candidatas en 2 sub-capas
     const extra = far ? 40 : 60;                   // margen de envuelve horizontal
     const fracY = far ? 0.7 : 0.62;                // banda vertical (como la v1)
     const span = VIEW_W + extra;
@@ -987,15 +1179,20 @@ function buildStarLayers(): void {
       const x = Math.round(h1 * span);
       const y = Math.round(h2v * bandH);
       const a = STAR_LAYERS[L].base * (0.6 + 0.4 * h3);          // brillo horneado
+      // —— DENSIDAD POR BANDAS (R9-3): la candidata sobrevive según el
+      //    campo de densidad (más denso hacia la Vía Láctea, vacíos
+      //    suaves); las muy brillantes (h3 > 0.93) pueden colarse en
+      //    cualquier sitio, como en un cielo real. ——
+      if (hnorm(hash2(i * 23 + 31, 137)) > starFieldDensity(h1, h2v, far ? 0.7 : 0.62) && hnorm(h3) <= 0.93) continue;
       if (far) {
         cc.globalAlpha = a;
-        cc.fillStyle = h3 > 0.85 ? '#ffe9c8' : '#dce4ff';
+        cc.fillStyle = hnorm(h3) > 0.85 ? '#ffe9c8' : '#dce4ff';
         cc.fillRect(x, y, 1, 1);
       } else {
         cc.globalAlpha = a;
-        cc.fillStyle = h3 > 0.8 ? '#fff3d8' : '#e6ecff';
+        cc.fillStyle = hnorm(h3) > 0.8 ? '#fff3d8' : '#e6ecff';
         cc.fillRect(x, y, 2, 2);
-        if (h3 > 0.82) {                                         // cruz de destello
+        if (hnorm(h3) > 0.82) {                                  // cruz de destello
           cc.globalAlpha = a * 0.47;                             // (0.4 / 0.85 de la v1)
           cc.fillRect(x - 2, y, 2, 2);
           cc.fillRect(x + 2, y, 2, 2);
@@ -1124,13 +1321,10 @@ export function drawSkyBackdrop(ctx: CanvasRenderingContext2D, g: Game): void {
     // ---- estrella fugaz rara (comparte ventana temporal con el mundo) ----
     if (nf > 0.55) drawShootingStar(ctx, t, Math.min(1, (nf - 0.55) / 0.25));
 
-    // ---- luna escalonada con halo dithered (pre-pintada, 1 drawImage) ----
+    // ---- luna con halo dithered y FASE por día del mundo (2 drawImage) ----
     if (nf > 0.25) {
       const mx2 = Math.round(VIEW_W * 0.78 - camX * 0.004);
-      const my = 66;
-      ctx.globalAlpha = Math.min(1, (nf - 0.2) * 1.6);
-      ctx.drawImage(getMoon(), mx2 - 60, my - 60);
-      ctx.globalAlpha = 1;
+      drawMoon(ctx, mx2, 66, Math.min(1, (nf - 0.2) * 1.6), moonPhaseIndexAt(t));
     }
   }
 
@@ -1206,7 +1400,9 @@ export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void 
     drawTwinklers(ctx, g.globalT, nf, TWIN_BUDGET[perfQuality()]);
   }
 
-  // ---- 5) estrella fugaz rara (noche cerrada, ventana determinista) ----
+  // ---- 5) estrella fugaz rara (noche cerrada, ventana determinista).
+  //      (La LUNA del mundo la pinta fx.ts en drawAmbient 'sky'; para
+  //      alinear su fase puede leer moonPhaseIndexAt(g.globalT) — v4) ----
   if (nf > 0.55) drawShootingStar(ctx, g.globalT, Math.min(1, (nf - 0.55) / 0.25));
 
   // ---- 6) lavado de época ----

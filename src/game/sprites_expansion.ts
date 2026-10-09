@@ -7,6 +7,14 @@
 // vult, coro, ecodesg, satiro + ojos de neumo/espectro/arpi):
 // siluetas retorcidas, ojos glow de 2 tonos, paleta fría + 1 acento
 // y detalles de historia (cadenas rotas, cicatrices, costuras).
+// R9-1: EXPANSIÓN V4 — tiles al nivel del mundo base: arena con
+// gradación húmeda y espuma de borde irregular, adoquinado de Merrow
+// con huecos/hierba, nieve con destellos fríos, hielo SEMITRANSPARENTO
+// (agua pintada bajo capa de escarcha) con grietas y coros ahogados;
+// autotiling agresivo por contexto de vecinos PREHORNEADO (Uint8Array,
+// cero allocations); props con variantes deterministas; enemigos con
+// ciclos de 4 fases (compatibles con el cap de 2 de entityFrame) y
+// jefes con pasada de contraste/silueta.
 //
 // Contenido:
 //   · initExpansionSprites(): registra 'neumo', 'espectro', 'arpi',
@@ -28,6 +36,9 @@
 
 import { registerSpr, hash2 } from './sprites';
 import type { Frames } from './sprites';
+// R9-1: solo lectura de las filas de la expansión para hornear vecinos
+// (maps_expansion no importa nada de este módulo → sin ciclo).
+import { EXPANSION_MAPS } from './maps_expansion';
 
 // ---------------- utilidades locales ----------------
 
@@ -59,60 +70,158 @@ function disc(x: CanvasRenderingContext2D, cx: number, cy: number, r: number, co
 }
 
 // ============================================================
+// R9-1 · CONTEXTO DE VECINOS PREHORNEADO (autotiling agresivo)
+// buildGround() (engine.ts) llama a drawExpansionTile tile a tile,
+// SIN acceso a los vecinos. En initExpansionSprites() leemos las
+// filas de EXPANSION_MAPS (solo lectura: las mismas filas que pinta
+// el motor) y horneamos, por tile, QUÉ vecinos cumplen cada
+// condición:
+//   bits 0..3 = N,E,S,W del anillo 1 (vecino directo)
+//   bits 4..7 = misma dirección en el anillo 2 (a ≤2 pasos)
+// Todo en Uint8Array de 64×64: lookup O(1) y CERO allocations en el
+// prerrender. buildGround corre SIEMPRE después de initExpansionSprites
+// (engine.ts: constructor → loadMap), así el contexto está listo.
+// ============================================================
+const NB_N = 1, NB_E = 2, NB_S = 4, NB_W = 8;
+let CX_COSTA_AGUA: Uint8Array | null = null;  // bits0-3 anillo1 · bits4-7 anillo2
+let CX_COSTA_ARENA: Uint8Array | null = null; // arena vecina (dunas)
+let CX_ALDEA_HIERBA: Uint8Array | null = null; // hierba reclaimando el pueblo
+let CX_ALDEA_AGUA: Uint8Array | null = null;  // laguna vecina (losa mojada)
+let CX_CUMBRES_HIELO: Uint8Array | null = null; // lago helado vecino (orillas)
+
+/** Máscara de vecinos directos que cumplen `match` (bits N,E,S,W). */
+function ring1(rows: string[], match: (ch: string) => boolean): Uint8Array {
+  const a = new Uint8Array(64 * 64);
+  for (let ty = 0; ty < rows.length && ty < 64; ty++) {
+    const row = rows[ty];
+    const up = ty > 0 ? rows[ty - 1] : '';
+    const dn = ty + 1 < rows.length ? rows[ty + 1] : '';
+    for (let tx = 0; tx < row.length && tx < 64; tx++) {
+      let m = 0;
+      if (up.length > tx && match(up[tx])) m |= NB_N;
+      if (tx + 1 < row.length && match(row[tx + 1])) m |= NB_E;
+      if (dn.length > tx && match(dn[tx])) m |= NB_S;
+      if (tx > 0 && match(row[tx - 1])) m |= NB_W;
+      a[(ty << 6) | tx] = m;
+    }
+  }
+  return a;
+}
+
+/** Anillo 2 por dirección: el bit exterior del anillo 1 de cada vecino. */
+function ring2(r1: Uint8Array): Uint8Array {
+  const a = new Uint8Array(64 * 64);
+  for (let ty = 0; ty < 64; ty++) {
+    for (let tx = 0; tx < 64; tx++) {
+      const i = (ty << 6) | tx;
+      let m = 0;
+      if (ty > 0) m |= r1[i - 64] & NB_N;
+      if (tx < 63) m |= r1[i + 1] & NB_E;
+      if (ty < 63) m |= r1[i + 64] & NB_S;
+      if (tx > 0) m |= r1[i - 1] & NB_W;
+      a[i] = m;
+    }
+  }
+  return a;
+}
+
+/** Lookup de 4 bits con desplazamiento; seguro fuera de rango (devuelve 0). */
+function nbBits(a: Uint8Array | null, tx: number, ty: number, shift: number): number {
+  if (!a || tx < 0 || tx > 63 || ty < 0 || ty > 63) return 0;
+  return (a[(ty << 6) | tx] >> shift) & 15;
+}
+
+function initTileContext(): void {
+  const agua = (ch: string) => ch === '~' || ch === 'x' || ch === 'B';
+  // costa: agua a 1 y a 2 pasos (empaquetadas en un byte) + arena vecina
+  const c1 = ring1(EXPANSION_MAPS.costa.rows, agua);
+  const c2 = ring2(c1);
+  const costaAgua = new Uint8Array(64 * 64);
+  for (let i = 0; i < costaAgua.length; i++) costaAgua[i] = c1[i] | (c2[i] << 4);
+  CX_COSTA_AGUA = costaAgua;
+  CX_COSTA_ARENA = ring1(EXPANSION_MAPS.costa.rows, (ch) => ch === 's');
+  // aldea: hierba reclaimando el empedrado + laguna
+  CX_ALDEA_HIERBA = ring1(EXPANSION_MAPS.aldea.rows, (ch) => ch === '.' || ch === 'c');
+  CX_ALDEA_AGUA = ring1(EXPANSION_MAPS.aldea.rows, agua);
+  // cumbres: lago helado (orillas del hielo)
+  CX_CUMBRES_HIELO = ring1(EXPANSION_MAPS.cumbres.rows, (ch) => ch === 'i');
+}
+
+// ============================================================
 // ENEMIGOS NUEVOS
 // ============================================================
 
-// ---------------- Neumo de Marea (16×16 · 2 frames) ----------------
+// ---------------- Neumo de Marea (16×16 · 4 frames · R9-1) ----------------
 // Criatura burbuja de espuma: flota y tiembla. Aguamarina translúcida
-// con brillo y un ojo oscuro pequeño.
+// con brillo, ojo mayor + mota menor, vórtice interior y luz de
+// refracción en la panza. Ciclo de 4 fases (f0/f1 = el ciclo antiguo,
+// entityFrame alterna esas dos hasta que el motor consuma n frames).
 
 function buildNeumo(): Frames {
   const frames: Frames = [];
-  for (let f = 0; f < 2; f++) {
+  const O = '#1c5a5e', BD = '#4ec2b8', B = '#7fe8d8', HL = '#d8fcf4', EYE = '#173038';
+  for (let f = 0; f < 4; f++) {
     const { c, x } = cv(16, 16);
-    const O = '#1c5a5e', BD = '#4ec2b8', B = '#7fe8d8', HL = '#d8fcf4', EYE = '#173038';
-    const oy = f; // tiembla: el cuerpo sube/baja 1 px
-    // contorno + masa
-    disc(x, 8, 8, f === 0 ? 6 : 6.4, O, 0.85);
-    disc(x, 8, 8 + oy * 0.4, 5.2, BD, 0.72);
-    disc(x, 8, 8 + oy * 0.4, 4.1, B, 0.68);
-    // brillo (espalda superior)
-    x.globalAlpha = 0.92;
-    rc(x, 5, 4 - f, 3, 2, HL);
-    rc(x, 4, 5 - f, 1, 1, HL);
-    x.globalAlpha = 0.55;
-    rc(x, 9, 5 - f, 1, 2, HL);
-    // ojo: glow de dos tonos (halo teal + núcleo oscuro con brillo)
-    x.globalAlpha = 0.35;
-    rc(x, 8, 6 - f, 4, 4, '#2a8a84');
+    // flotación v4 (4 fases): 0 reposo · 1 cede · 2 reposo (vórtice alterna) · 3 sube
+    const oy = f === 1 ? 1 : f === 3 ? -1 : 0;
+    const rr = f === 1 ? 6.4 : f === 3 ? 5.8 : 6.1; // tensión de superficie
+    // contorno + masa translúcida
+    disc(x, 8, 8, rr, O, 0.85);
+    disc(x, 8, 8 + oy * 0.4, rr - 0.9, BD, 0.72);
+    disc(x, 8, 8 + oy * 0.4, rr - 1.9, B, 0.68);
+    // luz de refracción en la panza (separa la silueta del suelo)
+    x.globalAlpha = 0.45;
+    rc(x, 5, 11 + oy, 5, 1, B);
+    rc(x, 6, 12 + oy, 3, 1, BD);
     x.globalAlpha = 1;
-    rc(x, 9, 7 - f, 2, 2, EYE);
-    rc(x, 9, 7 - f, 1, 1, '#ffffff');
+    // vórtice interior: la marea gira dentro (alterna por fase)
+    x.globalAlpha = 0.42;
+    if (f & 1) { rc(x, 6, 9, 4, 1, BD); rc(x, 9, 7 + oy, 1, 2, BD); }
+    else { rc(x, 6, 8 + oy, 1, 2, BD); rc(x, 6, 9, 4, 1, BD); }
+    x.globalAlpha = 1;
+    // brillo (espalda superior) + reflejo secundario
+    x.globalAlpha = 0.92;
+    rc(x, 5, 4 - oy, 3, 2, HL);
+    rc(x, 4, 5 - oy, 1, 1, HL);
+    x.globalAlpha = 0.55;
+    rc(x, 9, 5 - oy, 1, 2, HL);
+    // ojo mayor: glow de dos tonos (halo teal + núcleo oscuro con brillo)
+    x.globalAlpha = 0.35;
+    rc(x, 8, 6 - oy, 4, 4, '#2a8a84');
+    x.globalAlpha = 1;
+    rc(x, 9, 7 - oy, 2, 2, EYE);
+    rc(x, 9, 7 - oy, 1, 1, '#ffffff');
+    // ojo menor (asimetría de la criatura): mota que mira a la marea
+    rc(x, 6, 8 - oy, 1, 1, EYE);
     // cicatriz de la membrana (ya estalló una vez y se recosió)
     x.globalAlpha = 0.5;
     rc(x, 4, 9, 1, 2, O); rc(x, 5, 11, 1, 1, O);
     x.globalAlpha = 1;
-    // burbujitas de espuma en la base
+    // burbujitas de espuma (derivan con la fase)
     x.globalAlpha = 0.7;
     rc(x, 3, 12, 2, 2, B);
-    rc(x, 11, 12 + f, 2, 1, B);
+    rc(x, 11, 12 + (f & 1), 2, 1, B);
     rc(x, 7, 13, 1, 1, HL);
+    if (f === 2) rc(x, 12, 10, 1, 1, HL);        // burbuja escapada
+    if (f === 3) rc(x, 4, 10, 1, 1, B);
     x.globalAlpha = 1;
     frames.push(c);
   }
   return frames;
 }
 
-// ---------------- Espectro sin Nombre (16×16 · 2 frames) ----------------
-// Fantasma humanoide pálido que sube y baja; borde difuminado
-// (globalAlpha dentro del canvas) y ojos huecos.
+// ---------------- Espectro sin Nombre (16×16 · 4 frames · R9-1) ----------------
+// Fantasma humanoide pálido que levita; borde deshilachado que alterna
+// por fase, resplandor interno en el pecho y halo frío de los ojos que
+// late. f0/f1 reproducen el ciclo antiguo (cap de entityFrame).
 
 function buildEspectro(): Frames {
   const frames: Frames = [];
-  for (let f = 0; f < 2; f++) {
+  const O = '#3a4a5e', B = '#c9d4e4', S = '#a2b2c8', EYE = '#232e42';
+  for (let f = 0; f < 4; f++) {
     const { c, x } = cv(16, 16);
-    const O = '#3a4a5e', B = '#c9d4e4', S = '#a2b2c8', EYE = '#232e42';
-    const dy = f === 0 ? 0 : -1; // sube/baja
+    const dy = f === 1 || f === 2 ? -1 : 0;   // levitación: baja-sube en 4 fases
+    const jag = f & 1;                         // fase del borde deshilachado
     // cuerpo (semivapor)
     x.globalAlpha = 0.88;
     rc(x, 4, 7 + dy, 8, 4, B);
@@ -124,17 +233,26 @@ function buildEspectro(): Frames {
     rc(x, 5, 2 + dy, 6, 5, B);
     rc(x, 4, 3 + dy, 8, 3, B);
     rc(x, 5, 6 + dy, 6, 1, S);
+    // resplandor interno del pecho (le queda un resto de canto)
+    x.globalAlpha = f === 2 ? 0.45 : 0.3;
+    rc(x, 7, 9 + dy, 2, 2, '#e8f0ff');
     // borde difuminado: costados y rabo translúcidos
     x.globalAlpha = 0.35;
     rc(x, 3, 4 + dy, 1, 6, B);
     rc(x, 12, 4 + dy, 1, 6, B);
     rc(x, 4, 13 + dy, 8, 1, B);
-    // jirones finales (alternan con el frame)
+    // borde deshilachado: dientes que alternan por fase
     x.globalAlpha = 0.55;
-    if (f === 0) { rc(x, 6, 13, 2, 2, S); rc(x, 9, 13, 1, 1, S); }
-    else { rc(x, 5, 12, 1, 2, S); rc(x, 8, 13, 2, 1, S); }
-    // ojos huecos con halo frío de dos tonos
-    x.globalAlpha = 0.35;
+    if (jag === 0) { rc(x, 6, 13, 2, 2, S); rc(x, 9, 13, 1, 1, S); rc(x, 4, 13, 1, 1, S); }
+    else { rc(x, 5, 12, 1, 2, S); rc(x, 8, 13, 2, 1, S); rc(x, 11, 12, 1, 2, S); }
+    // jirones que se desprenden (varían por fase)
+    x.globalAlpha = 0.4;
+    if (f === 0) rc(x, 10, 14, 1, 1, S);
+    else if (f === 1) rc(x, 6, 14, 1, 1, S);
+    else if (f === 2) rc(x, 12, 13, 1, 1, S);
+    else rc(x, 7, 14, 1, 1, S);
+    // ojos huecos con halo frío de dos tonos (el halo LATE por fase)
+    x.globalAlpha = f === 2 ? 0.5 : 0.32;
     rc(x, 5, 3 + dy, 3, 3, '#5a7a9c'); rc(x, 8, 3 + dy, 3, 3, '#5a7a9c');
     x.globalAlpha = 1;
     rc(x, 6, 4 + dy, 1, 2, EYE);
@@ -155,30 +273,43 @@ function buildEspectro(): Frames {
   return frames;
 }
 
-// ---------------- Arpía de Cumbre (16×16 · 2 frames) ----------------
-// Ave de ventisca: alas arriba / alas abajo. Blanco-azul hielo,
-// pico gris, mirada hacia la derecha (el render voltea a la izq.).
+// ---------------- Arpía de Cumbre (16×16 · 4 frames · R9-1) ----------------
+// Ave de ventisca: aleteo de 4 fases (alzadas · bajadas · medio-alto ·
+// medio-bajo; f0/f1 = ciclo antiguo). Barbas de pluma, cola con muesca,
+// aliento de ventisca y contorno más agresivo para leer la silueta
+// contra la nieve. Pico gris, mirada a la derecha (el render voltea).
 
 function buildArpi(): Frames {
   const frames: Frames = [];
-  for (let f = 0; f < 2; f++) {
+  for (let f = 0; f < 4; f++) {
     const { c, x } = cv(16, 16);
-    const O = '#2e4256', W = '#eef6fc', WS = '#bcdcf0', WSD = '#8fb8d8', BK = '#8a94a0', EYE = '#1e2c3a';
-    // alas (arriba en f0, abajo en f1)
+    const O = '#2e4256', W = '#eef6fc', WS = '#bcdcf0', WSD = '#8fb8d8', BK = '#8a94a0';
+    // alas (4 fases de aleteo)
     x.globalAlpha = 1;
     x.fillStyle = WS;
-    if (f === 0) {
-      rc(x, 3, 2, 3, 5, WS); rc(x, 2, 4, 2, 4, WS);          // ala izq. alzada
-      rc(x, 10, 2, 3, 5, WS); rc(x, 12, 4, 2, 4, WS);        // ala der. alzada
-      rc(x, 4, 3, 1, 3, W); rc(x, 11, 3, 1, 3, W);           // brillo de pluma
-    } else {
-      rc(x, 2, 9, 3, 5, WS); rc(x, 1, 11, 2, 3, WS);         // ala izq. baja
-      rc(x, 11, 9, 3, 5, WS); rc(x, 13, 11, 2, 3, WS);       // ala der. baja
+    if (f === 0) {          // alzadas (igual que v2)
+      rc(x, 3, 2, 3, 5, WS); rc(x, 2, 4, 2, 4, WS);
+      rc(x, 10, 2, 3, 5, WS); rc(x, 12, 4, 2, 4, WS);
+      rc(x, 4, 3, 1, 3, W); rc(x, 11, 3, 1, 3, W);
+      rc(x, 3, 4, 1, 1, WSD); rc(x, 11, 4, 1, 1, WSD); // barbas
+    } else if (f === 1) {   // bajadas (igual que v2)
+      rc(x, 2, 9, 3, 5, WS); rc(x, 1, 11, 2, 3, WS);
+      rc(x, 11, 9, 3, 5, WS); rc(x, 13, 11, 2, 3, WS);
       rc(x, 3, 10, 1, 3, W); rc(x, 12, 10, 1, 3, W);
+      rc(x, 2, 10, 1, 1, WSD); rc(x, 12, 10, 1, 1, WSD);
+    } else if (f === 2) {   // medio-alto: planeo extendido
+      rc(x, 2, 4, 3, 4, WS); rc(x, 11, 4, 3, 4, WS);
+      rc(x, 1, 6, 2, 2, WS); rc(x, 13, 6, 2, 2, WS);
+      rc(x, 3, 5, 1, 2, W); rc(x, 12, 5, 1, 2, W);
+    } else {                // medio-bajo: empuje
+      rc(x, 2, 8, 3, 4, WS); rc(x, 11, 8, 3, 4, WS);
+      rc(x, 1, 10, 2, 2, WS); rc(x, 13, 10, 2, 2, WS);
+      rc(x, 3, 9, 1, 2, W); rc(x, 12, 9, 1, 2, W);
     }
-    // cola
+    // cola con muesca (dos plumas)
     rc(x, 2, 8, 3, 2, WSD);
     rc(x, 1, 9, 1, 1, WSD);
+    rc(x, 2, 10, 1, 1, WSD);
     // cuerpo
     rc(x, 5, 7, 6, 4, W);
     rc(x, 6, 6, 4, 6, W);
@@ -189,15 +320,24 @@ function buildArpi(): Frames {
     rc(x, 9, 7, 4, 1, WS);
     rc(x, 13, 5, 2, 2, BK);
     rc(x, 15, 6, 1, 1, BK);
+    // aliento de ventisca (fases de empuje/planeo)
+    if (f >= 2) {
+      x.globalAlpha = 0.6;
+      rc(x, 15, 5 + (f === 3 ? 1 : 0), 1, 1, '#dff2fc');
+      x.globalAlpha = 1;
+    }
     // ojo de ventisca: glow de dos tonos (halo hielo + núcleo claro)
     x.globalAlpha = 0.4;
     rc(x, 10, 4, 3, 3, '#6a9ac4');
     x.globalAlpha = 1;
     rc(x, 11, 5, 1, 1, '#bfe8ff');
-    // contorno sutil
+    // contorno sutil (más agresivo: pecho y laterales, contra la nieve)
     x.globalAlpha = 0.5;
     rc(x, 5, 6, 4, 1, O);
     rc(x, 9, 4, 4, 1, O);
+    rc(x, 5, 10, 6, 1, O);
+    x.globalAlpha = 0.35;
+    rc(x, 5, 7, 1, 3, O); rc(x, 10, 7, 1, 3, O);
     x.globalAlpha = 1;
     // pluma arrancada (la ventisca la desgarra)
     x.globalAlpha = 0.7;
@@ -312,6 +452,29 @@ function buildSirena(): Frames {
     rc(x, 7 + fs, 29, 4, 2, FIN); rc(x, 5 + fs, 30, 3, 1, FROST);  // rasgada
     rc(x, 17 - fs, 27, 4, 2, FIN); rc(x, 19 - fs, 28, 4, 2, FIN2);
     rc(x, 21 - fs, 29, 4, 2, FIN); rc(x, 24 - fs, 30, 3, 2, FROST);
+    // ---- R9-1 · crin de espuma (la marea la peina; se mece con el frame) ----
+    x.globalAlpha = 0.85;
+    rc(x, 10 + sway, 4, 3, 1, FROST);          // mechón de espuma sobre la frente
+    rc(x, 9 + sway, 6, 2, 1, FROST);
+    rc(x, 21 - sway, 5, 2, 1, FROST);
+    rc(x, 22 - sway, 7, 1, 2, '#eef8f0');      // rizo que cae
+    x.globalAlpha = 0.5;
+    rc(x, 8 + sway, 8, 2, 1, FROST);           // espuma enredada en la melena
+    rc(x, 23 - sway, 6, 2, 1, FROST);
+    rc(x, 12 + sway, 2, 2, 1, FROST);          // burbuja de la corona
+    x.globalAlpha = 1;
+    // fotóforos: el acento enciende la cola (late con el frame)
+    x.globalAlpha = f === 1 ? 0.9 : 0.55;
+    rc(x, 11, 21, 1, 1, ACC);
+    rc(x, 19, 22, 1, 1, ACC);
+    rc(x, 14, 25, 1, 1, ACC);
+    x.globalAlpha = 1;
+    // ---- R9-1 · borde de silueta (contraste contra fondos claros) ----
+    x.globalAlpha = 0.45;
+    rc(x, 9, 3, 14, 1, BK);                    // techo de la melena
+    rc(x, 9, 4, 1, 9, BK);                     // costado izq.
+    rc(x, 10, 19, 12, 1, BK);                  // cintura de la cola
+    x.globalAlpha = 1;
     // aura de bruma abisal (acento, muy tenue)
     x.globalAlpha = 0.14;
     rc(x, 4, 10 + sway, 2, 9, ACC);
@@ -410,6 +573,15 @@ function buildGolem(): Frames {
     rc(x, 17, 25, 6, 4, ICEDD);
     rc(x, 9, 28, 6, 1, DK); rc(x, 17, 28, 6, 1, DK);
     rc(x, 8, 29, 8, 1, SNOW); rc(x, 16, 29, 8, 1, SNOW);
+    // ---- R9-1 · musgo helado (lo último que la cumbre le canta) ----
+    x.globalAlpha = 0.8;
+    rc(x, 6, 9, 3, 1, '#5e7a62'); rc(x, 7, 10, 2, 1, '#54705a');   // hombro izq.
+    rc(x, 26, 9, 2, 2, '#54705a');                                  // hombro der.
+    rc(x, 10, 26, 2, 1, '#5e7a62');                                 // rodilla
+    x.globalAlpha = 1;
+    // carámbanos que cuelgan del puño izq. (gotean con el deshielo)
+    rc(x, 1, 28 - up, 1, 3, XT);
+    rc(x, 4, 28 - up, 1, 2, XT);
     // chispas de escarcha (deterministas)
     x.globalAlpha = 0.8;
     rc(x, 11, 11, 1, 1, SNOW); rc(x, 22, 17, 1, 1, SNOW); rc(x, 6, 16, 1, 1, SNOW);
@@ -474,6 +646,7 @@ function buildNota(): Frames {
 // ---------------- registro ----------------
 
 export function initExpansionSprites(): void {
+  initTileContext(); // R9-1: hornea vecinos de los mapas de expansión (autotiling de tiles)
   registerSpr('neumo', buildNeumo());
   registerSpr('espectro', buildEspectro());
   registerSpr('arpi', buildArpi());
@@ -500,6 +673,109 @@ export function initExpansionSprites(): void {
 //   drawTile(x, ch, tx, ty, this.mapId, 0);
 // ============================================================
 
+// ---------------- helpers de tiles v4 (R9-1) ----------------
+
+/** Banda de gradación con borde interior irregular (determinista).
+ *  dir: 0=N · 1=E · 2=S · 3=W — crece desde ese borde hacia dentro. */
+function bandaHumeda(
+  x: CanvasRenderingContext2D, px0: number, py0: number,
+  dir: number, prof: number, col: string, tx: number, ty: number,
+): void {
+  x.fillStyle = col;
+  for (let k = 0; k < prof; k++) {
+    for (let i = 0; i < 16; i++) {
+      // el borde interior de la banda se disuelve con huecos por hash
+      if (k === prof - 1 && hash2(tx * 29 + i, ty * 31 + k * 7 + dir * 13) < 0.45) continue;
+      if (dir === 0) x.fillRect(px0 + i, py0 + k, 1, 1);
+      else if (dir === 1) x.fillRect(px0 + 15 - k, py0 + i, 1, 1);
+      else if (dir === 2) x.fillRect(px0 + i, py0 + 15 - k, 1, 1);
+      else x.fillRect(px0 + k, py0 + i, 1, 1);
+    }
+  }
+}
+
+/** Espuma de ola pegada al borde del agua (línea irregular + lavado interior).
+ *  mask = bits N,E,S,W con agua vecina (contexto prehorneado). */
+function bordeEspuma(
+  x: CanvasRenderingContext2D, px0: number, py0: number, mask: number, tx: number, ty: number,
+): void {
+  const C1 = '#eef7f2', C2 = '#d8ece6';
+  for (let d = 0; d < 4; d++) {
+    if (!(mask & (1 << d))) continue;
+    for (let i = 0; i < 16; i++) {
+      const h = hash2(tx * 37 + i * 3 + d * 11, ty * 41 + i * 7 + d);
+      if (h < 0.18) continue;                    // hueco del borde irregular
+      const me = h > 0.85 ? 1 : 0;               // meandro hacia dentro
+      if (d === 0) { rc(x, px0 + i, py0 + me, 1, 1, C1); if (h > 0.6) rc(x, px0 + i, py0 + 1 + me, 1, 1, C2); }
+      else if (d === 2) { rc(x, px0 + i, py0 + 15 - me, 1, 1, C1); if (h > 0.6) rc(x, px0 + i, py0 + 14 - me, 1, 1, C2); }
+      else if (d === 1) { rc(x, px0 + 15 - me, py0 + i, 1, 1, C1); if (h > 0.6) rc(x, px0 + 14 - me, py0 + i, 1, 1, C2); }
+      else { rc(x, px0 + me, py0 + i, 1, 1, C1); if (h > 0.6) rc(x, px0 + 1 + me, py0 + i, 1, 1, C2); }
+    }
+  }
+}
+
+/** Adoquinado de Merrow v4: dos hiladas de piedras redondeadas con
+ *  junta de tierra, tono/volumen por piedra, huecos de tierra y hierba
+ *  entre adoquines. mode 0 = plaza ':' · mode 1 = camino '=' desgastado. */
+function adoquinado(
+  x: CanvasRenderingContext2D, px0: number, py0: number, tx: number, ty: number,
+  r: number, r2: number, r3: number, hierba: number, wet: boolean, mode: number,
+): void {
+  rc(x, px0, py0, 16, 16, mode === 1 ? '#4e4840' : r < 0.5 ? '#3e3e4a' : '#3a3a46');
+  const jY = mode === 1 ? 6 + Math.floor(r * 4) : 6 + Math.floor(r * 3);
+  for (let half = 0; half < 2; half++) {
+    const y0 = half === 0 ? 0 : jY + 1;
+    const y1 = half === 0 ? jY : 15;
+    const hh = y1 - y0 + 1;
+    let cxr = 0;
+    let idx = 0;
+    while (cxr < 16) {
+      let cw = (mode === 1 ? 6 : 4) + Math.floor(hash2(tx * 7 + half * 13 + idx, ty * 17 + idx * 5) * 4);
+      if (cxr + cw > 16) cw = 16 - cxr;        // la última piedra llega al borde
+      const tone = hash2(tx * 3 + idx * 11 + half, ty * 23 + half * 7 + idx);
+      const base = mode === 1
+        ? (tone < 0.4 ? '#6e6a60' : tone < 0.75 ? '#67635a' : '#716d62')
+        : (tone < 0.3 ? '#5e5e6c' : tone < 0.62 ? '#585864' : tone < 0.85 ? '#61616d' : '#52525e');
+      rc(x, px0 + cxr, py0 + y0, cw, hh, base);
+      // volumen: canto iluminado arriba + sombra abajo
+      rc(x, px0 + cxr, py0 + y0, cw, 1, tone < 0.5 ? '#6c6c78' : '#67676f');
+      rc(x, px0 + cxr, py0 + y1, cw, 1, mode === 1 ? '#46423a' : '#40404c');
+      if (cw > 3) rc(x, px0 + cxr + cw - 1, py0 + y0 + 1, 1, hh - 1, mode === 1 ? '#4a463e' : '#444450');
+      // hueco de tierra ocasional dentro de la piedra
+      if (hash2(tx * 31 + idx, ty * 29 + half) > (mode === 1 ? 0.88 : 0.8)) {
+        rc(x, px0 + cxr + 1 + Math.floor(tone * Math.max(1, cw - 3)),
+          py0 + y0 + 1 + Math.floor(hash2(tx + idx, ty + half) * Math.max(1, hh - 3)),
+          2, 1, mode === 1 ? '#5a4f3e' : '#56504a');
+      }
+      cxr += cw + 1; // junta de tierra entre piedras
+      idx++;
+    }
+  }
+  // grieta vieja cruzando (solo plaza, herencia v2)
+  if (mode === 0 && r2 > 0.7) {
+    rc(x, px0 + 3 + Math.floor(r * 6), py0 + 3, 1, 5, '#34343e');
+    rc(x, px0 + 4 + Math.floor(r * 6), py0 + 7, 2, 1, '#34343e');
+  }
+  // hierba entre adoquines (más densa junto a hierba vecina)
+  const gP = hierba !== 0 ? 0.55 : 0.22;
+  for (let i = 0; i < 3; i++) {
+    const gh = hash2(tx * 13 + i * 5, ty * 7 + i * 3);
+    if (gh < gP) {
+      const gx = px0 + 1 + Math.floor(hash2(tx + i * 7, ty * 3 + i) * 14);
+      const gy = py0 + Math.floor(hash2(tx * 5 + i, ty + i * 11) * 14);
+      x.fillStyle = i % 2 === 0 ? '#5f7d46' : '#4c6a3c';
+      x.fillRect(gx, gy, 1, 2);
+    }
+  }
+  // laguna cercana: losa mojada + charco con reflejo
+  if (wet && r3 > 0.35) {
+    const pw = 4 + Math.floor(r * 6);
+    const qx = px0 + 2 + Math.floor(r2 * 6), qy = py0 + 3 + Math.floor(r * 7);
+    rc(x, qx, qy, pw, 2, '#3a5a74');
+    rc(x, qx + 1, qy, Math.max(1, pw - 3), 1, '#7a98a8');
+  }
+}
+
 export function drawExpansionTile(
   x: CanvasRenderingContext2D, ch: string, tx: number, ty: number, mapId: string,
 ): boolean {
@@ -508,64 +784,203 @@ export function drawExpansionTile(
   const r2 = hash2(tx * 7 + 3, ty * 11 + 5);
   const r3 = hash2(tx * 13 + 1, ty * 3 + 7);
   switch (ch) {
-    case 's': { // arena con moteado determinista
-      rc(x, px0, py0, 16, 16, r < 0.5 ? '#dcc590' : '#d2bb84');
-      for (let i = 0; i < 5; i++) {
+    case 's': { // —— COSTA · arena v4: gradación húmeda + espuma + tesoros de marea
+      const a1 = nbBits(CX_COSTA_AGUA, tx, ty, 0);
+      const a2 = nbBits(CX_COSTA_AGUA, tx, ty, 4);
+      // base seca + moteado
+      rc(x, px0, py0, 16, 16, r < 0.5 ? '#dcc590' : '#d4bd86');
+      for (let i = 0; i < 6; i++) {
         const hx = hash2(tx * 5 + i * 3, ty * 7 + i);
         const hy = hash2(tx * 11 + i, ty * 5 + i * 7);
-        if (hx < 0.45) {
-          x.fillStyle = i % 2 === 0 ? '#c4ab74' : '#e6d2a2';
+        if (hx < 0.55) {
+          x.fillStyle = i % 2 === 0 ? '#c9b077' : '#e6d2a2';
           x.fillRect(px0 + Math.floor(hx * 30) % 15, py0 + Math.floor(hy * 30) % 15, 1, 1);
         }
       }
-      if (r2 > 0.86) { // concha suelta
-        rc(x, px0 + 4 + Math.floor(r * 6), py0 + 5 + Math.floor(r3 * 6), 2, 1, '#f0e8d4');
+      // gradación de arena húmeda hacia el agua (2 anillos, borde difuminado)
+      for (let d = 0; d < 4; d++) {
+        const bit = 1 << d;
+        if (a2 & bit) bandaHumeda(x, px0, py0, d, 2, '#c7ab72', tx, ty);
+        if (a1 & bit) {
+          bandaHumeda(x, px0, py0, d, 4, '#b39868', tx, ty);
+          bandaHumeda(x, px0, py0, d, 2, '#9c8153', tx, ty);
+        }
       }
-      if (r3 < 0.1) rc(x, px0 + 9, py0 + 3, 2, 1, '#e8d4a4');
+      // espuma de ola en el borde (línea irregular + lavado interior)
+      if (a1) bordeEspuma(x, px0, py0, a1, tx, ty);
+      // tesoros de la marea: glena · concha abanico · cinta de alga
+      const ox = px0 + 3 + Math.floor(r * 8), oy2 = py0 + 3 + Math.floor(r3 * 8);
+      if (r2 > 0.92) {                            // glena (caracola espiral)
+        rc(x, ox, oy2, 2, 2, '#e2d2b6'); rc(x, ox + 2, oy2 + 1, 1, 1, '#e2d2b6');
+        rc(x, ox, oy2, 1, 1, '#f4ead8'); rc(x, ox + 1, oy2 + 1, 1, 1, '#a88c64');
+      } else if (r2 > 0.84) {                     // concha abanico
+        rc(x, ox, oy2, 2, 1, '#f0e8d4');
+        rc(x, ox, oy2 + 1, 1, 1, '#dccdb0'); rc(x, ox + 1, oy2 + 1, 1, 1, '#c9b894');
+      } else if (r2 > 0.78) {                     // cinta de alga seca
+        rc(x, ox, oy2, 3, 1, '#8aa878'); rc(x, ox + 2, oy2 + 1, 1, 1, '#6e8c5c');
+      }
       return true;
     }
-    case 'S': { // nieve con destellos
+    case 'S': { // —— CUMBRES · nieve v4: ventisqueros + destellos fríos + orilla del lago
+      const hielo = mapId === 'cumbres' ? nbBits(CX_CUMBRES_HIELO, tx, ty, 0) : 0;
       rc(x, px0, py0, 16, 16, r < 0.5 ? '#e9eef5' : '#e2e9f1');
-      const n = r2 > 0.5 ? 2 : 1;
+      // ventisqueros: bandas de sombra suave (deterministas)
+      const nB = r2 > 0.55 ? 2 : 1;
+      for (let i = 0; i < nB; i++) {
+        const by = py0 + 2 + Math.floor(hash2(tx * 7 + i, ty * 11 + i) * 11);
+        const bx = px0 + Math.floor(hash2(tx * 3 + i * 5, ty * 13 + i) * 6);
+        x.globalAlpha = 0.5;
+        rc(x, bx, by, 6 + Math.floor(hash2(tx + i, ty * 5 + i) * 6), 1, '#d2dce8');
+        rc(x, bx + 1, by + 1, 4, 1, '#dbe4ee');
+        x.globalAlpha = 1;
+      }
+      // destellos fríos: mota blanca + glint cian en cruz (raro)
+      const n = r2 > 0.4 ? 3 : 2;
       for (let i = 0; i < n; i++) {
-        const hx = hash2(tx * 3 + i * 11, ty * 9 + i * 5);
-        const hy = hash2(tx * 17 + i, ty * 13 + i * 3);
-        rc(x, px0 + 2 + Math.floor(hx * 12), py0 + 2 + Math.floor(hy * 12), 1, 1, '#ffffff');
+        const hx2 = hash2(tx * 3 + i * 11, ty * 9 + i * 5);
+        const hy2 = hash2(tx * 17 + i, ty * 13 + i * 3);
+        const sxp = px0 + 1 + Math.floor(hx2 * 14), syp = py0 + 1 + Math.floor(hy2 * 14);
+        rc(x, sxp, syp, 1, 1, '#ffffff');
+        if (hash2(tx + i * 3, ty + i * 7) > 0.85) {
+          rc(x, sxp - 1, syp, 1, 1, '#bfe4ff'); rc(x, sxp + 1, syp, 1, 1, '#bfe4ff');
+          rc(x, sxp, syp - 1, 1, 1, '#bfe4ff'); rc(x, sxp, syp + 1, 1, 1, '#bfe4ff');
+        }
+      }
+      // orilla del lago: costra helada compactada hacia el hielo
+      if (hielo) {
+        x.globalAlpha = 0.8;
+        for (let d = 0; d < 4; d++) {
+          if (!(hielo & (1 << d))) continue;
+          for (let i = 0; i < 16; i++) {
+            if (hash2(tx * 7 + i, ty * 3 + d * 5) < 0.25) continue;
+            if (d === 0) rc(x, px0 + i, py0, 1, 1, '#d6e8f2');
+            else if (d === 2) rc(x, px0 + i, py0 + 15, 1, 1, '#d6e8f2');
+            else if (d === 1) rc(x, px0 + 15, py0 + i, 1, 1, '#d6e8f2');
+            else rc(x, px0, py0 + i, 1, 1, '#d6e8f2');
+          }
+        }
+        x.globalAlpha = 1;
       }
       if (r3 > 0.72) rc(x, px0 + 4 + Math.floor(r * 8), py0 + 9, 3, 1, '#d2dde9');
       return true;
     }
-    case 'i': { // hielo liso con grietas claras + reflejo
-      rc(x, px0, py0, 16, 16, r < 0.5 ? '#a9d2ea' : '#9fc9e4');
-      // reflejo diagonal
-      x.globalAlpha = 0.2;
-      rc(x, px0 + 2 + Math.floor(r2 * 4), py0, 3, 16, '#eaf7ff');
-      x.globalAlpha = 1;
-      // grietas (polilínea determinista)
-      if (r2 > 0.4) {
-        const cx0 = px0 + 3 + Math.floor(r * 6), cy0 = py0 + 3 + Math.floor(r3 * 8);
-        rc(x, cx0, cy0, 4, 1, '#d6eefc');
-        rc(x, cx0 + 3, cy0 + 1, 1, 3, '#d6eefc');
-        rc(x, cx0 + 2, cy0 + 3, 2, 1, '#c2e2f4');
+    case 'i': { // —— CUMBRES · lago v4: SEMITRANSPARENTO (agua pintada bajo la escarcha)
+      const hielo = mapId === 'cumbres' ? nbBits(CX_CUMBRES_HIELO, tx, ty, 0) : 0;
+      // agua profunda bajo el hielo (la transparencia se pinta, no se alpha)
+      rc(x, px0, py0, 16, 16, '#2e6d92');
+      // los coros ahogados: siluetas hundidas (historia del lago)
+      if (r2 > 0.55) {
+        x.globalAlpha = 0.65;
+        const fx = px0 + 2 + Math.floor(r * 7), fy = py0 + 3 + Math.floor(r3 * 7);
+        rc(x, fx, fy, 2, 3, '#17405c'); rc(x, fx + 2, fy + 1, 1, 2, '#17405c');
+        x.globalAlpha = 1;
       }
-      if (r3 < 0.25) rc(x, px0 + 10, py0 + 10, 3, 1, '#c2e2f4');
-      rc(x, px0, py0, 16, 1, '#b8dcf0');
+      // profundidades: mancha oscura
+      x.globalAlpha = 0.45;
+      rc(x, px0 + Math.floor(r3 * 10), py0 + Math.floor(r * 10), 5, 2, '#25587a');
+      x.globalAlpha = 1;
+      // capa de escarcha (el "cristal" semitransparente del lago)
+      x.globalAlpha = 0.78;
+      rc(x, px0, py0, 16, 16, '#b8dcee');
+      x.globalAlpha = 0.5;
+      rc(x, px0 + 1 + Math.floor(r * 6), py0 + 1 + Math.floor(r2 * 6), 7, 5, '#cbe6f4');
+      x.globalAlpha = 1;
+      // brillo diagonal del hielo
+      x.globalAlpha = 0.25;
+      const dx0 = px0 + 2 + Math.floor(r2 * 4);
+      rc(x, dx0, py0, 3, 16, '#eaf7ff');
+      rc(x, dx0 + 3, py0, 1, 16, '#dcf2fc');
+      x.globalAlpha = 1;
+      // grietas deterministas con núcleo claro
+      if (r2 > 0.3) {
+        const gx = px0 + 2 + Math.floor(r * 5), gy = py0 + 2 + Math.floor(r3 * 9);
+        rc(x, gx, gy, 5, 1, '#8fbcd8');
+        rc(x, gx + 1, gy, 3, 1, '#eaf8ff');
+        rc(x, gx + 4, gy + 1, 1, 3, '#8fbcd8');
+        rc(x, gx + 4, gy + 1, 1, 1, '#eaf8ff');
+        rc(x, gx + 2, gy - 1, 2, 1, '#8fbcd8');            // ramita
+        if (r3 > 0.5) { rc(x, gx + 6, gy + 2, 4, 1, '#8fbcd8'); rc(x, gx + 6, gy + 2, 2, 1, '#eaf8ff'); }
+      }
+      // orilla: rim pálido donde NO hay hielo vecino (borde irregular)
+      const rim = (~hielo) & 15;
+      if (rim) {
+        x.globalAlpha = 0.8;
+        for (let d = 0; d < 4; d++) {
+          if (!(rim & (1 << d))) continue;
+          for (let i = 0; i < 16; i++) {
+            if (hash2(tx * 11 + i, ty * 7 + d * 9) < 0.3) continue;   // orilla irregular
+            if (d === 0) rc(x, px0 + i, py0, 1, 1, '#dceefa');
+            else if (d === 2) rc(x, px0 + i, py0 + 15, 1, 1, '#dceefa');
+            else if (d === 1) rc(x, px0 + 15, py0 + i, 1, 1, '#dceefa');
+            else rc(x, px0, py0 + i, 1, 1, '#dceefa');
+          }
+        }
+        x.globalAlpha = 1;
+      }
       return true;
     }
     case '.': {
-      if (mapId === 'costa') { // hierba salada amarillenta-verdosa
-        rc(x, px0, py0, 16, 16, r < 0.5 ? '#8aa860' : '#7e9c56');
+      if (mapId === 'aldea') { // —— MERROW · hierba reclamando el pueblo (R9-1)
+        rc(x, px0, py0, 16, 16, r < 0.5 ? '#7a8a58' : '#72824f');
+        // parche de tierra desnuda
+        x.globalAlpha = 0.6;
+        rc(x, px0 + Math.floor(r2 * 8), py0 + Math.floor(r3 * 8), 5, 3, '#6a5c40');
+        x.globalAlpha = 1;
+        // mechones cortos
         for (let i = 0; i < 4; i++) {
           const hx = hash2(tx * 4 + i, ty * 9 + i);
-          if (hx < 0.4) {
+          if (hx < 0.5) {
+            rc(x, px0 + Math.floor(hx * 14), py0 + Math.floor(hash2(tx + i, ty * 3 + i) * 13), 1, 2,
+              i % 2 === 0 ? '#8ea066' : '#64744a');
+          }
+        }
+        // adoquines sueltos heredados del empedrado
+        if (r2 > 0.55) rc(x, px0 + 2 + Math.floor(r * 9), py0 + 3 + Math.floor(r3 * 9), 3, 2, '#5e5e6c');
+        if (r3 > 0.7) rc(x, px0 + 9 - Math.floor(r * 5), py0 + 11, 2, 1, '#52525e');
+        // flor del festival que sobrevive (rara)
+        if (r3 > 0.9) {
+          rc(x, px0 + 5 + Math.floor(r * 6), py0 + 4 + Math.floor(r2 * 6), 1, 1, '#e878a0');
+          rc(x, px0 + 5 + Math.floor(r * 6), py0 + 5 + Math.floor(r2 * 6), 1, 1, '#4c6a3c');
+        }
+        return true;
+      }
+      if (mapId === 'costa') { // hierba salada + arena/agua cercanas (R9-1)
+        const a1 = nbBits(CX_COSTA_AGUA, tx, ty, 0);
+        const s1 = nbBits(CX_COSTA_ARENA, tx, ty, 0);
+        rc(x, px0, py0, 16, 16, r < 0.5 ? '#8aa860' : '#7e9c56');
+        for (let i = 0; i < 5; i++) {
+          const hx = hash2(tx * 4 + i, ty * 9 + i);
+          if (hx < 0.45) {
             rc(x, px0 + Math.floor(hx * 14), py0 + Math.floor(hash2(tx + i, ty * 3 + i) * 14), 1, 2,
               i % 2 === 0 ? '#a8c070' : '#6e8c4c');
+          }
+        }
+        // arena invadiendo el borde (dunas incipientes, sesgo hacia la arena)
+        if (s1) {
+          for (let i = 0; i < 6; i++) {
+            const hx2 = hash2(tx * 29 + i, ty * 31 + i * 3);
+            if (hx2 < 0.5) {
+              let sxp = px0 + (Math.floor(hx2 * 30) % 15);
+              let syp = py0 + Math.floor(hash2(tx * 37 + i * 5, ty * 41 + i) * 14);
+              if (s1 & NB_N) syp = py0 + Math.floor(hash2(tx + i, ty) * 3);
+              else if (s1 & NB_S) syp = py0 + 13 + Math.floor(hash2(tx + i, ty) * 3);
+              if (s1 & NB_W) sxp = px0 + Math.floor(hx2 * 6);
+              else if (s1 & NB_E) sxp = px0 + 13 + Math.floor(hx2 * 6);
+              x.fillStyle = i % 2 === 0 ? '#c9b478' : '#bda66c';
+              x.fillRect(sxp, syp, 1, 1);
+            }
+          }
+        }
+        // hierba ahogada por la salpicadura (banda oscura hacia el agua)
+        if (a1) {
+          for (let d = 0; d < 4; d++) {
+            if (a1 & (1 << d)) bandaHumeda(x, px0, py0, d, 2, '#66804e', tx, ty);
           }
         }
         if (r2 > 0.8) rc(x, px0 + 6, py0 + 8, 2, 1, '#c8b878'); // brizna seca
         return true;
       }
-      if (mapId === 'cumbres') { // nieve corta verdosa
+      if (mapId === 'cumbres') { // nieve corta verdosa (v2 + brizna extra)
         rc(x, px0, py0, 16, 16, r < 0.5 ? '#a8c098' : '#9cb48c');
         for (let i = 0; i < 4; i++) {
           const hx = hash2(tx * 6 + i, ty * 5 + i * 3);
@@ -575,12 +990,13 @@ export function drawExpansionTile(
           }
         }
         if (r2 > 0.62) rc(x, px0 + 3 + Math.floor(r * 8), py0 + 4 + Math.floor(r3 * 8), 2, 1, '#eef4f0');
+        if (r3 > 0.8) rc(x, px0 + 10 - Math.floor(r * 6), py0 + 12, 1, 2, '#8aa07c');
         return true;
       }
       return false; // lunaris/bosque: dibujo genérico del motor
     }
     case ',': {
-      if (mapId === 'costa') { // flores de sal
+      if (mapId === 'costa') { // flores de sal (v2)
         rc(x, px0, py0, 16, 16, r < 0.5 ? '#8aa860' : '#7e9c56');
         // matas de sal cristalizada
         const bx = px0 + 3 + Math.floor(r * 7), by = py0 + 3 + Math.floor(r2 * 7);
@@ -594,29 +1010,77 @@ export function drawExpansionTile(
         }
         return true;
       }
+      if (mapId === 'aldea') { // —— MERROW pasado · pétalos del Festival del Nombre (R9-1)
+        adoquinado(x, px0, py0, tx, ty, r, r2, r3,
+          nbBits(CX_ALDEA_HIERBA, tx, ty, 0), nbBits(CX_ALDEA_AGUA, tx, ty, 0) !== 0, 0);
+        // pétalos caídos de las guirnaldas
+        for (let i = 0; i < 4; i++) {
+          const ph = hash2(tx * 19 + i, ty * 3 + i * 7);
+          if (ph > 0.35) {
+            rc(x, px0 + 1 + Math.floor(hash2(tx + i, ty * 5 + i) * 14),
+              py0 + 1 + Math.floor(hash2(tx * 7 + i, ty + i) * 14), 1, 1, PETALS[i % 3]);
+          }
+        }
+        // guirnalda caída: hilillo verde con un lazo
+        if (r2 > 0.6) {
+          rc(x, px0 + 3 + Math.floor(r * 6), py0 + 5, 4, 1, '#4c6a3c');
+          rc(x, px0 + 4 + Math.floor(r * 6), py0 + 6, 1, 1, '#e878a0');
+        }
+        return true;
+      }
+      if (mapId === 'cumbres') { // —— CUMBRES pasado · flores abrigadas junto a la hoguera (R9-1)
+        rc(x, px0, py0, 16, 16, r < 0.5 ? '#e9eef5' : '#e2e9f1');
+        if (r2 > 0.3) rc(x, px0 + 3 + Math.floor(r * 8), py0 + 10, 5, 1, '#d2dce8'); // ventisquero
+        // matas de flores que aguantan el frío (2-3)
+        for (let i = 0; i < 3; i++) {
+          const fh = hash2(tx * 7 + i * 3, ty * 11 + i);
+          if (fh > 0.4) {
+            const fx2 = px0 + 2 + Math.floor(hash2(tx + i * 5, ty + i) * 12);
+            const fy2 = py0 + 3 + Math.floor(hash2(tx * 3 + i, ty * 7 + i) * 10);
+            rc(x, fx2, fy2 + 1, 1, 2, '#4c6a3c');                       // tallito
+            rc(x, fx2, fy2, 1, 1, i % 2 === 0 ? '#b48ae8' : '#f0f0f0'); // corola
+          }
+        }
+        return true;
+      }
       return false;
     }
     case ':': {
-      if (mapId === 'aldea') { // empedrado viejo más oscuro/agrietado
-        rc(x, px0, py0, 16, 16, r < 0.5 ? '#585864' : '#525260');
-        rc(x, px0, py0, 16, 1, '#6a6a78');
-        // juntas de losas
-        x.fillStyle = '#40404c';
-        x.fillRect(px0, py0, 1, 16);
-        x.fillRect(px0, py0 + (r > 0.5 ? 7 : 9), 16, 1);
-        x.fillRect(px0 + (r2 > 0.5 ? 6 : 10), py0, 1, 8);
-        // grietas
-        if (r2 > 0.7) {
-          rc(x, px0 + 3 + Math.floor(r * 6), py0 + 3, 1, 5, '#3c3c48');
-          rc(x, px0 + 4 + Math.floor(r * 6), py0 + 7, 2, 1, '#3c3c48');
-        }
-        if (r3 > 0.85) rc(x, px0 + 11, py0 + 11, 2, 1, '#6e6e7c'); // piedra clara
+      if (mapId === 'aldea') { // —— MERROW · empedrado v4 (huecos, hierba, laguna cercana)
+        adoquinado(x, px0, py0, tx, ty, r, r2, r3,
+          nbBits(CX_ALDEA_HIERBA, tx, ty, 0), nbBits(CX_ALDEA_AGUA, tx, ty, 0) !== 0, 0);
         return true;
       }
       return false; // cripta/lunaris: dibujo genérico
     }
     case '=': {
-      if (mapId === 'cumbres') { // camino pisado moreno
+      if (mapId === 'costa') { // —— COSTA · sendero de arena pisada (R9-1)
+        rc(x, px0, py0, 16, 16, r < 0.5 ? '#c8ae7a' : '#c0a670');
+        rc(x, px0, py0, 16, 1, '#d4bc8c');
+        // rodadas y huellas (dashes deterministas)
+        for (let i = 0; i < 5; i++) {
+          const hx = hash2(tx * 13 + i, ty * 5 + i * 3);
+          if (hx < 0.5) {
+            rc(x, px0 + Math.floor(hx * 12), py0 + 2 + Math.floor(hash2(tx + i * 7, ty + i) * 12),
+              2 + Math.floor(hx * 3), 1, '#aa9060');
+          }
+        }
+        if (r2 > 0.7) rc(x, px0 + 4 + Math.floor(r * 8), py0 + 6 + Math.floor(r3 * 6), 2, 1, '#9a8860'); // piedrecilla
+        if (r3 > 0.8) rc(x, px0 + 9 - Math.floor(r * 5), py0 + 11, 2, 1, '#e8dcc0'); // concha triturada
+        // rociado de arena viva en los bordes
+        for (let i = 0; i < 4; i++) {
+          if (hash2(tx * 3 + i, ty * 9 + i) > 0.55) {
+            rc(x, px0 + Math.floor(hash2(tx + i, ty * 7 + i) * 15), py0 + (i % 2 === 0 ? 1 : 14), 1, 1, '#dcc590');
+          }
+        }
+        return true;
+      }
+      if (mapId === 'aldea') { // —— MERROW · camino empedrado desgastado (R9-1)
+        adoquinado(x, px0, py0, tx, ty, r, r2, r3,
+          nbBits(CX_ALDEA_HIERBA, tx, ty, 0), nbBits(CX_ALDEA_AGUA, tx, ty, 0) !== 0, 1);
+        return true;
+      }
+      if (mapId === 'cumbres') { // camino pisado moreno + ventisca (v2 + nieve R9-1)
         rc(x, px0, py0, 16, 16, r < 0.5 ? '#8a7048' : '#7c6440');
         rc(x, px0, py0, 16, 1, '#9a8056');
         for (let i = 0; i < 5; i++) {
@@ -626,6 +1090,13 @@ export function drawExpansionTile(
           }
         }
         if (r2 > 0.75) rc(x, px0 + 5 + Math.floor(r * 6), py0 + 6, 2, 1, '#a8906a'); // piedrecilla
+        // ventisca: nieve acumulada en los cantos + rociada
+        for (let i = 0; i < 3; i++) {
+          if (hash2(tx * 5 + i * 3, ty * 13 + i) > 0.45) {
+            rc(x, px0 + 1 + Math.floor(hash2(tx + i, ty * 7 + i) * 14), py0 + (i === 0 ? 1 : 13 + (i & 1)), 2, 1, '#e6ecf2');
+          }
+        }
+        if (r3 > 0.3) rc(x, px0 + 3 + Math.floor(r2 * 9), py0 + 5 + Math.floor(r * 6), 1, 1, '#dfe7ef');
         return true;
       }
       return false; // lunaris: dibujo genérico
@@ -713,14 +1184,28 @@ export function drawExpansionTallTile(
 // motor pasará sx(px), sy(py) como hace drawProps()).
 // ============================================================
 
+/** R9-1 · Variante determinista de prop a partir de una semilla estable
+ *  (hash de coords del mapa). seed=0 → variante 0 (base). */
+function varianteProp(seed: number, n: number): number {
+  if (!seed) return 0;
+  return Math.floor(hash2(seed * 7 + 1, seed * 13 + 3) * n) % n;
+}
+
+// Paletas constantes de props/tiles (fuera de las rutas de draw: cero
+// allocations por frame — el farol y los pétalos se pintan cada frame).
+const GARLAND_COLS = ['#e878a0', '#f0d060', '#7ea8e0'];
+const PETALS = ['#e878a0', '#f0d060', '#f0f0f0'];
+
 export function drawExpansionProp(
   ctx: CanvasRenderingContext2D, kind: string, cx: number, cy: number,
-  zoom: number, t: number, lit: boolean,
+  zoom: number, t: number, lit: boolean, seed = 0,
 ): void {
   const Z = zoom;
+  const V = varianteProp(seed, 4); // 4 variantes por prop (0 = base)
   switch (kind) {
     case 'wreck': {
-      // ---- casco de nave naufragada (~40×24) ----
+      // ---- casco de nave naufragada (~40×24) · 3 variantes (V%3) ----
+      const V3 = V % 3;
       ctx.save();
       ctx.translate(cx, cy);
       ctx.rotate(-0.16);
@@ -737,6 +1222,12 @@ export function drawExpansionProp(
         ctx.fillStyle = i % 2 === 0 ? '#6d4a2a' : '#54381e';
         ctx.fillRect(-w, (6 - i * 4) * Z, w * 2, 4 * Z);
       }
+      // cuadernas (costillas internas) asomando — la herida del casco (R9-1)
+      ctx.fillStyle = '#3a2812';
+      for (let i = 0; i < 4; i++) ctx.fillRect((-8 + i * 4) * Z, -2 * Z, 1.2 * Z, 4 * Z);
+      // línea de quilla en sombra (contraste)
+      ctx.fillStyle = 'rgba(20,14,8,0.45)';
+      ctx.fillRect(-17 * Z, 6 * Z, 34 * Z, 1 * Z);
       // borde superior desbordado (cubierta rota)
       ctx.fillStyle = '#8a6438';
       ctx.fillRect(-14 * Z, -12 * Z, 10 * Z, 2 * Z);
@@ -745,15 +1236,45 @@ export function drawExpansionProp(
       // tablón suelto
       ctx.fillStyle = '#7d5630';
       ctx.fillRect(-4 * Z, -9 * Z, 9 * Z, 1.5 * Z);
-      // musgo
+      // musgo + liquen
       ctx.fillStyle = '#4a7a3e';
       ctx.fillRect(-9 * Z, -6 * Z, 5 * Z, 2 * Z);
       ctx.fillRect(6 * Z, 1 * Z, 4 * Z, 2 * Z);
+      ctx.fillStyle = '#5e8a4a';
+      ctx.fillRect(-8 * Z, -6 * Z, 2 * Z, 1 * Z);
       // mástil roto
       ctx.fillStyle = '#54381e';
       ctx.fillRect(6 * Z, -26 * Z, 2.4 * Z, 22 * Z);
       ctx.fillStyle = '#3e2a16';
       ctx.fillRect(7.4 * Z, -26 * Z, 1 * Z, 22 * Z);
+      // variante 1: percebes en la línea de flotación + red de cuerda rota
+      if (V3 === 1) {
+        ctx.fillStyle = '#cfc8b4';
+        for (let i = 0; i < 7; i++) {
+          const bx = (-14 + ((i * 37) % 28)) * Z;
+          ctx.fillRect(bx, (2 + (i % 3)) * Z, 1.6 * Z, 1.6 * Z);
+        }
+        ctx.strokeStyle = '#8f7147';
+        ctx.lineWidth = Math.max(1, Z * 0.8);
+        ctx.beginPath();
+        ctx.moveTo(-12 * Z, -10 * Z);
+        ctx.quadraticCurveTo(-14 * Z, -2 * Z, (-10 + Math.sin(t * 1.1) * 1.2) * Z, 6 * Z);
+        ctx.moveTo(-8 * Z, -11 * Z);
+        ctx.lineTo((-9 + Math.sin(t * 1.3) * 1.5) * Z, 3 * Z);
+        ctx.stroke();
+      }
+      // variante 2: cargamento derramado (barril rodado + odre roto)
+      if (V3 === 2) {
+        ctx.fillStyle = '#7a5c3a';
+        ctx.fillRect(16 * Z, 2 * Z, 5 * Z, 4 * Z);
+        ctx.fillStyle = '#54381e';
+        ctx.fillRect(16 * Z, 3 * Z, 5 * Z, 1 * Z);
+        ctx.fillRect(16 * Z, 5 * Z, 5 * Z, 1 * Z);
+        ctx.fillStyle = '#6a4e30';
+        ctx.fillRect(-20 * Z, 3 * Z, 4 * Z, 3 * Z);
+        ctx.fillStyle = '#3e2a16';
+        ctx.fillRect(-19 * Z, 6 * Z, 2 * Z, 1 * Z);
+      }
       // vela desgarrada ondeando con sin(t)
       const wav = Math.sin(t * 1.7) * 3;
       ctx.globalAlpha = 0.92;
@@ -770,19 +1291,40 @@ export function drawExpansionProp(
       ctx.fillStyle = '#a89f8a';
       ctx.fillRect((17 + wav * 0.5) * Z, (-13 + wav) * Z, 4 * Z, 2 * Z);
       ctx.fillRect(11 * Z, -19 * Z, 3 * Z, 2 * Z);
+      // algas colgando de la cubierta (se mecen, R9-1)
+      ctx.fillStyle = '#3e6e3a';
+      ctx.fillRect(-11 * Z, (-10 + Math.sin(t * 1.4) * 0.6) * Z, 1 * Z, 3 * Z);
+      ctx.fillRect(3 * Z, (-9 + Math.sin(t * 1.7 + 1) * 0.6) * Z, 1 * Z, 2 * Z);
+      // espuma lamiendo la base (determinista con t)
+      ctx.globalAlpha = 0.5 + Math.sin(t * 2.2) * 0.15;
+      ctx.fillStyle = '#e8f2ec';
+      ctx.fillRect(-16 * Z, 9 * Z, 8 * Z, 1 * Z);
+      ctx.fillRect(4 * Z, 10 * Z, 12 * Z, 1 * Z);
       ctx.globalAlpha = 1;
       ctx.restore();
       break;
     }
     case 'faro': {
-      // ---- faro en ruinas (~20×48): torre de piedra con franjas ----
+      // ---- faro en ruinas (~20×48) · 3 variantes (V%3) ----
+      const V3 = V % 3;
       // 8 segmentos de 6 px → 48 px de alto, se estrecha hacia arriba
       for (let i = 0; i < 8; i++) {
         const yTop = cy + (14 - i * 6) * Z - 6 * Z;
         const halfW = (10 - i * 0.5) * Z;
         ctx.fillStyle = i % 2 === 0 ? '#c8c2b4' : '#9a5a4a';
         ctx.fillRect(cx - halfW, yTop, halfW * 2, 6 * Z + 0.6);
+        // sillares: juntas horizontales + luz rasante en el canto izq. (R9-1)
+        ctx.fillStyle = 'rgba(40,36,30,0.28)';
+        for (let j = 1; j <= 2; j++) ctx.fillRect(cx - halfW, yTop + j * 2 * Z, halfW * 2, Math.max(1, Z * 0.5));
+        ctx.fillStyle = 'rgba(255,255,255,0.14)';
+        ctx.fillRect(cx - halfW, yTop, Math.max(1, Z), 6 * Z);
       }
+      // manchas de sal (goteo del mar, deterministas)
+      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = '#f4f8f4';
+      ctx.fillRect(cx - 5 * Z, cy - 16 * Z, 1.4 * Z, 12 * Z);
+      ctx.fillRect(cx + 3 * Z, cy - 6 * Z, 1.2 * Z, 9 * Z);
+      ctx.globalAlpha = 1;
       // piedras caídas / ruina
       ctx.fillStyle = '#8a8478';
       ctx.fillRect(cx - 11 * Z, cy + 8 * Z, 3 * Z, 2 * Z);
@@ -791,6 +1333,27 @@ export function drawExpansionProp(
       ctx.fillStyle = 'rgba(40,36,30,0.5)';
       ctx.fillRect(cx - 2 * Z, cy - 10 * Z, 1.2 * Z, 10 * Z);
       ctx.fillRect(cx - 1 * Z, cy - 2 * Z, 1.2 * Z, 6 * Z);
+      // variante 1: puerta con dintel + escalón (R9-1)
+      if (V3 === 1) {
+        ctx.fillStyle = '#241a12';
+        ctx.fillRect(cx - 2.5 * Z, cy + 6 * Z, 5 * Z, 6 * Z);
+        ctx.fillStyle = '#3a2c1c';
+        ctx.fillRect(cx - 2.5 * Z, cy + 6 * Z, 5 * Z, 1 * Z);
+        ctx.fillStyle = '#8a8478';
+        ctx.fillRect(cx - 4 * Z, cy + 12 * Z, 8 * Z, 1.6 * Z);
+      }
+      // variante 2: grieta mayor con musgo + nido en la cornisa (R9-1)
+      if (V3 === 2) {
+        ctx.fillStyle = 'rgba(40,36,30,0.5)';
+        ctx.fillRect(cx + 4 * Z, cy - 2 * Z, 1.2 * Z, 14 * Z);
+        ctx.fillRect(cx + 3 * Z, cy + 4 * Z, 1.2 * Z, 4 * Z);
+        ctx.fillStyle = '#4d6a44';
+        ctx.fillRect(cx + 3 * Z, cy + 8 * Z, 2 * Z, 1.4 * Z);
+        ctx.fillRect(cx - 7 * Z, cy - 2 * Z, 2.4 * Z, 1.4 * Z);
+        ctx.fillStyle = '#8a7248';
+        ctx.fillRect(cx - 8 * Z, cy - 30 * Z, 3 * Z, 1.2 * Z);   // nido de pajitas
+        ctx.fillRect(cx - 7 * Z, cy - 29 * Z, 2 * Z, 0.8 * Z);
+      }
       // linterna
       const gy = cy - 34 * Z;
       ctx.fillStyle = '#3a3e48';
@@ -833,17 +1396,32 @@ export function drawExpansionProp(
       break;
     }
     case 'lamp': {
-      // ---- farol de pie (~10×18) ----
-      // peana + poste
+      // ---- farol de pie (~10×18) · 4 variantes: 0 base · 1 inclinado ·
+      //      2 guirnalda del festival · 3 cruzeta con cristal fisurado ----
+      ctx.save();
+      if (V === 1) { // poste inclinado por el viento de sal
+        ctx.translate(cx, cy + 8 * Z);
+        ctx.rotate(0.06);
+        ctx.translate(-cx, -(cy + 8 * Z));
+      }
+      // peana de adoquines + poste
+      ctx.fillStyle = '#4a4a54';
+      ctx.fillRect(cx - 4.5 * Z, cy + 7 * Z, 9 * Z, 1.6 * Z);
       ctx.fillStyle = '#2a2a32';
       ctx.fillRect(cx - 3 * Z, cy + 6 * Z, 6 * Z, 2 * Z);
       ctx.fillStyle = '#3a3a44';
       ctx.fillRect(cx - 1 * Z, cy - 8 * Z, 2 * Z, 15 * Z);
+      ctx.fillStyle = '#4a4a56';
+      ctx.fillRect(cx - 1 * Z, cy - 8 * Z, 0.8 * Z, 15 * Z);    // brillo del poste
+      if (V === 3) { ctx.fillStyle = '#3a3a44'; ctx.fillRect(cx - 6 * Z, cy - 9 * Z, 12 * Z, 1.4 * Z); } // cruzeta
       // caja del farol
       ctx.fillStyle = '#3a3a44';
       ctx.fillRect(cx - 3.5 * Z, cy - 16 * Z, 7 * Z, 9 * Z);
       ctx.fillStyle = '#2a2a32';
       ctx.fillRect(cx - 4.5 * Z, cy - 18 * Z, 9 * Z, 2.5 * Z);
+      // montante central de la vitrina (2 panes, R9-1)
+      ctx.fillStyle = '#2a2a32';
+      ctx.fillRect(cx - 0.5 * Z, cy - 15.5 * Z, 1 * Z, 8 * Z);
       if (lit) {
         // llama cálida parpadeante + halo dorado
         const fl = 0.7 + Math.sin(t * 9) * 0.2 + Math.sin(t * 23.7) * 0.1;
@@ -852,11 +1430,18 @@ export function drawExpansionProp(
         ctx.beginPath();
         ctx.arc(cx, cy - 11.5 * Z, 10 * Z, 0, Math.PI * 2);
         ctx.fill();
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = `rgba(255,216,138,${0.7 + fl * 0.3})`;
+        ctx.globalAlpha = 0.7 + fl * 0.3;        // (R9-1: sin string rgba por frame)
+        ctx.fillStyle = '#ffd88a';
         ctx.fillRect(cx - 2.5 * Z, cy - 14.5 * Z, 5 * Z, 6 * Z);
+        ctx.globalAlpha = 1;
         ctx.fillStyle = '#fff6d8';
         ctx.fillRect(cx - 1 * Z, cy - 13 * Z, 2 * Z, 3 * Z);
+        // polillas al amor de la llama (2 motas orbitando, deterministas)
+        ctx.globalAlpha = 0.75;
+        ctx.fillStyle = '#e8e2c8';
+        ctx.fillRect(cx + Math.sin(t * 3.1) * 6 * Z, cy - 12 * Z + Math.cos(t * 4.3) * 3 * Z, 1.2 * Z, 1.2 * Z);
+        ctx.fillRect(cx + Math.sin(t * 2.3 + 2.4) * 7 * Z, cy - 11 * Z + Math.cos(t * 3.7 + 1.2) * 4 * Z, 1 * Z, 1 * Z);
+        ctx.globalAlpha = 1;
       } else {
         // cristal apagado gris
         ctx.fillStyle = '#8a8f98';
@@ -864,6 +1449,40 @@ export function drawExpansionProp(
         ctx.fillStyle = '#6a6f78';
         ctx.fillRect(cx - 1 * Z, cy - 12 * Z, 2 * Z, 3 * Z);
       }
+      // variante 2: guirnalda del festival atada a una estaca (R9-1)
+      if (V === 2) {
+        const swg = Math.sin(t * 1.8) * 0.6 * Z;
+        ctx.strokeStyle = '#6a5a48';
+        ctx.lineWidth = Math.max(1, Z * 0.6);
+        ctx.beginPath();
+        ctx.moveTo(cx + 1 * Z, cy - 9 * Z);
+        ctx.quadraticCurveTo(cx + 6 * Z, cy - 4 * Z + swg, cx + 10 * Z, cy - 1 * Z);
+        ctx.stroke();
+        ctx.fillStyle = '#5a4026';
+        ctx.fillRect(cx + 9.5 * Z, cy - 1 * Z, 1.4 * Z, 4 * Z);  // estaca
+        for (let i = 0; i < 3; i++) {
+          const fx = (2.5 + i * 2.8) * Z;
+          const fy = (-8 + swg * 0.5 - i * 1.1) * Z;
+          ctx.fillStyle = GARLAND_COLS[i];
+          ctx.beginPath();
+          ctx.moveTo(cx + fx, cy + fy);
+          ctx.lineTo(cx + fx + 2 * Z, cy + fy);
+          ctx.lineTo(cx + fx + 1 * Z, cy + fy + 2.2 * Z);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+      // variante 3: cristal fisurado (el viento de la Niebla lo marcó)
+      if (V === 3) {
+        ctx.strokeStyle = 'rgba(30,30,38,0.6)';
+        ctx.lineWidth = Math.max(1, Z * 0.5);
+        ctx.beginPath();
+        ctx.moveTo(cx - 2 * Z, cy - 15 * Z);
+        ctx.lineTo(cx - 0.5 * Z, cy - 12 * Z);
+        ctx.lineTo(cx - 2 * Z, cy - 10 * Z);
+        ctx.stroke();
+      }
+      ctx.restore();
       break;
     }
     default:
@@ -1037,6 +1656,11 @@ function buildVult(): Frames {
     rc(x, 23, 22, 4, 2, DGAD);
     // brillo bilis de los filos (parpadea por frame)
     if (f !== 1) { x.globalAlpha = 0.8; rc(x, 6, 7, 1, 3, ACC); rc(x, 25, 17, 1, 2, ACC); x.globalAlpha = 1; }
+    // ---- R9-1 · pasada de contraste: sombra del faldón y costado ----
+    x.globalAlpha = 0.55;
+    rc(x, 12, 22, 10, 1, BK);                  // borde inferior del faldón
+    rc(x, 12, 10, 1, 9, BK);                   // costado izq. de la gabardina
+    x.globalAlpha = 1;
     // contorno sutil
     x.globalAlpha = 0.5;
     rc(x, 13, 3, 8, 1, BK);
@@ -1134,6 +1758,12 @@ function buildCoro(fase: 1 | 2 | 3): Frames {
     rc(x, 23, 12 + bob, 2, 2, HUECO);
     rc(x, 23, 12 + bob, 1, 1, FILO);
     rc(x, 24, 17 + bob, 1, 2, HUECO);
+    // ---- R9-1 · pasada de contraste: rim de silueta de las máscaras ----
+    x.globalAlpha = 0.5;
+    rc(x, 10, 5 + bob, 10, 1, HUECO);          // techo máscara central
+    rc(x, 3, 13 + bob, 6, 1, HUECO);           // techo máscara izq.
+    rc(x, 21, 8 + bob, 6, 1, HUECO);           // techo máscara der.
+    x.globalAlpha = 1;
     // destello del glow (parpadeo por frame)
     if (f === 1) {
       x.globalAlpha = 0.7;
@@ -1197,6 +1827,15 @@ function buildEcodesg(): Frames {
     x.globalAlpha = 0.5;
     rc(x, 7, 3 + GAP, 2, 1, O);                // labio del hueco
     x.globalAlpha = 1;
+    // ---- R9-1 · contraste: rim superior + chispas del eco dorado ----
+    x.globalAlpha = 0.45;
+    rc(x, 3, 3, 11, 1, O);                     // rim sobre las dos mitades
+    x.globalAlpha = 1;
+    if (f === 1) {                             // el eco escupe chispas al latir
+      x.globalAlpha = 0.8;
+      rc(x, 6, 12, 1, 1, GOLD); rc(x, 12, 4, 1, 1, GOLD);
+      x.globalAlpha = 1;
+    }
     frames.push(c);
   }
   return frames;
@@ -1249,6 +1888,13 @@ function buildSatiro(): Frames {
     rc(x, 10, 6 + hop, 1, 4, '#5c4a3a');
     rc(x, 11, 6 + hop, 1, 3, '#40342a');
     rc(x, 10, 7 + hop, 1, 1, ACCD);            // agujero tallado
+    // ---- R9-1 · contraste: polvo del brinco + filo del asta buena ----
+    if (f === 1) {
+      x.globalAlpha = 0.5;
+      rc(x, 3, 13, 2, 1, NIEBLA); rc(x, 11, 13, 2, 1, NIEBLA); // polvo al aterrizar
+      x.globalAlpha = 1;
+    }
+    rc(x, 10, 1 + hop, 1, 1, '#e0d8c4');       // punta del asta curva
     if (f === 1) { x.globalAlpha = 0.7; rc(x, 12, 5 + hop, 1, 1, NIEBLA); x.globalAlpha = 1; } // nota de niebla
     // cola corta
     rc(x, 2, 8 + hop, 1, 2, FUR2);

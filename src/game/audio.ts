@@ -183,6 +183,27 @@ const SEMI_UP = Math.pow(2, 1 / 12);
 // ruido más largo del juego (sNoise máx. actual: 1.2 s en 'song').
 const NOISE_BUF_S = 2;
 
+// ============================================================
+// R9-8 · helpers de módulo para atmósfera nocturna + magia
+// ============================================================
+
+// Hash determinista 0..1 (estilo splitmix): mismo input → mismo output,
+// sin estado ni Math.random. Se usa para variaciones por seed (rugidos),
+// fraseo de grillos y variación de aullidos. Barato: 3 imul + shifts.
+function det01(n: number): number {
+  let x = Math.imul(n | 0, 0x9e3779b1) + 0x7f4a7c15;
+  x = Math.imul(x ^ (x >>> 16), 0x85ebca6b);
+  x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35);
+  x ^= x >>> 16;
+  return (x >>> 0) / 4294967296;
+}
+
+// R9-8: arpegio de carga de hechizo (Re mayor ascendente, Hz) — hoisted a
+// módulo para NO alocar el array en cada disparo del hechizo.
+const SPELL_ARP: readonly number[] = [587.33, 739.99, 880, 1174.66, 1479.98];
+// Frecuencia base del shimmer (≈C7): sine agudo con vibrato creciente.
+const SPELL_SHIMMER_F = 2093;
+
 export class AudioEngine {
   ctx: AudioContext | null = null;
   master!: GainNode;
@@ -216,6 +237,18 @@ export class AudioEngine {
   // melodía, y fundido 0→1 del "tambor de tensión" de combate.
   private loopNo = 0;
   private tensionGain = 0;
+
+  // ---- R9-8 · estado de la capa nocturna y aullidos ----
+  // nightOn: estado lógico pedido (idempotencia de nightAmbience). nightGain:
+  // bus de la capa (se crea UNA vez y se reutiliza en on/off). nightTimer:
+  // scheduler de grillos (SOLO corre con la capa on). nightStep: índice
+  // determinista del scheduler. howlN: contador para variación determinista
+  // de aullidos consecutivos.
+  private nightOn = false;
+  private nightGain: GainNode | null = null;
+  private nightTimer: number | null = null;
+  private nightStep = 0;
+  private howlN = 0;
 
   musicVol = 0.7;
   sfxVol = 0.8;
@@ -739,6 +772,323 @@ export class AudioEngine {
         break;
     }
   }
+
+  // ============================================================
+  // R9-8 · ATMÓSFERA NOCTURNA + MAGIA (épicas 5.3 y 7.5)
+  // Métodos internos del engine (reutilizan sTone/sNoise/sharedNoise y el
+  // rate-limit). Las funciones EXPORT playSpellCast / playSpellImpact /
+  // playNightAmbience / playHowlDistant / playBossRoarVariant (al final del
+  // archivo) son envoltorios delgados sobre el singleton `audio`: el
+  // orquestador cablea esas export, no estos métodos.
+  // ============================================================
+
+  /** R9-8: rate-limit reutilizable con la MISMA política que sfx() (clave →
+   *  último disparo, Mapa de tamaño fijo). Devuelve true si se permite. */
+  private rl(key: string, gap: number): boolean {
+    if (!this.ctx) return false;
+    const now = this.ctx.currentTime;
+    const last = this.lastSfx.get(key);
+    if (last !== undefined && now >= last && now - last < gap) return false;
+    this.lastSfx.set(key, now);
+    return true;
+  }
+
+  // ---- 1) Carga de hechizo: arpegio ascendente + shimmer con vibrato ----
+  // ----    creciente. Total < 0.4 s (última nota termina ~0.31 s;      ----
+  // ----    shimmer ~0.40 s).                                           ----
+  spellCast() {
+    this.init();
+    if (!this.ctx || !this.rl('spellCast', 0.06)) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    // Arpegio pentatónico-mayor ascendente (D5 F#5 A5 D6 F#6), 42 ms/nota:
+    // "el hechizo se ensambla". Parcial de octava muy flojo para brillo.
+    for (let i = 0; i < SPELL_ARP.length; i++) {
+      const f = SPELL_ARP[i];
+      this.sTone(f, f * 1.004, 0.14, 'triangle', 0.09, i * 0.042);
+      this.sTone(f * 2, f * 2, 0.07, 'sine', 0.025, i * 0.042 + 0.01);
+    }
+    // Shimmer: sine agudo que sube un poco con vibrato que CRECE (el aire
+    // "se tensa" mientras el hechizo carga). LFO → frecuencia, profundidad
+    // 2→26 Hz en rampa. Nodos desechables (patrón estándar, ver tone()).
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    const lfo = ctx.createOscillator();
+    const lg = ctx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(SPELL_SHIMMER_F, t + 0.06);
+    o.frequency.exponentialRampToValueAtTime(SPELL_SHIMMER_F * 1.16, t + 0.36);
+    lfo.type = 'sine';
+    lfo.frequency.value = 7.5;
+    lg.gain.setValueAtTime(2, t + 0.06);
+    lg.gain.linearRampToValueAtTime(26, t + 0.36);
+    lfo.connect(lg); lg.connect(o.frequency);
+    g.gain.setValueAtTime(0.0001, t + 0.06);
+    g.gain.linearRampToValueAtTime(0.045, t + 0.12);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.36);
+    o.connect(g); g.connect(this.sfxGain);
+    o.start(t + 0.06); o.stop(t + 0.4);
+    lfo.start(t + 0.06); lfo.stop(t + 0.4);
+    // Chispazo de polvo arcano (ruido COMPARTIDO, barrido agudo suave)
+    this.sNoise(0.22, 7400, 0.028, 'highpass', 0.05, 9200);
+  }
+
+  // ---- 2) Impacto de hechizo: golpe grave + destello agudo. big=true     ----
+  // ----    (muerte por hechizo): más grave y cola de resonancia ~0.8 s.   ----
+  spellImpact(big: boolean) {
+    this.init();
+    if (!this.ctx || !this.rl('spellImpact', 0.06)) return;
+    if (big) {
+      // Remate: sub más profundo + dos resonancias lentas (tónica/quinta
+      // graves que se disuelven) + cola de ruido lowpass descendente.
+      this.sTone(120, 34, 0.4, 'square', 0.18);
+      this.sTone(60, 30, 0.5, 'sine', 0.22);
+      this.sNoise(0.1, 2400, 0.15, 'highpass');            // destello
+      this.sTone(1980, 1540, 0.14, 'square', 0.05, 0.02);  // chispa
+      this.sTone(90, 44, 0.7, 'sine', 0.09, 0.06);         // resonancia 1
+      this.sTone(135, 66, 0.75, 'sine', 0.055, 0.12);      // resonancia 2
+      this.sNoise(0.8, 420, 0.06, 'lowpass', 0.08, 90);    // cola grave
+    } else {
+      // Impacto estándar: thump corto + destello agudo de cierre.
+      this.sTone(165, 60, 0.18, 'square', 0.16);
+      this.sTone(85, 44, 0.22, 'sine', 0.18);
+      this.sNoise(0.08, 3000, 0.12, 'highpass');
+      this.sTone(2350, 1880, 0.1, 'square', 0.05, 0.02);
+      this.sNoise(0.05, 6400, 0.045, 'highpass', 0.04);
+    }
+  }
+
+  // ---- 3) Capa ambiental nocturna: grillos + viento tenue. IDEMPOTENTE   ----
+  // ----    (llamable cada frame: si ya está en el estado pedido, no-op).  ----
+  // Transición por crossfade (sube 2.4 s / baja 1.6 s). Coste en reposo con
+  // la capa on: 1 bufferSource en loop + filtro + LFO (viento, nodos fijos
+  // creados UNA vez) + setInterval 120 ms de grillos (solo mientras on).
+  nightAmbience(on: boolean) {
+    this.init();
+    if (!this.ctx || !this.sfxGain) return;
+    if (on === this.nightOn) return; // ya en el estado pedido → no-op seguro
+    this.nightOn = on;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    if (!this.nightGain) {
+      // Bus de la capa (se crea UNA vez; reutilizado en on/off posteriores).
+      // Va al bus sfx existente → respeta el volumen de SFX del jugador.
+      const bus = ctx.createGain();
+      bus.gain.value = 0.0001;
+      bus.connect(this.sfxGain);
+      // Viento tenue: ruido blanco COMPARTIDO en loop (sin buffers nuevos),
+      // lowpass ~210 Hz con LFO muy lento (0.06 Hz) que "respira".
+      const wind = ctx.createBufferSource();
+      wind.buffer = this.sharedNoise();
+      wind.loop = true;
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass'; lp.frequency.value = 210; lp.Q.value = 0.5;
+      const wg = ctx.createGain(); wg.gain.value = 0.05;
+      const lfo = ctx.createOscillator();
+      lfo.type = 'sine'; lfo.frequency.value = 0.06;
+      const lg = ctx.createGain(); lg.gain.value = 85;
+      lfo.connect(lg); lg.connect(lp.frequency);
+      wind.connect(lp); lp.connect(wg); wg.connect(bus);
+      wind.start(now); lfo.start(now);
+      this.nightGain = bus;
+    }
+    const g = this.nightGain.gain;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(Math.max(0.0001, g.value), now);
+    if (on) {
+      g.linearRampToValueAtTime(1, now + 2.4);   // crossfade de entrada
+      if (this.nightTimer === null) {
+        this.nightStep = 0;                       // fraseo determinista desde 0
+        this.nightTimer = window.setInterval(() => this.nightTick(), 120);
+      }
+    } else {
+      g.linearRampToValueAtTime(0.0001, now + 1.6); // crossfade de salida
+      if (this.nightTimer !== null) { clearInterval(this.nightTimer); this.nightTimer = null; }
+    }
+  }
+
+  /** Paso del scheduler de grillos (SOLO con la capa on): 2 voces
+   *  independientes con fraseo DETERMINISTA — mismo índice de arranque →
+   *  misma secuencia de trinos (det01, sin Math.random). Voz A cercana
+   *  (p≈0.22/paso, ~4.1-4.6 kHz), voz B lejana más grave y floja (p≈0.15). */
+  private nightTick() {
+    if (!this.ctx || !this.nightOn || !this.nightGain) return;
+    const ctx = this.ctx;
+    const s = this.nightStep++;
+    if (det01(s * 2 + 1) < 0.22) {
+      const f = 4100 + Math.floor(det01(s * 3 + 2) * 3) * 260;
+      this.nightChirp(ctx.currentTime + 0.02, f, 3 + Math.floor(det01(s * 5 + 3) * 3), 0.045);
+    }
+    if (det01(s * 7 + 5) < 0.15) {
+      const f = 3400 + Math.floor(det01(s * 11 + 7) * 3) * 220;
+      this.nightChirp(ctx.currentTime + 0.07, f, 3 + Math.floor(det01(s * 13 + 9) * 2), 0.026);
+    }
+  }
+
+  /** Un trino de grillo: `pulses` pulsos de 20 ms a 32 ms de separación.
+   *  Square + bandpass estrecho (Q 7) = chirp cristalino sin arpón. Un solo
+   *  oscilador gateado por la envolvente del gain (4 nodos por trino,
+   *  desechables — patrón estándar WebAudio, ver nota R7-O2 en tone()). */
+  private nightChirp(t0: number, f: number, pulses: number, gain: number) {
+    const ctx = this.ctx;
+    if (!ctx || !this.nightGain) return;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = 7;
+    const g = ctx.createGain();
+    bp.connect(g); g.connect(this.nightGain);
+    const o = ctx.createOscillator();
+    o.type = 'square'; o.frequency.value = f;
+    o.connect(bp);
+    for (let i = 0; i < pulses; i++) {
+      const t = t0 + i * 0.032;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(gain, t + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.02);
+    }
+    o.start(t0); o.stop(t0 + pulses * 0.032 + 0.03);
+  }
+
+  // ---- 4) Aullido lejano ocasional (lo dispara el orquestador con hash  ----
+  // ----    de tiempo): sube 0.6 s, meseta, baja 1.5 s; volumen bajo y    ----
+  // ----    eco barato (delay con realimentación lowpass = valle).        ----
+  // Variación DETERMINISTA por contador interno: la n-ésima llamada suena
+  // siempre igual (misma afinación, mismo eco), pero consecutivas no se
+  // clonan. Rate-limit propio de 0.6 s (es largo).
+  howlDistant() {
+    this.init();
+    if (!this.ctx || !this.rl('howlDistant', 0.6)) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const m = 0.92 + det01(this.howlN * 3 + 11) * 0.18;   // afinación 0.92..1.10
+    const dT = 0.24 + det01(this.howlN * 5 + 17) * 0.12;  // eco 0.24..0.36 s
+    this.howlN++;
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(196 * m, t);
+    o.frequency.exponentialRampToValueAtTime(392 * m, t + 0.6); // sube
+    o.frequency.setValueAtTime(392 * m, t + 0.9);               // meseta
+    o.frequency.exponentialRampToValueAtTime(150 * m, t + 2.4); // baja y muere
+    const vib = ctx.createOscillator();
+    vib.type = 'sine'; vib.frequency.value = 4.3;
+    const vg = ctx.createGain(); vg.gain.value = 4.5;
+    vib.connect(vg); vg.connect(o.frequency);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.05, t + 0.3);   // ataque suave = lejanía
+    g.gain.setValueAtTime(0.05, t + 1.6);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 2.4);
+    o.connect(g); g.connect(this.sfxGain);
+    // Eco barato: delay + feedback pasando por lowpass (misma receta que
+    // sPing, cola más larga y oscura). Cadena POR LLAMADA a propósito
+    // (paridad entre aullidos, ver comentario R7-O2 en sPing).
+    const dl = ctx.createDelay(0.6); dl.delayTime.value = dT;
+    const fb = ctx.createGain(); fb.gain.value = 0.42;
+    const dk = ctx.createBiquadFilter();
+    dk.type = 'lowpass'; dk.frequency.value = 1100;
+    const wet = ctx.createGain(); wet.gain.value = 0.5;
+    g.connect(dl); dl.connect(dk); dk.connect(fb); fb.connect(dl);
+    dl.connect(wet); wet.connect(this.sfxGain);
+    o.start(t); o.stop(t + 4.6);
+    vib.start(t); vib.stop(t + 4.6);
+    // Aliento sutil bajo el aullido (ruido COMPARTIDO, bandpass descendente)
+    this.sNoise(1.8, 640 * m, 0.02, 'bandpass', 0, 240);
+  }
+
+  // ---- 5) Rugido de jefe: 4 variantes DETERMINISTAS por seed.           ----
+  // v = |seed| % 4 fija la receta; det01(seed) da micro-afinación (±6%):
+  // el MISMO seed reproduce EXACTAMENTE el mismo rugido. No sustituye al
+  // sfx('roar') existente — el orquestador elige cuál disparar. Volúmenes
+  // moderados (pico ≤ 0.22 pre-buses) y rate-limit propio de 0.3 s.
+  bossRoarVariant(seed: number) {
+    this.init();
+    if (!this.ctx || !this.rl('bossRoarV', 0.3)) return;
+    const ctx = this.ctx;
+    const s = Math.trunc(seed) || 0;
+    const v = Math.abs(s) % 4;
+    const m = 0.94 + det01(s * 7 + 3) * 0.12;
+    const t = ctx.currentTime;
+    switch (v) {
+      case 0: // rugido clásico: barrido grave + aire que se apaga
+        this.sTone(115 * m, 40, 0.7, 'sawtooth', 0.2);
+        this.sTone(58 * m, 30, 0.8, 'sine', 0.13, 0.03);
+        this.sNoise(0.6, 300 * m, 0.13, 'lowpass', 0, 95);
+        break;
+      case 1: // alarido rasgado: más agudo, batido áspero + formante
+        this.sTone(190 * m, 70, 0.55, 'sawtooth', 0.17);
+        this.sTone(199 * m, 74, 0.55, 'square', 0.06);        // batido
+        this.sNoise(0.45, 950 * m, 0.1, 'bandpass', 0, 420);  // formante
+        this.sNoise(0.3, 2400, 0.05, 'highpass', 0.05, 900);
+        break;
+      case 2: { // gruño triple pulsado + cierre sub
+        for (let i = 0; i < 3; i++) {
+          const d = i * 0.21;
+          this.sTone(104 * m * (1 - i * 0.06), 48, 0.17, 'sawtooth', 0.16 - i * 0.03, d);
+          this.sNoise(0.16, 380, 0.075 - i * 0.015, 'lowpass', d, 120);
+        }
+        this.sTone(50, 26, 0.5, 'sine', 0.15, 0.44);
+        break;
+      }
+      default: { // v3: bramido con trémolo de pecho (9 Hz) + sub
+        const o = ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(72 * m, t);
+        o.frequency.exponentialRampToValueAtTime(38, t + 0.9);
+        // trémolo aislado en SU gain (trem) y envolvente en OTRO (env):
+        // así el LFO nunca pisa la envolvente ni hace click al parar.
+        const trem = ctx.createGain(); trem.gain.value = 0.55;
+        const lfo = ctx.createOscillator();
+        lfo.type = 'sine'; lfo.frequency.value = 9;
+        const lg = ctx.createGain(); lg.gain.value = 0.45;
+        lfo.connect(lg); lg.connect(trem.gain);
+        const env = ctx.createGain();
+        env.gain.setValueAtTime(0.0001, t);
+        env.gain.linearRampToValueAtTime(0.22, t + 0.07);
+        env.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+        o.connect(trem); trem.connect(env); env.connect(this.sfxGain);
+        o.start(t); o.stop(t + 0.95);
+        lfo.start(t); lfo.stop(t + 0.95);
+        this.sTone(55 * m, 30, 0.85, 'sine', 0.14, 0.02);
+        this.sNoise(0.5, 260 * m, 0.1, 'lowpass', 0, 80);
+        break;
+      }
+    }
+  }
 }
 
 export const audio = new AudioEngine();
+
+// ============================================================
+// R9-8 · API EXPORT para el orquestador (envoltorios delgados sobre
+// el singleton `audio`). Nombres EXACTOS pactados para el cableado.
+// ============================================================
+
+/** Carga de hechizo (épica 7.5): arpegio ascendente rápido + shimmer con
+ *  vibrato creciente. Corto (<0.4 s). Cablear en spells.ts/update.ts justo
+ *  cuando el jugador INICIA el casteo (antes del proyectil). */
+export function playSpellCast(): void { audio.spellCast(); }
+
+/** Impacto de hechizo (épica 7.5): golpe grave + destello agudo.
+ *  big=true → muerte por hechizo (más grave + cola de resonancia ~0.8 s).
+ *  Cablear en spells.ts al conectar el impacto; big=true también en
+ *  update.ts cuando el golpe de hechizo remata (kill) a un enemigo. */
+export function playSpellImpact(big: boolean): void { audio.spellImpact(big); }
+
+/** Capa ambiental nocturna (épica 5.3): grillos sintetizados (fraseo
+ *  determinista) + viento tenue grave, con crossfade suave. IDEMPOTENTE:
+ *  seguro de llamar CADA FRAME desde update.ts (p.ej.
+ *  playNightAmbience(esDeNoche && mapaBosque);) — si ya está en el estado
+ *  pedido es no-op y no programa nada. */
+export function playNightAmbience(on: boolean): void { audio.nightAmbience(on); }
+
+/** Aullido lejano ocasional de noche (épica 5.3): tono sube-meseta-baja con
+ *  eco barato (delay+feedback), volumen bajo y variación determinista por
+ *  llamada. Cablear en update.ts disparado por hash de tiempo de juego
+ *  (p.ej. cada ~20-40 s de noche, nunca dos veces seguidas por el
+ *  rate-limit interno de 0.6 s). */
+export function playHowlDistant(): void { audio.howlDistant(); }
+
+/** Rugido de jefe con 4 variantes DETERMINISTAS según seed (épica 7.5):
+ *  mismo seed → mismo rugido (variante |seed|%4 + micro-afinación por
+ *  hash). Cablear en bossintro/bossfx o donde hoy suena sfx('roar'),
+ *  pasando el seed de la entidad/encuentro (p.ej. boss.id o hash de sala). */
+export function playBossRoarVariant(seed: number): void { audio.bossRoarVariant(seed); }

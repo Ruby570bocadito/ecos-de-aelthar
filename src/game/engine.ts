@@ -12,13 +12,13 @@ export { VIEW_W, VIEW_H, ZOOM, fitViewToWindow };
 import type {
   Player, Enemy, Npc, Companion, MapId, Epoch, Projectile, Particle, FloatText,
   Toast, Shockwave, TeleGraph, SaveData, DialogueNode, DialogueOption, Dir, Element, StatsData,
-  ChestDef,
+  ChestDef, SpellFxSlot,
 } from './types';
 import { MAPS, mapRows, tileAt } from './maps';
 import { ARENA_MAP_ID } from './maps_expansion'; // 17-d: la arena no entra en visitedMaps (ver loadMap)
 import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
 import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
-import { audio } from './audio';
+import { audio, playSpellCast, playSpellImpact, playNightAmbience, playHowlDistant, playBossRoarVariant } from './audio';
 import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue, SENNUEL } from './data';
 import { updateGame } from './update';
 // Ronda 2 · Terror: disolución al morir + stinger de pavor + resets de la intro/FX del jefe
@@ -177,6 +177,9 @@ export class Game {
   toasts: Toast[] = [];
   waves: Shockwave[] = [];
   telegraphs: TeleGraph[] = [];
+  // R9-4 · magias espectaculares: pools fijos de FX (carga visible / impacto+residuo)
+  spellCastFx: SpellFxSlot[] = [];
+  spellImpactFx: SpellFxSlot[] = [];
   lastNote: Element = 'fuego';
 
   // feedback visual compartido (contrato fxcore)
@@ -624,6 +627,7 @@ export class Game {
     }
     this.spawnNpcs();
     this.projectiles = []; this.waves = []; this.telegraphs = [];
+    this.spellCastFx = []; this.spellImpactFx = []; // R9-4: pools de hechizo
     this.bossRef = null; this.bossActive = false;
     audio.setCombat(false);
     // ==== 17-d (qa-mundo): la arena (modo desafío, 12-a) NO participa de la
@@ -2013,6 +2017,33 @@ export class Game {
     this.castSkill(sk.id, sk.element);
   }
 
+  // R9-4 · pools de FX de hechizo (slots reescritos — cero alloc por frame).
+  // El seed se fija UNA vez: las chispas del impacto quedan estables entre frames.
+  private spellFxSlots(kind: 'cast' | 'impact'): SpellFxSlot[] {
+    const arr = kind === 'cast' ? this.spellCastFx : this.spellImpactFx;
+    if (arr.length === 0) {
+      const n = kind === 'cast' ? 6 : 12;
+      for (let i = 0; i < n; i++) arr.push({ active: false, x: 0, y: 0, element: 'fuego', age: 0, seed: 0, big: false });
+    }
+    return arr;
+  }
+
+  pushSpellCastFx(x: number, y: number, element: Element): void {
+    const arr = this.spellFxSlots('cast');
+    for (let i = 0; i < arr.length; i++) {
+      const s = arr[i];
+      if (!s.active) { s.active = true; s.x = x; s.y = y; s.element = element; s.age = 0; s.seed = (x * 3 + y * 5) | 0; s.big = false; return; }
+    }
+  }
+
+  pushSpellImpactFx(x: number, y: number, element: Element, big: boolean): void {
+    const arr = this.spellFxSlots('impact');
+    for (let i = 0; i < arr.length; i++) {
+      const s = arr[i];
+      if (!s.active) { s.active = true; s.x = x; s.y = y; s.element = element; s.age = 0; s.seed = (x * 3 + y * 5) | 0; s.big = big; return; }
+    }
+  }
+
   castSkill(id: string, element: Element) {
     if (!this.player) return;
     const p = this.player;
@@ -2059,19 +2090,27 @@ export class Game {
         break;
       case 'ascuas':
         audio.sfx('fire');
+        playSpellCast(); // R9-4/R9-8: carga visible + shimmer de casteo
+        this.pushSpellCastFx(p.x + nx * 8, p.y - 6 + ny * 8, 'fuego');
         this.projectiles.push({ x: p.x + nx * 8, y: p.y - 6 + ny * 8, vx: nx * 150, vy: ny * 150, t: 1.6, dmg: spellDmg, element: 'fuego', from: 'player', sprite: 'p_fire', radius: 4, pierce: 0 });
         break;
       case 'escarcha':
         audio.sfx('ice');
+        playSpellCast();
+        this.pushSpellCastFx(p.x + nx * 8, p.y - 6 + ny * 8, 'hielo');
         this.projectiles.push({ x: p.x + nx * 8, y: p.y - 6 + ny * 8, vx: nx * 170, vy: ny * 170, t: 1.4, dmg: spellDmg * 0.9, element: 'hielo', from: 'player', sprite: 'p_ice', radius: 4, pierce: 0 });
         break;
       case 'chispa':
         audio.sfx('bolt');
+        playSpellCast();
+        this.pushSpellCastFx(p.x + nx * 8, p.y - 6, 'rayo');
         this.chainLightning(p.x, p.y - 6, spellDmg, 3, nx, ny);
         break;
       case 'cantomayor': {
         const el = this.lastNote === 'ninguno' ? 'fuego' : this.lastNote;
         audio.sfx(el === 'fuego' ? 'fire' : el === 'hielo' ? 'ice' : 'bolt');
+        playSpellCast(); // R9-4/R9-8
+        this.pushSpellCastFx(wx, wy, el); // el Canto Mayor carga en el objetivo
         const wx2 = wx, wy2 = wy;
         this.aoeHit(wx2, wy2, 52, spellDmg * 2.2, el, false);
         this.waves.push({ x: wx2, y: wy2, r: 4, maxR: 56, speed: 150, dmg: 0, hit: true });
@@ -2164,7 +2203,7 @@ export class Game {
         e.aiT = 4;
         this.toast('¡QUEBRADO! El enemigo queda vulnerable', '#ffe86a');
         this.floatAt(e.x, e.y - 20, 'QUEBRADO', '#ffe86a', 7);
-        audio.sfx('roar');
+        playBossRoarVariant(e.etype.charCodeAt(0) * 7 + e.etype.length); // R9-8: variante determinista
       }
     }
     // estados

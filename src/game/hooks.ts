@@ -441,7 +441,7 @@ export function handleCustomAction(g: Game, action: string): boolean {
       ACTO4_BOSS.ref = boss;
       g.bossRef = boss;       // barra de jefe del HUD + limpieza de update (bossRef.dead → null)
       g.bossActive = true;
-      g.bossBannerT = 3.2;
+      g.bossBannerT = 1.8; // R9-5: intro corta ya muestra el nombre
       g.bossBannerText = 'EL HERALDO';
       g.bossBannerSub = 'Vesh, la Última Nota';
       audio.playTrack('boss');

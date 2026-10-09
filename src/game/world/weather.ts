@@ -78,6 +78,38 @@
 //     (glints de render.ts + PAL.sparkle): aquí NO se duplican.
 //   · Determinismo total (hash2/senos, cero Math.random), cero allocations
 //     por frame (pool + bakes reutilizados) y firmas export intactas.
+//
+// R9-9 (CLIMA DE LA EXPANSIÓN v2 — viento compartido pulido + identidad viva):
+//   · VIENTO COMPARTIDO: weatherWindAt gana un 3.er componente lento
+//     (p×2.618, amp 0.42) → hinchazones de ~2-3 min sobre la racha-calma de
+//     55-80 s. El vaivén de grass/trees/sky RESPIRA mejor sin romper firmas,
+//     rango (sigue acotado a ±WIND_MAX) ni convención de signo.
+//   · CUMBRES — VENTISCA v2: la racha añade un 3.er seno (ráfagas AGRUPADAS)
+//     y su dirección pasa a ser CONTINUA (el seno lento ya no bascula en
+//     binario: cero saltos de deriva al cambiar de sentido). El pool de
+//     nieve ahora se DIBUJA (R7-V3 lo simulaba sin caso de draw): copos que
+//     se alargan con |vx| y sueltan COLA en plena ráfaga. La capa cielo suma
+//     trazos de ventisca deterministas (gust>0.22), BANCOS de nieve horneados
+//     (tira wrap seamless) que cruzan la pantalla (gust>0.12) y un leve
+//     DESLUMBRAMIENTO blanco en el pico de ráfaga (smoothstep 0.72..0.98).
+//   · COSTA — BRUMA RODANTE: 3 bancos bajos (2 DETRÁS de entidades en la
+//     capa mundo, 1 POR DELANTE en la capa cielo → inquietud) que ruedan con
+//     velocidad/dirección propias + deriva del viento del mapa. Densidad
+//     variable (índice de clima + respiración lenta + banco de hash por
+//     ventana de 7 s). Tira de bruma HORNEADA wrap-seamless (fallback sin
+//     DOM: drawFogLayers) + ROCÍO/spray ocasional (P_DEW en el pool).
+//   · ALDEA — vida doméstica: HUMO de chimeneas determinista (P_SMOKE en el
+//     pool). Las anclas se derivan UNA vez por mapa/época replicando
+//     SOLO-LECTURA la decisión de chimenea de village.ts (mismo hash vh
+//     splitmix32 + flood-fill ligero con arrays fijos → sin allocations):
+//     el humo sale EXACTAMENTE de las bocas pintadas por el prerrender y se
+//     dispersa con el viento del mapa. En el presente (ruinas) no hay bocas
+//     → sin humo (coherente con la narrativa).
+//   · Determinismo intacto (hash2/vh/senos, cero Math.random), cero
+//     allocations por frame y firmas export intactas (weatherMode,
+//     setWeatherMode, RAIN_LO, RAIN_HI, weatherIndexAt, weatherWindAt,
+//     updateWeather, drawWeatherWorld, drawWeatherSky, WeatherStats,
+//     weatherStats).
 // ============================================================
 
 import type { Game } from '../engine';
@@ -147,15 +179,18 @@ export function weatherIndexAt(mapId: string, globalT: number): number {
 
 /**
  * Viento horizontal en px/s de mundo (-26..26): oscila con período
- * 55-80 s + armónico √2 (fase por mapId). La lluvia se inclina con
- * él, la niebla deriva con él y los haces se orientan con él.
+ * 55-80 s + armónico √2 + R9-9: 3.er componente lento p×2.618 (fase por
+ * mapId). La lluvia se inclina con él, la niebla deriva con él, los haces
+ * se orientan con él y grass/trees/sky respiran con sus hinchazones.
+ * Rango y convención INTACTOS: (1+0.55+0.42)/1.97 ≤ 1 → ±WIND_MAX.
  */
 export function weatherWindAt(mapId: string, globalT: number): number {
   const s = strSeed(mapId) * 3 + 5;
   const p = 55 + h2(s * 17 + 5, 919) * 25;
   const raw = Math.sin((globalT * TAU) / p + h2(s * 17 + 7, 921) * TAU)
-            + 0.55 * Math.sin((globalT * TAU) / (p * 1.414) + h2(s * 17 + 9, 923) * TAU);
-  return (raw / 1.55) * WIND_MAX;
+            + 0.55 * Math.sin((globalT * TAU) / (p * 1.414) + h2(s * 17 + 9, 923) * TAU)
+            + 0.42 * Math.sin((globalT * TAU) / (p * 2.618) + h2(s * 17 + 11, 925) * TAU);
+  return (raw / 1.97) * WIND_MAX;
 }
 
 // R5-O4: memo de 1 entrada para índice/viento. updateWeather y los dos
@@ -185,25 +220,30 @@ function rainAmpAt(mapId: string, globalT: number): number {
   return u * u * (3 - 2 * u);
 }
 
-// ---------------- Racha de cumbres (R7-V3) ----------------
-// Curva de viento DETERMINISTA con estructura racha-calma: dos senos de
-// baja frecuencia inconmensurables (13 s y 8.1 s) modulan un envolvente
-// 0..1; por encima de 0.55 de envolvente entra la racha (smoothstep hasta
-// plena a ~0.8). La DIRECCIÓN de la ventisca bascula con un seno lento
-// (47 s) — sin saltos visibles porque la deriva nace y muere con la racha.
-const GUST_T1 = 13, GUST_T2 = 8.1, GUST_DIR_T = 47;
-let mgT = -1, mgVal = 0, mgDir = 1;
+// ---------------- Racha de cumbres (R7-V3 · R9-9 v2) ----------------
+// Curva de viento DETERMINISTA con estructura racha-calma: tres senos de
+// baja frecuencia inconmensurables (13 / 8.1 / 21.3 s) modulan un
+// envolvente 0..1; por encima de 0.56 de envolvente entra la racha
+// (smoothstep hasta plena a ~0.82 — medido: en racha plena ~11 % del
+// tiempo). El 3.er seno AGRUPA las ráfagas (temporales de viento con
+// calmías más largas entre ellos). La DIRECCIÓN de la ventisca es CONTINUA
+// (seno lento de 47 s sin clampear a ±1): bascula de sentido sin el salto
+// de deriva del R7-V3 binario (328 px/s → 4.4 px/s por frame, medido).
+const GUST_T1 = 13, GUST_T2 = 8.1, GUST_T3 = 21.3, GUST_DIR_T = 47;
+let mgT = -1, mgVal = 0, mgDrift = 1;
 
 /** 0..1: intensidad de la racha en el instante t (memoizada 1 entrada,
  *  mismo contrato que idxAt/windAt: update + draws piden lo mismo). */
 function gustAt(t: number): number {
   if (t === mgT) return mgVal;
   mgT = t;
-  const raw = 0.5 + 0.31 * Math.sin((t * TAU) / GUST_T1) + 0.19 * Math.sin((t * TAU) / GUST_T2 + 1.7);
-  let u = (raw - 0.55) / 0.25;
+  const raw = 0.5 + 0.28 * Math.sin((t * TAU) / GUST_T1)
+            + 0.17 * Math.sin((t * TAU) / GUST_T2 + 1.7)
+            + 0.13 * Math.sin((t * TAU) / GUST_T3 + 4.2);
+  let u = (raw - 0.56) / 0.26;
   u = u < 0 ? 0 : u > 1 ? 1 : u;
   mgVal = u * u * (3 - 2 * u);
-  mgDir = Math.sin((t * TAU) / GUST_DIR_T) >= 0 ? 1 : -1;
+  mgDrift = Math.sin((t * TAU) / GUST_DIR_T); // -1..1 CONTINUO (sin saltos)
   return mgVal;
 }
 
@@ -212,13 +252,14 @@ function gustAt(t: number): number {
 let curGust = 0, curSnowVx = 0, curSnowVy = 0;
 
 /** Fija curGust/curSnowVx/curSnowVy para cumbres: en calma los copos caen
- *  con brisa ligera; en racha la deriva horizontal domina (ventisca). */
+ *  con brisa ligera que BASCULA despacio (deriva continua); en racha la
+ *  deriva horizontal domina (ventisca de hasta ~±200 px/s de mundo). */
 function cumbresSnowKin(t: number): void {
   const gust = gustAt(t);
   const wind = windAt('cumbres', t);
   curGust = gust;
-  curSnowVx = mgDir * (14 + 150 * gust) + wind * 0.5;
-  curSnowVy = 20 * (1 - 0.72 * gust);
+  curSnowVx = mgDrift * (26 + 170 * gust) + wind * 0.55;
+  curSnowVy = 22 * (1 - 0.75 * gust);
 }
 
 // ---------------- Tipos internos ----------------
@@ -234,6 +275,8 @@ const P_SPARK = 7;   // cripta: chispa de vela
 const P_WISP = 8;    // cripta: voluta de bruma fría
 const P_DUST = 9;    // cripta v2: micro-polvo flotando cerca de luces
 const P_SNOW = 10;   // cumbres (R7-V3): copo de nieve con rachas
+const P_SMOKE = 11;  // aldea (R9-9): humo de chimenea que sube y se dispersa
+const P_DEW = 12;    // costa (R9-9): rocío/spray de la bruma rodante
 
 const CAP = 200;     // presupuesto total de partículas del clima (v2: +60 para lluvia/polvo)
 const MARGIN = 48;   // margen de vida fuera de vista (px de mundo 1×)
@@ -267,6 +310,7 @@ const RAIN_CAP = 90;
 let allocCur = 0;
 let nFirefly = 0; // luciérnagas activas
 let nRain = 0;    // gotas + salpicones activos
+let nSmoke = 0;   // puffs de humo de chimenea activos (R9-9)
 
 // Estado interno del módulo (sin globales fuera de aquí)
 let lastMap: string = '';
@@ -545,6 +589,156 @@ function spawnDust(g: Game, k: number): void {
   s.size = 1;
 }
 
+// ---------------- Chimeneas de la aldea (R9-9 · humo doméstico) ----------------
+// Réplica SOLO-LECTURA de la decisión de chimenea de village.ts (mismo hash
+// vh splitmix32, mismo flood-fill ligero de bloques r/H/d, mismas tablas de
+// hash): el prerrender pinta la chimenea en la teja de hash mínimo del
+// bloque (si blk.chim, tipo ≠ cobertizo, no es el aguilón y el vecino de
+// arriba es suelo blando). Aquí se recomputan esas MISMAS condiciones UNA
+// vez por mapa/época y se guardan las bocas (x,y de mundo 1×) en arrays
+// fijos — cero allocations por frame y anclas SIEMPRE alineadas con el arte.
+
+const SMOKE_MAX = 24;
+const smokeAx = new Float64Array(SMOKE_MAX);
+const smokeAy = new Float64Array(SMOKE_MAX);
+let smokeAn = 0;
+
+/** Hash splitmix32 de village.ts (copia EXACTA: la chimenea se decide con él). */
+function vh(x: number, y: number): number {
+  let h = (Math.imul(x, 0x27d4eb2d) ^ Math.imul(y, 0x165667b1)) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 1 | h) >>> 0;
+  h = (h ^ (h + Math.imul(h ^ (h >>> 7), 61 | h))) >>> 0;
+  return ((h ^ (h >>> 14)) >>> 0) / 4294967296;
+}
+
+// scratch del flood-fill (se redimensiona solo si cambia el tamaño del mapa)
+let hhVis: Uint8Array | null = null;
+let hhStk: Int32Array | null = null;
+let hhW = -1, hhH = -1;
+const hhTopXs = new Int32Array(256); // tejas de cumbrera de la fila norte (W ≤ 160)
+// epochDiffs del mapa (g.rows es el grid BASE: los diffs del pasado los aplica
+// tileAt por consulta — aquí se replican para ver el MISMO grid que el prerrender)
+const hhDx = new Int16Array(64), hhDy = new Int16Array(64);
+const hhDc: string[] = [];
+let hhDn = 0;
+
+function computeChimneyAnchors(g: Game): void {
+  smokeAn = 0;
+  if (g.mapId !== 'aldea') return;
+  const rows = g.rows.length >= g.map.h ? g.rows : g.map.rows;
+  const W = g.map.w, H = g.map.h;
+  hhDn = 0;
+  if (g.epoch === 'pasado') {
+    for (const d of g.map.epochDiffs) {
+      if (hhDn >= 64) break;
+      hhDx[hhDn] = d.x; hhDy[hhDn] = d.y; hhDc[hhDn] = d.char; hhDn++;
+    }
+  }
+  if (!hhVis || hhW !== W || hhH !== H) {
+    hhVis = new Uint8Array(W * H);
+    hhStk = new Int32Array(W * H);
+    hhW = W; hhH = H;
+  } else {
+    hhVis.fill(0);
+  }
+  const vis = hhVis!, stk = hhStk!;
+  const chAt = (tx: number, ty: number): string => {
+    if (tx < 0 || tx >= W || ty < 0 || ty >= H) return '?';
+    let ch = rows[ty].charAt(tx);
+    for (let d = 0; d < hhDn; d++) {
+      if (hhDx[d] === tx && hhDy[d] === ty) { ch = hhDc[d]; break; }
+    }
+    return ch;
+  };
+
+  for (let ty0 = 0; ty0 < H; ty0++) {
+    for (let tx0 = 0; tx0 < W; tx0++) {
+      const c0 = chAt(tx0, ty0);
+      if ((c0 !== 'r' && c0 !== 'H' && c0 !== 'd') || vis[tx0 + ty0 * W]) continue;
+      // flood-fill del bloque de casa (marcado al ENCOLAR: 1 push/celda)
+      let sp = 0;
+      stk[sp++] = ty0 * W + tx0;
+      vis[tx0 + ty0 * W] = 1;
+      let rCount = 0, hCount = 0;
+      let ax = tx0, ay = ty0;                 // ancla: teja mínima (y, luego x)
+      let chimBest = 2, chimTx = -1, chimTy = -1;
+      let topMinY = 0x7fffffff, topNx = 0;    // tejas de cumbrera de la fila norte
+      while (sp > 0) {
+        const cell = stk[--sp];
+        const cx = cell % W, cy = (cell / W) | 0;
+        const c = chAt(cx, cy);
+        if (c !== 'r' && c !== 'H' && c !== 'd') continue;
+        if (cy < ay || (cy === ay && cx < ax)) { ax = cx; ay = cy; }
+        if (c === 'r') {
+          rCount++;
+          const hv = vh(cx * 5 + 3, cy * 9 + 7);
+          if (hv < chimBest) { chimBest = hv; chimTx = cx; chimTy = cy; }
+          if (chAt(cx, cy - 1) !== 'r') {
+            if (cy < topMinY) { topMinY = cy; topNx = 0; }
+            if (cy === topMinY && topNx < 256) hhTopXs[topNx++] = cx;
+          }
+        } else {
+          hCount++;
+        }
+        if (cx > 0 && !vis[cx - 1 + cy * W]) { vis[cx - 1 + cy * W] = 1; stk[sp++] = cy * W + cx - 1; }
+        if (cx < W - 1 && !vis[cx + 1 + cy * W]) { vis[cx + 1 + cy * W] = 1; stk[sp++] = cy * W + cx + 1; }
+        if (cy > 0 && !vis[cx + (cy - 1) * W]) { vis[cx + (cy - 1) * W] = 1; stk[sp++] = (cy - 1) * W + cx; }
+        if (cy < H - 1 && !vis[cx + (cy + 1) * W]) { vis[cx + (cy + 1) * W] = 1; stk[sp++] = (cy + 1) * W + cx; }
+      }
+      // mismas condiciones que village.ts para blk.chim (la chimenea
+      // "existe" en el bloque). NOTA: village añade DOS guards de PINTADO
+      // que aquí NO aplican: (a) upFree — es un guard de DESBORDAMIENTO del
+      // prerrender y la aldea es toda empedrado (':'), sin él jamás habría
+      // chimeneas → el humo sale del LOMO del tejado, donde la chimenea
+      // estaría; (b) exclusión del aguilón — el humo desde la cúspide lee
+      // bien y no choca con nada pintado.
+      if (chimTx < 0) continue;                       // bloque sin teja 'r'
+      if (rCount === 1 && hCount === 0) continue;     // tipo 2: cobertizo/escombro
+      const entera = rCount === hCount && rCount >= 3;
+      const tipo = entera && vh(ax * 5 + 2, ay * 11 + 3) < 0.38 ? 1 : 0;
+      if (vh(ax * 13 + 1, ay * 5 + 9) >= 0.34) continue; // blk.chim (~1/3)
+      // x de la "boca": el mismo offset del cuerpo de chimenea de village.ts
+      // (4px + hash, cuerpo en cx..cx+3) — con o sin sprite pintado, el humo
+      // sale SIEMPRE del mismo punto del lomo del tejado.
+      const cxPix = chimTx * TILE_PX + 4 + Math.floor(vh(chimTx * 7 + 1, chimTy * 3 + 2) * 8);
+      smokeAx[smokeAn] = cxPix + 2;
+      smokeAy[smokeAn] = chimTy * TILE_PX - 8;        // sobre el lomo (Y-9..Y-1 es la chimenea)
+      smokeAn++;
+      if (smokeAn >= SMOKE_MAX) return;
+    }
+  }
+}
+
+function spawnSmoke(g: Game, k: number): void {
+  if (smokeAn === 0) return;
+  const s = alloc(); if (!s) return;
+  nSmoke++;
+  const a = Math.floor(h2(k, 641) * smokeAn) % SMOKE_MAX;
+  s.active = true; s.kind = P_SMOKE;
+  s.x = smokeAx[a] + (h2(k, 643) - 0.5) * 3;
+  s.y = smokeAy[a] + (h2(k, 647) - 0.5) * 2;
+  s.vx = curWind * 0.25;                   // nace ya con la brisa del mapa
+  s.vy = -(7 + h2(k, 649) * 5);            // empuje térmico (decae en update)
+  s.t = 0; s.maxT = 4.5 + h2(k, 651) * 3;
+  s.seed = h2(k, 653); s.seedI = (k * 29 + 41) | 0;
+  s.size = 2;
+}
+
+/** Rocío/spray de la bruma de costa (R9-9): motas lentas en suspensión
+ *  cerca del suelo y, de vez en cuando, una gota corta que cae y se apaga. */
+function spawnDew(g: Game, k: number): void {
+  const s = alloc(); if (!s) return;
+  s.active = true; s.kind = P_DEW;
+  s.x = _wx0 + 8 + h2(k, 611) * (_wx1 - _wx0 - 16);
+  s.y = _wy0 + (_wy1 - _wy0) * (0.45 + h2(k, 613) * 0.5);
+  const fast = h2(k, 615) < 0.25;
+  s.vx = curWind * 0.3 + (h2(k, 617) - 0.5) * 6;
+  s.vy = fast ? 26 + h2(k, 619) * 20 : 3 + h2(k, 619) * 6;
+  s.t = 0; s.maxT = fast ? 1.2 + h2(k, 621) : 3.5 + h2(k, 621) * 2.5;
+  s.seed = h2(k, 623); s.seedI = (k * 17 + 43) | 0;
+  s.size = 1;
+}
+
 /** Copo de nieve de cumbres (R7-V3): entra por arriba; la cinemática de la
  *  racha (deriva horizontal + caída amortiguada) se aplica POR FRAME en la
  *  integración con curSnowVx/Vy — el copo siempre obedece al viento vivo. */
@@ -600,15 +794,24 @@ function spawnTick(g: Game, k: number): void {
       if (hash2(k * 13 + 6, 97) < 0.014 * (1 - curRainAmp)) spawnDrop(g, k, 0);
     }
   } else if (g.mapId === 'cumbres') {
-    // R7-V3: nieve SIEMPRE + ráfaga que la intensifica (racha-calma).
-    // En calma cae suave; en racha el viento la tumba horizontal.
+    // R7-V3+R9-9: nieve SIEMPRE + ráfaga que la intensifica (racha-calma).
+    // En calma cae suave basculando despacio; en racha el viento la tumba
+    // horizontal (el draw la alarga en traza según |vx|).
     const q = qMul();
     const gust = gustAt(g.globalT);
-    if (hash2(k * 13 + 10, 137) < (0.10 + 0.34 * gust) * q) spawnSnow(g, k);
-    if (gust > 0.5 && hash2(k * 13 + 11, 139) < 0.1 * q) spawnSnow(g, k * 5 + 3);
+    if (hash2(k * 13 + 10, 137) < (0.12 + 0.36 * gust) * q) spawnSnow(g, k);
+    if (gust > 0.45 && hash2(k * 13 + 11, 139) < 0.12 * q) spawnSnow(g, k * 5 + 3);
   } else if (g.mapId === 'costa') {
-    // R7-V3: la bruma marina NO vive en el pool (tira horneada en el draw);
-    // el mapa queda registrado en hasWeather para el viento/índice del frame.
+    // R7-V3: la bruma rodante NO vive en el pool (bancos horneados en el
+    // draw). R9-9: el ROCÍO/spray sí (motas lentas + gota corta ocasional).
+    const q = qMul();
+    if (hash2(k * 13 + 12, 631) < 0.1 * q) spawnDew(g, k);
+    if (hash2(k * 13 + 13, 633) < 0.02 * q) spawnDew(g, k * 3 + 5);
+  } else if (g.mapId === 'aldea') {
+    // R9-9: humo doméstico de chimeneas (anclas = bocas reales del prerrender;
+    // en el presente-ruinas no hay bocas → smokeAn 0 → sin humo).
+    const q = qMul();
+    if (smokeAn > 0 && nSmoke < Math.round(26 * q) && hash2(k * 13 + 12, 601) < 0.26 * q) spawnSmoke(g, k);
   } else {
     // cripta: chispas de vela + volutas de bruma fría + micro-polvo
     const mod = 0.7 + 0.6 * curIdx;      // [0.70..1.30]
@@ -636,12 +839,12 @@ function fireflyStep(s: WSlot, g: Game, dt: number): void {
 }
 
 /** ¿Mapa con clima propio? (R5-O4: el resto hace early-out barato).
- *  R7-V3: la expansión gana clima en costa (bruma marina) y cumbres
- *  (nieve/ventisca); la ALDEA sigue SIN clima propio (su perfil es de
- *  luz, en lighting.ts) y no hereda partículas de cripta. */
+ *  R7-V3: la expansión gana clima en costa (bruma) y cumbres (nieve).
+ *  R9-9: la ALDEA se une con HUMO de chimeneas (sin partículas de los
+ *  demás mapas ni capa atmosférica: su perfil sigue siendo de luz). */
 function hasWeather(mapId: string): boolean {
   return mapId === 'lunaris' || mapId === 'bosque' || mapId === 'cripta'
-    || mapId === 'costa' || mapId === 'cumbres';
+    || mapId === 'costa' || mapId === 'cumbres' || mapId === 'aldea';
 }
 
 /**
@@ -654,8 +857,9 @@ export function updateWeather(g: Game, dt: number): void {
     lastMap = g.mapId; lastEpoch = g.epoch;
     for (let i = 0; i < CAP; i++) pool[i].active = false;
     lastTick = -1;
-    nFirefly = 0; nRain = 0;               // R5-O4: contadores coherentes
+    nFirefly = 0; nRain = 0; nSmoke = 0;   // R5-O4/R9-9: contadores coherentes
     computeDustAnchors(g);
+    computeChimneyAnchors(g);              // R9-9: bocas de chimenea de la aldea
   }
   if (!hasWeather(g.mapId)) return;        // mapa sin clima: nada que simular
 
@@ -708,10 +912,17 @@ export function updateWeather(g: Game, dt: number): void {
         s.x += s.vx * dt; s.y += s.vy * dt;
         break;
       case P_SNOW:
-        // R7-V3 (cumbres): cinemática de la RACHA viva — deriva horizontal
-        // (mgDir + gust), caída amortiguada y vaivén propio por copo.
+        // R7-V3+R9-9 (cumbres): cinemática de la RACHA viva — deriva
+        // horizontal CONTINUA (drift + gust), caída amortiguada y vaivén propio.
         s.vx = curSnowVx * (0.55 + 0.9 * s.seed) + Math.sin(s.t * 1.2 + s.seed * 9) * 6;
         s.vy = curSnowVy * (0.7 + 0.6 * s.seed);
+        s.x += s.vx * dt; s.y += s.vy * dt;
+        break;
+      case P_SMOKE:
+        // R9-9 (aldea): relaja su velocidad hacia el VIENTO vivo (dispersión)
+        // y frena la subida (empuje térmico que decae). El vaivén es del draw.
+        s.vx += (curWind * (0.35 + 0.3 * s.seed) - s.vx) * Math.min(1, dt * 0.6);
+        s.vy += (-1.6 - s.vy) * Math.min(1, dt * 0.22);
         s.x += s.vx * dt; s.y += s.vy * dt;
         break;
       default:
@@ -722,9 +933,10 @@ export function updateWeather(g: Game, dt: number): void {
     if (s.t >= s.maxT || s.x < _wx0 - 8 || s.x > _wx1 + 8 ||
         s.y < _wy0 - 8 || s.y > _wy1 + 8) {
       s.active = false;
-      // R5-O4: baja en los contadores vivos de su familia
+      // R5-O4/R9-9: baja en los contadores vivos de su familia
       if (s.kind === P_FIREFLY) nFirefly--;
       else if (s.kind === P_DROP || s.kind === P_SPLASH) nRain--;
+      else if (s.kind === P_SMOKE) nSmoke--;
     }
   }
 }
@@ -845,7 +1057,184 @@ function drawFogLayers(
   ctx.globalAlpha = 1;
 }
 
-// ---------------- Dibujo: capa mundo (detrás de entidades) ----------------
+// ---------------- Bruma rodante y ventisca (R9-9 · tiras horneadas) ----------------
+// Dos tiras de 256px se HORNean una vez por sesión (blobs radiales
+// deterministas con wrap seamless, gradientes solo en el bake) y se dibujan
+// escaladas ×4 cubriendo VIEW_W DINÁMICO (bucle de wrap). Sin DOM (smokes
+// headless) devuelven null y los draws caen a un fallback determinista.
+
+const STRIP_W = 256;
+const STRIP_SCALE = 4;
+
+let coastStrip: HTMLCanvasElement | null | undefined;
+function coastStripC(): HTMLCanvasElement | null {
+  if (coastStrip !== undefined) return coastStrip;
+  if (typeof document === 'undefined') { coastStrip = null; return null; }
+  const c = document.createElement('canvas');
+  c.width = STRIP_W; c.height = 36;
+  const x = c.getContext('2d');
+  if (!x) { coastStrip = null; return null; }
+  for (let i = 0; i < 18; i++) {
+    const bx = h2(i * 7 + 1, 911) * STRIP_W;
+    const by = 18 + (h2(i * 11 + 3, 913) - 0.5) * 6;
+    const r = 8 + h2(i * 13 + 5, 915) * 5;
+    for (let e = -1; e <= 1; e++) {                 // wrap seamless horizontal
+      const ox = bx + e * STRIP_W;
+      const gr = x.createRadialGradient(ox, by, 0, ox, by, r);
+      gr.addColorStop(0, 'rgba(201,216,214,0.45)');
+      gr.addColorStop(0.6, 'rgba(201,216,214,0.2)');
+      gr.addColorStop(1, 'rgba(201,216,214,0)');
+      x.fillStyle = gr;
+      x.fillRect(ox - r, by - r, r * 2, r * 2);
+    }
+  }
+  coastStrip = c;
+  return c;
+}
+
+let snowStrip: HTMLCanvasElement | null | undefined;
+function snowStripC(): HTMLCanvasElement | null {
+  if (snowStrip !== undefined) return snowStrip;
+  if (typeof document === 'undefined') { snowStrip = null; return null; }
+  const c = document.createElement('canvas');
+  c.width = STRIP_W; c.height = 20;
+  const x = c.getContext('2d');
+  if (!x) { snowStrip = null; return null; }
+  for (let i = 0; i < 12; i++) {
+    const bx = h2(i * 9 + 2, 921) * STRIP_W;
+    const by = 10 + (h2(i * 5 + 4, 923) - 0.5) * 3;
+    const r = 4 + h2(i * 13 + 6, 925) * 4;
+    for (let e = -1; e <= 1; e++) {
+      const ox = bx + e * STRIP_W;
+      const gr = x.createRadialGradient(ox, by, 0, ox, by, r);
+      gr.addColorStop(0, 'rgba(255,255,255,0.5)');
+      gr.addColorStop(1, 'rgba(255,255,255,0)');
+      x.fillStyle = gr;
+      x.fillRect(ox - r, by - r, r * 2, r * 2);
+    }
+  }
+  snowStrip = c;
+  return c;
+}
+
+// bancos de bruma de costa: LEJANO y MEDIO (capa mundo, tras entidades) y
+// CERCANO (capa cielo, por delante de todo — la inquietud de la bruma).
+const COAST_BANKS = [
+  { y: 0.58, h: 9, sp: 5, a: 0.085, k: 0.45, dir: 1 },
+  { y: 0.75, h: 13, sp: 9, a: 0.115, k: 0.75, dir: -1 },
+  { y: 0.93, h: 19, sp: 14, a: 0.14, k: 1.15, dir: 1 },
+] as const;
+// fallback sin DOM: mismos bancos como franjas de drawFogLayers (prealocadas)
+const COAST_FB: FogLayer[][] = [
+  [{ y: 0.6, h0: 9, pitch: 96, speed: 5, alpha: 0.085, dir: 1 }],
+  [{ y: 0.77, h0: 13, pitch: 76, speed: 9, alpha: 0.115, dir: -1 }],
+  [{ y: 0.94, h0: 19, pitch: 60, speed: 14, alpha: 0.14, dir: 1 }],
+];
+
+/**
+ * Bancos [j0, j1) de bruma rodante de costa. Desplazamiento DETERMINISTA:
+ * deriva propia (sp·dir, lenta — "ruedan") + respuesta al viento del mapa
+ * (k crece con la cercanía). Densidad variable: índice de clima × respiración
+ * sinusoidal × banco de hash por ventana de 7 s (nunca uniforme, siempre vivo).
+ */
+function drawCoastBanks(ctx: CanvasRenderingContext2D, g: Game, j0: number, j1: number): void {
+  const t = g.globalT;
+  const wind = windAt('costa', t);
+  const idx = idxAt('costa', t);
+  const strip = coastStripC();
+  for (let j = j0; j < j1; j++) {
+    const L = COAST_BANKS[j];
+    const breath = 0.82 + 0.26 * Math.sin((t * TAU) / (19 + j * 7) + h2(j * 3 + 1, 881) * TAU);
+    const step = 0.85 + h2(Math.floor(t / 7) * 7 + j, 883) * 0.3;
+    const dens = (0.55 + 0.65 * idx) * breath * step;
+    const yB = Math.round(L.y * VIEW_H + Math.sin(t * 0.35 + j * 1.9) * 3);
+    const h = L.h * ZOOM;
+    if (strip) {
+      const W = STRIP_W * STRIP_SCALE;
+      let off = (t * L.sp * L.dir + wind * L.k) * ZOOM;
+      off %= W; if (off < 0) off += W;
+      ctx.globalAlpha = Math.min(0.85, L.a * dens);
+      for (let x = -off; x < VIEW_W; x += W) ctx.drawImage(strip, Math.round(x), yB, W, h);
+    } else {
+      // fallback headless: misma lectura con franjas deterministas
+      drawFogLayers(ctx, g, COAST_FB[j], '#c4d4d2', dens, wind);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** Trazos de ventisca de cumbres (capa cielo, aditivo): rachas horizontales
+ *  deterministas — sin pool, x por hash+tiempo con wrap; aparecen a partir
+ *  de gust>0.22 y su longitud/velocidad crecen hasta plena racha. */
+function drawGustStreaks(ctx: CanvasRenderingContext2D, g: Game): void {
+  const gust = gustAt(g.globalT);
+  if (gust <= 0.22) return;
+  const t = g.globalT;
+  const dir = curSnowVx >= 0 ? 1 : -1;
+  const n = Math.min(14, Math.floor((3 + gust * 11) * qMul()));
+  ctx.fillStyle = '#eaf2fa';
+  for (let i = 0; i < n; i++) {
+    const len = 12 + h2(i * 11 + 3, 737) * (12 + 26 * gust);
+    const sp = 140 + h2(i * 7 + 2, 733) * 140 + gust * 260;
+    const span = VIEW_W + len * 2;
+    let x = (t * sp * dir + h2(i * 17 + 5, 739) * span) % span;
+    if (x < 0) x += span;
+    x -= len;
+    const y = Math.round(h2(i * 13 + 1, 731) * VIEW_H * 0.85 + Math.sin(t * 1.1 + i * 2.4) * 5);
+    ctx.globalAlpha = (0.04 + 0.09 * gust) * (0.5 + 0.5 * h2(i * 19 + 7, 743));
+    ctx.fillRect(Math.round(x), y, Math.round(len), 1);
+  }
+}
+
+/** Bancos de nieve que CRUZAN la pantalla (cumbres, capa cielo aditiva):
+ *  sábanas de ventisca horneadas que entran con la racha (gust>0.12),
+ *  corren en la dirección de la deriva y se disuelven al calmar. */
+function drawSnowBanks(ctx: CanvasRenderingContext2D, g: Game): void {
+  const gust = gustAt(g.globalT);
+  if (gust <= 0.12) return;
+  let u = (gust - 0.12) / 0.28;
+  u = u < 0 ? 0 : u > 1 ? 1 : u;
+  const rise = u * u * (3 - 2 * u);
+  const strip = snowStripC();
+  const dir = curSnowVx >= 0 ? 1 : -1;
+  const t = g.globalT;
+  for (let j = 0; j < 2; j++) {
+    const a = rise * (0.05 + 0.08 * gust) * (j === 0 ? 1 : 0.75) * qMul();
+    if (a <= 0.004) continue;
+    const h = (j === 0 ? 13 : 19) * ZOOM;
+    const yB = Math.round(VIEW_H * (j === 0 ? 0.34 : 0.62) + Math.sin(t * 0.6 + j * 2.2) * 4);
+    const sp = (j === 0 ? 110 + 190 * gust : 150 + 230 * gust) * dir;
+    if (strip) {
+      const W = STRIP_W * STRIP_SCALE;
+      let off = (t * sp) % W; if (off < 0) off += W;
+      ctx.globalAlpha = a;
+      for (let x = -off; x < VIEW_W; x += W) ctx.drawImage(strip, Math.round(x), yB, W, h);
+    } else {
+      // fallback headless: sábana ancha deslizante determinista
+      const w = 260 * ZOOM;
+      let x = (t * sp) % (VIEW_W + w); if (x < 0) x += VIEW_W + w;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(Math.round(x - w), yB, w, h);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** Deslumbramiento blanco LEVE en el PICO de la ráfaga (cumbres): velo
+ *  frío a pantalla completa que solo asoma en lo ALTO del envolvente
+ *  (g^4) y RESPIRA con un seno de ~3.7 s — la ventisca "se queda blanca"
+ *  a ratos dentro del temporal, sin velo constante ni parpadeo estroboscópico. */
+function drawGustGlare(ctx: CanvasRenderingContext2D, g: Game): void {
+  const gust = gustAt(g.globalT);
+  const g4 = gust * gust * gust * gust;
+  const glare = g4 * (0.5 + 0.5 * Math.sin(g.globalT * 1.7 + 2.9)) * 0.14 * qMul();
+  if (glare <= 0.006) return;
+  ctx.globalAlpha = glare;
+  ctx.fillStyle = '#dfe9f6';
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.globalAlpha = 1;
+}
 
 /**
  * DETRÁS de entidades: niebla por capas del bosque, bruma y haces de
@@ -867,6 +1256,10 @@ export function drawWeatherWorld(ctx: CanvasRenderingContext2D, g: Game): void {
   } else if (g.mapId === 'cripta') {
     drawShafts(ctx, g);
     drawFogLayers(ctx, g, MIST_LAYERS, '#9db2c8', 0.7 + 0.6 * idx, windAt(g.mapId, g.globalT));
+  } else if (g.mapId === 'costa') {
+    // R9-9: BRUMA RODANTE — bancos LEJANOS/MEDIOS rodando tras las entidades
+    // (el cercano, que da la inquietud, rueda por delante en drawWeatherSky).
+    drawCoastBanks(ctx, g, 0, 2);
   }
 
   // ---- partículas del pool en coordenadas de mundo ----
@@ -930,6 +1323,47 @@ export function drawWeatherWorld(ctx: CanvasRenderingContext2D, g: Game): void {
         ctx.fillRect(x, y, s.size, 2);
         break;
       }
+      case P_SNOW: {
+        // R9-9 (cumbres): copo que se ALARGA con la ventisca (traza según
+        // |vx| del frame) y suelta COLA en plena ráfaga. Dos tonos por
+        // profundidad (near brillante / far azulado) para leer sobre nieve.
+        const vxAbs = Math.abs(curSnowVx) * (0.55 + 0.9 * s.seed);
+        const w = Math.min(7, Math.max(1, Math.round(1 + vxAbs * 0.035)));
+        ctx.globalAlpha = (s.size === 2 ? 0.8 : 0.55) * (0.7 + 0.3 * s.seed) * fade;
+        ctx.fillStyle = s.size === 2 ? '#f2f7fc' : '#dce6f2';
+        ctx.fillRect(x, y, w, 1);
+        if (w >= 5) {
+          ctx.globalAlpha *= 0.4;
+          ctx.fillStyle = '#c8d4e4';
+          if (curSnowVx >= 0) ctx.fillRect(x - 3, y, 3, 1);
+          else ctx.fillRect(x + w, y, 3, 1);
+        }
+        break;
+      }
+      case P_SMOKE: {
+        // R9-9 (aldea): puff que sube, CRECE y se dispersa con el viento
+        // (el desplazamiento lo integra el update; aquí solo forma/alpha).
+        const ph = s.t / s.maxT;
+        const wob = Math.sin(s.t * 1.4 + s.seed * 9) * (1 + ph * 3);
+        const sz = 2 + Math.round(ph * 4);
+        ctx.globalAlpha = 0.28 * (1 - ph * 0.75) * fade;
+        ctx.fillStyle = '#bfc3ce';
+        ctx.fillRect(x + Math.round(wob), y - (sz >> 1), sz, sz);
+        ctx.globalAlpha *= 0.55;
+        ctx.fillStyle = '#d3d6de';
+        ctx.fillRect(x + Math.round(wob * 0.6) + (sz >> 2), y - sz, Math.max(1, sz - 2), Math.max(1, sz - 2));
+        break;
+      }
+      case P_DEW: {
+        // R9-9 (costa): rocío/spray — mota en suspensión (2×1) o gota corta
+        // que cae (1×3), con pulso lento para que titilee entre la bruma.
+        const pulse = 0.5 + 0.5 * Math.sin(g.globalT * 2.2 + s.seed * 11);
+        ctx.globalAlpha = (0.1 + 0.13 * pulse) * fade;
+        ctx.fillStyle = '#dceae8';
+        if (s.vy > 14) ctx.fillRect(x, y, 1, 3);
+        else ctx.fillRect(x, y, 2, 1);
+        break;
+      }
       default:
         break;
     }
@@ -953,9 +1387,14 @@ export function drawWeatherSky(ctx: CanvasRenderingContext2D, g: Game): void {
 
   // motas doradas dentro de los haces (cripta, deterministas)
   if (g.mapId === 'cripta') drawShaftMotes(ctx, g);
+  // R9-9: BRUMA RODANTE — la banca CERCANA rueda POR DELANTE de todo
+  // (entidades + iluminación): la bruma de Merrow roza al Portador.
+  if (g.mapId === 'costa') drawCoastBanks(ctx, g, 2, 3);
 
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
+  // R9-9 (cumbres): trazos de ventisca + bancos de nieve cruzando (aditivos)
+  if (g.mapId === 'cumbres') { drawGustStreaks(ctx, g); drawSnowBanks(ctx, g); }
   for (let i = 0; i < CAP; i++) {
     const s = pool[i];
     if (!s.active) continue;
@@ -1028,6 +1467,9 @@ export function drawWeatherSky(ctx: CanvasRenderingContext2D, g: Game): void {
   }
   ctx.restore();
   ctx.globalAlpha = 1;
+  // R9-9 (cumbres): deslumbramiento blanco LEVE en el pico de la ráfaga
+  // (fuera del 'lighter': velo lechoso source-over, no suma de brillos)
+  if (g.mapId === 'cumbres') drawGustGlare(ctx, g);
 }
 
 // ---------------- Estadísticas (debug/harness, no usar por frame) ----------------
