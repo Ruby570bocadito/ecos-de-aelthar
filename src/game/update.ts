@@ -59,6 +59,15 @@ const lastAttackT = new WeakMap<Player, number>();
 /** Pulso previo del latido de vida baja (Ronda 3): dispara sfx en el cruce ascendente. */
 let prevHeartbeat = 0;
 
+// ---------------- R8 · IA v2 (1.2 steering anti-atasco · 2.5 espaciado) ----------------
+// Token de ATAQUE por frame (EPIC 2.5, O(n) total, cero allocs): de todos los
+// aggro vivos no-jefe, SOLO el más cercano al Portador tiene derecho de
+// aproximación; el resto orbita lateralmente (no amontonarse). El token se
+// recalcula 1×/frame en updateGame y lo lee updateEnemy.
+let tokenRef: Enemy | null = null; // atacante con token este frame
+let tokenD2 = Infinity;            // su distancia² al Portador (con histéresis)
+let prevToken: Enemy | null = null; // histéresis: el token actual solo se cede a un reto ≥15% más cerca
+
 // ---------------- HIELO RESBALADIZO (Acto II, 9-a) ----------------
 // Sobre el lago helado de las Cumbres (tile 'i') el Portador conserva la
 // inercia: aceleración reducida al moverse y deslizamiento con decaimiento
@@ -506,6 +515,16 @@ export function updateGame(g: Game, dt: number) {
   // se memoiza 1× por frame en vez de 1× por enemigo.
   curNightMult = isNight(g) ? 1.3 : 1;
   let anyAggro = false;
+  // R8-2.5 · TOKEN DE ATAQUE — 1 pasada O(n), sin allocs ( EPIC 2.5 espaciado):
+  // elige al atacante no-jefe más cercano al Portador; los demás lo respetan.
+  tokenRef = null; tokenD2 = Infinity;
+  for (let i = 0; i < g.enemies.length; i++) {
+    const en = g.enemies[i];
+    if (en.dead || !en.aggro || en.etype === 'guardian') continue;
+    const dd2 = dist2(en.x, en.y, p.x, p.y) * (en === prevToken ? 0.85 : 1); // histéresis anti-parpadeo
+    if (dd2 < tokenD2) { tokenD2 = dd2; tokenRef = en; }
+  }
+  prevToken = tokenRef;
   for (const e of g.enemies) {
     if (e.dead) {
       // jefes del Acto II (9-a) + jefes 14-a: última salva visual en cuanto mueren,
@@ -848,6 +867,43 @@ function speedMult(e: Enemy): number {
   return m;
 }
 
+/**
+ * R8-1.2 · Movimiento de persecución con steering local O(1) anti-atasco.
+ * Los enemigos perseguían en LÍNEA RECTA y se encallaban contra tiles altos
+ * sólidos ('t'/'p'): ahora, si el paso directo está bloqueado (sonda boxFree,
+ * la misma puerta que moveEntity), deslizan PERPENDICULAR al muro con lado
+ * determinista (paridad de la celda del hogar — sin Math.random → sin
+ * vibración) y MANTIENEN el intento ~0.45 s (histéresis: no se recalcula la
+ * dirección cada frame). Si el deslizamiento también choca, invierte el lado
+ * al momento. Cero allocations; como moveEntity valida por eje, el roce con
+ * el muro sigue avanzando de forma natural.
+ */
+function chaseMove(g: Game, e: Enemy, dx: number, dy: number, spd: number, dt: number): void {
+  const step = spd * dt;
+  if (e.slideT !== undefined && e.slideT > 0) {
+    // deslizamiento en curso: tangente al muro + componente hacia el objetivo
+    e.slideT -= dt;
+    let sd = e.slideSide ?? 1;
+    if (!g.boxFree(e.x - dy * sd * step, e.y + dx * sd * step, e.w, e.h)) {
+      sd = -sd; e.slideSide = sd; // rincón: invierte el sentido del rodeo
+    }
+    const mx = -dy * sd * 0.85 + dx * 0.35, my = dx * sd * 0.85 + dy * 0.35;
+    const ml = Math.sqrt(mx * mx + my * my) || 1;
+    g.moveEntity(e, (mx / ml) * step, (my / ml) * step);
+    if (e.slideT <= 0) { e.slideT = undefined; e.slideSide = undefined; } // reintenta directo
+    return;
+  }
+  if (g.boxFree(e.x + dx * step, e.y + dy * step, e.w, e.h)) {
+    g.moveEntity(e, dx * step, dy * step); // paso directo: sin obstáculo
+    return;
+  }
+  // bloqueado por tile alto/muro: elige lado determinista y memoriza el intento
+  const sd = (((e.homeX + e.homeY) | 0) & 1) ? 1 : -1;
+  e.slideSide = sd;
+  e.slideT = 0.45;
+  g.moveEntity(e, -dy * sd * step * 0.8, dx * sd * step * 0.8);
+}
+
 function updateEnemy(g: Game, e: Enemy, dt: number) {
   const p = g.player!;
   const def = ENEMY_DEFS[e.etype];
@@ -943,12 +999,26 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
       // ==== 16-b (señuelo): enemigo atraído camina hacia el señuelo y NO
       // ataca al Portador; al expirar el timer retoma la persecución normal ====
       if (lureActive(g, e)) { sennoChase(g, e, dt, def.speed * speedMult(e)); break; }
+      // R8-2.5 · duda tras parry (no jefes): si el Portador acaba de PARAR un
+      // golpe (destello de parada activo con la ventana ya cerrada — firmado
+      // por p.parryFx>0.15 && p.parryT<=0; al INICIAR parry parryT>0 y no
+      // cuenta), la IA vacila ~0.25 s y no arranca nuevo viento de ataque.
+      if (e.etype !== 'guardian' && p.parryFx > 0.15 && p.parryT <= 0) { e.moving = false; break; }
       const spd = def.speed * speedMult(e);
       if (d2 > (def.atkR * 0.8) * (def.atkR * 0.8)) {
         // R5-O10: sqrt solo al normalizar la dirección (antes hypot por frame)
         const dl = Math.sqrt(d2) || 1;
-        const dx = (p.x - e.x) / dl, dy = (p.y - e.y) / dl;
-        g.moveEntity(e, dx * spd * dt, dy * spd * dt);
+        let dx = (p.x - e.x) / dl, dy = (p.y - e.y) / dl;
+        // R8-2.5 · espaciado (no jefes): si el atacante con token ya está a
+        // <24 px del Portador, el resto ORBITA lateralmente en vez de apilarse
+        // detrás de él (lado determinista por enemigo, cero allocs).
+        if (e.etype !== 'guardian' && tokenRef !== null && tokenRef !== e && tokenD2 < 576) {
+          const sd = e.slideSide ?? (((e.homeX + e.homeY) | 0) & 1 ? 1 : -1);
+          const ox = -dy * sd * 0.8 + dx * 0.25, oy = dx * sd * 0.8 + dy * 0.25;
+          const ol = Math.sqrt(ox * ox + oy * oy) || 1;
+          dx = ox / ol; dy = oy / ol;
+        }
+        chaseMove(g, e, dx, dy, spd, dt); // R8-1.2: steering anti-atasco en árboles
         e.moving = true;
         e.dir = dx > 0 ? 'right' : 'left';
       } else e.moving = false;
@@ -1013,7 +1083,16 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
     }
     case 'recupera': {
       e.aiT -= dt;
-      e.moving = false;
+      // R8-2.5 · retirada (no jefes): tras golpear cede 1-2 pasos si el
+      // Portador sigue encima (~0.25 s, cooldown de aproximación natural);
+      // moveEntity valida por eje → nunca se mete en muros al retroceder.
+      if (e.etype !== 'guardian' && e.aiT > 0.2 && d2 < (def.atkR * 1.4) * (def.atkR * 1.4)) {
+        const dl = Math.sqrt(d2) || 1;
+        const bx = (e.x - p.x) / dl, by = (e.y - p.y) / dl;
+        g.moveEntity(e, bx * def.speed * 0.9 * dt, by * def.speed * 0.9 * dt);
+        e.moving = true;
+        e.dir = bx > 0 ? 'right' : 'left';
+      } else e.moving = false;
       if (e.aiT <= 0) e.ai = e.aggro ? 'persigue' : 'patrulla';
       break;
     }
@@ -1045,8 +1124,14 @@ function guardianBrain(g: Game, e: Enemy, dt: number, d: number) {
     addShake(g, 5);
     addFlash(g, e.phase === 3 ? '#e8a0ff' : '#7ee8ff', 0.2);
     requestSlowmo(g, 0.25);
-    if (e.phase === 2) {
-      // invoca sombras
+    if (e.phase === 2 && !e.sumFase2) {
+      // invoca sombras — R8-1.5: UNA VEZ por vida del jefe (latch sumFase2).
+      // La memoria de vida del motor (loadMap → bossHp_*) devolvía HP de banda
+      // fase-2 a un jefe RECIÉN NACIDO en fase 1; el salto 1→2 re-invocaba el
+      // par de fantasmas en CADA re-entrada a la cripta ("el fantasma se
+      // multiplica al salir"). El latch vive en el enemigo (opcional, el save()
+      // del motor NO serializa enemigos) → sin duplicados ni fugas de estado.
+      e.sumFase2 = true;
       for (let i = 0; i < 2; i++) {
         const s = g.makeEnemy('sombra', e.x + (i === 0 ? -24 : 24), e.y + 12, 0, 'boss');
         s.aggro = true;

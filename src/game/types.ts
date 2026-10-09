@@ -131,6 +131,9 @@ export interface Enemy extends Entity {
   subT?: number;                // timer auxiliar para cerebros de IA nuevos
   invulT?: number;              // >0: invulnerable (fase espectral de espectro/sirena)
   lured?: number;               // 16-b: >0 — atraído por un señuelo (segundos restantes)
+  slideSide?: number;           // R8-1.2: lado memorizado del deslizamiento anti-obstáculo (-1|1)
+  slideT?: number;              // R8-1.2: s restantes del intento de deslizamiento (histéresis anti-vibración)
+  sumFase2?: boolean;           // R8-1.5: invocación de sombras de fase 2 ya realizada (1× por vida del jefe)
 }
 
 export interface Companion extends Entity {
