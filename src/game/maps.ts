@@ -5,6 +5,7 @@
 // ============================================================
 
 import type { MapDef, MapId, EpochDiff, Epoch } from './types';
+import { EXPANSION_MAPS } from './maps_expansion';
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -121,6 +122,9 @@ function buildLunaris(): string[] {
   scatter(g, 3, 3, 48, 34, ',', 0.055, 101, (x, y) => g[y][x] !== '.');
   scatter(g, 3, 31, 22, 35, 'm', 0.06, 77, (x, y) => g[y][x] !== '.');
   scatter(g, 3, 3, 20, 7, 'p', 0.10, 55, (x, y) => g[y][x] !== '.');
+  // abertura sur hacia la Costa de Bruma (Acto II): x25..27, y36..37
+  rect(g, 25, 36, 3, 2, '=');
+  pathV(g, 30, 35, 25); pathV(g, 30, 35, 26);
   return toRows(g);
 }
 
@@ -170,6 +174,12 @@ function buildBosque(): string[] {
   set(g, 12, 20, 'R'); set(g, 30, 33, 'R'); set(g, 50, 30, 'R');
   scatter(g, 2, 14, 53, 41, ',', 0.05, 303, (x, y) => g[y][x] !== '.');
   scatter(g, 2, 14, 53, 41, 'm', 0.035, 404, (x, y) => g[y][x] !== '.');
+  // abertura este hacia las Cumbres Heladas (Acto II): x54..55, y6..8.
+  // El camino va por y=8 para no cruzar la Niebla Muda (y6..7) ni el río.
+  pathH(g, 27, 54, 8);
+  rect(g, 53, 6, 3, 3, '=');
+  // plataforma de aterrizaje para quien vuelve de las Cumbres (51,7)
+  rect(g, 50, 7, 3, 2, '=');
   return toRows(g);
 }
 
@@ -231,7 +241,7 @@ const bosqueDiffs: EpochDiff[] = [
 
 // ---------------- Definición completa ----------------
 
-export const MAPS: Record<MapId, MapDef> = {
+const BASE_MAPS: Record<'lunaris' | 'bosque' | 'cripta', MapDef> = {
   lunaris: {
     id: 'lunaris',
     name: 'Valle de Lunaris',
@@ -268,11 +278,14 @@ export const MAPS: Record<MapId, MapDef> = {
     ],
     exits: [
       { x: 23, y: 0, w: 6, h: 2, to: 'bosque', tx: 27, ty: 40, label: 'Bosque Susurrante' },
+      // aterrizaje en costa (26,2): camino '=' bajo la abertura norte, fuera de su zona de salida
+      { x: 25, y: 36, w: 3, h: 2, to: 'costa', tx: 26, ty: 2, label: 'Costa de Bruma' },
     ],
     props: [
       { id: 'sanc_l', kind: 'sanctuary', x: 25, y: 18 },
       { id: 'forge', kind: 'forge', x: 37, y: 10 },
       { id: 'sign_l', kind: 'sign', x: 29, y: 3, label: '«Al norte: Bosque Susurrante. Cuidado con la Niebla.»' },
+      { id: 'sign_l2', kind: 'sign', x: 23, y: 34, label: '«Al sur: la Costa de Bruma. El mar... todavía susurra.»' },
     ],
   },
 
@@ -316,6 +329,8 @@ export const MAPS: Record<MapId, MapDef> = {
     exits: [
       { x: 24, y: 42, w: 6, h: 2, to: 'lunaris', tx: 26, ty: 3, label: 'Valle de Lunaris' },
       { x: 8, y: 2, w: 5, h: 2, to: 'cripta', tx: 19, ty: 30, label: 'Cripta del Primer Canto' },
+      // aterrizaje en cumbres (25,39): camino '=' sobre la abertura sur, fuera de su zona de salida
+      { x: 54, y: 6, w: 2, h: 3, to: 'cumbres', tx: 25, ty: 39, label: 'Cumbres Heladas' },
     ],
     props: [
       { id: 'sanc_b', kind: 'sanctuary', x: 38, y: 26 },
@@ -324,6 +339,7 @@ export const MAPS: Record<MapId, MapDef> = {
       { id: 'sign_c', kind: 'sign', x: 15, y: 5, label: '«Cripta del Primer Canto. Aquí durmió la voz del dios.»' },
       // easter egg Nimue (biblia: hermana de Ilwen, atrapada en la Niebla) — solo en el pasado
       { id: 'sign_nimue', kind: 'sign', x: 25, y: 6, needPast: true, label: 'Las flores del pasado no crecen en círculo por casualidad. Entre las raíces, apenas un hilo de voz que ya no es voz: «...nimue... nimue...» Alguien duerme aquí debajo, y la Niebla la cuida como a una semilla. (Ilwen busca a su hermana... pero jura que no se llamaba así.)' },
+      { id: 'sign_b2', kind: 'sign', x: 52, y: 9, label: '«Al este: el paso de las Cumbres. Lleva abrigo, Portador.»' },
     ],
   },
 
@@ -336,7 +352,12 @@ export const MAPS: Record<MapId, MapDef> = {
     epochDiffs: [],
     dark: true,
     music: 'crypt',
-    npcs: [],
+    npcs: [
+      // 16-a: La Guarda del Primer Canto — el tercer capellán que no calló,
+      // atado a la piedra de la Cripta. Solo aparece cuando el tercer canto
+      // terminó (acto3Done): custodia la puerta de la Sala (misiones q15).
+      { id: 'guarda', x: 21, y: 24, sprite: 'kael', name: 'La Guarda del Primer Canto', showFlag: 'acto3Done' },
+    ],
     chests: [
       { id: 'c1', x: 28, y: 25, gold: 50 },
       { id: 'c2', x: 7, y: 25, potions: 2 },
@@ -364,6 +385,9 @@ export const MAPS: Record<MapId, MapDef> = {
     ],
   },
 };
+
+// Mundo completo: mapa base + expansión del Acto II (Costa, Aldea, Cumbres)
+export const MAPS: Record<MapId, MapDef> = { ...BASE_MAPS, ...EXPANSION_MAPS };
 
 // Rellena filas cortas por seguridad
 export function mapRows(m: MapDef): string[] {

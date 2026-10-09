@@ -1,10 +1,15 @@
 // ============================================================
 // ECOS DE AELTHAR — Update por frame
 // Jugador, IA de enemigos, jefe, proyectiles, compañera, mundo
+// + capa de feedback de combate (agente 8-c: embestida, chispas,
+//   soplo de esquiva, estelas de proyectiles, recoil de Ilwen)
+// + HIELO RESBALADIZO (Acto II, 9-a): inercia sobre tile 'i' de cumbres
+//   + velocidad real del Portador (predicción de la ventisca del gólem)
+//   + última salva visual al morir los jefes del Acto II
 // ============================================================
 
 import type { Game } from './engine';
-import { TILE, playerMeleeDmg } from './engine';
+import { TILE, playerMeleeDmg, BOSS_DEFEAT_FLAG } from './engine';
 import type { Enemy, Dir, Element, Player, Companion } from './types';
 import { ENEMY_DEFS } from './data';
 import { audio } from './audio';
@@ -17,6 +22,10 @@ import { updateBossFx } from './actors/bossfx';
 // Ronda 3 · Combate y Juice: HUD vivo, FX de Ilwen y audio de latido
 import { updateHudFx, hudHeartbeatPulse } from './actors/hudfx';
 import { companionShotFx, setBondActive, setArrowIndex } from './actors/companfx';
+import { combatSparks, dodgeRing, critGlint } from './fx';
+import { expansionTick, expansionDeathFx, expansionBossWatchers } from './enemies_expansion';
+import { tileAt } from './maps'; // solo lectura (mapas propiedad de otro agente)
+import { interaccionTick, companionOrdersMove, lureActive, sennoChase } from './interaccion'; // 16-b: órdenes tácticas + señuelo
 
 const DIRS: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
 
@@ -41,8 +50,65 @@ const lastAttackT = new WeakMap<Player, number>();
 /** Pulso previo del latido de vida baja (Ronda 3): dispara sfx en el cruce ascendente. */
 let prevHeartbeat = 0;
 
+// ---------------- HIELO RESBALADIZO (Acto II, 9-a) ----------------
+// Sobre el lago helado de las Cumbres (tile 'i') el Portador conserva la
+// inercia: aceleración reducida al moverse y deslizamiento con decaimiento
+// suave al soltar. Memoria por Portador (WeakMap, no persiste).
+interface IceMem { vx: number; vy: number }
+const iceMem = new WeakMap<Player, IceMem>();
+
+/** Velocidad real del Portador del último frame de juego (px/s). Mide el
+ *  desplazamiento total (caminar, rodar, deslizarse, retroceso) y sirve
+ *  a la ventisca del gólem (enemies_expansion → getPortadorVel) para
+ *  telegrafiar su posición FUTURA. Teleportes (saltos grandes) → 0. */
+let plLastX = 0, plLastY = 0, plLastOk = false, plVX = 0, plVY = 0;
+export function getPortadorVel(): { x: number; y: number } {
+  return { x: plVX, y: plVY };
+}
+
 function dist(ax: number, ay: number, bx: number, by: number): number {
   return Math.hypot(bx - ax, by - ay);
+}
+
+/** Tipos de enemigo del Acto II con cerebro propio en enemies_expansion.ts. */
+const EXPANSION_TYPES = new Set<string>(['neumo', 'espectro', 'arpi', 'sirena', 'golem', 'vult', 'coro', 'ecodesg', 'satiro']); // 14-a: +4 tipos
+
+// ---------------- FX de impacto (agente 8-c) ----------------
+// Detección de golpes conectados SIN tocar engine.ts: damageEnemy sube
+// e.hitFlash a 0.12 al conectar (mismo patrón de borde ascendente que usa
+// enemies_expansion.commonTick). Todo sale por combatSparks/critGlint (fx.ts).
+const fxHitSeen = new WeakMap<Enemy, number>();
+/** Impactos que ya sueltan FX propio (proyectiles, REMATE): token de frame. */
+const fxOwnFx = new WeakMap<Enemy, number>();
+let fxF = 0;
+
+/** Color de chispa según el contexto: arma del Portador (acero/dorado
+ *  cargado) o elemento del golpe si viene de habilidad. */
+function sparkColorFor(p: Player, e: Enemy): string {
+  if (p.attackT > 0) return p.chargedHit ? '#ffe86a' : '#f5f2ea';
+  if (e.statuses.some(s => s.kind === 'quemado')) return '#ff9040';
+  if (e.statuses.some(s => s.kind === 'congelado')) return '#a0e8ff';
+  return '#e8e2d4';
+}
+
+/** Escanea enemigos buscando golpes recién conectados y suelta chispas
+ *  direccionales opuestas al swing (+ destello dorado si fue crítico:
+ *  el motor fija hitStop 0.09 en crítico frente a 0.04 normal).
+ *  Debe correr ANTES del bucle de enemigos (hitFlash aún sin decaer). */
+function updateCombatFx(g: Game): void {
+  fxF++;
+  const p = g.player;
+  if (!p) return;
+  for (const e of g.enemies) {
+    if (e.dead) continue;
+    const seen = fxHitSeen.get(e) ?? 0;
+    fxHitSeen.set(e, e.hitFlash);
+    if (e.hitFlash <= seen + 5e-4 || e.hitFlash <= 0.06) continue; // no es golpe nuevo
+    if (fxF - (fxOwnFx.get(e) ?? -99) <= 2) continue;              // ya tiene chispas propias
+    // rebote del impacto: chispas en dirección opuesta al swing
+    combatSparks(g, e.x, e.y - 4, p.x - e.x, p.y - e.y, sparkColorFor(p, e), 5, 70);
+    if (g.hitStop > 0.05) critGlint(g, e.x, e.y - 6);
+  }
 }
 
 export function updateGame(g: Game, dt: number) {
@@ -141,23 +207,81 @@ export function updateGame(g: Game, dt: number) {
     p.moving = false;
     p.anim += dt;
   } else {
-    // movimiento normal
+    // HIELO RESBALADIZO (Acto II, 9-a): caminar sobre el lago helado de las
+    // Cumbres (tile 'i') conserva la INERCIA. Fuera de hielo, control normal
+    // 1:1 (intacto). Nunca aplica con voltereta (otra rama) ni knockback.
+    const im = iceMem.get(p) ?? { vx: 0, vy: 0 };
+    iceMem.set(p, im);
+    const kbActive = (p.kbVx ?? 0) !== 0 || (p.kbVy ?? 0) !== 0;
+    const onIce = !kbActive &&
+      tileAt(g.map, g.rows, Math.floor(p.x / TILE), Math.floor((p.y + p.h / 2) / TILE), g.epoch) === 'i';
     const spd = 74;
-    if (mx !== 0 || my !== 0) {
-      g.moveEntity(p, (mx / mlen) * spd * dt, (my / mlen) * spd * dt);
-      p.moving = true;
-      p.anim += dt;
-      if (!p.charging || p.chargeT < 0.2) {
-        if (Math.abs(mx) > Math.abs(my)) p.dir = mx > 0 ? 'right' : 'left';
-        else p.dir = my > 0 ? 'down' : 'up';
+    if (onIce) {
+      if (mx !== 0 || my !== 0) {
+        // al pisar hielo con velocidad, se parte de la inercia real del frame anterior
+        if (im.vx === 0 && im.vy === 0) { im.vx = plVX; im.vy = plVY; }
+        // aceleración reducida (×0.55): la velocidad persigue la objetivo más despacio
+        const k = 1 - Math.pow(0.55, dt * 60);
+        im.vx += ((mx / mlen) * spd - im.vx) * k;
+        im.vy += ((my / mlen) * spd - im.vy) * k;
+      } else {
+        // sin input: conserva la última velocidad con decaimiento 0.90^(dt·60)
+        // hasta bajar de 5 px/s (deslizamiento suave, no frenazo seco)
+        const dec = Math.pow(0.9, dt * 60);
+        im.vx *= dec;
+        im.vy *= dec;
+        if (im.vx * im.vx + im.vy * im.vy < 25) { im.vx = 0; im.vy = 0; }
+      }
+      if (im.vx !== 0 || im.vy !== 0) {
+        g.moveEntity(p, im.vx * dt, im.vy * dt);
+        p.moving = true;
+        p.anim += dt * ((mx !== 0 || my !== 0) ? 1 : 0.7); // derrapa sin input
+        if ((mx !== 0 || my !== 0) && (!p.charging || p.chargeT < 0.2)) {
+          if (Math.abs(mx) > Math.abs(my)) p.dir = mx > 0 ? 'right' : 'left';
+          else p.dir = my > 0 ? 'down' : 'up';
+        }
+      } else {
+        p.moving = false;
+        p.anim += dt * 0.4;
       }
     } else {
-      p.moving = false;
-      p.anim += dt * 0.4;
+      // control normal (tiles no helados): la memoria de hielo se resetea
+      im.vx = 0;
+      im.vy = 0;
+      if (mx !== 0 || my !== 0) {
+        g.moveEntity(p, (mx / mlen) * spd * dt, (my / mlen) * spd * dt);
+        p.moving = true;
+        p.anim += dt;
+        if (!p.charging || p.chargeT < 0.2) {
+          if (Math.abs(mx) > Math.abs(my)) p.dir = mx > 0 ? 'right' : 'left';
+          else p.dir = my > 0 ? 'down' : 'up';
+        }
+      } else {
+        p.moving = false;
+        p.anim += dt * 0.4;
+      }
     }
   }
 
+  // velocidad real del Portador (9-a): desplazamiento de este frame / dt.
+  // La usan la inercia del hielo (semilla al pisarlo) y la ventisca del
+  // gólem (getPortadorVel). Saltos de teleporte (>160 px) → velocidad 0.
+  if (plLastOk) {
+    const ddx = p.x - plLastX, ddy = p.y - plLastY;
+    if (ddx * ddx + ddy * ddy < 160 * 160) {
+      plVX = ddx / Math.max(1e-4, dt);
+      plVY = ddy / Math.max(1e-4, dt);
+      const vm = Math.hypot(plVX, plVY);
+      if (vm > 240) { plVX *= 240 / vm; plVY *= 240 / vm; } // tope (rodar+retroceso)
+    } else { plVX = 0; plVY = 0; }
+  }
+  plLastX = p.x; plLastY = p.y; plLastOk = true;
+
   // ---------------- ventana de combo · golpe recién liberado · REMATE ----------------
+  // FX de impacto (8-c): detecta golpes conectados el frame anterior
+  // (input/parcelas) y suelta chispas; antes del bucle de enemigos.
+  updateCombatFx(g);
+
   const prevAttackT = lastAttackT.get(p) ?? 0;
   const attackStarted = p.attackT > 0 && prevAttackT <= 0;
   lastAttackT.set(p, p.attackT);
@@ -174,6 +298,13 @@ export function updateGame(g: Game, dt: number) {
   }
 
   if (attackStarted) {
+    // EMBESTIDA (8-c): el peso del tajo empuja al Portador un paso en su
+    // dirección. applyKnockback + stepKnockback (ya en marcha, línea 100)
+    // mueven con g.moveEntity → respeta tiles; fuerza suave que decae sola.
+    if (p.rollT <= 0) {
+      const [lgx, lgy] = DIRS[p.dir];
+      applyKnockback(p, lgx, lgy, p.chargedHit ? 88 : 62);
+    }
     // impacto cargado: onda de empuje frontal (el peso del Portador)
     if (p.chargedHit) {
       const [fdx, fdy] = DIRS[p.dir];
@@ -193,6 +324,11 @@ export function updateGame(g: Game, dt: number) {
         finisherUsed.add(e);
         const [rdx, rdy] = DIRS[p.dir];
         g.damageEnemy(e, playerMeleeDmg(p) * 0.6, 'ninguno', 90, rdx, rdy);
+        // chispas del REMATE (8-c): doradas, opuestas al swing; marcado para
+        // que updateCombatFx no las duplique al ver el hitFlash subir
+        fxOwnFx.set(e, fxF);
+        combatSparks(g, e.x, e.y - 4, -rdx, -rdy, '#ffe86a', 6, 90);
+        critGlint(g, e.x, e.y - 6);
         g.floatAt(e.x, e.y - 26, '¡REMATE!', '#ffe86a', 12);
         addShake(g, 4);
         requestSlowmo(g, 0.2);
@@ -215,6 +351,8 @@ export function updateGame(g: Game, dt: number) {
     let rd: Dir = p.dir;
     if (mx !== 0 || my !== 0) rd = Math.abs(mx) > Math.abs(my) ? (mx > 0 ? 'right' : 'left') : (my > 0 ? 'down' : 'up');
     (p as unknown as { rollDir?: Dir }).rollDir = rd;
+    // soplo de esquiva (8-c): anillo de partículas que se abre con la voltereta
+    dodgeRing(g, p.x, p.y);
     audio.sfx('dodge');
   }
 
@@ -264,10 +402,19 @@ export function updateGame(g: Game, dt: number) {
   // ---------------- compañera ----------------
   if (g.companion) updateCompanion(g, dt);
 
+  // ==== 16-b (interacción-compañeros): señuelo (vida/marcador/aggro timers),
+  // restos (ttl/marcador) y cooldown de interposición. O(1)/frame, cero GC. ====
+  interaccionTick(g, dt);
+
   // ---------------- enemigos ----------------
   let anyAggro = false;
   for (const e of g.enemies) {
-    if (e.dead) continue;
+    if (e.dead) {
+      // jefes del Acto II (9-a) + jefes 14-a: última salva visual en cuanto mueren,
+      // ANTES de que el filtro de abajo los retire del array
+      if (e.etype === 'sirena' || e.etype === 'golem' || e.etype === 'vult' || e.etype === 'coro') expansionDeathFx(g, e);
+      continue;
+    }
     updateEnemy(g, e, dt);
     if (e.aggro && e.ai !== 'muerto') anyAggro = true;
   }
@@ -275,23 +422,42 @@ export function updateGame(g: Game, dt: number) {
   if (g.bossRef && g.bossRef.dead) g.bossRef = null;
   audio.setCombat(anyAggro);
 
-  // ---------------- jefe: activación ----------------
-  if (g.mapId === 'cripta' && !g.flags.guardianDefeated && !g.bossActive) {
-    const boss = g.enemies.find(e => e.etype === 'guardian');
+  // ---------------- jefe: activación (generalizada Acto II) ----------------
+  const bossSpawn = g.map.spawns.find(s => s.zone === 'boss');
+  if (bossSpawn && !g.flags[BOSS_DEFEAT_FLAG[bossSpawn.type] ?? 'x_defeated'] && !g.bossActive) {
+    const boss = g.enemies.find(e => e.etype === bossSpawn.type);
     if (boss) {
       g.bossRef = boss;
       if (dist(p.x, p.y, boss.x, boss.y) < 190) {
         g.bossActive = true;
         audio.playTrack('boss');
         // terror v2 (Ronda 2): capa de pavor + presentación cinematográfica
+        // (ahora para TODOS los jefes; el intro lee bossRef.etype)
         dreadInit();
         dreadStinger('boss');
         startBossIntro(g);
-        g.toast('El Guardián Hueco despierta: ROMPE SU BARRA DE QUIEBRE', '#7ee8ff');
-        audio.sfx('roar');
+        // aviso y sfx según el jefe que despierta (Acto II + 14-a)
+        if (bossSpawn.type === 'guardian') {
+          g.toast('El Guardián Hueco despierta: ROMPE SU BARRA DE QUIEBRE', '#7ee8ff');
+          audio.sfx('roar');
+        } else if (bossSpawn.type === 'sirena') {
+          g.toast('La Sirena Abisal despierta: ROMPE SU BARRA DE QUIEBRE', '#8ef0ff');
+          audio.sfx('song');
+        } else if (bossSpawn.type === 'golem') {
+          g.toast('El Gólem de Escarcha despierta: ROMPE SU BARRA DE QUIEBRE', '#a8d8ff');
+          audio.sfx('roar');
+        } else {
+          g.toast(`${ENEMY_DEFS[bossSpawn.type]?.name ?? 'Un poder antiguo'} despierta: ROMPE SU BARRA DE QUIEBRE`, '#c08af0');
+          audio.sfx('roar');
+        }
       }
     }
   }
+
+  // 14-a: jefes opcionales (Vult en Cumbres de noche · El Coro Roto en la
+  // Cripta post-Acto III) — spawn + activación de barra al estilo del bloque
+  // anterior. Barato: el watcher filtra primero por mapa.
+  expansionBossWatchers(g);
 
   // ---------------- proyectiles ----------------
   for (let i = g.projectiles.length - 1; i >= 0; i--) {
@@ -311,6 +477,9 @@ export function updateGame(g: Game, dt: number) {
           // empuje según elemento: el fuego arrea más (contrato fxcore)
           const kbForce = pr.from === 'companion' ? 90 : pr.element === 'fuego' ? 150 : pr.element === 'rayo' ? 110 : 85;
           applyKnockback(e, pr.vx, pr.vy, kbForce);
+          // el impacto del proyectil ya suelta burst propio → marcar para que
+          // updateCombatFx no duplique chispas al ver el hitFlash subir
+          fxOwnFx.set(e, fxF);
           dead = true;
           break;
         }
@@ -329,10 +498,31 @@ export function updateGame(g: Game, dt: number) {
           dead = true;
         }
       }
-      if (Math.random() < 0.4) g.particles.push({ x: pr.x, y: pr.y, vx: 0, vy: 0, t: 0.25, maxT: 0.25, color: '#b48fff', size: 1.5, grav: 0 });
+      // estelas de proyectiles nuevos (8-c): marea/escarcha/canto dejan un
+      // soplo fino del color propio, sin gravedad (extiende el patrón aliado;
+      // el resto mantiene su estela púrpura genérica)
+      const trailC = pr.sprite === 'orb' ? '#8ef0ff' : pr.sprite === 'shard' ? '#a8d8ff' : pr.sprite === 'nota' ? '#ffe9a0' : '';
+      if (trailC) {
+        if (Math.random() < 0.6) {
+          g.particles.push({ x: pr.x + (Math.random() - 0.5) * 3, y: pr.y + (Math.random() - 0.5) * 3, vx: 0, vy: 0, t: 0.25, maxT: 0.25, color: trailC, size: 1.4, grav: 0 });
+        }
+      } else if (Math.random() < 0.4) {
+        g.particles.push({ x: pr.x, y: pr.y, vx: 0, vy: 0, t: 0.25, maxT: 0.25, color: '#b48fff', size: 1.5, grav: 0 });
+      }
     }
     if (dead) {
       g.burst(pr.x, pr.y, pr.element === 'fuego' ? '#ff9040' : pr.element === 'hielo' ? '#a0e8ff' : '#e8d0ff', 6, 40);
+      // canto de sirena (8-c): al morir la nota suelta 3 destellos musicales
+      // que ascienden (contra pared o contra el Portador)
+      if (pr.sprite === 'nota') {
+        for (let j = 0; j < 3; j++) {
+          g.particles.push({
+            x: pr.x + (Math.random() - 0.5) * 6, y: pr.y + (Math.random() - 0.5) * 4,
+            vx: (Math.random() - 0.5) * 14, vy: -16 - Math.random() * 14,
+            t: 0.55, maxT: 0.55, color: '#b8a0f0', size: 1.6, grav: 0,
+          });
+        }
+      }
       g.projectiles.splice(i, 1);
     }
   }
@@ -390,20 +580,32 @@ function updateCompanion(g: Game, dt: number) {
   }
   c.atkCd -= dt;
   const d = dist(c.x, c.y, p.x, p.y);
-  // mantener posición de escolta
-  if (d > 30) {
-    const spd = Math.min(92, 40 + (d - 30) * 2);
-    const dx = (p.x - c.x) / d, dy = (p.y - c.y) / d;
-    g.moveEntity(c, dx * spd * dt, dy * spd * dt);
-    c.moving = true; c.anim += dt;
-    c.dir = dx > 0 ? 'right' : dx < 0 ? 'left' : dy > 0 ? 'down' : 'up';
-  } else { c.moving = false; c.anim += dt * 0.4; }
+  // ==== 16-b: ¿modo defensivo? (filtra disparos y Lluvia de estrellas al perímetro de 2 tiles) ====
+  const defensivo16b = (c.mode ?? 'seguir') === 'defensivo';
+  // ==== 16-b (órdenes tácticas al compañero, tecla T) =====================
+  // En 'agresivo' y 'defensivo' el movimiento lo decide la orden
+  // (interaccion.companionOrdersMove). Devuelve false en 'seguir' —y en la
+  // retirada agresiva por vida baja (<30%)— y entonces corre la escolta
+  // ORIGINAL de abajo, intacta.
+  if (!companionOrdersMove(g, c, p, dt, d)) {
+    // mantener posición de escolta
+    if (d > 30) {
+      const spd = Math.min(92, 40 + (d - 30) * 2);
+      const dx = (p.x - c.x) / d, dy = (p.y - c.y) / d;
+      g.moveEntity(c, dx * spd * dt, dy * spd * dt);
+      c.moving = true; c.anim += dt;
+      c.dir = dx > 0 ? 'right' : dx < 0 ? 'left' : dy > 0 ? 'down' : 'up';
+    } else { c.moving = false; c.anim += dt * 0.4; }
+  }
+  // ==== fin 16-b (dispatch de movimiento) ==================================
   // disparo a enemigos aggro cercanos: flechas elementales cíclicas fuego→hielo→rayo
   // (fuego/hielo aplican sus estados vía damageEnemy; rayo solo daño)
   if (c.atkCd <= 0) {
     let best: Enemy | null = null, bd = 150;
+    // ==== 16-b: modo DEFENSIVO — solo dispara a enemigos a <2 tiles del Portador ====
     for (const e of g.enemies) {
       if (e.dead) continue;
+      if (defensivo16b && dist(e.x, e.y, p.x, p.y) >= 2 * TILE) continue;
       const dd = dist(c.x, c.y, e.x, e.y);
       if (dd < bd) { bd = dd; best = e; }
     }
@@ -420,6 +622,8 @@ function updateCompanion(g: Game, dt: number) {
         dmg, element: el, from: 'companion', sprite: 'p_arrow', radius: 3, pierce: 0,
       });
       companionShotFx(g, c.x, c.y - 6, el); // Ronda 3: destello de arco + motas
+      // micro-retroceso visual (8-c): chispas de cuerda de arco, opuestas al disparo
+      combatSparks(g, c.x, c.y - 6, -dx / l, -dy / l, '#e8d8a0', 3, 42);
       audio.sfx('companionShot');
     }
   }
@@ -441,7 +645,9 @@ function updateCompanion(g: Game, dt: number) {
   // Técnica combinada «Lluvia de estrellas» (afinidad ≥ 20 · cd 24 s · biblia)
   mem.rainCd -= dt;
   if (mem.rainCd <= 0 && c.affinity >= 20) {
-    const targets = g.enemies.filter(e => !e.dead && e.aggro && dist(c.x, c.y, e.x, e.y) < 140);
+    // ==== 16-b: en DEFENSIVO la Lluvia de estrellas también respeta el perímetro de 2 tiles ====
+    const targets = g.enemies.filter(e => !e.dead && e.aggro && dist(c.x, c.y, e.x, e.y) < 140
+      && (!defensivo16b || dist(e.x, e.y, p.x, p.y) < 2 * TILE));
     if (targets.length > 0) {
       mem.rainCd = 24;
       const t0 = targets[0];
@@ -455,6 +661,8 @@ function updateCompanion(g: Game, dt: number) {
           from: 'companion', sprite: 'p_arrow', radius: 3, pierce: 0,
         });
       }
+      // retroceso del tiro multiple (8-c): un solo golpe de cuerda por ráfaga
+      combatSparks(g, c.x, c.y - 8, -Math.cos(baseAng), -Math.sin(baseAng), '#e8d8a0', 4, 50);
       g.waves.push({ x: c.x, y: c.y, r: 4, maxR: 64, speed: 150, dmg: 0, hit: true });
       g.waves.push({ x: c.x, y: c.y, r: 4, maxR: 96, speed: 190, dmg: 0, hit: true });
       addFlash(g, '#ffe9a0', 0.15);
@@ -523,6 +731,10 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
   }
   if (e.hp < e.maxHp) e.aggro = true;
 
+  // Acto II: decae la fase intangible y delega en el cerebro propio si lo maneja
+  if (e.invulT !== undefined && e.invulT > 0) e.invulT -= dt;
+  if (EXPANSION_TYPES.has(e.etype) && expansionTick(g, e, dt, def)) return;
+
   const d = dist(e.x, e.y, p.x, p.y);
   const nightMult = isNight(g) ? 1.3 : 1;
   const aggroR = def.aggroR * nightMult * (e.etype === 'guardian' ? (g.bossActive ? 99 : 1) : 1);
@@ -576,6 +788,9 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
     case 'persigue': {
       if (!e.aggro) { e.ai = 'patrulla'; break; }
       if (d > aggroR * 2.4) { e.aggro = false; e.ai = 'patrulla'; break; }
+      // ==== 16-b (señuelo): enemigo atraído camina hacia el señuelo y NO
+      // ataca al Portador; al expirar el timer retoma la persecución normal ====
+      if (lureActive(g, e)) { sennoChase(g, e, dt, def.speed * speedMult(e)); break; }
       const dx = (p.x - e.x) / (d || 1), dy = (p.y - e.y) / (d || 1);
       const spd = def.speed * speedMult(e);
       if (d > def.atkR * 0.8) {

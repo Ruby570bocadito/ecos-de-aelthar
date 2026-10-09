@@ -150,6 +150,20 @@ const PALS: Record<string, HumanPal> = {
     dread: true, dreadC: '#bff0dc', dreadEye: '#7ae8c0',
   },
 
+  // --- Aldea de Merrow (Acto II · pescadores; reservadas por main) ---
+  merrow_h: {
+    // Pescador de Merrow: jersey de trabajo descolorido, barba canosa
+    outline: '#1c222a', hair: '#5a5a50', hairS: '#46463e', skin: '#d8a878',
+    body: '#5a6a6a', bodyS: '#465454', accent: '#8a7a5a',
+    legs: '#3e4a50', legsS: '#333e44', boots: '#3a2e20', eye: '#2a2a30', beard: '#6a6a5e',
+  },
+  merrow_m: {
+    // Pescadora de Merrow: capucha de marinar y gabardina verde agua
+    outline: '#241c22', hair: '#4a6a5e', hairS: '#3a544a', skin: '#e0b088',
+    body: '#6a7a72', bodyS: '#525f58', accent: '#9a8a6a',
+    legs: '#4a5450', legsS: '#3c443f', boots: '#3a2e20', eye: '#2a3a34', hood: true,
+  },
+
   // --- Enemigos humanoides (terror horneado por R2-A1 — NO TOCAR) ---
   esqueleto: {
     outline: '#20201e', hair: '#e6e0c8', hairS: '#c2bc9e', skin: '#e6e0c8',

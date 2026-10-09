@@ -10,12 +10,13 @@ export { VIEW_W, VIEW_H, ZOOM };
 
 import type {
   Player, Enemy, Npc, Companion, MapId, Epoch, Projectile, Particle, FloatText,
-  Toast, Shockwave, TeleGraph, SaveData, DialogueNode, Dir, Element,
+  Toast, Shockwave, TeleGraph, SaveData, DialogueNode, DialogueOption, Dir, Element, StatsData,
 } from './types';
 import { MAPS, mapRows, tileAt } from './maps';
 import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
+import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
 import { audio } from './audio';
-import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue } from './data';
+import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue, SENNUEL } from './data';
 import { updateGame } from './update';
 // Ronda 2 · Terror: disolución al morir + stinger de pavor + resets de la intro/FX del jefe
 import { spawnDeathDissolve, resetBossFx } from './actors/bossfx';
@@ -29,10 +30,80 @@ import { notifyLevelUp, notifyStatPoint } from './actors/hudfx';
 import { drawGame } from './render';
 import { buildMinimapV2 } from './world/minimap';
 import { handleCustomAction, recordDialogueTone } from './hooks';
+import { challengeTick, onChallengeDeath, type ChallengeRun } from './challenge';
+import { skillTick, skillCdMult, setSkillCdDecay } from './skilltree';
+import { balanceTick, enemyStatMult } from './balance';
+import { worldTick, worldInteract } from './worldlife';
+import { timeTick, beginEpochShift } from './timeskip';
+import { defaultStats, sanitizeStats, statsTick, achievementTick } from './achievements'; // 16-c: estadísticas + logros
+import {
+  cycleCompanionMode, useSenno, registerCorpse16b, bossSennoLoot16b, companionInterpose,
+  noteDialogueClosed16b, rumorAfterDialogue16b, interaccionInteract16b,
+} from './interaccion'; // 16-b: órdenes tácticas + señuelo + restos + rumores
+import {
+  ARMORS, ARMOR_HEAVY_SPEED, armorActive, armorActiveId, armorDefFor, armorReduction, armorTick,
+} from './armor';
 
-export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end';
+// 14-b (auditoría de cooldowns): el motor aplica skillCdMult AL FIJAR el cd
+// en useSkill (camino B del contrato skilltree.ts) → el decaimiento extra por
+// tick se desactiva para que NUNCA se descuente dos veces. Con esto el cd
+// nace reducido en todos los puntos presentes/futuros de fijación.
+setSkillCdDecay(false);
 
-export interface UiHit { x: number; y: number; w: number; h: number; cb: () => void; hover?: boolean }
+// 14-b (Manto de Ecos): guard anti-reentrancy del reflejo (damageEnemy no
+// daña al jugador, pero el flag blinda el embudo ante cambios futuros).
+let reflectBusy = false;
+
+// 14-b (compañeros): memoria transitoria de Ilwen por instancia (no serializa;
+// mismo patrón WeakMap que update.ts/skilltree). El seguimiento, el disparo
+// base y la Lluvia de estrellas siguen viniendo de update.ts (congelado):
+// este módulo AÑADE escolta robusta + apoyo de combate + avisos.
+interface CompMem { lastX: number; lastY: number; stuckT: number; coverCd: number; lineCd: number; lineIdx: number }
+const compMem = new WeakMap<Companion, CompMem>();
+const COMPANION_LINES = [
+  '¡A tu izquierda!',
+  '¡Vienen varios, no te dejes rodear!',
+  '¡Detrás de ti!',
+  'Cúbreme el flanco.',
+  '¡Están flanqueándote!',
+];
+
+// Vista DINÁMICA (fix barra negra): el buffer se ajusta al aspecto real de la
+// ventana (sin letterbox en 16:10/3:2/4:3/21:9). `let` + live bindings: todos
+// los módulos importan VIEW_W/VIEW_H y leen el valor actual en cada frame.
+export let VIEW_W = 960, VIEW_H = 540;
+export const ZOOM = 2;
+
+/**
+ * Ajusta el buffer del juego al aspecto de la ventana para eliminar el
+ * letterbox (la "barra negra" abajo/arriba). Mantiene 540px de alto base
+ * a 16:9 exacto; pantallas más anchas ganan vista lateral (hasta 1600px)
+ * y más cuadradas ganan vista vertical (hasta 800px). Clamp de seguridad
+ * para aspectos extremos (móvil vertical): ahí el letterbox es aceptable.
+ */
+export function fitViewToWindow(winW: number, winH: number): void {
+  const a = winW / Math.max(1, winH);
+  let vw = Math.round(540 * a);
+  let vh = 540;
+  if (vw < 840) { vw = 840; vh = Math.round(vw / a); }
+  else if (vw > 1600) { vw = 1600; vh = Math.round(vw / a); }
+  vh = Math.max(460, Math.min(800, vh));
+  vw = Math.max(840, Math.min(1600, Math.round(vh * a)));
+  if (vw !== VIEW_W || vh !== VIEW_H) { VIEW_W = vw; VIEW_H = vh; }
+}
+
+/** Flag de derrota por tipo de JEFE (Acto II: sirena/golem se suman al Guardián). */
+export const BOSS_DEFEAT_FLAG: Record<string, string> = {
+  guardian: 'guardianDefeated',
+  sirena: 'sirenaDefeated',
+  golem: 'golemDefeated',
+  vult: 'vultDefeated', // 14-a
+  coro: 'coroDefeated', // 14-a
+};
+
+export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end' | 'skills';
+
+export interface UiHit { x: number; y: number; w: number; h: number; cb: () => void; hover?: boolean; state?: GState }
 
 export class Game {
   canvas: HTMLCanvasElement;
@@ -44,6 +115,10 @@ export class Game {
   sfxVolUi = 0.8;
 
   requestCreate() {
+    // blindaje anti clic-fantasma (2ª capa): la creación SOLO existe desde el
+    // título. Si algún uiHit residual de otra instancia/estado disparara esto,
+    // el guard lo ignora y el overlay DOM nunca se abre en plena partida.
+    if (this.state !== 'title') return;
     audio.sfx('confirm');
     this.onRequestCreate?.();
   }
@@ -124,6 +199,12 @@ export class Game {
   bossRef: Enemy | null = null;
   bossActive = false;
 
+  // modo desafío (arena): sesión volátil — no se serializa en save()
+  challengeRun: ChallengeRun | null = null;
+
+  // ==== 16-c (logros-stats): estadísticas de la partida (save/load con defaults) ====
+  stats: StatsData = defaultStats();
+
   // bucle
   private raf = 0;
   private lastTs = 0;
@@ -135,6 +216,7 @@ export class Game {
     this.ctx = canvas.getContext('2d')!;
     this.ctx.imageSmoothingEnabled = false;
     initSprites();
+    initExpansionSprites(); // Acto II: sprites de neumo/espectro/arpi/sirena/golem + proyectiles
     this.bindInput();
     // volúmenes persistidos (sistema → sliders)
     try {
@@ -156,12 +238,76 @@ export class Game {
     // al reanudar ni reescribir el autoguardado con posición incorrecta.
     if (s !== 'play' && s !== 'dialogue') this.pendingMap = null;
     if (s !== 'play') this.rollQueued = false;
+    // 14-b (auditoría): al salir de 'play' (pausa/muerte) con una carga en
+    // curso (clic o J sostenidos), se cancela — si no, al reanudar el
+    // Portador seguía "cargando" con el ratón/tecla ya soltados.
+    if (s !== 'play' && s !== 'dialogue' && this.player?.charging) {
+      this.player.charging = false;
+      this.player.chargeT = 0;
+    }
     this.onStateChange?.(s);
     if (s === 'title') audio.playTrack('title');
   }
 
   update(dt: number) {
     updateGame(this, dt);
+    // Watchers del Acto II que viven en el motor (O(1) por frame; update.ts es
+    // de otro agente). q7 paso 0→1: la Sirena entra en combate. Elección
+    // documentada: watcher por ACTIVACIÓN DEL JEFE (bossActive al acercarte al
+    // naufragio) — más simple y robusto que medir distancia al prop 'wreck';
+    // la flag sirenaSeen evita que se repita (y se serializa en el guardado).
+    if (this.bossActive && this.bossRef?.etype === 'sirena' &&
+        this.questIdx === 6 && this.questStep === 0 && !this.flags.sirenaSeen) {
+      this.flags.sirenaSeen = true;
+      this.questAdvance();
+      this.toast('La Sirena te ha visto...', '#8ef0ff');
+    }
+    this.catchUpActo2();
+    // módulos de juego (no-ops de costo O(1) si no aplican)
+    challengeTick(this, dt); // modo desafío (arena)
+    skillTick(this, dt);     // pasivas del árbol de habilidades
+    balanceTick(this, dt);   // monitor de dificultad dinámica
+    worldTick(this, dt);     // fauna, rumores y eventos del mundo (13-b)
+    timeTick(this, dt);      // inmersión del viaje temporal (13-c)
+    armorTick(this, dt);     // 14-b: pasiva de la Malla del Alba (+vigor/s)
+    // ==== 16-c (logros-stats): tiempoJugado + memorias + logros (O(1), early-out) ====
+    statsTick(this, dt);
+    achievementTick(this);
+    this.companionTick(dt);  // 14-b: escolta, teletransporte, apoyo y avisos de Ilwen
+    this.antiStuck();        // 14-b: red anti-encallamiento del Portador
+  }
+
+  /**
+   * 11-a (integración): red de seguridad del Acto II contra JUEGO FUERA DE
+   * ORDEN. Los pasos de q7-q9 se completaban solo por EVENTO (watcher de
+   * aggro, killEnemy, lightLamp, eco_*_taken): si el jugador completa el
+   * objetivo ANTES de aceptar la misión —mata a la Sirena durante q6, mata al
+   * Gólem durante q8, enciende los 3 faroles antes de q8 o toma un Eco por
+   * adelantado— el evento ya no puede repetirse (jefe muerto no re-spawnea,
+   * altar vacío, farol ya encendido) y la cadena quedaba bloqueada para
+   * siempre. Igual que el fix de visitas de 8-int, el avance es IDEMPOTENTE
+   * POR ESTADO: cada paso se completa si su condición final ya es cierta, en
+   * cualquier orden. O(1): early-out salvo cadena del Acto II activa.
+   */
+  private catchUpActo2() {
+    if (this.questIdx < 5 || this.questIdx > 9) return;
+    // q7 (idx 6): 0 avistada · 1 derrotada · 2 Eco de las Mareas tomado
+    if (this.questIdx === 6) {
+      if (this.questStep === 0 && this.flags.sirenaDefeated) this.questAdvance();
+      if (this.questIdx === 6 && this.questStep === 1 && this.flags.sirenaDefeated) this.questAdvance();
+      if (this.questIdx === 6 && this.questStep === 2 && this.flags.ecoMareas) this.questAdvance();
+    }
+    // q8 (idx 7): 1 los 3 faroles encendidos (orden-independiente) · 2 Eco de los Nombres
+    if (this.questIdx === 7) {
+      if (this.questStep === 1 &&
+          (['lamp1', 'lamp2', 'lamp3'] as const).filter(l => this.flags[l]).length >= 3) this.questAdvance();
+      if (this.questIdx === 7 && this.questStep === 2 && this.flags.ecoNombres) this.questAdvance();
+    }
+    // q9 (idx 8): 1 gólem derrotado · 2 Eco de las Cumbres tomado
+    if (this.questIdx === 8) {
+      if (this.questStep === 1 && this.flags.golemDefeated) this.questAdvance();
+      if (this.questIdx === 8 && this.questStep === 2 && this.flags.ecoCumbres) this.questAdvance();
+    }
   }
 
   // ---------------- Ciclo de vida ----------------
@@ -238,6 +384,8 @@ export class Game {
     this.deadGolds = [];
     this.companion = null;
     this.visitedMaps = { lunaris: true };
+    // ==== 16-c (logros-stats): partida nueva, contadores a cero ====
+    this.stats = defaultStats();
     this.dayT = 0.15;
     this.setState('intro');
     this.introIdx = 0;
@@ -291,8 +439,15 @@ export class Game {
     this.openedChests = new Set(d.openedChests);
     this.takenEchoes = new Set(d.takenEchoes);
     this.deadGolds = d.deadGolds ?? [];
+    // ==== 16-c (logros-stats): restore tolerante (saves antiguos sin stats) ====
+    this.stats = sanitizeStats(d.stats);
     this.epoch = d.epoch === 'pasado' && p.hasEcho ? 'pasado' : 'presente';
     this.companion = d.companion ? this.makeCompanion() : null;
+    // ==== 16-b: restaura la orden táctica del compañero (saves viejos sin el
+    // campo → undefined = 'seguir', el comportamiento de siempre) ====
+    if (this.companion && (d.companionMode === 'agresivo' || d.companionMode === 'defensivo' || d.companionMode === 'seguir')) {
+      this.companion.mode = d.companionMode;
+    }
     this.visitedMaps = { lunaris: true };
     if (this.flags.visitedBosque) this.visitedMaps.bosque = true;
     if (this.flags.visitedCripta) this.visitedMaps.cripta = true;
@@ -331,9 +486,13 @@ export class Game {
       takenEchoes: [...this.takenEchoes],
       deadGolds: this.deadGolds,
       companion: !!this.companion,
+      companionMode: this.companion?.mode ?? 'seguir', // 16-b: orden táctica serializada
       saveTime: Date.now(),
+      stats: { ...this.stats }, // 16-c: estadísticas dentro del guardado
     };
     try { localStorage.setItem('ecos-aelthar-save', JSON.stringify(d)); } catch { /* noop */ }
+    // ==== 16-c (logros-stats): espejo de las últimas cifras para el título ====
+    try { localStorage.setItem('ecos-stats', JSON.stringify(this.stats)); } catch { /* noop */ }
   }
 
   // ---------------- Mapa ----------------
@@ -341,8 +500,10 @@ export class Game {
   loadMap(id: MapId, tx: number, ty: number) {
     // memoria del jefe: si sales de la cripta con el Guardián herido, no se
     // regenera al volver (cierra el exploit de reseteo de combate)
-    if (this.mapId === 'cripta' && this.bossRef && !this.bossRef.dead && !this.flags.guardianDefeated) {
-      this.flags.bossHp = this.bossRef.hp;
+    // memoria del jefe (generalizada Acto II): si sales de un mapa con su JEFE vivo, no se regenera
+    if (this.bossRef && !this.bossRef.dead) {
+      this.flags[`bossHp_${this.mapId}`] = this.bossRef.hp;
+      if (this.mapId === 'cripta') this.flags.bossHp = this.bossRef.hp; // compat con saves antiguos
     }
     this.mapId = id;
     this.map = MAPS[id];
@@ -354,13 +515,27 @@ export class Game {
       const [sx, sy] = this.findSafeTile(tx, ty);
       this.player.x = sx * TILE + 8;
       this.player.y = sy * TILE + 8;
+      // 14-b (auditoría de movimiento): el estado transitorio de combate NO
+      // viaja de mapa — los iframes de un golpe recibido antes del viaje
+      // daban invulnerabilidad gratis al aterrizar, y una voltereta/carga en
+      // curso al iniciar el fundido seguía viva al llegar (roll a ciegas en
+      // el mapa nuevo, posible encallamiento contra muros desconocidos).
+      this.player.iframes = 0;
+      this.player.rollT = 0;
+      this.player.charging = false;
+      this.player.chargeT = 0;
+      this.player.parryT = 0;
+      this.player.lastHitT = 0;
+      this.rollQueued = false;
     }
     this.exitCd = 0.9;
     this.spawnEnemies();
     // restaura la vida memorizada del Guardián si la partida sigue en curso
-    if (id === 'cripta' && !this.flags.guardianDefeated && typeof this.flags.bossHp === 'number') {
-      const boss = this.enemies.find(e => e.etype === 'guardian');
-      if (boss) boss.hp = Math.max(1, Math.min(boss.maxHp, this.flags.bossHp as number));
+    const savedBossHp = typeof this.flags[`bossHp_${id}`] === 'number' ? (this.flags[`bossHp_${id}`] as number)
+      : id === 'cripta' && typeof this.flags.bossHp === 'number' ? (this.flags.bossHp as number) : null;
+    if (savedBossHp !== null) {
+      const boss = this.enemies.find(e => BOSS_DEFEAT_FLAG[e.etype] !== undefined);
+      if (boss) boss.hp = Math.max(1, Math.min(boss.maxHp, savedBossHp));
     }
     this.spawnNpcs();
     this.projectiles = []; this.waves = []; this.telegraphs = [];
@@ -375,6 +550,13 @@ export class Game {
       this.flags.visitedCripta = true;
       if (this.questIdx === 3 && this.questStep === 0) this.questAdvance();
     }
+    // Acto II: pisar cada mapa nuevo completa su objetivo de viaje. Sin guard
+    // de "primera visita": si el jugador llega ANTES de aceptar la misión, el
+    // avance debe funcionar igual al volver (condición idempotente por estado).
+    if (id === 'costa' && this.questIdx === 5 && this.questStep === 0) this.questAdvance();
+    if (id === 'aldea' && this.questIdx === 7 && this.questStep === 0) this.questAdvance();
+    if (id === 'cumbres' && this.questIdx === 8 && this.questStep === 0) this.questAdvance();
+    if (!this.flags[`visited_${id}`]) this.flags[`visited_${id}`] = true;
     this.mapTitleT = 2.6;
     this.updateCamera(true);
   }
@@ -390,16 +572,22 @@ export class Game {
       for (let ty = 0; ty < h; ty++) {
         for (let tx = 0; tx < w; tx++) {
           const ch = tileAt(this.map, this.rows, tx, ty, ep);
-          drawTile(x, ch, tx, ty, this.mapId, 0, (dx: number, dy: number) =>
-            tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
+          // Acto II: arena/nieve/hielo y suelos por bioma los dibuja la expansión; fallback genérico
+          // (el fallback usa el drawTile v2 con hook de vecinos para autotiling — merge mejora-visual)
+          if (!drawExpansionTile(x, ch, tx, ty, this.mapId))
+            drawTile(x, ch, tx, ty, this.mapId, 0, (dx: number, dy: number) =>
+              tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
         }
       }
       // objetos altos por orden de fila
       for (let ty = 0; ty < h; ty++) {
         for (let tx = 0; tx < w; tx++) {
           const ch = tileAt(this.map, this.rows, tx, ty, ep);
-          if (SOLID_CHARS.has(ch) && (ch === 't' || ch === 'p')) drawTallTile(x, ch, tx, ty, this.mapId, (dx: number, dy: number) =>
-            tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
+          if (SOLID_CHARS.has(ch) && (ch === 't' || ch === 'p')) {
+            if (!drawExpansionTallTile(x, ch, tx, ty, this.mapId))
+              drawTallTile(x, ch, tx, ty, this.mapId, (dx: number, dy: number) =>
+                tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
+          }
         }
       }
       return c;
@@ -419,16 +607,24 @@ export class Game {
   spawnEnemies() {
     this.enemies = [];
     for (const s of this.map.spawns) {
-      if (s.type === 'guardian' && this.flags.guardianDefeated) continue;
+      if (s.needPast && this.epoch !== 'pasado') continue;
+      if (s.needPresent && this.epoch !== 'presente') continue;
+      const defFlag = BOSS_DEFEAT_FLAG[s.type];
+      if (defFlag && this.flags[defFlag]) continue; // jefes derrotados no renacen
       this.enemies.push(this.makeEnemy(s.type, s.x * TILE + 8, s.y * TILE + 8, s.patrol ?? 2, s.zone));
     }
   }
 
   makeEnemy(type: Enemy['etype'], x: number, y: number, patrol: number, zone?: string): Enemy {
     const d = ENEMY_DEFS[type];
+    // balanceador de dificultad (12-c): multiplica hp del spawn (neutro en desafío)
+    const bm = enemyStatMult(this);
+    const hp = Math.max(1, Math.round(d.hp * bm.hp));
     return {
-      kind: 'enemy', etype: type, x, y, w: type === 'guardian' ? 22 : 12, h: type === 'guardian' ? 16 : 10,
-      vx: 0, vy: 0, dir: 'down', hp: d.hp, maxHp: d.hp, sprite: d.sprite, anim: Math.random() * 9, moving: false,
+      kind: 'enemy', etype: type, x, y,
+      w: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' ? 22 : 12,
+      h: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' ? 16 : 10,
+      vx: 0, vy: 0, dir: 'down', hp, maxHp: hp, sprite: d.sprite, anim: Math.random() * 9, moving: false,
       ai: 'patrulla', aiT: Math.random() * 2, homeX: x, homeY: y, patrolAngle: Math.random() * Math.PI * 2,
       aggro: false, windup: 0, atkCd: Math.random(), sta: d.breakBar ?? 0, maxSta: d.breakBar ?? 0,
       statuses: [], slowT: 0, phase: 1, sumT: 0, hitFlash: 0, spawnGuard: zone === 'boss' ? 0.5 : 0,
@@ -456,6 +652,129 @@ export class Game {
       vx: 0, vy: 0, dir: 'down', hp: 60, maxHp: 60, sprite: 'ilwen',
       anim: 0, moving: false, atkCd: 0, downT: 0, affinity: 10,
     };
+  }
+
+  // ---------------- Compañera (14-b: escolta robusta) ----------------
+  // El seguimiento, el ciclo de flechas elementales, la marca y la Lluvia de
+  // estrellas siguen en update.ts (congelado). Este tick AÑADE lo que faltaba:
+  // (a) nunca se pierde (teletransporte >12 tiles / atasco / caja en muro),
+  // (b) apoyo de combate propio contra el enemigo aggro más cercano al
+  //     Portador (prioriza marcados) con cadencia propia de 2.4 s,
+  // (c) regeneración extra fuera de combate (+8 hp/s — no muere por su cuenta;
+  //     el regen base de 2 hp/s ya existía en update.ts),
+  // (d) avisos tácticos ocasionales cuando te rodean 2+ enemigos (cd 25 s).
+  private companionTick(dt: number) {
+    const c = this.companion, p = this.player;
+    if (!c || !p || c.downT > 0) return; // derribada: la gestiona update.ts
+    const mem = compMem.get(c) ?? { lastX: c.x, lastY: c.y, stuckT: 0, coverCd: 0.5, lineCd: 14, lineIdx: 0 };
+    compMem.set(c, mem);
+    const d = Math.hypot(p.x - c.x, p.y - c.y);
+    // (a) escolta: a >12 tiles (384 px) reaparece a tu lado; si su caja quedó
+    // dentro de un sólido (sin pathfinding detrás de un muro), también.
+    if (d > 12 * TILE || !this.boxFree(c.x, c.y, c.w, c.h)) {
+      this.companionTeleport(c, p);
+      mem.lastX = c.x; mem.lastY = c.y;
+      return;
+    }
+    // anti-atasco: quería seguirte (d>40) y lleva 1.2 s sin avanzar → teleporte suave
+    const moved = Math.hypot(c.x - mem.lastX, c.y - mem.lastY);
+    mem.lastX = c.x; mem.lastY = c.y;
+    if (d > 40 && moved < 0.6) mem.stuckT += dt; else mem.stuckT = 0;
+    if (mem.stuckT >= 1.2) {
+      this.companionTeleport(c, p);
+      mem.stuckT = 0;
+      return;
+    }
+    // (b) apoyo de combate con cadencia propia: flecha de cobertura SIN
+    // elementos (los estados los pone el ciclo de update.ts, aquí no se
+    // duplican) dirigida al aggro más cercano AL PORTADOR.
+    mem.coverCd -= dt;
+    if (mem.coverCd <= 0 && this.state === 'play') {
+      let best: Enemy | null = null, bd = 190;
+      for (const e of this.enemies) {
+        if (e.dead || !e.aggro) continue;
+        // ==== 16-b: en modo DEFENSIVO Ilwen solo apoya a enemigos a <2 tiles del Portador ====
+        if ((c.mode ?? 'seguir') === 'defensivo' && Math.hypot(e.x - p.x, e.y - p.y) >= 2 * TILE) continue;
+        const score = Math.hypot(e.x - p.x, e.y - p.y) - ((e.marked ?? 0) > 0 ? 60 : 0);
+        if (score < bd) { bd = score; best = e; }
+      }
+      if (best) {
+        mem.coverCd = 2.4;
+        const dx = best.x - c.x, dy = best.y - 4 - (c.y - 6);
+        const l = Math.max(1, Math.hypot(dx, dy));
+        this.projectiles.push({
+          x: c.x, y: c.y - 6, vx: (dx / l) * 190, vy: (dy / l) * 190, t: 1.2,
+          dmg: 6 + p.level * 1.2, element: 'ninguno', from: 'companion',
+          sprite: 'p_arrow', radius: 3, pierce: 0,
+        });
+        audio.sfx('companionShot');
+      }
+    }
+    // (c) fuera de combate regenera más rápido (el vínculo la mantiene entera)
+    const inCombat = this.enemies.some(e => !e.dead && e.aggro);
+    if (!inCombat && c.hp < c.maxHp) c.hp = Math.min(c.maxHp, c.hp + 8 * dt);
+    // (d) aviso táctico: 2+ enemigos aggro a <110 px del Portador, cd largo
+    mem.lineCd -= dt;
+    if (mem.lineCd <= 0 && inCombat && this.state === 'play') {
+      let near = 0;
+      for (const e of this.enemies) {
+        if (!e.dead && e.aggro && Math.hypot(e.x - p.x, e.y - p.y) < 110) near++;
+      }
+      if (near >= 2) {
+        mem.lineCd = 25;
+        this.floatAt(c.x, c.y - 24, COMPANION_LINES[mem.lineIdx % COMPANION_LINES.length], '#a8e8c8', 6);
+        mem.lineIdx++;
+      } else {
+        mem.lineCd = 4; // sin rodeo todavía: recheck pronto, sin spamear
+      }
+    }
+  }
+
+  /** Teletransporte de escolta: hueco libre alrededor del Portador (anillos). */
+  private companionTeleport(c: Companion, p: Player) {
+    let placed = false;
+    for (let r = 1; r <= 3 && !placed; r++) {
+      for (let i = 0; i < 8 * r && !placed; i++) {
+        const a = (i / (8 * r)) * Math.PI * 2;
+        const nx = p.x + Math.cos(a) * 18 * r;
+        const ny = p.y + Math.sin(a) * 18 * r;
+        if (this.boxFree(nx, ny, c.w, c.h)) { c.x = nx; c.y = ny; placed = true; }
+      }
+    }
+    if (!placed) { c.x = p.x - 14; c.y = p.y; } // sin hueco: cae a su sombra
+    c.kbVx = 0; c.kbVy = 0;
+    this.burst(c.x, c.y - 4, '#8ef0b0', 8, 40);
+  }
+
+  /**
+   * 14-b (auditoría de movimiento): red anti-encallamiento. moveEntity solo
+   * acepta un eje si la caja COMPLETA queda libre: si el Portador acaba con
+   * su caja dentro de un tile sólido (residuo de knockback antiguo, un save
+   * previo a un fix, un edge de época o de un mapa), TODOS los ejes fallan y
+   * ningún input lo saca — encallamiento permanente. Este guard (O(1) si
+   * estás libre) lo recoloca al tile libre más cercano, misma red que
+   * findSafeTile (sin caer en zonas de salida para no viajar por accidente).
+   */
+  private antiStuck() {
+    const p = this.player;
+    // antes del primer loadMap (estado intro/título) no hay filas: no-op
+    if (!p || !this.rows.length || this.boxFree(p.x, p.y, p.w, p.h)) return;
+    const tx = Math.floor(p.x / TILE), ty = Math.floor(p.y / TILE);
+    for (let r = 1; r <= 6; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const nx = tx + dx, ny = ty + dy;
+          if (nx < 0 || ny < 0 || nx >= this.map.w || ny >= this.map.h) continue;
+          const wx = nx * TILE + 8, wy = ny * TILE + 8;
+          if (this.boxFree(wx, wy, p.w, p.h) && !this.inExitZone(nx, ny)) {
+            p.x = wx; p.y = wy;
+            this.floatAt(p.x, p.y - 20, 'El canto te aparta del muro', '#c8b0e8', 6);
+            return;
+          }
+        }
+      }
+    }
   }
 
   tileSolidAt(px: number, py: number): boolean {
@@ -500,8 +819,20 @@ export class Game {
   }
 
   moveEntity(e: { x: number; y: number; w: number; h: number }, dx: number, dy: number) {
+    // 14-b (armaduras): Placas del Canto — el peso de la armadura frena al
+    // Portador (−8%). moveEntity es la ÚNICA puerta por la que pasa TODO
+    // movimiento (caminar, rodar, empujones, Paso de Brisa): una sola fuente
+    // de verdad, sin tocar update.ts. Los enemigos y la compañera no pesan.
+    if (e === this.player && this.flags.armor_3) { dx *= ARMOR_HEAVY_SPEED; dy *= ARMOR_HEAVY_SPEED; }
+    const wasX = e.x, wasY = e.y;
     if (dx !== 0 && this.boxFree(e.x + dx, e.y, e.w, e.h)) e.x += dx;
     if (dy !== 0 && this.boxFree(e.x, e.y + dy, e.w, e.h)) e.y += dy;
+    // ==== 16-c (logros-stats): distancia andada del Portador. moveEntity es la
+    // ÚNICA puerta del movimiento (caminar, rodar, hielo, empujones): se cuenta
+    // solo el desplazamiento REALMENTE aplicado (aprox. por tiles al mostrar).
+    if (e === this.player && !this.challengeRun) {
+      this.stats.distanciaAndada += Math.hypot(e.x - wasX, e.y - wasY);
+    }
   }
 
   updateCamera(snap = false) {
@@ -525,8 +856,12 @@ export class Game {
       this.toast('La Cripta existe fuera del tiempo.', '#9aa0b8');
       return;
     }
+    // inmersión temporal (13-c): transición y posible veto (momento hostil)
+    if (!beginEpochShift(this)) return;
     this.epoch = this.epoch === 'presente' ? 'pasado' : 'presente';
     this.epochFx = 0.8;
+    // ==== 16-c (logros-stats): solo cuenta el viaje REAL (tras el veto de 13-c) ====
+    if (!this.challengeRun) this.stats.vecesCambioEpoca++;
     audio.sfx('epoch');
     // el cambio de época puede traer un muro hasta ti: recoloca si quedas dentro
     if (this.player && this.tileSolidAt(this.player.x, this.player.y)) {
@@ -563,6 +898,7 @@ export class Game {
       else if (pr.kind === 'fragment') consider(px, py, 'frag', 'Fragmento de Eco', () => this.openDialogue('voz_fragment'), 30);
       else if (pr.kind === 'altarEcho') consider(px, py, 'altar', 'Altar del Eco', () => this.tryTakeEco(), 30);
       else if (pr.kind === 'sign') consider(px, py, 'sign', 'Leer cartel', () => this.readSign(pr.label ?? ''), 28);
+      else if (pr.kind === 'lamp' && !this.flags[pr.id]) consider(px, py, 'lamp', 'Encender el Farol del Recuerdo', () => this.lightLamp(pr.id), 28);
     }
     for (const ec of this.map.echoes) {
       if (this.takenEchoes.has(ec.id)) continue;
@@ -577,7 +913,10 @@ export class Game {
     this.openedChests.add(id);
     audio.sfx('chest');
     const parts: string[] = [];
-    if (ch.gold) { this.player!.gold += ch.gold; parts.push(`${ch.gold} coronas`); this.floatAt(ch.x * TILE + 8, ch.y * TILE, `+${ch.gold}`, '#f0c84a'); }
+    if (ch.gold) {
+      this.player!.gold += ch.gold; parts.push(`${ch.gold} coronas`); this.floatAt(ch.x * TILE + 8, ch.y * TILE, `+${ch.gold}`, '#f0c84a');
+      if (!this.challengeRun) this.stats.coronasGanadas += ch.gold; // ==== 16-c ====
+    }
     if (ch.potions) { this.player!.potions += ch.potions; parts.push(`${ch.potions} poción(es)`); }
     if (ch.item) parts.push(ch.item);
     this.toast(`Cofre abierto: ${parts.join(', ')}`, '#f0c84a');
@@ -597,7 +936,54 @@ export class Game {
     this.openDialogue('lore');
   }
 
+  /** Enciende un Farol del Recuerdo de Merrow (Acto II, misión q8). */
+  lightLamp(id: string) {
+    this.flags[id] = true;
+    audio.sfx('lamp');
+    const pr = this.map.props.find(x => x.id === id);
+    if (pr) {
+      this.burst(pr.x * TILE + 8, pr.y * TILE - 6, '#ffe9a0', 14, 60);
+      this.floatAt(pr.x * TILE + 8, pr.y * TILE - 14, 'Un nombre vuelve', '#ffe9a0', 5);
+    }
+    const lamps = ['lamp1', 'lamp2', 'lamp3'].filter(l => this.flags[l]).length;
+    if (this.questIdx === 7 && this.questStep === 1) {
+      if (lamps >= 3) {
+        this.questAdvance();
+        this.toast('Los tres faroles arden: la Espectro de Merrow te espera', '#ffe9a0');
+      } else {
+        this.toast(`Farol encendido (${lamps}/3)`, '#8ef0b0');
+      }
+    } else {
+      this.toast('El farol se enciende: un recuerdo de Merrow regresa', '#ffe9a0');
+    }
+  }
+
   tryTakeEco() {
+    // Acto II: cada mapa con altar tiene su Eco y su custodio
+    if (this.mapId === 'costa') {
+      if (this.flags.ecoMareas) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
+      if (!this.flags.sirenaDefeated) { this.toast('La Sirena custodia el Eco. Calma su canto primero.', '#e88'); return; }
+      if (DIALOGUES['eco_mareas']) { this.openDialogue('eco_mareas'); return; }
+      this.dynNodes['eco_mareas'] = {
+        name: 'Eco de las Mareas', portrait: 'fragment',
+        text: 'El segundo canto asciende del naufragio, salado y vivo. «El mar guardó mi nota bajo la quilla de un barco que soñaba con estrellas. Cántala, Portador: hay mareás que solo se curan cantando.» (Eco de las Mareas recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
+        onEnd: 'eco_mareas_taken',
+      };
+      this.openDialogue('eco_mareas');
+      return;
+    }
+    if (this.mapId === 'cumbres') {
+      if (this.flags.ecoCumbres) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
+      if (!this.flags.golemDefeated) { this.toast('El Gólem custodia el Eco. Rompe su hielo primero.', '#e88'); return; }
+      if (DIALOGUES['eco_cumbres']) { this.openDialogue('eco_cumbres'); return; }
+      this.dynNodes['eco_cumbres'] = {
+        name: 'Eco de las Cumbres', portrait: 'fragment',
+        text: 'El tercer canto desciende con la ventisca, limpio y paciente. «Las montañas aprendieron a guardar voces bajo el hielo. La primera fue la de los pastores que cantaban por turnos para no dormirse. Toma la suya: ahora canta contigo.» (Eco de las Cumbres recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
+        onEnd: 'eco_cumbres_taken',
+      };
+      this.openDialogue('eco_cumbres');
+      return;
+    }
     if (this.flags.ecoVoz) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
     if (!this.flags.guardianDefeated) { this.toast('El Guardián custodia el Eco. Derótalo primero.', '#e88'); return; }
     this.openDialogue('eco_voz');
@@ -623,6 +1009,16 @@ export class Game {
   }
 
   talkTo(nid: string) {
+    // q5→q6: «Regresa con la Anciana Brisa» (1 paso) se completa AL hablar con
+    // ella tras el Guardián. Se avanza ANTES de resolver el nodo para que
+    // getDialogue vea la misión nueva (coordinación agente 8-a: con questIdx 5
+    // debe servir el nodo cuyo onEnd es accept_q6; con questIdx 9, el nodo
+    // final del Acto II cuyo onEnd es end_demo).
+    if (nid === 'brisa' && this.questIdx === 4 && this.questStep === 0) this.questAdvance();
+    // 10-b (balance): q10 se completa al regresar con Brisa (nodo brisa_final2 →
+    // acto2_report en hooks.ts, congelado); pagamos su recompensa al abrir ese
+    // nodo, con flag q10Paid para no duplicar si se reabre el diálogo
+    if (nid === 'brisa' && this.questIdx === 9 && !this.flags.acto2Done) this.grantQuestLoot(9);
     const key = getDialogue(nid, { questIdx: this.questIdx, questStep: this.questStep, flags: this.flags, companion: !!this.companion });
     this.openDialogue(key);
   }
@@ -632,6 +1028,14 @@ export class Game {
   openDialogue(key: string) {
     this.dlgKey = key;
     this.dlgNode = this.dynNodes[key] ?? DIALOGUES[key] ?? null;
+    // robustez multi-agente: si el nodo resuelto no existe todavía (data.ts se
+    // edita en paralelo), se cae a un nodo seguro en vez de dejar el juego en
+    // un estado raro (diálogo que no abre / pantalla bloqueada)
+    if (!this.dlgNode && key !== 'brisa_idle') {
+      console.warn(`[EcosAelthar] Nodo de diálogo inexistente: '${key}' — fallback: 'brisa_idle'`);
+      this.dlgKey = 'brisa_idle';
+      this.dlgNode = DIALOGUES['brisa_idle'] ?? null;
+    }
     this.dlgCharT = 0;
     this.dlgSel = 0;
     if (this.dlgNode) this.setState('dialogue');
@@ -663,6 +1067,7 @@ export class Game {
   closeDialogue() {
     this.dlgKey = null;
     this.dlgNode = null;
+    noteDialogueClosed16b(this); // ==== 16-b: habilita el rumor al re-pulsar E ====
     if (this.state === 'dialogue') this.setState('play');
   }
 
@@ -688,6 +1093,28 @@ export class Game {
         this.questIdx = 4; this.questStep = 0;
         audio.sfx('quest'); this.toast('Nueva misión: Ecos de Esperanza', '#8ef0b0');
         break;
+      // ------- ACTO II · aceptación de misiones q6-q10 (disparadas desde los
+      // nodos de diálogo del Acto II en data.ts — agente 8-a) -------
+      case action === 'accept_q6':
+        this.questIdx = 5; this.questStep = 0; this.flags.q6 = true;
+        audio.sfx('quest'); this.toast('Nueva misión: El Rumor del Mar', '#8ef0b0');
+        break;
+      case action === 'accept_q7':
+        this.questIdx = 6; this.questStep = 0; this.flags.q7 = true;
+        audio.sfx('quest'); this.toast('Nueva misión: La Sirena sin Canto', '#8ef0b0');
+        break;
+      case action === 'accept_q8':
+        this.questIdx = 7; this.questStep = 0; this.flags.q8 = true;
+        audio.sfx('quest'); this.toast('Nueva misión: La Aldea que Olvidó su Nombre', '#8ef0b0');
+        break;
+      case action === 'accept_q9':
+        this.questIdx = 8; this.questStep = 0; this.flags.q9 = true;
+        audio.sfx('quest'); this.toast('Nueva misión: La Cumbre del Segundo Canto', '#8ef0b0');
+        break;
+      case action === 'accept_q10':
+        this.questIdx = 9; this.questStep = 0; this.flags.q10 = true;
+        audio.sfx('quest'); this.toast('Nueva misión: Dos Voces más Fuertes', '#8ef0b0');
+        break;
       case action === 'fragment_touched':
         this.flags.fragmentTouched = true;
         p.hasEcho = true;
@@ -703,6 +1130,22 @@ export class Game {
         if (this.questIdx === 3 && this.questStep === 2) this.questAdvance();
         this.toast('Eco de la Voz recuperado: +1 punto de habilidad, +10 reputación', '#ffe9a0');
         break;
+      case action === 'eco_mareas_taken':
+        this.flags.ecoMareas = true;
+        p.points += 1; p.repGuardianes += 10;
+        p.hp = p.maxHp;
+        if (this.questIdx === 6 && this.questStep === 2) this.questAdvance();
+        this.applyAction('memory_mem_faro');
+        this.toast('Eco de las Mareas recuperado: +1 punto de habilidad, +10 reputación', '#ffe9a0');
+        break;
+      case action === 'eco_cumbres_taken':
+        this.flags.ecoCumbres = true;
+        p.points += 1; p.repGuardianes += 10;
+        p.hp = p.maxHp;
+        if (this.questIdx === 8 && this.questStep === 2) this.questAdvance();
+        this.applyAction('memory_mem_invierno');
+        this.toast('Eco de las Cumbres recuperado: +1 punto de habilidad, +10 reputación', '#ffe9a0');
+        break;
       case action === 'fragment':
         break;
       case action === 'forge': {
@@ -710,15 +1153,50 @@ export class Game {
         if (p.weaponPlus >= 5) { this.toast('Toln: «+5 es lo que da de sí esta forja, Portador.»', '#e8a'); audio.sfx('error'); }
         else if (p.gold >= cost) {
           p.gold -= cost; p.weaponPlus++;
+          if (!this.challengeRun) this.stats.coronasGastadas += cost; // ==== 16-c: pago en forja ====
           audio.sfx('confirm');
           this.toast(`Arma mejorada a +${p.weaponPlus} (${cost} coronas)`, '#f0c84a');
         } else { this.toast(`Te faltan coronas (${cost} necesarias)`, '#e88'); audio.sfx('error'); }
         break;
       }
       case action === 'buy_potion':
-        if (p.gold >= 15) { p.gold -= 15; p.potions++; audio.sfx('coin'); this.toast('Poción comprada (15 coronas)', '#f0c84a'); }
+        if (p.gold >= 15) {
+          p.gold -= 15; p.potions++;
+          if (!this.challengeRun) this.stats.coronasGastadas += 15; // ==== 16-c: pago en tienda ====
+          audio.sfx('coin'); this.toast('Poción comprada (15 coronas)', '#f0c84a');
+        }
         else { this.toast('Te faltan coronas', '#e88'); audio.sfx('error'); }
         break;
+      // ==== 16-b: señuelo de caza (item apilable 'sennuelo' en flags.sennuelos) ====
+      case action === 'buy_sennuelo':
+        if (p.gold >= SENNUEL.price) {
+          p.gold -= SENNUEL.price;
+          if (!this.challengeRun) this.stats.coronasGastadas += SENNUEL.price; // 16-c: espejo
+          this.flags.sennuelos = (Number(this.flags.sennuelos ?? 0) || 0) + 1;
+          audio.sfx('coin');
+          this.toast(`Señuelo de caza comprado (${SENNUEL.price} coronas) — llevas ${this.flags.sennuelos}`, '#e8c88a');
+        } else { this.toast(`Te faltan coronas (${SENNUEL.price} necesarias)`, '#e88'); audio.sfx('error'); }
+        break;
+      // 14-b: compra de corazas en la forja de Toln (diálogo 'toln_armaduras')
+      case action.startsWith('armor_'): {
+        const a = armorDefFor(Number(action.slice(6)));
+        if (a) {
+          if (this.flags[a.id]) { this.toast('Toln: «esa coraza ya te cubre, Portador.»', '#e88'); audio.sfx('error'); break; }
+          if (a.needFlag && !this.flags[a.needFlag]) {
+            this.toast('Toln: «La Guarda del Primer Canto solo la forjo para quien ha oído el tercer canto hasta el final.»', '#e88');
+            audio.sfx('error');
+            break;
+          }
+          if (p.gold >= a.cost) {
+            p.gold -= a.cost;
+            if (!this.challengeRun) this.stats.coronasGastadas += a.cost; // ==== 16-c: pago de coraza ====
+            this.flags[a.id] = true;
+            audio.sfx('confirm');
+            this.toast(`${a.name} forjada (${a.cost} coronas): daño recibido −${Math.round(a.red * 100)}%`, '#f0c84a');
+          } else { this.toast(`Te faltan coronas (${a.cost} necesarias)`, '#e88'); audio.sfx('error'); }
+        }
+        break;
+      }
       case action === 'recruit_ilwen':
         if (!this.companion) {
           this.companion = this.makeCompanion();
@@ -746,6 +1224,8 @@ export class Game {
           `Nivel ${p.level} · ${p.kills} enemigos derrotados · ${p.gold} coronas\n` +
           `Reputación Guardianes: ${p.repGuardianes >= 0 ? '+' : ''}${p.repGuardianes} · Muertes: ${p.deaths}\n` +
           `Tiempo de juego: ${mins}m ${secs}s · Época favorita: la que tú elijas`;
+        // el mismo cierre sirve de final del Acto I (questIdx<9) o del Acto II
+        if (this.questIdx >= 9) this.toast('Fin del Acto II', '#ffe9a0');
         this.save();
         this.setState('end');
         audio.playTrack('title');
@@ -771,11 +1251,50 @@ export class Game {
     if (this.questStep < QUESTS[this.questIdx].steps.length - 1) {
       this.questStep++;
     } else {
+      const prev = this.questIdx;
       this.questIdx = Math.min(QUESTS.length - 1, this.questIdx + 1);
       this.questStep = 0;
-      if (this.questIdx === 4) this.toast('Nueva misión: Ecos de Esperanza', '#8ef0b0');
+      // 10-b (balance): botín pequeño al COMPLETAR cada misión del Acto II
+      // (q6-q10), clave = índice de la misión recién terminada. Solo dispara
+      // en el cambio de misión, así no interfiere con los avances de paso.
+      this.grantQuestLoot(prev);
+      // toast generalizado al CAMBIAR de misión (antes solo lo cantaba el paso
+      // q4→q5 con texto hardcodeado); si el clamp ya está en la última misión,
+      // no repite el aviso
+      if (this.questIdx !== prev) this.toast(`Nueva misión: ${QUESTS[this.questIdx].name}`, '#8ef0b0');
     }
     audio.sfx('quest');
+  }
+
+  /**
+   * 10-b (balance): recompensa por completar una misión del Acto II.
+   * q6 +20 coronas · q7 +40 y 1 poción · q8 +35 · q9 +50 y 1 poción · q10 +60.
+   * q10 se paga desde talkTo('brisa') (el cierre real del Acto II vive en
+   * hooks.acto2_report, archivo congelado) con flag q10Paid anti-doble pago;
+   * la entrada 9 del mapa queda por si el motor algún día avanza desde q10.
+   */
+  grantQuestLoot(doneIdx: number) {
+    const LOOT: Record<number, { gold: number; potions?: number }> = {
+      5: { gold: 20 },             // q6 El Rumor del Mar
+      6: { gold: 40, potions: 1 }, // q7 La Sirena sin Canto
+      7: { gold: 35 },             // q8 La Aldea que Olvidó su Nombre
+      8: { gold: 50, potions: 1 }, // q9 La Cumbre del Segundo Canto
+      9: { gold: 60 },             // q10 Dos Voces más Fuertes
+    };
+    const loot = LOOT[doneIdx];
+    if (!loot || !this.player) return;
+    if (doneIdx === 9) {
+      if (this.flags.q10Paid) return;
+      this.flags.q10Paid = true;
+    }
+    const p = this.player;
+    p.gold += loot.gold;
+    if (!this.challengeRun) this.stats.coronasGanadas += loot.gold; // ==== 16-c ====
+    if (loot.potions) p.potions += loot.potions;
+    const txt = `Recompensa: +${loot.gold} coronas${loot.potions ? ' y 1 poción' : ''}`;
+    this.floatAt(p.x, p.y - 26, txt, '#f0c84a', 7);
+    this.toast(txt, '#f0c84a');
+    audio.sfx('coin');
   }
 
   questProgressText(): string | null {
@@ -815,11 +1334,19 @@ export class Game {
   playerDied() {
     const p = this.player!;
     p.deaths++;
+    if (!this.challengeRun) this.stats.muertes++; // ==== 16-c (logros-stats) ====
     const lost = Math.floor(p.gold / 2);
     this.lastGoldLost = lost;
     if (lost > 0) {
       p.gold -= lost;
       this.deadGolds.push({ map: this.mapId, x: p.x, y: p.y, amount: lost });
+    }
+    // 14-b (compañeros): al caer el Portador, Ilwen se RETIRA — no sigue
+    // peleando sola; reaparece entera a tu lado al despertar en el Santuario
+    // (companionTick la teletransporta y el regen fuera de combate la cura).
+    if (this.companion) {
+      if (this.companion.downT <= 0) this.companion.hp = this.companion.maxHp;
+      this.toast('Ilwen te cubre la retirada...', '#8ef0b0');
     }
     audio.sfx('die');
     dreadStinger('muerte'); // terror v2 (Ronda 2): golpe grave + silencio
@@ -827,6 +1354,9 @@ export class Game {
   }
 
   respawn() {
+    // en desafío la muerte NO respawnea al santuario de campaña: el módulo
+    // challenge muestra resultados y vuelve al título
+    if (this.challengeRun) { onChallengeDeath(this); return; }
     const p = this.player!;
     const [sx, sy] = this.sanctuaryPos(this.mapId);
     this.epoch = 'presente';
@@ -849,7 +1379,24 @@ export class Game {
     // teclas pegadas tras alt-tab / cambio de ventana: soltar todo
     window.addEventListener('blur', this.onLoseFocus);
     document.addEventListener('visibilitychange', this.onLoseFocus);
+    // vista dinámica: sin barras negras a cualquier aspecto de ventana
+    window.addEventListener('resize', this.onResize);
+    this.fitCanvas();
   }
+
+  /** Recalcula el buffer al aspecto actual y redimensiona el bitmap del canvas. */
+  private fitCanvas() {
+    const before = `${VIEW_W}x${VIEW_H}`;
+    fitViewToWindow(window.innerWidth, window.innerHeight);
+    if (this.canvas.width !== VIEW_W || this.canvas.height !== VIEW_H) {
+      this.canvas.width = VIEW_W;
+      this.canvas.height = VIEW_H;
+      this.ctx.imageSmoothingEnabled = false; // el resize resetea el estado del ctx
+    }
+    if (before !== `${VIEW_W}x${VIEW_H}`) this.updateCamera(true);
+  }
+
+  private onResize = () => { this.fitCanvas(); };
 
   private onLoseFocus = () => {
     this.keys.clear();
@@ -861,7 +1408,16 @@ export class Game {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onLoseFocus);
+    window.removeEventListener('resize', this.onResize);
     document.removeEventListener('visibilitychange', this.onLoseFocus);
+    // FIX clics fantasma: desvincular TAMBIÉN los listeners del canvas. Antes
+    // quedaban colgados: con el doble montaje de React (StrictMode) la primera
+    // instancia moría sin soltarlos, su uiHit quedaba congelado con los botones
+    // del título y al hacer clic "donde estaban" durante la partida se abría la
+    // creación de personaje (requestCreate sigue ligado al setState del overlay).
+    this.canvas.removeEventListener('mousemove', this.onMouseMove);
+    this.canvas.removeEventListener('mousedown', this.onMouseDown);
+    this.canvas.removeEventListener('mouseup', this.onMouseUp);
     this.stop();
   }
 
@@ -901,9 +1457,16 @@ export class Game {
         this.toast('Esperas junto al camino hasta el alba...', '#ffe86a');
         audio.sfx('save');
       }
+      // ==== 16-b (interacción-compañeros): órdenes tácticas (T) y señuelo (8;
+      // las teclas 5/6/7 son de las herramientas del árbol, 12-b) ====
+      else if (k === 't') cycleCompanionMode(this);
+      else if (k === '8') useSenno(this);
       else if (['1', '2', '3', '4'].includes(k)) this.useSkill(parseInt(k, 10) - 1);
+      else if (k === 'k') { this.setState('skills'); audio.sfx('uiOpen'); }
     } else if (this.state === 'pause') {
       if (k === 'escape' || k === 'm') this.setState('play');
+    } else if (this.state === 'skills') {
+      if (k === 'escape' || k === 'k' || k === 'm') { this.setState('play'); audio.sfx('uiOpen'); }
     } else if (this.state === 'dead') {
       if (k === 'e' || k === 'enter') this.respawn();
     } else if (this.state === 'end') {
@@ -924,16 +1487,21 @@ export class Game {
   }
 
   private onMouseMove = (e: MouseEvent) => {
+    if (!this.running) return; // instancia muerta: ignora input (clics fantasma)
     const p = this.canvasPos(e);
     this.mouse.x = p.x; this.mouse.y = p.y;
   };
 
   private onMouseDown = (e: MouseEvent) => {
+    if (!this.running) return; // instancia muerta: ignora input (clics fantasma)
     audio.resume();
     const p = this.canvasPos(e);
     this.mouse.x = p.x; this.mouse.y = p.y;
-    // UI hits primero
+    // UI hits primero — solo del estado ACTUAL (stamp anti-fantasma: los hits
+    // se registran con el estado del frame en que se dibujaron; un clic que
+    // aterrice en la misma frame de una transición título→juego no reabre menús)
     for (const h of this.uiHit) {
+      if (h.state !== this.state) continue;
       if (p.x >= h.x && p.x <= h.x + h.w && p.y >= h.y && p.y <= h.y + h.h) {
         audio.sfx('select');
         h.cb();
@@ -950,6 +1518,7 @@ export class Game {
   };
 
   private onMouseUp = (e: MouseEvent) => {
+    if (!this.running) return; // instancia muerta: ignora input
     if (e.button === 0) {
       this.mouse.down = false;
       if (this.player?.charging) this.releaseCharge();
@@ -958,8 +1527,16 @@ export class Game {
   };
 
   tryInteract() {
+    // ==== 16-b: E de nuevo justo tras cerrar un diálogo → rumor corto del NPC
+    // (ventana 2.5 s, cooldown 60 s por NPC; si no toca, abre el diálogo normal) ====
+    if (rumorAfterDialogue16b(this)) { audio.sfx('select'); return; }
     const it = this.nearestInteract();
     if (it) { audio.sfx('select'); it.act(); }
+    // micro-interacciones del mundo vivo (13-b): pozo, lápidas, agua, faroles…
+    else if (worldInteract(this)) { audio.sfx('select'); }
+    // ==== 16-b: restos de enemigos y cofres ya abiertos (añadidos al final de
+    // la cadena: nunca roban NPCs/cofres cerrados/santuarios ni casos 13-b) ====
+    else if (interaccionInteract16b(this)) { audio.sfx('select'); }
     else this.toast('No hay nada que interactuar aquí.', '#9aa0b8');
   }
 
@@ -969,6 +1546,7 @@ export class Game {
     if (p.potions <= 0) { this.toast('No te quedan pociones', '#e88'); audio.sfx('error'); return; }
     if (p.hp >= p.maxHp) { this.toast('Vida al máximo', '#9aa0b8'); return; }
     p.potions--;
+    if (!this.challengeRun) this.stats.pocionesUsadas++; // ==== 16-c (logros-stats) ====
     const heal = Math.round(p.maxHp * 0.4);
     p.hp = Math.min(p.maxHp, p.hp + heal);
     audio.sfx('potion');
@@ -1045,7 +1623,10 @@ export class Game {
     if (p.cds[i] > 0) { this.toast(`${sk.name}: aún en recarga`, '#9aa0b8'); return; }
     if (p.res < sk.cost) { this.toast(`Resonancia insuficiente (${sk.cost})`, '#e88'); audio.sfx('error'); return; }
     p.res -= sk.cost;
-    p.cds[i] = sk.cd;
+    // 14-b (camino B del contrato skilltree.ts): el descuento del árbol se
+    // aplica AL FIJAR (skillCdMult); el decaimiento extra por tick está OFF
+    // (setSkillCdDecay(false)) para que NUNCA se descuente dos veces.
+    p.cds[i] = sk.cd * skillCdMult(p);
     this.castSkill(sk.id, sk.element);
   }
 
@@ -1171,6 +1752,12 @@ export class Game {
   }
 
   damageEnemy(e: Enemy, dmg: number, element: Element, kb: number, kbx = 0, kby = 0) {
+    if (e.invulT !== undefined && e.invulT > 0) {
+      // fase intangible (espectro desvaneciéndose / sirena sumergida): el golpe atraviesa
+      this.floatAt(e.x, e.y - 16, 'intangible', '#b8c8e0', 5);
+      audio.sfx('wraith');
+      return;
+    }
     if (e.dead) return;
     const def = ENEMY_DEFS[e.etype];
     e.aggro = true;
@@ -1236,14 +1823,25 @@ export class Game {
 
   killEnemy(e: Enemy) {
     e.dead = true;
+    // ==== 16-b (interacción con todo): restos examinables con E + botín raro
+    // de jefes (8% de +1 señuelo de caza) ====
+    registerCorpse16b(this, e);
+    bossSennoLoot16b(this, e);
     const def = ENEMY_DEFS[e.etype];
     const p = this.player!;
     p.kills++;
     const espMult = 1 + p.attrs.esp * 0.1;
     p.res = Math.min(p.maxRes, p.res + 10 * espMult);
-    this.gainXp(def.xp);
+    this.gainXp(Math.max(1, Math.round(def.xp * enemyStatMult(this).xp)));
     const gold = Math.round(def.gold[0] + Math.random() * (def.gold[1] - def.gold[0]));
     p.gold += gold;
+    // ==== 16-c (logros-stats): combate acumulado + chequeo puntual de logros ====
+    if (!this.challengeRun) {
+      this.stats.enemigosDerrotados++;
+      this.stats.coronasGanadas += gold;
+      if (BOSS_DEFEAT_FLAG[e.etype] !== undefined) this.stats.jefesDerrotados++;
+      achievementTick(this);
+    }
     this.floatAt(e.x, e.y - 20, `+${gold} coronas`, '#f0c84a');
     this.burst(e.x, e.y - 4, e.etype === 'guardian' ? '#7ee8ff' : '#9ec4b4', e.etype === 'guardian' ? 40 : 14, e.etype === 'guardian' ? 120 : 60);
     // terror v2 (Ronda 2): el enemigo no explota alegre — se DESHACE en cenizas
@@ -1262,6 +1860,7 @@ export class Game {
     if (e.etype === 'guardian') {
       this.flags.guardianDefeated = true;
       delete this.flags.bossHp;
+      delete this.flags.bossHp_cripta;
       this.bossActive = false;
       audio.setCombat(false);
       audio.playTrack('crypt');
@@ -1269,6 +1868,58 @@ export class Game {
       this.toast('El Guardián Hueco se deshace en notas de silencio...', '#7ee8ff');
       this.toast('El altar del Eco brilla al norte', '#ffe9a0');
       if (this.questIdx === 3 && this.questStep === 1) this.questAdvance();
+    } else if (e.etype === 'sirena') {
+      this.flags.sirenaDefeated = true;
+      delete this.flags.bossHp_costa;
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('costa');
+      this.shake = 8;
+      audio.sfx('song');
+      this.toast('La Sirena Abisal se deshace en espuma que susurra un nombre...', '#8ef0ff');
+      this.toast('El altar del naufragio brilla: el Eco de las Mareas es libre', '#ffe9a0');
+      // 10-b (balance): botín garantizado de jefa (economía del Acto II)
+      p.potions += 1;
+      this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción', '#7ef0a0');
+      if (this.questIdx === 6 && this.questStep === 1) this.questAdvance();
+    } else if (e.etype === 'golem') {
+      this.flags.golemDefeated = true;
+      delete this.flags.bossHp_cumbres;
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('cumbres');
+      this.shake = 8;
+      this.toast('El Gólem de Escarcha se aquieta: las cumbres recuerdan su canto', '#a8d8ff');
+      this.toast('El altar del paso brilla: el Eco de las Cumbres es libre', '#ffe9a0');
+      // 10-b (balance): botín garantizado del jefe (economía del Acto II)
+      p.gold += 30;
+      this.floatAt(e.x, e.y - 34, 'Botín del jefe: +30 coronas', '#f0c84a');
+      if (this.questIdx === 8 && this.questStep === 1) this.questAdvance();
+    } else if (e.etype === 'vult') {
+      // 14-a: jefe opcional de caza (Cumbres de noche) — botín generoso
+      this.flags.vultDefeated = true;
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('cumbres');
+      this.shake = 8;
+      this.toast('Vult cae: su mapa se deshace y tus pasos vuelven a ser tuyos', '#c8b0e8');
+      this.toast('El cartógrafo de la Liga descansará esta noche...', '#c8b0e8');
+      p.potions += 1;
+      p.gold += 40;
+      this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción, +40 coronas', '#f0c84a');
+    } else if (e.etype === 'coro') {
+      // 14-a: jefe post-Acto III (Cripta) — cierre del contenido opcional
+      this.flags.coroDefeated = true;
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('crypt');
+      this.shake = 8;
+      audio.sfx('song');
+      this.toast('Las tres máscaras caen a la vez: el Coro Roto por fin descansa', '#c8b0e8');
+      this.toast('La Cripta respira. Fuera del tiempo, algo agradece tu canto', '#ffe9a0');
+      p.potions += 1;
+      p.gold += 60;
+      this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción, +60 coronas', '#f0c84a');
     }
   }
 
@@ -1297,6 +1948,8 @@ export class Game {
 
   damagePlayer(dmg: number, fromX: number, fromY: number) {
     const p = this.player!;
+    // balanceador (12-c): embudo único de todo el daño enemigo (neutro en desafío)
+    dmg = Math.max(1, Math.round(dmg * enemyStatMult(this).dmg));
     if (p.iframes > 0 || p.rollT > 0 || this.state !== 'play') return;
     if (p.parryT > 0) {
       // ¡parada perfecta!
@@ -1317,11 +1970,29 @@ export class Game {
       p.parryT = 0;
       return;
     }
+    // 14-b: armadura activa — reduce DESPUÉS del balanceador y ANTES de la
+    // Vigia (contrato armor.ts): dmg_final = max(1, round(bm·(1−red)·(1−vig)))
+    const ared = armorReduction(this);
     const red = Math.min(0.5, p.attrs.vig * 0.01);
-    const final = Math.max(1, Math.round(dmg * (1 - red)));
-    p.hp -= final;
+    const final = Math.max(1, Math.round(dmg * (1 - ared) * (1 - red)));
+    // ==== 16-b: INTERPOSICIÓN — con la compañera en modo defensivo a <1.5
+    // tiles, ella absorbe el 50% de este golpe melé (cooldown 6 s) ====
+    const interposed16b = companionInterpose(this, final, fromX, fromY);
+    p.hp -= final - interposed16b;
     p.iframes = 0.6;
     p.lastHitT = 0.3;
+    // 14-b: Manto de Ecos — refleja 15% SOLO de contacto melé (el origen del
+    // golpe coincide con el cuerpo de un enemigo); los proyectiles vuelan
+    // desde lejos y NO reflejan (decisión documentada en armor.ts)
+    const refl = armorActive(this)?.reflect;
+    if (refl && final > 0) {
+      const src = this.enemies.find(e => !e.dead
+        && Math.abs(e.x - fromX) < e.w / 2 + 6 && Math.abs(e.y - fromY) < e.h / 2 + 8);
+      if (src) {
+        this.damageEnemy(src, Math.max(1, Math.round(final * refl)), 'ninguno', 0);
+        this.burst(src.x, src.y - 6, '#ffe9a0', 8, 70);
+      }
+    }
     this.shake = 4;
     audio.sfx('hurt');
     this.floatAt(p.x, p.y - 16, `-${final}`, '#ff7060');

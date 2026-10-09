@@ -12,6 +12,11 @@ import { ENEMY_DEFS } from './data';
 import { COL, text, textShadow, panel, bar, clearHits, wrapText, fBody } from './ui';
 import { drawScreens } from './screens';
 import { drawSlashArc, entityFrame, drawPortrait } from './sprites';
+import { hash2 } from './world/palette'; // hash determinista (sprites lo re-exporta)
+import * as SPRITES from './sprites'; // poses de combate (contrato 9-b, llamada opcional)
+import { drawExpansionProp, drawExpansionProjectile } from './sprites_expansion';
+import { drawSkillTree } from './skilltree';
+import { drawWorldLife } from './worldlife';
 import { drawFloatV2, drawSparks, SPARK_MIN_SIZE } from './fx';
 import { takeShakeDir } from './fxcore';
 import { skillIcon, bossBarV2 } from './ui';
@@ -56,6 +61,12 @@ export function drawGame(g: Game) {
 
   if (g.state === 'title' || g.state === 'controls') {
     drawScreens(g);
+    return;
+  }
+
+  // árbol de habilidades: pantalla propia a pantalla completa (agente 12-b)
+  if (g.state === 'skills') {
+    drawSkillTree(g);
     return;
   }
 
@@ -117,6 +128,9 @@ function drawWorld(g: Game) {
   const sx = (wx: number) => wx * ZOOM - camX;
   const sy = (wy: number) => wy * ZOOM - camY;
 
+  // agua viva: brillos especulares sobre los tiles '~' visibles (R3-c)
+  drawWaterGlints(g, sx, sy);
+
   ctx.save();
   ctx.filter = WORLD_FILTER[g.epoch] ?? 'none';
 
@@ -138,7 +152,7 @@ function drawWorld(g: Game) {
   }
 
   // props (v2: obeliscos, forja, fragmentos, altares, carteles, portones)
-  drawProps(g);
+  drawProps(g, sx, sy);
 
   // aura de suelo, esquirlas orbitando y grietas del Guardián (Ronda 2):
   // bajo las entidades, dentro del filtro de época para fundirse con el mundo
@@ -178,6 +192,9 @@ function drawWorld(g: Game) {
     ctx.drawImage(sprC, sx(ch.x * TILE), sy(ch.y * TILE - 2), sprC.width * ZOOM, sprC.height * ZOOM);
   }
 
+  // fauna y viajante del mundo vivo (13-b) — capa ambiente bajo las entidades
+  drawWorldLife(g, sx, sy);
+
   drawCombatFx(g, sx, sy);
 
   // chispas de impacto v2 (Ronda 3): trazos alargados ANTES del bucle normal
@@ -195,6 +212,10 @@ function drawWorld(g: Game) {
   drawAmbient(g, 'world');
   // clima por mapa (R1): niebla/haces/bruma + partículas del pool, SIN filtro de época
   drawWeatherWorld(ctx, g);
+
+  // personalidad cromática por bioma (R3-c): siempre tras suelo/entidades
+  // y ANTES de la iluminación — la técnica offscreen de Task 4 queda intacta.
+  drawBiomeTint(g);
 
   // iluminación v2 (módulo lighting): ciclo día/noche + oscuridad recortada
   // por luces + tinte aditivo + viñeta. Ronda 4: ojos brillantes de esqueletos
@@ -291,7 +312,7 @@ function drawRollTrail(g: Game, sx: (n: number) => number, sy: (n: number) => nu
 
 // ---------------- Props ----------------
 
-function drawProps(g: Game) {
+function drawProps(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
   const p = g.player;
   for (const pr of g.map.props) {
     if (pr.needPast && g.epoch !== 'pasado') continue;
@@ -300,7 +321,21 @@ function drawProps(g: Game) {
     // prop "seleccionado": cerca del jugador (<24 px) — lo usa 'sign' para
     // el temblor y el globo de lectura (drawPropV2 aplica su propia cámara)
     const selected = !!(p && Math.hypot(px - p.x, py - p.y) < 24);
-    drawPropV2(g.ctx, pr.kind, px, py, g, selected);
+    // Dispatcher híbrido (merge main+mejora-visual):
+    //  · kinds base → drawPropV2 (props v2/v3: sanctuary/forge/fragment/
+    //    altarEcho/sign/gate) con id del prop para flags de altares
+    //  · props de la expansión (wreck/faro/lamp) → drawExpansionProp
+    switch (pr.kind) {
+      case 'sanctuary': case 'forge': case 'fragment':
+      case 'altarEcho': case 'sign': case 'gate':
+        drawPropV2(g.ctx, pr.kind, px, py, g, selected, pr.id);
+        break;
+      case 'wreck': case 'faro': case 'lamp':
+        // Acto II: props de la expansión (nave naufragada, faro, faroles de Merrow)
+        drawExpansionProp(ctx, pr.kind, sx(px), sy(py), ZOOM, g.globalT, !!g.flags[pr.id]);
+        break;
+      default: break;
+    }
   }
 }
 
@@ -316,6 +351,10 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
   if (e.kind === 'player') {
     const pp = g.player!;
     if (pp.iframes > 0 && pp.rollT <= 0) spriteAlpha = 0.55 + Math.abs(Math.sin(g.globalT * 24)) * 0.35;
+  }
+  // Acto II: fase intangible de enemigos (espectro/sirena sumergida)
+  if (e.kind === 'enemy' && (e as Enemy).invulT !== undefined && (e as Enemy).invulT! > 0) {
+    spriteAlpha = 0.3 + Math.abs(Math.sin(g.globalT * 14)) * 0.18;
   }
 
   // sombra (estable)
@@ -340,19 +379,40 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
     fi = entityFrame(spr, e.dir, e.moving, e.anim);
   }
   const idx = Math.min(fi, spr.length - 1);
+
+  // R3-c: poses de combate del Portador (contrato con 9-b). getAttackFrames /
+  // getCastFrames devuelven [frameAnticipación, frameGolpe] (mismo tamaño que
+  // los frames de andar) o null. Llamada opcional vía namespace: mientras 9-b
+  // no exista el fallback es el frame de andar — nunca rompe la compilación.
+  let poseCv: HTMLCanvasElement | null = null;
+  if (e.kind === 'player' && g.player && g.player.attackT > 0) {
+    const pl = g.player;
+    const dur = pl.chargedHit ? 0.4 : 0.26;
+    const anticip = pl.attackT > dur * 0.5; // 1ª mitad: preparación · 2ª: golpe
+    const SP = SPRITES as unknown as {
+      getAttackFrames?: (base: string, dir: string) => HTMLCanvasElement[] | null;
+      getCastFrames?: (base: string, dir: string) => HTMLCanvasElement[] | null;
+    };
+    const frames = pl.discipline === 'tejedor' && SP.getCastFrames
+      ? (SP.getCastFrames(pl.sprite, pl.dir) ?? (SP.getAttackFrames ? SP.getAttackFrames(pl.sprite, pl.dir) : null))
+      : (SP.getAttackFrames ? SP.getAttackFrames(pl.sprite, pl.dir) : null);
+    if (frames && frames.length > 1) poseCv = frames[anticip ? 0 : 1] ?? null;
+  }
+
   const flip = e.dir === 'left';
   const dx = sx(e.x) - (zoomW * ZOOM) / 2;
   const dy = sy(e.y + 4) - zoomH * ZOOM;
 
+  const frCv = poseCv ?? spr[idx];
   ctx.globalAlpha = spriteAlpha;
   if (flip) {
     ctx.save();
     ctx.translate(dx + zoomW * ZOOM, 0);
     ctx.scale(-1, 1);
-    ctx.drawImage(spr[idx], 0, dy, zoomW * ZOOM, zoomH * ZOOM);
+    ctx.drawImage(frCv, 0, dy, zoomW * ZOOM, zoomH * ZOOM);
     ctx.restore();
   } else {
-    ctx.drawImage(spr[idx], dx, dy, zoomW * ZOOM, zoomH * ZOOM);
+    ctx.drawImage(frCv, dx, dy, zoomW * ZOOM, zoomH * ZOOM);
   }
   ctx.globalAlpha = 1;
 
@@ -520,10 +580,130 @@ function drawCombatFx(g: Game, sx: (n: number) => number, sy: (n: number) => num
   }
   // proyectiles v2 (Ronda 3): fuego/hielo/rayo/flecha/orbe con estelas
   for (const pr of g.projectiles) {
-    drawProjectileV2(ctx, pr, sx(pr.x), sy(pr.y), g.globalT);
+    const x = sx(pr.x), y = sy(pr.y);
+    if (pr.sprite === 'orb' || pr.sprite === 'shard' || pr.sprite === 'nota') {
+      // Acto II: proyectiles de la expansión (marea, escarcha, canto)
+      drawExpansionProjectile(ctx, pr.sprite, x, y, pr.radius, ZOOM, g.globalT);
+    } else {
+      drawProjectileV2(ctx, pr, x, y, g.globalT);
+    }
   }
   // anillos/cruces/columnas de muerte (Ronda 3)
   drawKillFx(ctx, g, sx, sy);
+}
+
+// ---------------- Tintes de bioma y agua viva (R3-c) ----------------
+// Personalidad cromática por bioma: capas SUAVES dibujadas tras suelo/entidades
+// y antes de la iluminación (el hueco de luz del Portador de Task 4 no se toca).
+// Solo los mapas del Acto II reciben tinte; Lunaris/Bosque/Cripta quedan como
+// estaban (cripta conserva su púrpura, noche su azul, amanecer su cálido).
+
+function drawBiomeTint(g: Game) {
+  const ctx = g.ctx;
+  const t = g.globalT;
+  switch (g.mapId) {
+    case 'costa': {
+      // día: dorado salino cálido; atardecer/anochecer: azul marino profundo
+      const dayLight = Math.max(0.1, Math.sin(g.dayT * Math.PI * 2) * 1.25 + 0.25);
+      const night = 1 - Math.min(1, dayLight); // 0 pleno día → ~0.9 madrugada
+      ctx.fillStyle = `rgba(240,224,176,${0.07 * (1 - night)})`;
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      if (night > 0.25) {
+        ctx.fillStyle = `rgba(24,48,92,${Math.min(0.14, (night - 0.25) * 0.2)})`;
+        ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      }
+      // horizonte de bruma: banda blanca-azulada que respira sobre la mitad sur
+      drawSeaMist(g);
+      break;
+    }
+    case 'aldea': {
+      if (g.epoch === 'pasado') {
+        // pueblo vivo: dorado de festival (contraste con el duelo del presente)
+        ctx.fillStyle = 'rgba(255,233,192,0.08)';
+      } else {
+        // ruinas en duelo: gris-lavanda melancólico
+        ctx.fillStyle = 'rgba(138,138,160,0.10)';
+      }
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      if (g.epoch !== 'pasado') {
+        // viñeta más densa: la pérdida de Merrow aprieta desde los bordes
+        const vg = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.36, VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.8);
+        vg.addColorStop(0, 'rgba(6,6,16,0)');
+        vg.addColorStop(1, 'rgba(6,6,16,0.30)');
+        ctx.fillStyle = vg;
+        ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      }
+      break;
+    }
+    case 'cumbres': {
+      // frío azul-hielo de altura
+      ctx.fillStyle = 'rgba(184,216,240,0.10)';
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      // destellos de ventisca: líneas diagonales tenues cruzando la pantalla
+      ctx.save();
+      ctx.translate(VIEW_W / 2, VIEW_H / 2);
+      ctx.rotate(-0.32);
+      for (let i = 0; i < 4; i++) {
+        const speed = 110 + i * 40;                    // determinista por índice
+        const gx = ((t * speed + i * 617) % 1500) - 700;
+        const gy = -VIEW_H / 2 + 36 + i * 118;
+        const a = 0.05 + 0.04 * (0.5 + 0.5 * Math.sin(t * 0.9 + i * 1.7));
+        ctx.fillStyle = `rgba(240,248,255,${a})`;
+        ctx.fillRect(gx, gy, 140 + i * 40, 1.5);
+      }
+      ctx.restore();
+      break;
+    }
+    // lunaris / bosque / cripta: sin tinte nuevo (identidad ya propia)
+  }
+}
+
+// banda de bruma costera: gradiente vertical anclado a la orilla (mar al sur);
+// ondula despacio y su alpha respira 0.10–0.18 con sin(globalT*0.5)
+function drawSeaMist(g: Game) {
+  const ctx = g.ctx;
+  const y0 = g.map.h * TILE * 0.82 * ZOOM - g.camY; // orilla aproximada en pantalla
+  if (y0 > VIEW_H + 40 || y0 < -80) return;         // el mar no está a la vista
+  const t = g.globalT;
+  const a = 0.10 + 0.08 * (0.5 + 0.5 * Math.sin(t * 0.5));
+  const top = y0 - 30 + Math.sin(t * 0.5) * 8;
+  const grad = ctx.createLinearGradient(0, top, 0, top + 260);
+  grad.addColorStop(0, 'rgba(222,236,250,0)');
+  grad.addColorStop(0.35, `rgba(222,236,250,${a})`);
+  grad.addColorStop(1, 'rgba(178,204,236,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, top, VIEW_W, 260);
+}
+
+// brillos especulares del agua: 1-2 píxeles blancos por tile '~' visible cuya
+// posición ondula con sin(globalT*1.6 + hash2(tx,ty)*2π). Solo tiles del
+// viewport, sin asignaciones por frame (barato y determinista).
+function drawWaterGlints(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
+  if (g.mapId !== 'costa' && g.mapId !== 'aldea') return;
+  const ctx = g.ctx;
+  const t = g.globalT;
+  const tx0 = Math.floor(g.camX / (TILE * ZOOM));
+  const ty0 = Math.floor(g.camY / (TILE * ZOOM));
+  const tx1 = Math.ceil((g.camX + VIEW_W) / (TILE * ZOOM));
+  const ty1 = Math.ceil((g.camY + VIEW_H) / (TILE * ZOOM));
+  ctx.fillStyle = '#fff';
+  for (let ty = ty0; ty <= ty1; ty++) {
+    for (let tx = tx0; tx <= tx1; tx++) {
+      if (tileAt(g.map, g.rows, tx, ty, g.epoch) !== '~') continue;
+      const ph = hash2(tx, ty) * 6.283;
+      const w1 = Math.sin(t * 1.6 + ph);
+      const a = 0.10 + 0.15 * (0.5 + 0.5 * w1); // 0.10 → 0.25
+      const px = tx * TILE + 3 + hash2(tx * 3 + 1, ty) * 9 + w1 * 2.5;
+      const py = ty * TILE + 3 + hash2(tx, ty * 3 + 2) * 9 + Math.cos(t * 1.2 + ph) * 1.5;
+      ctx.globalAlpha = a;
+      ctx.fillRect(Math.round(sx(px)), Math.round(sy(py)), 2, 1);
+      if (hash2(tx * 5 + 2, ty * 7 + 3) > 0.55) {
+        ctx.globalAlpha = a * 0.7;
+        ctx.fillRect(Math.round(sx(px + 6 - w1 * 1.5)), Math.round(sy(py + 4)), 2, 1);
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
 }
 
 // ---------------- Iluminación ----------------
@@ -557,15 +737,15 @@ function drawLightingExtras(g: Game) {
   }
   if (!p) return;
 
-  // viñeta roja pulsante con poca vida
+  // viñeta roja pulsante con poca vida (solo en juego; intensidad según gravedad)
   const hpPct = p.hp / p.maxHp;
-  if (hpPct < 0.3 && p.hp > 0) {
+  if (g.state === 'play' && hpPct < 0.3 && p.hp > 0) {
     const severity = 1 - hpPct / 0.3;               // 0 → 1
     const pulse = 0.5 + 0.5 * Math.sin(g.globalT * 5);
     const a = (0.10 + pulse * 0.10) * (0.4 + severity * 0.6);
     const rg = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.3, VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.78);
-    rg.addColorStop(0, 'rgba(160,20,30,0)');
-    rg.addColorStop(1, `rgba(180,20,30,${a})`);
+    rg.addColorStop(0, 'rgba(180,40,40,0)');
+    rg.addColorStop(1, `rgba(180,40,40,${a})`);
     ctx.fillStyle = rg;
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   }
@@ -662,8 +842,8 @@ function drawHud(g: Game) {
     }
   }
 
-  // ---- misión (abajo-derecha) ----
-  const q = QUESTS[g.questIdx];
+  // ---- misión (abajo-derecha) — oculta en el modo desafío: es contenido de campaña ----
+  const q = g.challengeRun ? null : QUESTS[g.questIdx];
   if (q) {
     const lines = wrapText(g.questProgressText() ?? q.steps[g.questStep], 30);
     const qw = 216;
@@ -673,10 +853,11 @@ function drawHud(g: Game) {
     lines.forEach((l, i) => text(g, l, VIEW_W - qw, VIEW_H - qh + 20 + i * 14, 14, COL.text));
   }
 
-  // ---- barra del jefe v2 (Ronda 3): color por fase, marcas y quiebre con glow ----
+  // ---- barra del jefe v2 (Ronda 3): color por fase, marcas y quiebre con glow
+  //      (generalizada Acto II: nombre según el jefe activo — Guardián/Sirena/Gólem/Vult/Coro) ----
   if (g.bossActive && g.bossRef && !g.bossRef.dead) {
     const boss = g.bossRef;
-    bossBarV2(g, ENEMY_DEFS.guardian.name, boss.hp / boss.maxHp, boss.maxSta > 0 ? boss.sta / boss.maxSta : 1, boss.phase);
+    bossBarV2(g, ENEMY_DEFS[boss.etype]?.name ?? 'Guardián Hueco', boss.hp / boss.maxHp, boss.maxSta > 0 ? boss.sta / boss.maxSta : 1, boss.phase);
   }
 
   // ---- toasts v2 (Ronda 3): glifo por tipo, entrada lateral y apilado limpio ----

@@ -63,6 +63,12 @@ export function getSpr(name: string): Frames {
   return SPR[name] ?? SPR['hero_alba'];
 }
 
+/** Registro tardío de sprites (los usa sprites_expansion.ts: jefes y
+ *  enemigos del Acto II/III — sirena, golem, vult, coro, etc.). */
+export function registerSpr(name: string, frames: Frames): void {
+  SPR[name] = frames;
+}
+
 export const TILE = 16;
 
 export type NeighborFn = (tx: number, ty: number) => string;

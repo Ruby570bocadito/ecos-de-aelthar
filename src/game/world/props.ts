@@ -57,6 +57,7 @@ let _t = 0;                  // globalT del frame
 let _tx = 0;                 // tile X del prop (para hash determinista)
 let _ty = 0;                 // tile Y del prop
 let _nf = 0;                 // factor noche 0..1 (de g.dayT, espejo de lighting.ts)
+let _pid = '';               // id del prop actual (flags de altares por id: altar_mareas/…)
 
 // ---------------- Helpers de dibujo (px mundo locales ×ZOOM) ----------------
 
@@ -536,12 +537,18 @@ function drawAltarEcho(g: Game): void {
   }
 
   // el Eco dormita sobre el altar hasta ser recogido (paridad gameplay)
-  if (!g.flags.ecoVoz) {
+  // merge Acto II: cada altar consulta SUS flags según id (altar_mareas →
+  // sirena, altar_cumbres → golem, resto → Guardián Hueco)
+  const ecoFlag = _pid === 'altar_mareas' ? 'ecoMareas' : _pid === 'altar_cumbres' ? 'ecoCumbres' : 'ecoVoz';
+  const custodianFlag = _pid === 'altar_mareas' ? 'sirenaDefeated' : _pid === 'altar_cumbres' ? 'golemDefeated' : 'guardianDefeated';
+  const fRec = g.flags as Record<string, boolean>;
+  if (!fRec[ecoFlag]) {
     const bob2 = Math.round(Math.sin(t * 2.6) * 3);
-    const gl2 = g.flags.guardianDefeated ? 0.7 : 0.3;
-    ELL(0, -14 + bob2, 9, 5, PAL_PROP.crackGold, gl2 * 0.35);
+    const gl2 = fRec[custodianFlag] ? 0.7 : 0.3;
+    const ecoTint = _pid === 'altar_mareas' ? '#8ef0ff' : _pid === 'altar_cumbres' ? '#a8d8ff' : PAL_PROP.crackGold;
+    ELL(0, -14 + bob2, 9, 5, ecoTint, gl2 * 0.35);
     P(-2, -18 + bob2, 4, 8, PAL_PROP.crackGoldDeep);      // esquirla dorada
-    P(-2, -18 + bob2, 2, 8, PAL_PROP.crackGold);
+    P(-2, -18 + bob2, 2, 8, ecoTint);
     P(-1, -16 + bob2, 2, 3, PAL_PROP.crackGoldHi);        // núcleo
     P(-1, -10 + bob2, 2, 1, PAL_PROP.crackGoldDeep);      // punta
     // dos motas orbitando el Eco
@@ -727,7 +734,7 @@ function drawGate(): void {
  */
 export function drawPropV2(
   ctx: CanvasRenderingContext2D, kind: string,
-  wx: number, wy: number, g: Game, selected: boolean,
+  wx: number, wy: number, g: Game, selected: boolean, id?: string,
 ): void {
   _ctx = ctx;
   _ox = Math.round(wx * ZOOM) - Math.round(g.camX);
@@ -736,6 +743,7 @@ export function drawPropV2(
   _tx = Math.floor(wx / TILE);
   _ty = Math.floor(wy / TILE);
   _nf = nightFactor(g.dayT); // v3: factor noche para sombras largas (gate)
+  _pid = id ?? '';
   ctx.save();
   try {
     switch (kind) {

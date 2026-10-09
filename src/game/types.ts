@@ -6,11 +6,11 @@
 export type Dir = 'down' | 'up' | 'left' | 'right';
 export interface Vec { x: number; y: number }
 
-export type MapId = 'lunaris' | 'bosque' | 'cripta';
+export type MapId = 'lunaris' | 'bosque' | 'cripta' | 'costa' | 'aldea' | 'cumbres';
 export type Epoch = 'presente' | 'pasado';
-export type TrackName = 'village' | 'forest' | 'crypt' | 'boss' | 'title';
+export type TrackName = 'village' | 'forest' | 'crypt' | 'boss' | 'title' | 'costa' | 'aldea' | 'cumbres';
 
-export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian';
+export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian' | 'neumo' | 'espectro' | 'arpi' | 'sirena' | 'golem' | 'vult' | 'coro' | 'ecodesg' | 'satiro' | 'heraldo'; // 16-a: jefe final del Acto IV
 export type Element = 'fuego' | 'hielo' | 'rayo' | 'sombra' | 'sagrado' | 'ninguno';
 export type StatusKind = 'quemado' | 'congelado' | 'aturdido' | 'marcado';
 
@@ -29,7 +29,9 @@ export interface SpawnDef {
   type: EnemyType;
   x: number; y: number;      // en tiles
   patrol?: number;           // radio de patrulla en tiles
-  zone?: string;             // 'valle' | 'bosque' | 'cripta' | 'boss'
+  zone?: string;             // 'valle' | 'bosque' | 'cripta' | 'boss' | 'costa' | 'aldea' | 'cumbres'
+  needPast?: boolean;        // solo aparece en el pasado
+  needPresent?: boolean;     // solo aparece en el presente
 }
 
 export interface NpcDef {
@@ -59,7 +61,7 @@ export interface ExitDef {
   label?: string;
 }
 
-export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'altarEcho' | 'sign' | 'gate';
+export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'altarEcho' | 'sign' | 'gate' | 'wreck' | 'faro' | 'lamp';
 
 export interface PropDef {
   id: string; kind: PropKind; x: number; y: number;
@@ -88,6 +90,9 @@ export interface MapDef {
 // ---------- Combate ----------
 
 export type EnemyAIState = 'patrulla' | 'alerta' | 'persigue' | 'carga' | 'ataca' | 'recupera' | 'huye' | 'aturdido' | 'muerto';
+
+/** 16-b (interacción-compañeros): órdenes tácticas del compañero (tecla T). */
+export type CompMode = 'seguir' | 'agresivo' | 'defensivo';
 
 export interface Entity {
   kind: 'player' | 'enemy' | 'npc' | 'companion';
@@ -120,9 +125,12 @@ export interface Enemy extends Entity {
   phase: number;
   sumT: number;
   hitFlash: number;
-  telegraphKind?: 'slam' | 'onda' | 'aro';
+  telegraphKind?: 'slam' | 'onda' | 'aro' | 'salva' | 'ventisca';
   spawnGuard?: number;          // no aggro al inicio
   marked?: number;              // >0: marcado por Ilwen (flechas focalizadas + daño extra)
+  subT?: number;                // timer auxiliar para cerebros de IA nuevos
+  invulT?: number;              // >0: invulnerable (fase espectral de espectro/sirena)
+  lured?: number;               // 16-b: >0 — atraído por un señuelo (segundos restantes)
 }
 
 export interface Companion extends Entity {
@@ -131,6 +139,7 @@ export interface Companion extends Entity {
   atkCd: number;
   downT: number;
   affinity: number;
+  mode?: CompMode;              // 16-b: orden táctica activa (default 'seguir'; serializada en save)
 }
 
 export interface Npc extends Entity {
@@ -199,6 +208,21 @@ export interface DialogueNode {
 
 // ---------- Guardado ----------
 
+// 16-c (logros-stats): estadísticas acumuladas de la partida. Opcional en el
+// guardado para mantener compatibilidad con saves antiguos (defaults seguros).
+export interface StatsData {
+  enemigosDerrotados: number;
+  jefesDerrotados: number;
+  muertes: number;
+  coronasGanadas: number;
+  coronasGastadas: number;
+  pocionesUsadas: number;
+  vecesCambioEpoca: number;
+  distanciaAndada: number;   // px aplicados (se muestra ≈ tiles: px/TILE)
+  tiempoJugado: number;      // segundos en estado play/dialogue
+  memoriasHalladas: number;
+}
+
 export interface SaveData {
   v: number;
   player: {
@@ -221,7 +245,9 @@ export interface SaveData {
   takenEchoes: string[];
   deadGolds: { map: MapId; x: number; y: number; amount: number }[];
   companion: boolean;
+  companionMode?: CompMode;  // 16-b: orden táctica del compañero (opcional: saves viejos = 'seguir')
   saveTime: number;
+  stats?: StatsData;         // 16-c: ausente en saves antiguos → defaults
 }
 
 export interface Toast { text: string; t: number; color?: string }
