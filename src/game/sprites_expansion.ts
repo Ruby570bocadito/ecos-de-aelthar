@@ -3,6 +3,10 @@
 // EXPANSIÓN (AGENTE 7-b · enemigos + sprites).
 // 100% procedural: canvas + fillRect píxel a píxel, sin assets.
 // NO toca sprites.ts: usa registerSpr()/hash2() (contrato).
+// R6-V1: REDISEÑO TERROR V2 de los jefes de expansión (sirena, golem,
+// vult, coro, ecodesg, satiro + ojos de neumo/espectro/arpi):
+// siluetas retorcidas, ojos glow de 2 tonos, paleta fría + 1 acento
+// y detalles de historia (cadenas rotas, cicatrices, costuras).
 //
 // Contenido:
 //   · initExpansionSprites(): registra 'neumo', 'espectro', 'arpi',
@@ -78,10 +82,16 @@ function buildNeumo(): Frames {
     rc(x, 4, 5 - f, 1, 1, HL);
     x.globalAlpha = 0.55;
     rc(x, 9, 5 - f, 1, 2, HL);
-    // ojo oscuro pequeño
+    // ojo: glow de dos tonos (halo teal + núcleo oscuro con brillo)
+    x.globalAlpha = 0.35;
+    rc(x, 8, 6 - f, 4, 4, '#2a8a84');
     x.globalAlpha = 1;
     rc(x, 9, 7 - f, 2, 2, EYE);
     rc(x, 9, 7 - f, 1, 1, '#ffffff');
+    // cicatriz de la membrana (ya estalló una vez y se recosió)
+    x.globalAlpha = 0.5;
+    rc(x, 4, 9, 1, 2, O); rc(x, 5, 11, 1, 1, O);
+    x.globalAlpha = 1;
     // burbujitas de espuma en la base
     x.globalAlpha = 0.7;
     rc(x, 3, 12, 2, 2, B);
@@ -123,12 +133,17 @@ function buildEspectro(): Frames {
     x.globalAlpha = 0.55;
     if (f === 0) { rc(x, 6, 13, 2, 2, S); rc(x, 9, 13, 1, 1, S); }
     else { rc(x, 5, 12, 1, 2, S); rc(x, 8, 13, 2, 1, S); }
-    // ojos huecos
+    // ojos huecos con halo frío de dos tonos
+    x.globalAlpha = 0.35;
+    rc(x, 5, 3 + dy, 3, 3, '#5a7a9c'); rc(x, 8, 3 + dy, 3, 3, '#5a7a9c');
     x.globalAlpha = 1;
     rc(x, 6, 4 + dy, 1, 2, EYE);
     rc(x, 9, 4 + dy, 1, 2, EYE);
-    x.globalAlpha = 0.5;
-    rc(x, 7, 6 + dy, 2, 1, EYE);
+    rc(x, 6, 4 + dy, 1, 1, '#d8e8ff'); rc(x, 9, 4 + dy, 1, 1, '#d8e8ff');
+    // boca cosida en zigzag (nadie quiere que hable)
+    x.globalAlpha = 0.8;
+    rc(x, 7, 6 + dy, 2, 1, EYE); rc(x, 8, 7 + dy, 1, 1, EYE); rc(x, 7, 8 + dy, 1, 1, EYE);
+    x.globalAlpha = 1;
     // contorno parcial (difuminado, nunca cerrado)
     x.globalAlpha = 0.38;
     rc(x, 4, 2 + dy, 8, 1, O);
@@ -174,11 +189,19 @@ function buildArpi(): Frames {
     rc(x, 9, 7, 4, 1, WS);
     rc(x, 13, 5, 2, 2, BK);
     rc(x, 15, 6, 1, 1, BK);
-    rc(x, 11, 5, 1, 1, EYE);
+    // ojo de ventisca: glow de dos tonos (halo hielo + núcleo claro)
+    x.globalAlpha = 0.4;
+    rc(x, 10, 4, 3, 3, '#6a9ac4');
+    x.globalAlpha = 1;
+    rc(x, 11, 5, 1, 1, '#bfe8ff');
     // contorno sutil
     x.globalAlpha = 0.5;
     rc(x, 5, 6, 4, 1, O);
     rc(x, 9, 4, 4, 1, O);
+    x.globalAlpha = 1;
+    // pluma arrancada (la ventisca la desgarra)
+    x.globalAlpha = 0.7;
+    rc(x, 3, 13, 2, 1, W);
     x.globalAlpha = 1;
     frames.push(c);
   }
@@ -186,87 +209,113 @@ function buildArpi(): Frames {
 }
 
 // ---------------- Sirena Abisal (32×32 · 3 frames · JEFA) ----------------
-// Reina del naufragio: melena de agua ondulante, cola de pez
-// escarchada, corona de coral roto. Verde-mar + turquesa + perla.
-// Debe verse REGIA y triste: mirada baja, boca mínima, perlas.
+// TERROR V2: reina AHOGADA del naufragio. Paleta abisal desaturada
+// (teal apagado + piel de ahogada verdosa) con UN acento teal vivo en
+// ojos, aletas y bruma. Corona de coral retorcida y asimétrica, ojos
+// de glow de dos tonos (núcleo perla + halo teal que late), dientes de
+// aguja, cicatriz de ancla, cadena rota en la muñeca (la ataron a la
+// quilla) y aleta caudal rasgada.
 
 function buildSirena(): Frames {
   const frames: Frames = [];
   for (let f = 0; f < 3; f++) {
     const { c, x } = cv(32, 32);
-    const HAIR = '#2e6a68', HAIR2 = '#54b8a8', SKIN = '#e9e4d8', SKINS = '#c6c0b2',
-      CORAL = '#c86a5a', CORALD = '#a44e42', PEARL = '#eef4ee',
-      TOP = '#3e8a7a', TOP2 = '#54b8a8', FIN = '#54b8a8', FIN2 = '#7fd8c8',
-      FROST = '#eef8f4', EYE = '#2a4a54';
+    const HAIR = '#1d464a', HAIR2 = '#35696a', SKIN = '#c7d2c2', SKINS = '#9caca0',
+      CORAL = '#6e565c', CORALD = '#52424a', CHAIN = '#4c5862', CHAINL = '#7e8a94',
+      TOP = '#2a5258', TOP2 = '#3a6e6c', FIN = '#3a6e6c', FIN2 = '#4f8a84',
+      FROST = '#dfeee6', BK = '#0e2226',
+      ACC = '#4fd8c8',   // ACENTO: teal abisal (ojos, bruma)
+      HALO = '#2a8a84';  // halo del ojo (teal apagado, late en f1)
     const sway = f === 0 ? 0 : f === 1 ? 1 : -1; // vaivén de melena y aletas
-    // ---- melena trasera (masa de agua) ----
+    // ---- melena trasera: masa de agua retorcida, más larga a un lado ----
     x.globalAlpha = 0.95;
     rc(x, 9, 3, 14, 12, HAIR);
     rc(x, 8, 5 + sway, 2, 10, HAIR);           // mechón izq.
-    rc(x, 22, 5 - sway, 2, 10, HAIR);          // mechón der.
+    rc(x, 22, 5 - sway, 2, 9, HAIR);           // mechón der. (más corto: asimetría)
+    rc(x, 24, 8 - sway, 3, 7, HAIR2);          // masa baja que arrastra a un lado
     rc(x, 7, 9 + sway, 2, 6, HAIR2);
-    rc(x, 23, 9 - sway, 2, 6, HAIR2);
+    rc(x, 27, 12 - sway, 1, 4, HAIR);          // mechón suelto flotando
     // puntas que ondean
     x.globalAlpha = 0.6;
     rc(x, 6, 15 + sway, 3, 3, HAIR2);
     rc(x, 23, 15 - sway, 3, 3, HAIR2);
     rc(x, 9, 16 - sway, 2, 2, HAIR2);
-    // ---- corona de coral roto ----
+    rc(x, 27, 16 - sway, 2, 2, HAIR2);         // punta desprendida
+    // ---- corona de coral retorcida (asimétrica: pica doblada y rota) ----
     x.globalAlpha = 1;
-    rc(x, 10, 1, 3, 4, CORAL);                 // pica izq. (entera)
-    rc(x, 10, 1, 3, 1, PEARL);
-    rc(x, 14, 3, 3, 2, CORALD);                // pica central ROTA (mucho más baja)
+    rc(x, 12, 3, 9, 2, CORALD);                // base de la corona
+    rc(x, 9, 2, 2, 4, CORAL);                  // pica izq. alta y delgada
+    rc(x, 8, 1, 2, 2, CORAL);                  // muesca doblada hacia fuera
+    rc(x, 8, 1, 1, 1, FROST);                  // punta perla
+    rc(x, 14, 3, 2, 2, CORALD);                // pica central ROTA (tocón)
     rc(x, 15, 2, 1, 1, CORALD);
-    rc(x, 19, 1, 3, 4, CORAL);                 // pica der. (entera)
-    rc(x, 19, 1, 3, 1, PEARL);
-    // ---- rostro ----
-    rc(x, 12, 4, 8, 8, SKIN);
-    rc(x, 12, 10, 8, 2, SKINS);
-    rc(x, 11, 5, 1, 4, SKINS);
-    rc(x, 20, 5, 1, 4, SKINS);
+    rc(x, 19, 1, 2, 5, CORAL);                 // pica der. la más alta
+    rc(x, 18, 0, 2, 2, CORAL);                 // codo que se dobla
+    rc(x, 18, 0, 1, 1, FROST);
+    // ---- rostro de ahogada ----
+    rc(x, 12, 5, 8, 8, SKIN);
+    rc(x, 12, 11, 8, 2, SKINS);
+    rc(x, 11, 6, 1, 4, SKINS);
+    rc(x, 20, 6, 1, 4, SKINS);
     // flequillo de agua partido
     rc(x, 11, 3, 10, 2, HAIR2);
     rc(x, 11, 5, 3, 2, HAIR2);
     rc(x, 18, 5, 3, 2, HAIR2);
-    // ojos tristes (mirada baja, párpado caído)
-    rc(x, 13, 7, 2, 2, EYE);
-    rc(x, 17, 7, 2, 2, EYE);
-    rc(x, 13, 6, 2, 1, SKINS);
+    // ojos: cuenca hundida + glow de dos tonos (núcleo perla, halo teal)
+    rc(x, 12, 7, 3, 2, BK);                    // cuenca izq. mayor (asimetría)
+    x.globalAlpha = f === 1 ? 0.5 : 0.32;      // el halo LATE con el frame
+    rc(x, 11, 7, 5, 3, HALO);
+    x.globalAlpha = 1;
+    rc(x, 13, 7, 2, 2, ACC);                   // iris teal
+    rc(x, 13, 7, 1, 1, FROST);                 // núcleo perla
+    rc(x, 17, 7, 2, 2, BK);                    // ojo der. hundido, menor
+    rc(x, 17, 7, 1, 1, ACC);
+    rc(x, 12, 6, 3, 1, SKINS);                 // párpados caídos
     rc(x, 17, 6, 2, 1, SKINS);
-    rc(x, 14, 9, 1, 1, '#bfe8f0');             // lágrima de perla
-    rc(x, 15, 10, 2, 1, '#8a7a72');            // boca mínima
+    // boca entreabierta: dientes de aguja (canta y devora)
+    rc(x, 14, 11, 4, 1, BK);
+    rc(x, 14, 11, 1, 1, FROST); rc(x, 16, 11, 1, 1, FROST);
+    // cicatriz de ancla en la mejilla (historia)
+    rc(x, 18, 9, 1, 3, SKINS); rc(x, 19, 10, 1, 1, SKINS);
     // ---- busto con túnica de marea ----
-    rc(x, 9, 12, 14, 3, TOP);
-    rc(x, 9, 12, 14, 1, '#dceae4');            // ribete de perla
-    rc(x, 12, 15, 8, 4, SKIN);
-    rc(x, 12, 15, 8, 1, SKINS);
-    // collar de perlas
-    rc(x, 12, 15, 1, 1, PEARL); rc(x, 14, 16, 1, 1, PEARL);
-    rc(x, 17, 16, 1, 1, PEARL); rc(x, 19, 15, 1, 1, PEARL);
-    // brazos
-    rc(x, 7, 13, 2, 6, SKIN); rc(x, 7, 13, 1, 6, SKINS);
-    rc(x, 23, 13, 2, 6, SKIN); rc(x, 24, 13, 1, 6, SKINS);
+    rc(x, 9, 13, 14, 3, TOP);
+    rc(x, 9, 13, 14, 1, '#cfe0d8');            // ribete de perla apagado
+    rc(x, 12, 16, 8, 4, SKIN);
+    rc(x, 12, 16, 8, 1, SKINS);
+    // collar de perlas rotas (faltan cuentas)
+    rc(x, 12, 16, 1, 1, FROST); rc(x, 15, 17, 1, 1, FROST);
+    rc(x, 18, 17, 1, 1, FROST);
+    // brazos + garras de perla
+    rc(x, 7, 14, 2, 6, SKIN); rc(x, 7, 14, 1, 6, SKINS);
+    rc(x, 6, 19, 1, 2, FROST);                 // garra
+    rc(x, 23, 14, 2, 6, SKIN); rc(x, 24, 14, 1, 6, SKINS);
+    rc(x, 25, 19, 1, 2, FROST);
+    // cadena rota en la muñeca der. (la ataron a la quilla del naufragio)
+    rc(x, 23, 17, 2, 1, CHAIN);
+    rc(x, 25, 18, 1, 1, CHAINL);               // eslabón suelto que cuelga
     // ---- cola escarchada ----
-    rc(x, 10, 18, 12, 3, TOP);
-    rc(x, 11, 21, 10, 2, TOP);
-    rc(x, 12, 23, 8, 2, TOP2);
-    rc(x, 13, 25, 6, 2, FIN);
+    rc(x, 10, 19, 12, 3, TOP);
+    rc(x, 11, 22, 10, 2, TOP);
+    rc(x, 12, 24, 8, 2, TOP2);
+    rc(x, 13, 26, 6, 2, FIN);
+    // aleta dorsal desgarrada (asimétrica)
+    rc(x, 15, 19, 1, 3, FIN2); rc(x, 16, 19, 1, 1, FIN2);
     // escamas de brillo
     x.globalAlpha = 0.7;
-    rc(x, 12 + sway, 19, 2, 1, TOP2);
-    rc(x, 17 - sway, 22, 2, 1, FROST);
-    rc(x, 14, 24, 1, 2, FROST);
+    rc(x, 12 + sway, 20, 2, 1, TOP2);
+    rc(x, 17 - sway, 23, 2, 1, FROST);
+    rc(x, 14, 25, 1, 2, FROST);
     x.globalAlpha = 1;
-    // aletas (frost tips) — se mecen con el frame
+    // aletas caudales RASGADAS (frost tips) — se mecen con el frame
     const fs = sway;
-    rc(x, 11 + fs, 26, 4, 2, FIN); rc(x, 9 + fs, 27, 4, 2, FIN2);
-    rc(x, 7 + fs, 28, 4, 2, FIN); rc(x, 5 + fs, 29, 3, 2, FROST);
-    rc(x, 17 - fs, 26, 4, 2, FIN); rc(x, 19 - fs, 27, 4, 2, FIN2);
-    rc(x, 21 - fs, 28, 4, 2, FIN); rc(x, 24 - fs, 29, 3, 2, FROST);
-    // aura de bruma marina
-    x.globalAlpha = 0.18;
-    rc(x, 5, 10 + sway, 2, 8, FIN2);
-    rc(x, 25, 10 - sway, 2, 8, FIN2);
+    rc(x, 11 + fs, 27, 4, 2, FIN); rc(x, 9 + fs, 28, 4, 2, FIN2);
+    rc(x, 7 + fs, 29, 4, 2, FIN); rc(x, 5 + fs, 30, 3, 1, FROST);  // rasgada
+    rc(x, 17 - fs, 27, 4, 2, FIN); rc(x, 19 - fs, 28, 4, 2, FIN2);
+    rc(x, 21 - fs, 29, 4, 2, FIN); rc(x, 24 - fs, 30, 3, 2, FROST);
+    // aura de bruma abisal (acento, muy tenue)
+    x.globalAlpha = 0.14;
+    rc(x, 4, 10 + sway, 2, 9, ACC);
+    rc(x, 26, 10 - sway, 2, 8, ACC);
     x.globalAlpha = 1;
     frames.push(c);
   }
@@ -274,59 +323,92 @@ function buildSirena(): Frames {
 }
 
 // ---------------- Gólem de Escarcha (32×32 · 2 frames · JEFE) ----------------
-// Masa de hielo masiva con núcleo brillante y cristales al hombro.
-// Frame 2 = el núcleo pulsa. Azul hielo + blanco + cian núcleo.
+// TERROR V2: columna de hielo encadenada a la cumbre. Paleta de
+// hielo desaturada (azul grisáceo) con UN acento cian que respira en
+// núcleo, grietas y ojos. Asta de hielo retorcida en el hombro izq.,
+// cadena rota helada cruzando el vientre, fragmento incrustado en el
+// hombro y grieta que le parte la cara. F1 = windup: brazo alzado.
 
 function buildGolem(): Frames {
   const frames: Frames = [];
   for (let f = 0; f < 2; f++) {
     const { c, x } = cv(32, 32);
-    const O = '#1c3048', ICE = '#7ea8cc', ICED = '#5a86b0', ICEDD = '#4a76a0',
-      L = '#a8cce8', XT = '#c8e4f4', SNOW = '#eef6fc';
-    const CORE = f === 0 ? '#3ec8e8' : '#5fdcf8';
-    const CORE2 = f === 0 ? '#8ef0ff' : '#d8f8ff';
+    const O = '#141f30', ICE = '#8ba6bc', ICED = '#68829a', ICEDD = '#54708a',
+      L = '#a9c2d4', XT = '#c8dce8', SNOW = '#e6eef2', DK = '#39516a',
+      CHAIN = '#3c4a5c', CHAINL = '#6c7e92',
+      ACC = '#7ce8ff',   // ACENTO: cian hielo (núcleo, grietas, ojos)
+      ACCD = '#2e7a96';
+    const up = f; // f1: el brazo izq. se alza 1 px (windup del slam)
+    const CORE = f === 0 ? '#2f8aa8' : '#4fc0e0';
+    const CORE2 = f === 0 ? '#8ee4f4' : '#d8f8ff';
     // ---- torso macizo ----
     rc(x, 8, 10, 16, 15, ICE);
     rc(x, 8, 10, 16, 2, L);
     rc(x, 9, 24, 14, 2, ICED);
-    // placas y grietas
+    // placas
     rc(x, 8, 14, 16, 1, ICED);
     rc(x, 8, 19, 16, 1, ICED);
-    rc(x, 10, 15, 1, 4, '#3a5a7c');
-    rc(x, 21, 11, 1, 3, '#3a5a7c');
-    rc(x, 17, 20, 1, 3, '#3a5a7c');
+    // grietas del torso que dejan escapar el acento (el núcleo respira)
+    x.globalAlpha = f === 1 ? 0.9 : 0.55;
+    rc(x, 10, 15, 1, 4, ACC);
+    rc(x, 21, 11, 1, 3, ACC);
+    rc(x, 17, 20, 1, 3, ACC);
+    rc(x, 22, 21, 1, 2, ACCD);
+    x.globalAlpha = 1;
     // ---- núcleo brillante ----
     if (f === 1) disc(x, 15.5, 17.5, 5.5, CORE2, 0.22); // pulso
-    rc(x, 12, 14, 8, 7, '#2a7a9c');
+    rc(x, 12, 14, 8, 7, '#1e5e78');
     rc(x, 13, 15, 6, 5, CORE);
     rc(x, 14, 16, 4, 3, CORE2);
-    // ---- cabeza hundida ----
+    // ---- cadena rota helada cruzando el vientre (lo ataron a la cumbre) ----
+    rc(x, 9, 21, 2, 1, CHAIN); rc(x, 11, 22, 2, 1, CHAIN);
+    rc(x, 13, 23, 2, 1, CHAIN);
+    rc(x, 17, 23, 2, 1, CHAIN); rc(x, 19, 22, 2, 1, CHAIN);
+    rc(x, 21, 21, 2, 1, CHAIN); rc(x, 23, 20, 2, 1, CHAIN);
+    rc(x, 25, 21, 1, 2, CHAINL);               // eslabón roto que cuelga
+    rc(x, 24, 23, 1, 1, CHAIN);
+    // ---- cabeza hundida con la cara partida ----
     rc(x, 12, 3, 8, 7, ICE);
     rc(x, 12, 3, 8, 1, L);
     rc(x, 12, 9, 8, 1, ICED);
-    rc(x, 13, 6, 2, 1, CORE); rc(x, 17, 6, 2, 1, CORE); // ojos ranura de cian
-    // ---- hombros con cristales ----
+    // ojos: glow de dos tonos (núcleo blanco, halo cian que late)
+    x.globalAlpha = 0.4;
+    rc(x, 12, 5, 4, 3, ACCD); rc(x, 16, 5, 4, 3, ACCD);
+    if (f === 1) { x.globalAlpha = 0.25; rc(x, 11, 4, 11, 5, ACC); }
+    x.globalAlpha = 1;
+    rc(x, 13, 6, 2, 1, ACC); rc(x, 17, 6, 2, 1, ACC);      // iris cian
+    rc(x, 13, 6, 1, 1, SNOW); rc(x, 17, 6, 1, 1, SNOW);    // núcleo blanco
+    // grieta que le cruza la cara (cicatriz del primer deshielo)
+    rc(x, 14, 3, 1, 2, DK); rc(x, 15, 5, 1, 2, DK); rc(x, 16, 7, 1, 1, DK);
+    // ---- hombros asimétricos: asta de hielo retorcida (izq.) ----
     rc(x, 2, 8, 9, 7, ICED);
     rc(x, 2, 8, 9, 1, L);
-    rc(x, 4, 5, 4, 3, XT); rc(x, 5, 4, 2, 1, SNOW);     // cristal izq.
+    rc(x, 4, 4, 3, 4, XT);                     // asta: tramo bajo
+    rc(x, 3, 2, 2, 2, XT);                     // asta: codo que gira
+    rc(x, 6, 3, 1, 2, ICED);                   // muesca del giro
+    rc(x, 3, 2, 1, 1, SNOW);                   // punta nevada
+    // hombro der.: cristales rotos, sin punta
     rc(x, 21, 8, 9, 7, ICED);
     rc(x, 21, 8, 9, 1, L);
-    rc(x, 24, 5, 4, 3, XT); rc(x, 26, 4, 2, 1, SNOW);   // cristal der.
+    rc(x, 24, 5, 4, 3, XT); rc(x, 25, 4, 2, 1, XT);
+    // fragmento de la cadena incrustado en el hombro (historia)
+    rc(x, 27, 10, 2, 2, CHAIN); rc(x, 27, 10, 1, 1, CHAINL);
     // nieve posada
     rc(x, 3, 8, 4, 1, SNOW); rc(x, 25, 8, 4, 1, SNOW);
-    // ---- brazos colosales ----
-    rc(x, 1, 12, 5, 12, ICED);
-    rc(x, 1, 12, 1, 12, L);
-    rc(x, 0, 23, 7, 5, ICEDD);
-    rc(x, 0, 23, 7, 1, L);
+    // ---- brazos colosales (el izq. se alza en f1: va a golpear) ----
+    rc(x, 1, 12 - up, 5, 12, ICED);
+    rc(x, 1, 12 - up, 1, 12, L);
+    rc(x, 0, 23 - up, 7, 5, ICEDD);
+    rc(x, 0, 23 - up, 7, 1, L);
+    rc(x, 0, 22 - up, 1, 1, XT); rc(x, 3, 22 - up, 1, 1, XT); // garras del puño
     rc(x, 26, 12, 5, 12, ICED);
-    rc(x, 30, 12, 1, 12, '#3a5a7c');
+    rc(x, 30, 12, 1, 12, DK);
     rc(x, 25, 23, 7, 5, ICEDD);
     rc(x, 25, 23, 7, 1, L);
     // ---- pata de bloque y escarcha base ----
     rc(x, 9, 25, 6, 4, ICEDD);
     rc(x, 17, 25, 6, 4, ICEDD);
-    rc(x, 9, 28, 6, 1, '#3a5a7c'); rc(x, 17, 28, 6, 1, '#3a5a7c');
+    rc(x, 9, 28, 6, 1, DK); rc(x, 17, 28, 6, 1, DK);
     rc(x, 8, 29, 8, 1, SNOW); rc(x, 16, 29, 8, 1, SNOW);
     // chispas de escarcha (deterministas)
     x.globalAlpha = 0.8;
@@ -882,60 +964,79 @@ export function drawExpansionProjectile(
 // ============================================================
 
 // ---------------- Vult, el Cazador de Ecos (32×32 · 3 frames · JEFE) ----
-// Humanoide veloz: gabardina de cazador verde-niebla, pañuelo al viento,
-// dos dagas de eco (filos pálidos). Silueta inclinada hacia delante
-// (siempre en carrerilla). El frame alterna el ondear de la capa.
+// TERROR V2: cazador encorvado de gabardina verde BILIS desaturada.
+// Ojos de glow de dos tonos (núcleo célere + halo oliva), capucha
+// rasgada con cicatriz, daga mellada, costura de remiendo en la
+// gabardina, cinturón con eslabón roto y pañuelo que se deshilacha.
 
 function buildVult(): Frames {
   const frames: Frames = [];
   for (let f = 0; f < 3; f++) {
     const { c, x } = cv(32, 32);
-    const CAP = '#26483c', CAP2 = '#31604e', CAPD = '#1a332a',
-      SKIN = '#d4dcc8', SKINS = '#aeb8a2', SCARF = '#8ef0c0',
-      DGA = '#dfeee6', DGAD = '#9cbcb0', BOOT = '#20302a', EYE = '#b8ffd8',
-      BK = '#14241e';
+    const CAP = '#2c3a2e', CAP2 = '#3d5040', CAPD = '#1c281e',
+      SKIN = '#c8cec0', SKINS = '#a2ac9c', SCARF = '#8ea834',
+      DGA = '#dce8dc', DGAD = '#9cb4a0', BOOT = '#1a241a',
+      BK = '#0e1610',
+      ACC = '#b8e83c',   // ACENTO: verde bilis (ojos, brillo de filos)
+      HALO = '#5e7c1e';  // halo del ojo (oliva, late en f1)
     const sway = f === 0 ? 0 : f === 1 ? 1 : -1; // capa y pañuelo
-    // ---- capa trasera (ondea opuesta al avance) ----
+    // ---- capa trasera desgarrada (ondea opuesta al avance) ----
     x.globalAlpha = 0.95;
     rc(x, 7 - sway, 8, 7, 14, CAPD);
     rc(x, 5 - sway, 10, 3, 10, CAPD);
+    rc(x, 8 - sway, 22, 3, 2, CAPD);           // jirón inferior suelto
     x.globalAlpha = 0.55;
-    rc(x, 4 - sway, 14 + sway, 3, 6, CAP);           // ala baja de la capa
+    rc(x, 4 - sway, 14 + sway, 3, 6, CAP);     // ala baja de la capa
     x.globalAlpha = 1;
-    // ---- pañuelo de eco (se mecen con el frame) ----
+    // ---- pañuelo de eco hilachas (se mecen con el frame) ----
     rc(x, 16 + sway, 7, 6, 2, SCARF);
     rc(x, 21 + sway * 2, 6, 4, 2, SCARF);
     x.globalAlpha = 0.6;
-    rc(x, 24 + sway * 2, 5, 3, 2, SCARF);            // punta que se disuelve
+    rc(x, 24 + sway * 2, 5, 3, 2, SCARF);      // punta que se disuelve
+    rc(x, 25 + sway * 2, 8, 2, 1, SCARF);      // hilacho suelto
     x.globalAlpha = 1;
-    // ---- torso y gabardina ----
+    // ---- torso y gabardina con costura de remiendo ----
     rc(x, 12, 10, 9, 10, CAP);
     rc(x, 12, 10, 9, 1, CAP2);
-    rc(x, 13, 12, 1, 7, CAP2);                       // solapa
+    rc(x, 13, 12, 1, 7, CAP2);                 // solapa
     rc(x, 19, 11, 1, 8, CAPD);
-    rc(x, 12, 19, 10, 4, CAPD);                      // faldón
+    rc(x, 12, 19, 10, 4, CAPD);                // faldón
+    // costura del remiendo (lo cose con hilo de eco)
+    rc(x, 14, 15, 5, 1, CAP2);
+    rc(x, 14, 15, 1, 1, SKINS); rc(x, 16, 15, 1, 1, SKINS); rc(x, 18, 15, 1, 1, SKINS);
+    // cinturón con eslabón roto que cuelga
+    rc(x, 12, 18, 9, 1, BOOT);
+    rc(x, 21, 18, 1, 2, '#4a5662'); rc(x, 22, 20, 1, 1, '#6a7884');
     rc(x, 13, 23, 4, 3, BOOT);
     rc(x, 18, 23, 4, 3, BOOT);
-    // ---- cabeza con capucha ----
+    // ---- cabeza con capucha rasgada ----
     rc(x, 13, 3, 8, 7, CAP);
     rc(x, 12, 4, 1, 5, CAPD);
     rc(x, 21, 4, 1, 5, CAPD);
-    rc(x, 14, 5, 6, 4, BK);                          // hueco de la capucha
-    rc(x, 15, 6, 1, 1, EYE);                         // ojos de eco
-    rc(x, 18, 6, 1, 1, EYE);
+    rc(x, 21, 3, 2, 1, CAPD);                  // oreja de la capucha rota
+    rc(x, 14, 5, 6, 4, BK);                    // hueco de la capucha
+    // ojos de bilis: glow de dos tonos (halo oliva que late + núcleo)
+    x.globalAlpha = f === 1 ? 0.5 : 0.32;
+    rc(x, 13, 5, 4, 3, HALO); rc(x, 17, 5, 3, 3, HALO);
+    x.globalAlpha = 1;
+    rc(x, 14, 6, 2, 2, ACC); rc(x, 18, 6, 1, 2, ACC);  // asimetría: ojo der. fino
+    rc(x, 14, 6, 1, 1, '#f2ffd0'); rc(x, 18, 6, 1, 1, '#f2ffd0'); // núcleo célere
+    // cicatriz vieja que cruza la capucha (historia)
+    rc(x, 19, 3, 1, 1, SKINS); rc(x, 20, 4, 1, 2, SKINS);
     // ---- brazos + dagas de eco ----
     rc(x, 9, 11, 3, 3, CAP); rc(x, 8, 13, 2, 3, SKIN);   // brazo trasero
     rc(x, 21, 11, 3, 3, CAP); rc(x, 23, 13, 2, 3, SKIN); // brazo delantero
-    // daga 1 (alzada, atrás)
+    // daga 1 (alzada, atrás — filo mellado)
     rc(x, 6, 6, 2, 8, DGA);
     rc(x, 6, 6, 1, 8, DGAD);
-    rc(x, 5, 13, 4, 2, DGAD);                        // guarda
+    rc(x, 8, 9, 1, 1, DGA);                    // mella del filo
+    rc(x, 5, 13, 4, 2, DGAD);                  // guarda
     // daga 2 (invertida, adelante — agarre de cazarreco)
     rc(x, 24, 16, 2, 7, DGA);
     rc(x, 25, 16, 1, 7, DGAD);
     rc(x, 23, 22, 4, 2, DGAD);
-    // brillo de los filos (parpadea por frame)
-    if (f !== 1) { x.globalAlpha = 0.8; rc(x, 6, 7, 1, 3, '#ffffff'); rc(x, 25, 17, 1, 2, '#ffffff'); x.globalAlpha = 1; }
+    // brillo bilis de los filos (parpadea por frame)
+    if (f !== 1) { x.globalAlpha = 0.8; rc(x, 6, 7, 1, 3, ACC); rc(x, 25, 17, 1, 2, ACC); x.globalAlpha = 1; }
     // contorno sutil
     x.globalAlpha = 0.5;
     rc(x, 13, 3, 8, 1, BK);
@@ -947,19 +1048,22 @@ function buildVult(): Frames {
 }
 
 // ---------------- El Coro Roto (30×30 · 2 frames × 3 máscaras · JEFE) ----
-// MASA de tres máscaras flotantes unidas por hilos de bruma: una central
-// grande cantando al revés (boca vertical) y dos menores a los flancos.
+// TERROR V2: masa de tres máscaras flotantes unidas por hilos de
+// bruma, hueso más frío y desaturado, glow VIOLETA y ojos de dos
+// tonos (núcleo hueso claro + halo del color del coro). Una costura
+// cierra la grieta principal, la cadena del techo sigue colgando del
+// mentón y las máscaras laterales cuelgan retorcidas y desportilladas.
 // buildCoro(fase) devuelve la variante de la fase:
-//   1 · MÁSCARA DEL PULSO    — hueso claro, glow aguamarina, intacta.
-//   2 · MÁSCARA DEL VERA     — hueso frío, glow violeta, grietas finas.
+//   1 · MÁSCARA DEL PULSO    — hueso claro, glow violeta-azulado.
+//   2 · MÁSCARA DEL VERA     — hueso frío, glow violeta, grietas cosidas.
 //   3 · MÁSCARA DEL SILENCIO — hueso apagado, glow dorado, cuarteadas.
 
 function buildCoro(fase: 1 | 2 | 3): Frames {
   const pal = fase === 1
-    ? { HUESO: '#d8d4c4', HUESO2: '#bdb8a6', GLOW: '#7ee8ff', HUECO: '#1a2030', FILO: '#eef2e8' }
+    ? { HUESO: '#d2d2c6', HUESO2: '#b0b0a0', GLOW: '#8fb0ff', HUECO: '#141826', FILO: '#eef0ea' }
     : fase === 2
-      ? { HUESO: '#c8c2b2', HUESO2: '#aaa494', GLOW: '#b48fff', HUECO: '#1c1830', FILO: '#e4e2da' }
-      : { HUESO: '#c4bcae', HUESO2: '#9c9486', GLOW: '#ffd88a', HUECO: '#241f28', FILO: '#dcd8cc' };
+      ? { HUESO: '#c6c4ba', HUESO2: '#a2a094', GLOW: '#a86bff', HUECO: '#160f24', FILO: '#e8e4e0' }
+      : { HUESO: '#c2bcb0', HUESO2: '#98928a', GLOW: '#e0c078', HUECO: '#1c1820', FILO: '#d8d4cc' };
   const frames: Frames = [];
   for (let f = 0; f < 2; f++) {
     const { c, x } = cv(30, 30);
@@ -970,29 +1074,36 @@ function buildCoro(fase: 1 | 2 | 3): Frames {
     rc(x, 8, 14 + bob, 4, 1, GLOW);
     rc(x, 18, 14 - bob, 4, 1, GLOW);
     x.globalAlpha = 0.22;
-    disc(x, 15, 13 + bob, 11, GLOW);                 // aura compartida
+    disc(x, 15, 13 + bob, 11, GLOW);           // aura compartida
     x.globalAlpha = 1;
     // ---- máscara central (boca vertical = canto al revés) ----
     rc(x, 10, 5 + bob, 10, 13, HUESO);
     rc(x, 9, 6 + bob, 12, 11, HUESO);
-    rc(x, 10, 17 + bob, 10, 2, HUESO2);              // mentón
+    rc(x, 10, 17 + bob, 10, 2, HUESO2);        // mentón
     rc(x, 9, 6 + bob, 1, 9, HUESO2);
     rc(x, 20, 6 + bob, 1, 9, HUESO2);
-    // ojos huecos (el central mayor según la fase: se apaga el coro)
+    // ojos huecos con glow de dos tonos (halo del coro, late en f1)
     const eyeH = fase === 1 ? 2 : fase === 2 ? 3 : 4;
+    x.globalAlpha = f === 1 ? 0.55 : 0.3;
+    rc(x, 10, 7 + bob, 4, eyeH + 2, GLOW);
+    rc(x, 16, 7 + bob, 4, eyeH + 2, GLOW);
+    x.globalAlpha = 1;
     rc(x, 11, 8 + bob, 2, eyeH, HUECO);
     rc(x, 17, 8 + bob, 2, eyeH, HUECO);
-    rc(x, 11, 8 + bob, 2, 1, FILO);
+    rc(x, 11, 8 + bob, 2, 1, FILO);            // núcleo claro
     rc(x, 17, 8 + bob, 2, 1, FILO);
     // boca vertical (la nota al revés) + glow interior
     rc(x, 14, 11 + bob, 2, 5, HUECO);
     x.globalAlpha = 0.85;
     rc(x, 14, 11 + bob, 1, 4, GLOW);
     x.globalAlpha = 1;
-    // grietas: finas en F2, cuarteadas en F3
+    // grietas: finas y COSIDAS en F2, cuarteadas en F3
     if (fase >= 2) {
-      rc(x, 12, 5 + bob, 1, 3, HUESO2);
-      rc(x, 18, 13 + bob, 1, 4, HUESO2);
+      rc(x, 12, 5 + bob, 1, 3, HUECO);
+      rc(x, 18, 13 + bob, 1, 4, HUECO);
+      rc(x, 11, 6 + bob, 1, 1, FILO);          // puntadas de la costura
+      rc(x, 13, 7 + bob, 1, 1, FILO);
+      rc(x, 17, 15 + bob, 1, 1, FILO); rc(x, 19, 14 + bob, 1, 1, FILO);
     }
     if (fase === 3) {
       rc(x, 10, 12 + bob, 3, 1, HUECO);
@@ -1000,22 +1111,35 @@ function buildCoro(fase: 1 | 2 | 3): Frames {
       rc(x, 13, 18 + bob, 4, 1, HUECO);
       rc(x, 19, 9 + bob, 1, 3, HUESO2);
     }
-    // ---- máscara izquierda (perfil, cuelga más baja) ----
-    rc(x, 3, 12 + bob, 6, 8, HUESO2);
-    rc(x, 2, 13 + bob, 1, 6, HUESO2);
-    rc(x, 4, 15 + bob, 2, 2, HUECO);                 // ojo ladeado
-    rc(x, 5, 20 + bob, 1, 2, HUECO);                 // boca pequeña
-    // ---- máscara derecha (perfil, más alta) ----
-    rc(x, 21, 9 + bob, 6, 8, HUESO2);
-    rc(x, 27, 10 + bob, 1, 6, HUESO2);
+    // cadena rota que cuelga del mentón (historia: colgó de la cripta)
+    rc(x, 14, 20 + bob, 2, 1, '#4e5866');
+    rc(x, 15, 21 + bob, 1, 2, '#6c7888');      // eslabón suelto
+    // ---- máscara izquierda (perfil, cuelga retorcida) ----
+    rc(x, 3, 13 + bob, 6, 8, HUESO2);
+    rc(x, 2, 14 + bob, 1, 6, HUESO2);
+    x.globalAlpha = 0.35;
+    rc(x, 3, 14 + bob, 3, 3, GLOW);            // halo del ojo ladeado
+    x.globalAlpha = 1;
+    rc(x, 4, 15 + bob, 2, 2, HUECO);
+    rc(x, 4, 15 + bob, 1, 1, FILO);
+    rc(x, 5, 21 + bob, 1, 2, HUECO);           // boca pequeña
+    rc(x, 7, 13 + bob, 1, 3, HUECO);           // grieta que la parte
+    // ---- máscara derecha (perfil, más alta y desportillada) ----
+    rc(x, 21, 8 + bob, 6, 8, HUESO2);
+    rc(x, 27, 9 + bob, 1, 6, HUESO2);
+    rc(x, 22, 8 + bob, 3, 1, HUECO);           // desportilladura superior
+    x.globalAlpha = 0.35;
+    rc(x, 22, 11 + bob, 3, 3, GLOW);
+    x.globalAlpha = 1;
     rc(x, 23, 12 + bob, 2, 2, HUECO);
+    rc(x, 23, 12 + bob, 1, 1, FILO);
     rc(x, 24, 17 + bob, 1, 2, HUECO);
     // destello del glow (parpadeo por frame)
     if (f === 1) {
       x.globalAlpha = 0.7;
       rc(x, 14, 15 + bob, 1, 1, FILO);
       rc(x, 6, 11 + bob, 1, 1, GLOW);
-      rc(x, 23, 8 + bob, 1, 1, GLOW);
+      rc(x, 23, 7 + bob, 1, 1, GLOW);
       x.globalAlpha = 1;
     }
     frames.push(c);
@@ -1024,38 +1148,54 @@ function buildCoro(fase: 1 | 2 | 3): Frames {
 }
 
 // ---------------- Eco Desgarrado (16×16 · 2 frames) ----------------------
-// Espectro PARTIDO en dos mitades con un hueco de bruma entre ellas:
-// el hueco late (cambia de ancho por frame). Paleta pálida azulada.
+// TERROR V2: espectro PARTIDO en dos mitades por un hueco del que se
+// escapa su eco en ORO CORRUPTO (acento). Hueso frío desaturado,
+// costura dorada en el costado y ojos desalineados de dos tonos. El
+// hueco late (cambia de ancho y de brillo por frame).
 
 function buildEcodesg(): Frames {
   const frames: Frames = [];
   for (let f = 0; f < 2; f++) {
     const { c, x } = cv(16, 16);
-    const O = '#39465e', B = '#cdd8ea', S = '#a4b2ca', EYE = '#222c44', GAP = f === 0 ? 1 : 2;
+    const O = '#2e3844', B = '#c2ccd2', S = '#9ca8b0', HUECO = '#1c2430',
+      GOLD = '#e0b850', GOLDD = '#8a6c2c';     // ACENTO: oro corrupto
+    const GAP = f === 0 ? 1 : 2;
+    // resplandor del desgarro (el eco dorado se escapa; late en f1)
+    x.globalAlpha = f === 1 ? 0.4 : 0.25;
+    rc(x, 7, 3, 2 + GAP, 9, GOLDD);
+    x.globalAlpha = 1;
+    // mitad izquierda (jag de desgarro) con costura dorada
     x.globalAlpha = 0.85;
-    // mitad izquierda (jag de desgarro)
     rc(x, 4, 4, 3, 7, B);
     rc(x, 3, 6, 1, 4, B);
     rc(x, 7 - GAP, 5, 1, 2, B);
     rc(x, 6 - GAP, 8, 1, 2, S);
+    x.globalAlpha = 1;
+    rc(x, 5, 5, 1, 4, GOLDD);                  // costura de la herida
+    rc(x, 4, 7, 1, 1, S); rc(x, 6, 8, 1, 1, S);// puntadas
     // mitad derecha (simétrica rota)
+    x.globalAlpha = 0.85;
     rc(x, 9 + GAP, 4, 3, 7, B);
     rc(x, 12 + GAP, 6, 1, 4, B);
     rc(x, 8 + GAP, 5, 1, 2, S);
     rc(x, 9 + GAP, 8, 1, 2, S);
+    x.globalAlpha = 1;
     // cola desgarrada (3 jirones)
     x.globalAlpha = 0.6;
     rc(x, 4, 11, 2, 2 + f, B);
     rc(x, 7, 11 + GAP, 2, 1 + f, S);
     rc(x, 10 + GAP, 11, 2, 2, B);
     x.globalAlpha = 1;
-    // ojos desalineados (el eco no se reconoce)
-    rc(x, 4, 6, 1, 2, EYE);
-    rc(x, 11 + GAP, 6, 1, 2, EYE);
+    // ojos desalineados con glow de dos tonos (núcleo oro + halo)
+    x.globalAlpha = f === 1 ? 0.5 : 0.3;
+    rc(x, 3, 5, 3, 3, GOLDD); rc(x, 10 + GAP, 5, 3, 3, GOLDD);
+    x.globalAlpha = 1;
+    rc(x, 4, 6, 1, 2, HUECO); rc(x, 11 + GAP, 6, 1, 2, HUECO);
+    rc(x, 4, 6, 1, 1, GOLD); rc(x, 11 + GAP, 6, 1, 1, GOLD);
     // borde superior del desgarro
     rc(x, 4, 3, 8, 1, O);
     x.globalAlpha = 0.5;
-    rc(x, 7, 3 + GAP, 2, 1, O);                      // labio del hueco
+    rc(x, 7, 3 + GAP, 2, 1, O);                // labio del hueco
     x.globalAlpha = 1;
     frames.push(c);
   }
@@ -1063,41 +1203,52 @@ function buildEcodesg(): Frames {
 }
 
 // ---------------- Sátiro de la Niebla (16×16 · 2 frames) -----------------
-// Cabrío pequeño y encorvado con zampoña: pelaje gris-verde, cuernos
-// claros, ojos dorados. El frame alterna el brinco (patas) y la flauta.
+// TERROR V2: bruto cabrío de ceniza (pelaje gris desaturado) con UN
+// acento ROJO CARNE: asta rota con médula expuesta, hilo rojo atado
+// al asta buena, ojo de glow de dos tonos, cicatriz en el costado y
+// la zampoña tallada con un agujero. El frame alterna el brinco.
 
 function buildSatiro(): Frames {
   const frames: Frames = [];
   for (let f = 0; f < 2; f++) {
     const { c, x } = cv(16, 16);
-    const FUR = '#4a5648', FUR2 = '#5e6c58', HORN = '#c8b890', EYE = '#ffd88a',
-      HOOF = '#2c342a', NIEBLA = '#aebcc8', BK = '#262e26';
+    const FUR = '#4a4a4c', FUR2 = '#5c5c5a', HORN = '#c4bcac',
+      HOOF = '#26262a', NIEBLA = '#a8b4bc', BK = '#202022',
+      ACC = '#d8483a', ACCD = '#7c241c';       // ACENTO: rojo carne
     const hop = f === 0 ? 0 : -1; // brinco
     // niebla en los cascos
     x.globalAlpha = 0.35;
     rc(x, 2, 14, 5, 1, NIEBLA);
     rc(x, 9, 14, 5, 1, NIEBLA);
     x.globalAlpha = 1;
-    // cuernos curvos
-    rc(x, 4, 1 + hop, 1, 3, HORN); rc(x, 3, 1 + hop, 1, 2, HORN);
+    // astas asimétricas: la izq. ROTA, la der. curva con hilo rojo
+    rc(x, 4, 1 + hop, 1, 3, HORN);
+    rc(x, 4, 1 + hop, 1, 1, ACCD);             // médula expuesta del tocón
     rc(x, 9, 1 + hop, 1, 3, HORN); rc(x, 10, 1 + hop, 1, 2, HORN);
+    rc(x, 9, 1 + hop, 1, 1, ACC);              // hilo de carne
     // cabeza cabruna (perfil)
     rc(x, 4, 3 + hop, 6, 4, FUR);
-    rc(x, 9, 4 + hop, 2, 2, FUR);                    // hocico
-    rc(x, 5, 4 + hop, 1, 1, EYE);
+    rc(x, 9, 4 + hop, 2, 2, FUR);              // hocico
+    // ojo con glow de dos tonos (halo carne que late + núcleo claro)
+    x.globalAlpha = f === 1 ? 0.5 : 0.3;
+    rc(x, 4, 3 + hop, 3, 3, ACCD);
+    x.globalAlpha = 1;
+    rc(x, 5, 4 + hop, 1, 1, '#ff9a80');
     // barba de chivo
     rc(x, 8, 7 + hop, 1, 2, FUR2);
-    // torso encorvado
+    // torso encorvado con cicatriz pálida en el costado
     rc(x, 3, 7 + hop, 8, 4, FUR);
     rc(x, 4, 11 + hop, 6, 1, FUR2);
     rc(x, 3, 7 + hop, 8, 1, BK);
+    rc(x, 3, 9 + hop, 2, 1, '#8a8a86');        // cicatriz
     // patas traseras y delanteras (el brinco alterna)
     rc(x, 4, 11 + hop, 1, 3 - f, FUR2); rc(x, 4, 13 + hop - f, 1, 1, HOOF);
     rc(x, 9, 11 + hop, 1, 3 - (1 - f), FUR2); rc(x, 9, 13 + hop - (1 - f), 1, 1, HOOF);
     rc(x, 3, 11 + hop, 1, 2, FUR2);
-    // zampoña (tubos) junto al hocico — silba la balada curva
-    rc(x, 10, 6 + hop, 1, 4, '#8a6a4a');
-    rc(x, 11, 6 + hop, 1, 3, '#6a4e36');
+    // zampoña tallada junto al hocico (un agujero por cada nombre robado)
+    rc(x, 10, 6 + hop, 1, 4, '#5c4a3a');
+    rc(x, 11, 6 + hop, 1, 3, '#40342a');
+    rc(x, 10, 7 + hop, 1, 1, ACCD);            // agujero tallado
     if (f === 1) { x.globalAlpha = 0.7; rc(x, 12, 5 + hop, 1, 1, NIEBLA); x.globalAlpha = 1; } // nota de niebla
     // cola corta
     rc(x, 2, 8 + hop, 1, 2, FUR2);

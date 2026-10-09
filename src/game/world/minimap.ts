@@ -1,24 +1,32 @@
 // ============================================================
-// ECOS DE AELTHAR — Minimapa v3 (módulo world)
+// ECOS DE AELTHAR — Minimapa v4 (módulo world)
 // Sustituto mejorado del minimapa plano de buildGround():
-//  · 2 px por tile con paleta coherente con los módulos world
+//  · 2 px por tile con paleta coherente con los módulos world,
+//    incluidos los tiles de expansión ('s' arena, 'S' nieve,
+//    'i' hielo, '=' camino, 'n' niebla muda — antes caían al vacío)
 //  · variación de hierba por hash, relieve falso por bloques
 //    de tiles del mismo tipo, contorno costero del agua
 //  · tinte cálido suave en la época 'pasado'
-//  · overlay con marco de madera remachado y placa integrada v3
-//    (hairline dorada + aguja N de 4 px) y marcadores: jugador
-//    (ámbar pulsante + aguja direccional según p.dir + estela de
-//    2 posiciones previas), NPC (blanco), santuario (rombo cian
-//    + anillo expansivo tenue cada ~2.5 s), cofre sin abrir
-//    (dorado), jefe vivo (rojo parpadeante) y salidas (flechas)
-//  · R4-A9/A9b: objetivos de misión vía setMinimapTargets() — diana
-//    dorada que pulsa con sin(t*3) para kind 'quest' y 'salida' (esta
-//    última con marco pálido acorde a las flechas de exit); anillo
-//    expansivo para 'altar'. Mientras nadie llame al setter, es no-op.
+//  · v4 (R6-V8): marco PERGAMINO/BRONCE con esquinas biseladas,
+//    pre-renderizado y cacheado por (tamaño+época+mapa): por frame
+//    es UN drawImage. Placa v3 intacta (hairline dorada + aguja N).
+//  · marcadores: jugador (ámbar pulsante + aguja direccional según
+//    p.dir + estela de 2 posiciones previas), NPC (blanco),
+//    santuario (punto teal con halo + anillo expansivo tenue cada
+//    ~2.5 s), cofre sin abrir (dorado) y salidas (flechas)
+//  · v4: jefes VIVOS del mapa como diamante rojo pulsante, por la
+//    misma vía de objetivos que setMinimapTargets(): el overlay los
+//    sintetiza como targets 'rombo' desde g.enemies (maxSta > 0 =
+//    barra de quiebre = jefe). MinimapTarget amplía con campos
+//    OPCIONALES shape ('diana'|'rombo') y color — sin romper a los
+//    llamadores del setter.
+//  · RENDIMIENTO: cero canvas nuevos por frame y ~1 fillRect/frame
+//    (fondo del mapa); el resto son drawImage de sprites cacheados
+//    y fills/strokes de path (rombos, halos, anillos).
 // Todo determinista (sin Math.random): las animaciones derivan de
 // g.globalT. La estela del jugador es historial posicional (misma
 // secuencia de frames → mismo dibujo). El canvas base se cachea
-// por (mapa+época).
+// por (mapa+época+huella de filas).
 // ============================================================
 
 import type { Game } from '../engine';
@@ -48,15 +56,22 @@ function shade(hex: string, f: number): string {
 // Los bloques del relieve se definen por categoría: tiles de la misma
 // categoría se funden en un "bloque" con bisel arriba-izq / abajo-der.
 
-type Cat = 'grass' | 'water' | 'path' | 'floor' | 'wall' | 'building' | 'wood' | 'tree' | 'void';
+type Cat = 'grass' | 'sand' | 'snow' | 'ice' | 'water' | 'path' | 'floor' | 'wall' | 'building' | 'wood' | 'tree' | 'void';
 
 function catOf(ch: string): Cat {
   switch (ch) {
     case '.':
     case ',':
     case 'm': // niebla muda (suelo transitable) se funde con la hierba
+    case 'n': // niebla muda (parche de lunaris): mismo trato de suelo
     case 'c':
       return 'grass';
+    case 's': // arena de la Costa de Bruma (expansión)
+      return 'sand';
+    case 'S': // nieve de las Cumbres Heladas (expansión)
+      return 'snow';
+    case 'i': // hielo del lago de las cumbres (expansión)
+      return 'ice';
     case '~':
       return 'water';
     case '=':
@@ -114,7 +129,16 @@ function baseColor(ch: string, tx: number, ty: number, kind: string): string {
       return forest ? '#45705c' : '#4f8a68'; // hierba bajo niebla
     case 'c':
       return '#6a4e30'; // cultivo (surco de tierra)
+    case 's':
+      return '#d8c07a'; // arena (expansión: costa) — antes caía al vacío
+    case 'S':
+      return '#dfe8f2'; // nieve (expansión: cumbres) — antes caía al vacío
+    case 'i':
+      return '#a8cfe8'; // hielo (expansión: lago) — antes caía al vacío
+    case 'n':
+      return '#7ea49a'; // niebla muda: velo salvia — antes caía al vacío
     case '~':
+      // ('=' ya se gestionaba: dominante #b89a6a, verificado R6-V8)
       return r > 0.6 ? '#3f72a4' : '#3a6a9a';
     case '=':
       return r > 0.75 ? '#c4a878' : r < 0.2 ? '#a08454' : '#b89a6a';
@@ -161,8 +185,10 @@ const miniCache = new Map<string, HTMLCanvasElement>();
 /**
  * Construye (o recupera de caché) el minimapa v2: 2 px por tile.
  *
- * @param mapRows   filas del mapa (respaldo; la lectura real va por tileAtFn
- *                  para que la época aplique sus diffs)
+ * @param mapRows   filas crudas del mapa: solo alimentan la huella de la
+ *                  clave de caché (desambigua mapas con iguales dimensiones,
+ *                  p. ej. aldea/arena, ambas 44×34); la lectura real va por
+ *                  tileAtFn para que la época aplique sus diffs
  * @param m         dimensiones del mapa en tiles
  * @param epoch     época del mundo ('presente' | 'pasado')
  * @param tileAtFn  función de lectura de tile (tx,ty) → char, con diffs de época
@@ -173,9 +199,12 @@ export function buildMinimapV2(
   epoch: 'presente' | 'pasado',
   tileAtFn: (tx: number, ty: number) => string,
 ): HTMLCanvasElement {
-  void mapRows; // la lectura de tiles se delega en tileAtFn (aplica epochDiffs)
   const kind = kindFromSize(m.w, m.h);
-  const key = `${kind}|${epoch}`;
+  // Clave de caché v4: dimensiones + época + huella barata de las filas
+  // (primera/media/última). La huella corrige la colisión aldea/arena
+  // (AMBAS 44×34): sin ella el modo desafío heredaría el minimapa
+  // cacheado de la aldea y sus tiles jamás se pintarían.
+  const key = `${kind}|${epoch}|${mapRows.length}|${mapRows[0] ?? ''}|${mapRows[mapRows.length >> 1] ?? ''}|${mapRows[mapRows.length - 1] ?? ''}`;
   const hit = miniCache.get(key);
   if (hit) return hit;
 
@@ -276,8 +305,25 @@ export function buildMinimapV2(
 /**
  * Objetivo destacable en el minimapa. x/y en TILES del mapa (los mismos
  * que usa maps.ts); el centro del marcador cae en el centro del tile.
+ *
+ * v4 (R6-V8): campos OPCIONALES añadidos sin romper llamadores —
+ *  · shape: 'diana' (marcador clásico circular, predeterminado según
+ *    kind) o 'rombo' (diamante pulsante, la forma de los jefes vivos);
+ *  · color: color base del marcador; sin él, cada forma usa su color
+ *    por defecto (rombo → rojo #ff5040).
  */
-export type MinimapTarget = { x: number; y: number; kind: 'quest' | 'altar' | 'salida' };
+export type MinimapTarget = {
+  x: number; y: number;
+  kind: 'quest' | 'altar' | 'salida';
+  shape?: 'diana' | 'rombo';
+  color?: string;
+};
+
+/** Variante interna de dibujo (v4): añade el kind 'jefe' que el overlay
+ *  sintetiza desde g.enemies para recorrer la MISMA vía de marcadores que
+ *  los objetivos registrados. NO forma parte del contrato público: los
+ *  llamadores del setter siguen usando quest/altar/salida. */
+type MinimapTargetDraw = MinimapTarget & { kind: 'quest' | 'altar' | 'salida' | 'jefe' };
 
 /** Objetivos actuales; vacío hasta que render.ts llame a setMinimapTargets(). */
 let minimapTargets: MinimapTarget[] = [];
@@ -288,6 +334,9 @@ let minimapTargets: MinimapTarget[] = [];
  * Mientras no se llame, la lista queda vacía y el overlay es no-op con
  * respecto a los objetivos (todo lo demás de la v2 se dibuja igual).
  * Entradas con coordenadas no finitas se descartan por robustez.
+ * v4: cada entrada puede llevar shape ('diana'|'rombo') y color
+ * opcionales — los 'rombo' se dibujan como diamantes pulsantes (la vía
+ * de los jefes vivos) con el color pedido.
  */
 export function setMinimapTargets(list: MinimapTarget[]): void {
   minimapTargets = Array.isArray(list)
@@ -305,6 +354,9 @@ let trailMapId: string | undefined;
 
 /** Periodo del anillo expansivo del santuario (s). */
 const RING_PERIOD = 2.5;
+
+/** Teal del santuario (v4): punto, halo y anillo expansivo, misma familia. */
+const TEAL = '#2dd4bf';
 
 /** Triángulo/flecha pixel determinista (con contorno oscuro). */
 function arrowTri(
@@ -349,19 +401,168 @@ function northNeedle(ctx: CanvasRenderingContext2D, x: number, yBase: number): v
   ctx.fillRect(x, yBase, 1, 2);       // mástil
 }
 
-/** Remache metálico 3×3 con asiento sombreado (esquinas del marco). */
+/** Remache BRONCE 3×3 con asiento sombreado (esquinas del marco v4). */
 function rivet(ctx: CanvasRenderingContext2D, rx: number, ry: number): void {
-  ctx.fillStyle = '#2a2a33'; ctx.fillRect(rx - 1, ry - 1, 4, 4);
-  ctx.fillStyle = '#8a8f9a'; ctx.fillRect(rx, ry, 3, 3);
-  ctx.fillStyle = '#c8ccd6'; ctx.fillRect(rx, ry, 1, 1);
-  ctx.fillStyle = '#5a5f6a'; ctx.fillRect(rx + 2, ry + 2, 1, 1);
+  ctx.fillStyle = '#33240e'; ctx.fillRect(rx - 1, ry - 1, 4, 4);
+  ctx.fillStyle = '#a8843c'; ctx.fillRect(rx, ry, 3, 3);
+  ctx.fillStyle = '#e8cc7a'; ctx.fillRect(rx, ry, 1, 1);
+  ctx.fillStyle = '#6a4e1e'; ctx.fillRect(rx + 2, ry + 2, 1, 1);
+}
+
+// ---------------- cachés del marco y sprites (v4) ----------------
+
+/**
+ * Marco pergamino/bronce + placa, pre-renderizados UNA vez por
+ * (tamaño+época+nombre del mapa) y cacheados: por frame la overlay los
+ * estampa con UN drawImage. La ventana del mapa queda TRANSPARENTE para
+ * estampar el marco DESPUÉS del contenido (los marcadores ya dibujados
+ * quedan enmarcados por el chaflán sin ser tapados). Sin canvas nuevos
+ * por frame: solo en fallo de caché (cambio de mapa/época).
+ */
+const chromeCache = new Map<string, HTMLCanvasElement>();
+
+/** Chaflán de esquina (v4): triángulo bronce oscuro + luz interior biselada. */
+function cornerCut(x: CanvasRenderingContext2D, cx: number, cy: number, sx: number, sy: number): void {
+  x.fillStyle = '#3a2a10'; // corte oscuro (sombra del chaflán)
+  x.beginPath();
+  x.moveTo(cx, cy);
+  x.lineTo(cx + sx * 6, cy);
+  x.lineTo(cx, cy + sy * 6);
+  x.closePath();
+  x.fill();
+  x.fillStyle = '#b08c3e'; // hilo bronce interior del bisel
+  x.beginPath();
+  x.moveTo(cx + sx, cy + sy);
+  x.lineTo(cx + sx * 5, cy + sy);
+  x.lineTo(cx + sx, cy + sy * 5);
+  x.closePath();
+  x.fill();
 }
 
 /**
- * Dibuja el minimapa v3 en pantalla (arriba-derecha): marco de madera
- * con esquinas remachadas, placa integrada con aguja N, marcadores de
- * siempre y los objetivos de misión registrados vía setMinimapTargets.
- * El contenido se recorta con clipping al área interior del marco.
+ * Pinta el marco pergamino/bronce + placa en coords locales (0,0 = esquina
+ * del marco). La placa v3 queda INTACTA (fondos, hairline dorada, aguja N,
+ * 'N', título e insignia de época): el restyling solo toca banda y esquinas.
+ */
+function buildChrome(dw: number, dh: number, past: boolean, name: string): HTMLCanvasElement {
+  const plateH = 15;
+  const fw = dw + 4, fh = plateH + dh + 4;
+  const c = document.createElement('canvas');
+  c.width = fw; c.height = fh;
+  const x = c.getContext('2d')!;
+
+  // ---- banda bronce con hilo de pergamino (bisel claro arriba-izq) ----
+  x.fillStyle = '#6e5224'; // bronce base
+  x.fillRect(0, 0, fw, fh);
+  x.fillStyle = '#c9a44c'; // bronce luz (borde 2px arriba/izq)
+  x.fillRect(0, 0, fw, 2); x.fillRect(0, 0, 2, fh);
+  x.fillStyle = '#4a3414'; // bronce oscuro (borde 2px abajo/der)
+  x.fillRect(0, fh - 2, fw, 2); x.fillRect(fw - 2, 0, 2, fh);
+  x.fillStyle = '#e2cea0'; // hilo pergamino iluminado
+  x.fillRect(2, 2, fw - 4, 1); x.fillRect(2, 2, 1, fh - 4);
+  x.fillStyle = '#6a4e1e'; // hilo pergamino sombreado
+  x.fillRect(2, fh - 3, fw - 4, 1); x.fillRect(fw - 3, 2, 1, fh - 4);
+  x.fillStyle = '#141018'; // lecho oscuro tras placa y mapa
+  x.fillRect(3, 3, fw - 6, fh - 6);
+
+  // ---- placa integrada v3 INTACTA: fondo con sombra interna, hairline
+  //      dorada, aguja N (4 px) a la izquierda y título con sombra ----
+  const plateRows = plateH - 2; // 13 filas de placa; la hairline cierra abajo
+  const plateCy = 3 + Math.round((plateRows - 1) / 2) + 1; // centro óptico
+  x.fillStyle = past ? '#2c2010' : '#1c1826';
+  x.fillRect(2, 3, dw, plateRows);
+  x.fillStyle = past ? '#241a0e' : '#131020'; // sombra interna inferior
+  x.fillRect(2, 2 + plateRows, dw, 1);
+  x.fillStyle = past ? '#a87c46' : '#8a6c40'; // hairline dorada (une placa y mapa)
+  x.fillRect(2, plateH + 1, dw, 1);
+  northNeedle(x, 2 + 6, plateCy);
+  x.font = fBody(11);
+  x.textAlign = 'left';
+  x.textBaseline = 'middle';
+  x.fillStyle = '#c9b992';
+  x.fillText('N', 2 + 9, plateCy + 0.5);
+  x.font = fBody(14);
+  x.textAlign = 'center';
+  x.fillStyle = '#0e0c16'; // sombra del título
+  x.fillText(name, fw / 2, plateCy + 1);
+  x.fillStyle = COL.goldSoft;
+  x.fillText(name, fw / 2, plateCy);
+  if (past) { // insignia de época: rombo cálido a la derecha
+    const ex2 = fw - 11, ey2 = plateCy;
+    x.fillStyle = COL.epochPast;
+    x.fillRect(ex2, ey2 - 1, 3, 3);
+    x.fillRect(ex2 + 1, ey2 - 2, 1, 5);
+    x.fillRect(ex2 - 1, ey2 - 1, 5, 1);
+  }
+
+  // ventana del mapa transparente: el contenido se dibuja antes en el
+  // canvas principal y el marco se estampa encima sin taparlo
+  x.clearRect(2, plateH + 2, dw, dh);
+
+  // esquinas biseladas (chaflán bronce) sobre banda/placa/mapa + remaches
+  // superiores (los inferiores quedaban tapados por el mapa en v3: omitidos)
+  cornerCut(x, 0, 0, 1, 1);
+  cornerCut(x, fw, 0, -1, 1);
+  cornerCut(x, 0, fh, 1, -1);
+  cornerCut(x, fw, fh, -1, -1);
+  rivet(x, 5, 5);
+  rivet(x, fw - 8, 5);
+  return c;
+}
+
+/**
+ * Sprites de marcador (v4): los puntos que en v3 eran cadenas de fillRect
+ * (estela, cofres, NPCs, jugador) pre-renderizados UNA vez con el MISMO
+ * patrón píxel a píxel. Por frame son drawImages: la overlay queda con
+ * ~1 fillRect (el fondo del mapa) sin cambiar ni un píxel de v3.
+ */
+interface MarkerSprites {
+  trail: HTMLCanvasElement;  // cruz dorada 3×3 (estela del jugador)
+  chest: HTMLCanvasElement;  // cofre 4×4 (asiento + oro + brillo)
+  npc: HTMLCanvasElement;    // NPC 4×4 (asiento + blanco)
+  player: HTMLCanvasElement; // jugador 5×5 (asiento + oro + brillo)
+}
+let markerSprites: MarkerSprites | null = null;
+
+function getMarkerSprites(): MarkerSprites {
+  if (markerSprites) return markerSprites;
+  const mk = (w: number, h: number, paint: (x: CanvasRenderingContext2D) => void): HTMLCanvasElement => {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    paint(c.getContext('2d')!);
+    return c;
+  };
+  markerSprites = {
+    trail: mk(3, 3, (x) => {
+      x.fillStyle = COL.gold;
+      x.fillRect(0, 1, 3, 1); x.fillRect(1, 0, 1, 1); x.fillRect(1, 2, 1, 1);
+    }),
+    chest: mk(4, 4, (x) => {
+      x.fillStyle = '#1a1206'; x.fillRect(0, 0, 4, 4);
+      x.fillStyle = COL.gold; x.fillRect(1, 1, 2, 2);
+      x.fillStyle = '#ffe9a0'; x.fillRect(1, 1, 1, 1);
+    }),
+    npc: mk(4, 4, (x) => {
+      x.fillStyle = '#1a1a22'; x.fillRect(0, 0, 4, 4);
+      x.fillStyle = '#f4f4f0'; x.fillRect(1, 1, 2, 2);
+    }),
+    player: mk(5, 5, (x) => {
+      x.fillStyle = '#241503'; x.fillRect(0, 0, 5, 5);
+      x.fillStyle = COL.gold; x.fillRect(1, 1, 3, 3);
+      x.fillStyle = '#ffe9a0'; x.fillRect(1, 1, 1, 1);
+    }),
+  };
+  return markerSprites;
+}
+
+/**
+ * Dibuja el minimapa v4 en pantalla (arriba-derecha): mapa cacheado con
+ * marcadores recortados al interior y, estampado encima con UN drawImage,
+ * el marco pergamino/bronce de esquinas biseladas (pre-renderizado y
+ * cacheado; placa v3 intacta con su aguja N). Marcadores: los de siempre
+ * + jefes vivos como diamante rojo pulsante (targets 'rombo' sintetizados
+ * por la misma vía de setMinimapTargets) y objetivos de misión registrados.
+ * Presupuesto por frame: ~1 fillRect (fondo del mapa) y cero canvas nuevos.
  */
 export function drawMinimapOverlay(
   ctx: CanvasRenderingContext2D, mini: HTMLCanvasElement, g: Game,
@@ -385,63 +586,25 @@ export function drawMinimapOverlay(
   const fx = VIEW_W - fw - 12, fy = 12;
   const mapX = fx + 2, mapY = fy + 2 + plateH;
 
-  // ---- marco de madera con bisel y remaches ----
-  ctx.fillStyle = '#4a3620'; // lecho madera
-  ctx.fillRect(fx, fy, fw, fh);
-  ctx.fillStyle = past ? '#8a6238' : '#7a5c3a'; // borde 2px claro (arriba/izq)
-  ctx.fillRect(fx, fy, fw, 2); ctx.fillRect(fx, fy, 2, fh);
-  ctx.fillStyle = '#332415'; // borde 2px oscuro (abajo/der)
-  ctx.fillRect(fx, fy + fh - 2, fw, 2); ctx.fillRect(fx + fw - 2, fy, 2, fh);
-  ctx.fillStyle = '#9a7850'; // bisel interior iluminado
-  ctx.fillRect(fx + 2, fy + 2, fw - 4, 1); ctx.fillRect(fx + 2, fy + 2, 1, fh - 4);
-  ctx.fillStyle = '#241a0e'; // bisel interior sombreado
-  ctx.fillRect(fx + 2, fy + fh - 3, fw - 4, 1); ctx.fillRect(fx + fw - 3, fy + 2, 1, fh - 4);
-  ctx.fillStyle = '#141018'; // lecho oscuro tras placa y mapa
-  ctx.fillRect(fx + 3, fy + 3, fw - 6, fh - 6);
-  rivet(ctx, fx + 3, fy + 3);
-  rivet(ctx, fx + fw - 6, fy + 3);
-  rivet(ctx, fx + 3, fy + fh - 6);
-  rivet(ctx, fx + fw - 6, fy + fh - 6);
-
-  // ---- placa integrada v3: fondo limpio con sombra interna, hairline
-  //      dorada que la funde con el mapa, aguja N (4 px) a la izquierda
-  //      y título con sombra de 1 px ----
-  const plateRows = plateH - 2; // 13 filas de placa; la hairline cierra abajo
-  const plateCy = fy + 3 + Math.round((plateRows - 1) / 2) + 1; // centro óptico
-  ctx.fillStyle = past ? '#2c2010' : '#1c1826';
-  ctx.fillRect(mapX, fy + 3, dw, plateRows);
-  ctx.fillStyle = past ? '#241a0e' : '#131020'; // sombra interna inferior
-  ctx.fillRect(mapX, fy + 2 + plateRows, dw, 1);
-  ctx.fillStyle = past ? '#a87c46' : '#8a6c40'; // hairline dorada (une placa y mapa)
-  ctx.fillRect(mapX, fy + plateH + 1, dw, 1);
-  northNeedle(ctx, mapX + 6, plateCy);
-  ctx.font = fBody(11);
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#c9b992';
-  ctx.fillText('N', mapX + 9, plateCy + 0.5);
-  ctx.font = fBody(14);
-  ctx.textAlign = 'center';
-  const titleX = fx + fw / 2;
-  ctx.fillStyle = '#0e0c16'; // sombra del título
-  ctx.fillText(map.name, titleX, plateCy + 1);
-  ctx.fillStyle = COL.goldSoft;
-  ctx.fillText(map.name, titleX, plateCy);
-  if (past) { // insignia de época: rombo cálido a la derecha
-    const ex2 = fx + fw - 11, ey2 = plateCy;
-    ctx.fillStyle = COL.epochPast;
-    ctx.fillRect(ex2, ey2 - 1, 3, 3);
-    ctx.fillRect(ex2 + 1, ey2 - 2, 1, 5);
-    ctx.fillRect(ex2 - 1, ey2 - 1, 5, 1);
+  // ---- marco pergamino/bronce v4: pre-renderizado y cacheado por
+  //      (tamaño+época+mapa) → por frame es UN drawImage; la placa v3
+  //      (hairline dorada + aguja N + título) vive dentro del caché ----
+  const chromeKey = `${fw}x${fh}|${past ? 'P' : 'A'}|${map.name}`;
+  let chrome = chromeCache.get(chromeKey);
+  if (!chrome) {
+    chrome = buildChrome(dw, dh, past, map.name);
+    chromeCache.set(chromeKey, chrome);
   }
 
-  // ---- mapa con clipping al área interior del marco ----
+  // ---- mapa + marcadores recortados al interior; el marco se estampa AL
+  //      FINAL con su ventana transparente: el chaflán biselado enmarca el
+  //      contenido sin taparlo ----
   ctx.save();
   ctx.beginPath();
   ctx.rect(mapX, mapY, dw, dh);
   ctx.clip();
   ctx.fillStyle = '#0c0a14';
-  ctx.fillRect(mapX, mapY, dw, dh);
+  ctx.fillRect(mapX, mapY, dw, dh); // único fillRect del frame
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(mini, mapX, mapY, dw, dh);
 

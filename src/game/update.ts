@@ -26,6 +26,14 @@ import { combatSparks, dodgeRing, critGlint } from './fx';
 import { expansionTick, expansionDeathFx, expansionBossWatchers } from './enemies_expansion';
 import { tileAt } from './maps'; // solo lectura (mapas propiedad de otro agente)
 import { interaccionTick, companionOrdersMove, lureActive, sennoChase } from './interaccion'; // 16-b: órdenes tácticas + señuelo
+import { perfQuality } from './perf'; // R6-V10: escalón de calidad adaptativa (0=alta · 1=media · 2=baja)
+
+// R6-V10 · Calidad adaptativa (consumidor de perf.ts): multiplicador de partículas
+// COSMÉTICAS según el escalón que perfFrame ya calcula (alta=×1 · media=×0.6 · baja=×0.35).
+// Se aplica SOLO a chispas de proyectil, polvo y destellos decorativos de este módulo.
+// El feedback de gameplay NO se recorta aquí (disolución de jefes/hitsparks viven en
+// bossfx.ts/fx.ts); las brasas de 'quemado' llevan suelo 0.7 por ser feedback de estado.
+const qMul = (): number => [1, 0.6, 0.35][perfQuality()];
 
 const DIRS: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
 
@@ -268,7 +276,8 @@ export function updateGame(g: Game, dt: number) {
   // carga de ataque
   if (p.charging) {
     p.chargeT += dt;
-    if (p.chargeT > 0.35 && Math.random() < 0.4) {
+    // R6-V10: chispa de carga = cosmética → probabilidad × calidad
+    if (p.chargeT > 0.35 && Math.random() < 0.4 * qMul()) {
       g.particles.push({ x: p.x + (Math.random() - 0.5) * 14, y: p.y - 10, vx: 0, vy: -30, t: 0.3, maxT: 0.3, color: '#ffe86a', size: 1.5, grav: 0 });
     }
   }
@@ -282,7 +291,8 @@ export function updateGame(g: Game, dt: number) {
     g.moveEntity(p, rx * spd * dt, ry * spd * dt);
     p.moving = true;
     p.anim += dt * 1.4;
-    if (Math.random() < 0.5) g.particles.push({ x: p.x, y: p.y, vx: 0, vy: 0, t: 0.25, maxT: 0.25, color: '#d8dce4', size: 2, grav: 0 });
+    // R6-V10: polvo del rollo = cosmético → probabilidad × calidad
+    if (Math.random() < 0.5 * qMul()) g.particles.push({ x: p.x, y: p.y, vx: 0, vy: 0, t: 0.25, maxT: 0.25, color: '#d8dce4', size: 2, grav: 0 });
   } else if (p.attackT > 0) {
     p.attackT -= dt;
     p.moving = false;
@@ -566,7 +576,8 @@ export function updateGame(g: Game, dt: number) {
     let dead = pr.t <= 0 || g.tileSolidAt(pr.x, pr.y);
     if (pr.from !== 'enemy') {
       // proyectil aliado (Portador o Ilwen): daña enemigos
-      if (Math.random() < 0.5) g.particles.push({ x: pr.x, y: pr.y, vx: 0, vy: 0, t: 0.22, maxT: 0.22, color: pr.element === 'fuego' ? '#ff9040' : pr.element === 'hielo' ? '#a0e8ff' : '#ffe86a', size: 1.5, grav: 0 });
+      // R6-V10: estela de proyectil aliado = cosmética → probabilidad × calidad
+      if (Math.random() < 0.5 * qMul()) g.particles.push({ x: pr.x, y: pr.y, vx: 0, vy: 0, t: 0.22, maxT: 0.22, color: pr.element === 'fuego' ? '#ff9040' : pr.element === 'hielo' ? '#a0e8ff' : '#ffe86a', size: 1.5, grav: 0 });
       // R5-O10: candidatos por rejilla espacial (≥12 enemigos) o barrido directo.
       // La prueba EXACTA por candidato y la elección del PRIMER enemigo vivo en
       // orden de array se mantienen idénticas (mínimo índice entre los en rango).
@@ -623,10 +634,12 @@ export function updateGame(g: Game, dt: number) {
       // el resto mantiene su estela púrpura genérica)
       const trailC = pr.sprite === 'orb' ? '#8ef0ff' : pr.sprite === 'shard' ? '#a8d8ff' : pr.sprite === 'nota' ? '#ffe9a0' : '';
       if (trailC) {
-        if (Math.random() < 0.6) {
+        // R6-V10: estela de proyectil enemigo = cosmética → probabilidad × calidad
+        // (el proyectil se dibuja aparte: telegrafiar la esquiva no depende de esto)
+        if (Math.random() < 0.6 * qMul()) {
           g.particles.push({ x: pr.x + (Math.random() - 0.5) * 3, y: pr.y + (Math.random() - 0.5) * 3, vx: 0, vy: 0, t: 0.25, maxT: 0.25, color: trailC, size: 1.4, grav: 0 });
         }
-      } else if (Math.random() < 0.4) {
+      } else if (Math.random() < 0.4 * qMul()) { // R6-V10: estela genérica = cosmética
         g.particles.push({ x: pr.x, y: pr.y, vx: 0, vy: 0, t: 0.25, maxT: 0.25, color: '#b48fff', size: 1.5, grav: 0 });
       }
     }
@@ -635,7 +648,9 @@ export function updateGame(g: Game, dt: number) {
       // canto de sirena (8-c): al morir la nota suelta 3 destellos musicales
       // que ascienden (contra pared o contra el Portador)
       if (pr.sprite === 'nota') {
-        for (let j = 0; j < 3; j++) {
+        // R6-V10: destellos al morir la nota = cosméticos → recuento × calidad (mínimo 1)
+        const n = Math.max(1, Math.round(3 * qMul()));
+        for (let j = 0; j < n; j++) {
           g.particles.push({
             x: pr.x + (Math.random() - 0.5) * 6, y: pr.y + (Math.random() - 0.5) * 4,
             vx: (Math.random() - 0.5) * 14, vy: -16 - Math.random() * 14,
@@ -852,7 +867,8 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
     s.t -= dt;
     if (s.kind === 'quemado') {
       e.hp -= s.power * dt;
-      if (Math.random() < 0.15) g.particles.push({ x: e.x + (Math.random() - 0.5) * 8, y: e.y - 6, vx: 0, vy: -24, t: 0.3, maxT: 0.3, color: '#ff9040', size: 1.5, grav: 0 });
+      // R6-V10: brasa de 'quemado' = feedback de estado del DoT → suelo 0.7 (no baja a 0.35)
+      if (Math.random() < 0.15 * Math.max(0.7, qMul())) g.particles.push({ x: e.x + (Math.random() - 0.5) * 8, y: e.y - 6, vx: 0, vy: -24, t: 0.3, maxT: 0.3, color: '#ff9040', size: 1.5, grav: 0 });
       if (e.hp <= 0) { g.killEnemy(e); return; }
     }
     if (s.t <= 0) e.statuses.splice(i, 1);

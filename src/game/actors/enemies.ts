@@ -55,9 +55,11 @@ function seg(
 // Anatomía: lomo arqueado, cresta de pelo erizado (silueta dentada),
 // cola larga con curva, patas con articulación (corvejón), cabeza real
 // (hocico 3px con trufa, orejas triangulares — hacia atrás al embestir).
-// Terror: ojos rojos con halo rgba, niebla que emana del lomo y las patas,
-// colmillos 1px en la zambida y una tenue "doble exposición" del perro
-// guardián que fue, desplazada 1px bajo la niebla.
+// Terror V3: ojos BRASA (ascua dorada dentro de brasa naranja + halo cálido),
+// costillas marcadas bajo el pelaje, púas 1px sueltas en la silueta, dientes
+// incluso con la boca cerrada, cabeza baja al andar, niebla que emana del
+// lomo y las patas, colmillos 1px en la zambida y una tenue "doble exposición"
+// del perro guardián que fue, desplazada 1px bajo la niebla.
 // ============================================================
 
 const WOLF = {
@@ -68,8 +70,9 @@ const WOLF = {
   S: '#5c5c80',                    // pelaje sombra (identidad)
   W: '#a7a7c4',                    // pelaje claro
   H: '#ccd6ec',                    // highlight frío del lomo (tono nuevo 2)
-  E: '#ff2f24',                    // ojo rojo
-  e: 'rgba(255,64,40,0.38)',       // halo del ojo
+  E: '#ff7830',                    // brasa del ojo (acento 1)
+  EC: '#ffd24a',                   // ascua dorada: núcleo del ojo (acento 2)
+  e: 'rgba(255,120,48,0.42)',      // halo brasa del ojo
   F: '#e9eef6',                    // colmillo
   N: '#10101e',                    // trufa
   f1: 'rgba(186,199,230,0.20)',    // niebla tenue
@@ -117,7 +120,7 @@ const LOBO_POSES: LoboPose[] = [
   { // 1 · acecho-medio — eleva el lomo, un paso tentative
     top: [5, 5, 5, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5],
     bot: [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 10, 10, 9],
-    headX: 16, headY: 3, boca: 'cerrada', orejas: 'arriba', ojoAlto: false,
+    headX: 16, headY: 4, boca: 'cerrada', orejas: 'arriba', ojoAlto: false,
     cola: [[4, 6], [3, 6], [2, 7], [1, 8], [0, 8]],
     patas: [
       { pts: [[14, 8], [15, 9], [15, 10], [15, 11], [15, 12], [15, 13]], paw: [15, 14], cerca: true },
@@ -127,10 +130,10 @@ const LOBO_POSES: LoboPose[] = [
     ],
     brumas: [[7, 2, 2], [10, 1, 3], [13, 2, 2], [15, 3, 2]],
   },
-  { // 2 · zancada — galope: delantera alcanza, trasera empuja
+  { // 2 · zancada — galope con la cabeza baja: delantera alcanza, trasera empuja
     top: [5, 5, 4, 4, 3, 3, 3, 3, 4, 4, 4, 5, 5],
     bot: [9, 9, 9, 9, 9, 9, 9, 9, 9, 10, 10, 10, 9],
-    headX: 16, headY: 3, boca: 'cerrada', orejas: 'arriba', ojoAlto: false,
+    headX: 16, headY: 4, boca: 'cerrada', orejas: 'arriba', ojoAlto: false,
     cola: [[4, 6], [3, 7], [2, 8], [1, 10], [0, 11]],
     patas: [
       { pts: [[14, 8], [15, 9], [16, 10], [17, 11], [18, 12], [18, 13]], paw: [18, 14], cerca: true },
@@ -140,10 +143,10 @@ const LOBO_POSES: LoboPose[] = [
     ],
     brumas: [[6, 2, 2], [9, 1, 3], [12, 2, 2], [15, 3, 2]],
   },
-  { // 3 · zancada-opuesta — fases de patas invertidas + rebote del cuerpo
+  { // 3 · zancada-opuesta — patas invertidas, rebote y cabeza aún más baja
     top: [6, 6, 5, 5, 4, 4, 4, 4, 5, 5, 5, 6, 6],
     bot: [10, 10, 10, 10, 10, 10, 10, 10, 10, 11, 11, 11, 10],
-    headX: 16, headY: 4, boca: 'cerrada', orejas: 'arriba', ojoAlto: false,
+    headX: 16, headY: 5, boca: 'cerrada', orejas: 'arriba', ojoAlto: false,
     cola: [[4, 6], [3, 6], [2, 7], [1, 7], [0, 9]],
     patas: [
       { pts: [[14, 9], [13, 10], [12, 11], [11, 12], [11, 13]], paw: [11, 14], cerca: true },
@@ -207,6 +210,12 @@ function loboTorso(x: CanvasRenderingContext2D, top: number[], bot: number[]): v
     if (r > 0.78) px(x, X, yb + 1, 1, 1, WOLF.D2);            // pelaje dentado (sombra profunda)
     else if (r > 0.5) px(x, X, yb + 1, 1, 1, WOLF.S);         // pelaje dentado del vientre
   }
+  // costillas marcadas: el hambre de la niebla se lee bajo el pelaje
+  for (let i = 2; i <= 10; i += 2) {
+    if (rnd(i * 9.1 + 2.3) > 0.2) {
+      px(x, 4 + i, top[i] + 2, 1, 2, i % 4 === 2 ? WOLF.D : WOLF.S);
+    }
+  }
   px(x, 8, top[4], 5, 1, WOLF.H);                // highlight frío en el arco del lomo
   px(x, 13, bot[10] - 1, 3, 2, WOLF.D);          // pecho profundo
   px(x, 14, bot[10], 2, 1, WOLF.D2);             // núcleo de sombra del pecho
@@ -214,16 +223,19 @@ function loboTorso(x: CanvasRenderingContext2D, top: number[], bot: number[]): v
 
 /** Cresta de pelo erizado: dientes 1-2px sobre el dorso, melena más alta en el cuello. */
 function loboCresta(x: CanvasRenderingContext2D, top: number[], f: number): void {
+  // cresta dorsal: al galopar (f 2-3) el pelo se yergue más a menudo
   for (let i = 1; i < 12; i++) {
     const X = 4 + i;
-    const h = rnd(i * 7.3 + f * 13.7) > 0.55 ? 2 : 1;
+    const h = rnd(i * 7.3 + f * 13.7) > (f >= 2 && f <= 3 ? 0.45 : 0.55) ? 2 : 1;
     for (let k = 1; k <= h; k++) px(x, X, top[i] - k, 1, 1, k === 2 ? WOLF.H : WOLF.W);
   }
-  // melena del cuello (pelo en cresta): 2-3px entre hombros y cabeza
+  // melena del cuello: 2-4px entre hombros y cabeza, de pie al galopar
   for (let X = 13; X <= 15; X++) {
-    const h = 2 + (rnd(X * 5.1 + f * 3.3) > 0.5 ? 1 : 0);
+    const h = 2 + (rnd(X * 5.1 + f * 3.3) > 0.5 ? 1 : 0) + (f >= 2 && f <= 3 ? 1 : 0);
     for (let k = 1; k <= h; k++) px(x, X, top[X - 4] - k, 1, 1, k === h ? WOLF.W : WOLF.S);
   }
+  // púa suelta en la grupa: rompe la silueta redondeada
+  px(x, 3, top[0] + 1, 1, 1, WOLF.W);
 }
 
 /** Pata con articulación: muslo 2px, canilla 1px, almohadilla 2×2 al suelo. */
@@ -248,7 +260,15 @@ function loboCola(x: CanvasRenderingContext2D, pts: [number, number][]): void {
   px(x, tip[0], tip[1], 1, 1, WOLF.D2);
 }
 
-/** Cabeza de lobo real: cráneo 6×4, hocico 3px con trufa, orejas, ojo rojo con halo. */
+/** OJO BRASA: brasa naranja 2×2 con ascua dorada de 1px dentro + halo cálido rgba. */
+function loboOjo(x: CanvasRenderingContext2D, hx: number, hy: number): void {
+  px(x, hx + 2, hy + 1, 2, 2, WOLF.E);           // brasa (#ff7830)
+  px(x, hx + 2, hy + 1, 1, 1, WOLF.EC);          // ascua dorada (#ffd24a)
+  px(x, hx + 1, hy + 1, 1, 1, WOLF.e);           // halo cálido
+  px(x, hx + 4, hy + 1, 1, 1, WOLF.e);
+}
+
+/** Cabeza de lobo real: cráneo 6×4, hocico 3px con trufa, orejas, ojo brasa. */
 function loboCabeza(
   x: CanvasRenderingContext2D,
   hx: number, hy: number,
@@ -276,11 +296,11 @@ function loboCabeza(
   px(x, hx, hy + 2, 1, 1, WOLF.D);
   px(x, hx + 1, hy + 2, 3, 1, WOLF.S);           // mejilla
   px(x, hx + 1, hy + 3, 3, 1, WOLF.D);           // mandíbula/garganta
+  px(x, hx + 2, hy + 4, 1, 1, WOLF.S);           // púa de barba bajo la mandíbula
 
   if (boca === 'aullido') {
     // hocico alzado al cielo, boca entreabierta cantando
-    px(x, hx + 2, hy + 1, 2, 2, WOLF.E);         // ojo rojo 2×2 (arde al aullar)
-    px(x, hx + 1, hy + 1, 1, 1, WOLF.e); px(x, hx + 4, hy + 1, 1, 1, WOLF.e);
+    loboOjo(x, hx, hy);                          // ojo brasa (arde al aullar)
     px(x, hx + 5, hy - 1, 2, 1, WOLF.B);         // puente del hocico (diagonal arriba)
     px(x, hx + 7, hy - 2, 1, 1, WOLF.N);         // trufa al aire
     px(x, hx + 5, hy, 2, 1, WOLF.O);             // apertura del aullido
@@ -288,9 +308,8 @@ function loboCabeza(
     px(x, hx + 4, hy + 2, 2, 1, WOLF.B);         // barbilla
   } else if (boca === 'zambida') {
     // fauces abiertas: interior oscuro + colmillos de 1px + ojo furioso 2×2
-    px(x, hx + 2, hy + 1, 2, 2, WOLF.E);         // ojo arde en furia
-    px(x, hx + 1, hy + 1, 1, 1, WOLF.e); px(x, hx + 4, hy + 1, 1, 1, WOLF.e);
-    px(x, hx + 2, hy, 1, 1, WOLF.e); px(x, hx + 3, hy, 1, 1, WOLF.e);
+    loboOjo(x, hx, hy);                          // ojo brasa en furia
+    px(x, hx + 2, hy, 1, 1, WOLF.e); px(x, hx + 3, hy, 1, 1, WOLF.e);  // resplandor que sube
     px(x, hx + 4, hy + 1, 3, 1, WOLF.B);         // hocico superior
     px(x, hx + 7, hy + 1, 1, 1, WOLF.N);         // trufa
     px(x, hx + 4, hy + 2, 4, 1, WOLF.O);         // interior de la boca
@@ -298,16 +317,17 @@ function loboCabeza(
     px(x, hx + 6, hy + 2, 1, 1, WOLF.F);         // colmillo superior
     px(x, hx + 5, hy + 2, 1, 1, WOLF.F);         // colmillo inferior (zigzag)
     px(x, hx + 3, hy + 3, 4, 1, WOLF.D);         // mandíbula inferior
+    px(x, hx + 6, hy + 4, 1, 1, WOLF.F);         // colmillo inferior que gotea
   } else {
     // hocico cerrado de 3px (hy+1..hy+3) con trufa y línea de boca
     if (ojoAlto) px(x, hx + 2, hy, 2, 1, WOLF.D);  // ceño fruncido (preparación)
-    px(x, hx + 2, hy + 1, 2, 2, WOLF.E);         // OJO ROJO 2×2
-    px(x, hx + 1, hy + 1, 1, 1, WOLF.e);         // halo rgba
-    px(x, hx + 4, hy + 1, 1, 1, WOLF.e);         // halo rgba
+    loboOjo(x, hx, hy);                          // OJO BRASA 2×2 con ascua
     px(x, hx + 4, hy + 2, 4, 1, WOLF.B);         // hocico
     px(x, hx + 7, hy + 2, 1, 1, WOLF.N);         // trufa
     px(x, hx + 4, hy + 3, 3, 1, WOLF.D);         // labio inferior
     px(x, hx + 5, hy + 3, 3, 1, WOLF.O);         // línea de la boca
+    px(x, hx + 6, hy + 3, 1, 1, WOLF.F);         // diente que asoma (boca cerrada)
+    px(x, hx + 7, hy + 4, 1, 1, WOLF.F);         // colmillo inferior que cuelga
   }
 }
 
@@ -390,11 +410,16 @@ export function wolfFrameAI(ai: string, anim: number): number {
 // GUARDIÁN HUECO — 40×44, 8 frames (JEFE)
 // Armadura vacía: dentro del casco NO hay cara — vacío negro con dos
 // cuencas pequeñas y profundas de glow tenue; visera con grietas
-// radiando; el hueco del pecho pulsa como un corazón lento (2 tonos que
-// alternan por frame); dedos-garra de 3 falanges; capa rota con flecos
+// radiando; el hueco del pecho encierra el Eco con parpadeo lento; dedos-garra
+// de 3 falanges; capa rota con flecos
 // que flotan INDEPENDIENTES del bob. Aura: sombra elíptica horneada más
 // grande + escamas caídas bajo el jefe en los frames idle.
 // Estados: 0-1 idle · 2-3 grito · 4-5 invocación · 6-7 colapso.
+// Terror V3: corona deslucida sobre la máscara + grieta que la parte, Eco del
+// pecho con parpadeo LENTO (chispa y halo solo en el pulso alto), un único
+// punto de luz parpadeante en cada cuenca hueca, brazos más largos con garras
+// colgantes, flecos con jirones y desgarrón que se abre en colapso (donde
+// además se rompe el cuerno izquierdo).
 // ============================================================
 
 /** Glow por FASE de juego del jefe (1..3) — para partículas/ondas del integrador. */
@@ -415,6 +440,8 @@ const GUARD = {
   esc2: '#57536e',                 // escama en sombra
   bruma: 'rgba(160,175,210,0.16)', // bruma de la base
   brumaRoja: 'rgba(255,90,74,0.13)',
+  cor: '#c9b078',                  // corona deslucida (acento 1)
+  cor2: '#8a7442',                 // corona en sombra (acento 2)
 } as const;
 
 function glowDe(st: number): { glow: string; hi: string; dim: string; halo: string } {
@@ -439,6 +466,7 @@ function guardianMitad(x: CanvasRenderingContext2D, f: number): void {
   const st = f >> 1;                                  // 0 idle · 1 grito · 2 invoca · 3 colapso
   const bob = st === 3 ? (f % 2 === 1 ? 1 : 0) : (f % 2 === 1 ? 1 : -1);  // idle ±1px · colapso se hunde
   const g = glowDe(st);
+  const par = f % 2 === 0;                          // parpadeo lento compartido: Eco + punto de luz
 
   // --- sombra-aura proyectada (más grande que la del motor) ---
   x.fillStyle = st === 3 ? 'rgba(0,0,0,0.38)' : 'rgba(0,0,0,0.30)';
@@ -455,17 +483,19 @@ function guardianMitad(x: CanvasRenderingContext2D, f: number): void {
     else xl = 7;
     px(x, xl, y, 20 - xl, 1, (y + xl) % 7 === 0 ? GUARD.A2 : GUARD.A);
   }
-  // desgarrón de la capa (hueco real)
+  // desgarrón de la capa (hueco real); en el colapso se abre más
   x.clearRect(7, 22 + bob, 3, 3);
+  if (st === 3) x.clearRect(7, 21 + bob, 3, 5);
   // borde inferior deshilachado
   for (let X = 7; X < 20; X += 2) px(x, X, 34 + bob, 1, 1, GUARD.A2);
 
   // --- flecos que flotan INDEPENDIENTES del bob (longitud propia por frame) ---
   const extraFleco = st === 3 ? 1 : 0;
   for (let X = 6; X <= 18; X += 2) {
-    const len = 3 + Math.floor(rnd(X * 3.7 + f * 1.3) * 4) + extraFleco;
+    const len = 2 + Math.floor(rnd(X * 3.7 + f * 1.3) * 5) + extraFleco;
     px(x, X, 35, 1, len, GUARD.A2);
     px(x, X, 35 + len, 1, 1, GUARD.O);
+    if (rnd(X * 1.9 + f * 2.7) > 0.6) px(x, X + 1, 34 + len, 1, 1, GUARD.A2);  // jirón lateral
   }
 
   // --- fragmentos traseros (invocación) ---
@@ -476,21 +506,21 @@ function guardianMitad(x: CanvasRenderingContext2D, f: number): void {
     x.globalAlpha = 1;
   }
 
-  // --- brazo izquierdo (exterior) + antebrazo ---
-  px(x, 2, 19 + bob, 5, 7, GUARD.S2);                 // brazo
-  px(x, 2, 19 + bob, 1, 7, GUARD.D);                  // canto exterior
-  px(x, 2, 25 + bob, 4, 6, GUARD.S);                  // antebrazo
-  px(x, 2, 25 + bob, 4, 1, GUARD.D);                  // codo
-  px(x, 3, 21 + bob, 1, 1, GUARD.HL); px(x, 3, 27 + bob, 1, 1, GUARD.HL);
+  // --- brazo largo (nace bajo la hombrera) + antebrazo alargado ---
+  px(x, 2, 18 + bob, 5, 8, GUARD.S2);                 // brazo
+  px(x, 2, 18 + bob, 1, 8, GUARD.D);                  // canto exterior
+  px(x, 2, 26 + bob, 4, 7, GUARD.S);                  // antebrazo
+  px(x, 2, 26 + bob, 4, 1, GUARD.D);                  // codo
+  px(x, 3, 21 + bob, 1, 1, GUARD.HL); px(x, 3, 29 + bob, 1, 1, GUARD.HL);
 
-  // --- dedos-garra: 3 falanges por dedo (2 nudillos de separación) ---
+  // --- garras colgantes: 3 falanges por dedo, llegan casi al suelo ---
   for (const fx of [1, 3, 5]) {
-    px(x, fx, 31 + bob, 1, 3, GUARD.S2);              // falange 1
-    px(x, fx, 34 + bob, 1, 1, GUARD.O);               // nudillo
-    px(x, fx, 35 + bob, 1, 3, GUARD.S2);              // falange 2
-    px(x, fx, 38 + bob, 1, 1, GUARD.O);               // nudillo
-    px(x, fx, 39 + bob, 1, 3, GUARD.S2);              // falange 3
-    px(x, fx + 1, Math.min(43, 42 + bob), 1, 1, GUARD.HL);  // punta curvada (sigue el bob)
+    px(x, fx, 33 + bob, 1, 3, GUARD.S2);              // falange 1
+    px(x, fx, 36 + bob, 1, 1, GUARD.O);               // nudillo
+    px(x, fx, 37 + bob, 1, 3, GUARD.S2);              // falange 2
+    px(x, fx, 40 + bob, 1, 1, GUARD.O);               // nudillo
+    px(x, fx, 41 + bob, 1, 3, GUARD.S2);              // falange 3 (roza el borde inferior)
+    px(x, fx + 1, Math.min(43, 43 + bob), 1, 1, GUARD.HL);  // punta curvada
   }
 
   // --- hombrera con pinchos ---
@@ -508,20 +538,18 @@ function guardianMitad(x: CanvasRenderingContext2D, f: number): void {
   px(x, 11, 17 + bob, 9, 1, GUARD.D);                 // junta de placa
   px(x, 11, 27 + bob, 9, 1, GUARD.D);
 
-  // --- hueco del pecho: pulso como corazón lento (2 tonos alternos) ---
+  // --- hueco del pecho: el Eco brilla dentro (parpadeo LENTO) ---
   px(x, 15, 17 + bob, 5, 10, GUARD.O);                // vacío (mitad de 10px)
   px(x, 15, 17 + bob, 1, 10, GUARD.S2);               // borde del hueco
-  const par = f % 2 === 0;
-  const nucleo = par ? g.glow : g.dim;                // fase por frame
-  const borde = par ? g.dim : g.glow;
-  // rombo del corazón (mitad izquierda)
-  px(x, 18, 19 + bob, 2, 1, borde);
-  px(x, 17, 20 + bob, 3, 3, borde);
-  px(x, 18, 23 + bob, 2, 1, borde);
-  px(x, 18, 20 + bob, 2, 3, nucleo);                  // núcleo palpitante
-  px(x, 19, 21 + bob, 1, 1, g.hi);                    // chispa central
-  if (st === 1) {
-    // en el grito el corazón se desborda (halo del glow)
+  // rombo del Eco: el contorno arde siempre; el núcleo respira despacio
+  px(x, 18, 19 + bob, 2, 1, g.glow);
+  px(x, 17, 20 + bob, 3, 3, g.glow);
+  px(x, 18, 23 + bob, 2, 1, g.glow);
+  px(x, 18, 20 + bob, 2, 3, par ? g.glow : g.dim);    // núcleo palpitante
+  if (par) px(x, 19, 21 + bob, 1, 1, g.hi);           // chispa central (solo pulso alto)
+  if (par) px(x, 14, 21 + bob, 1, 2, g.dim);          // luz que escapa por la junta
+  if (st === 1 || (st === 0 && par)) {
+    // halo: grito desbordado · idle solo en el pulso alto (parpadeo lento)
     x.fillStyle = g.halo;
     x.fillRect(16, 18 + bob, 4, 8);
   }
@@ -536,6 +564,9 @@ function guardianMitad(x: CanvasRenderingContext2D, f: number): void {
   for (let X = 10; X < 20; X++) {
     if (rnd(X * 2.9 + f) > 0.3) px(x, X, 38 + bob, 1, 1, GUARD.D);   // picos del bajo
   }
+  // túnica desgarrada: mordiscos de vacío en el bajo de la falda
+  x.clearRect(11, 37 + bob, 1, 2);
+  x.clearRect(16, 37 + bob, 1, 1);
 
   // --- casco hueco (NO hay cara: vacío con dos cuencas) ---
   px(x, 12, 2 + bob, 8, 11, GUARD.S2);                // bóveda
@@ -545,9 +576,15 @@ function guardianMitad(x: CanvasRenderingContext2D, f: number): void {
   px(x, 12, 5 + bob, 1, 7, GUARD.D);                  // canto izquierdo
   px(x, 13, 7 + bob, 7, 5, GUARD.O);                  // EL VACÍO (sin rostro)
   px(x, 15, 9 + bob, 2, 2, GUARD.V);                  // cuenca izquierda (profunda)
-  x.globalAlpha = 0.55;
-  px(x, 16, 9 + bob, 1, 1, g.glow);                   // glow tenue en el fondo
+  x.globalAlpha = par ? 0.95 : 0.45;
+  px(x, 16, 9 + bob, 1, 1, par ? g.hi : g.glow);      // UN punto de luz: parpadeo lento
   x.globalAlpha = 1;
+
+  // --- corona deslucida: 3 puntas por lado sobre la cresta (falta la central) ---
+  px(x, 13, 1 + bob, 1, 2, GUARD.cor2);               // punta corta
+  px(x, 15, 1 + bob, 1, 3, GUARD.cor);                // punta alta
+  px(x, 17, 2 + bob, 1, 2, GUARD.cor);                // punta media, hacia el centro
+
   if (st === 1) {
     // GRITO: la visera se abre hacia abajo y el glow interior crece, pero el
     // casco sigue VACÍO (el brillo es un núcleo dentro del vacío, no un lavado)
@@ -577,6 +614,9 @@ function guardianFrente(x: CanvasRenderingContext2D, f: number): void {
   seg(x, 13, 7 + bob, 11, 4 + bob, GUARD.O, 1);
   seg(x, 26, 11 + bob, 29, 14 + bob, GUARD.O, 1);
   px(x, 10, 3 + bob, 1, 1, GUARD.O);
+  // V3: grieta que baja de la corona y parte la máscara (solo lado izquierdo)
+  seg(x, 15, 2 + bob, 14, 5 + bob, GUARD.O, 1);
+  px(x, 12, 6 + bob, 1, 1, GUARD.O);
 
   // colapso: la armadura se agrieta y el glow rojo escapa por las grietas
   if (st === 3) {
@@ -593,6 +633,18 @@ function guardianFrente(x: CanvasRenderingContext2D, f: number): void {
     px(x, 9, 40, 2, 2, GUARD.S2);
     px(x, 30, 38 + (f % 2), 2, 1, GUARD.esc2);
     x.globalAlpha = 1;
+    // V3: el cuerno izquierdo se rompe y un trozo cae
+    x.clearRect(8, 0, 3, 5);
+    px(x, 7, 36 + (f % 2), 1, 2, GUARD.esc2);
+  }
+
+  // grito: esquirlas de luz que salen despedidas del casco
+  if (st === 1) {
+    x.globalAlpha = 0.8;
+    px(x, 7, 4 + bob, 1, 1, g.hi);
+    px(x, 28, 3, 1, 1, g.hi);
+    px(x, 24, 0, 1, 1, g.hi);
+    x.globalAlpha = 1;
   }
 
   // invocación: fragmentos DELANTE orbitando (con estela de 1px)
@@ -606,6 +658,8 @@ function guardianFrente(x: CanvasRenderingContext2D, f: number): void {
       px(x, 26, 14, 1, 1, GUARD.HL); px(x, 12, 24, 1, 1, GUARD.HL);
     }
     x.globalAlpha = 1;
+    x.fillStyle = g.halo;                             // el Eco se desborda al invocar
+    x.fillRect(16, 18 + bob, 8, 8);
   }
 
   // escamas caídas bajo el jefe (solo idle: el cuerpo se desprende a trozos)

@@ -72,17 +72,17 @@ const D: Record<string, DialogueNode> = {
   // ----- Brisa -----
   brisa_intro: {
     name: 'Anciana Brisa', portrait: 'brisa',
-    text: 'Despierta, Portador. Tres noches dormiste junto al Santuario y tres noches algo cantó bajo tus sueños: una voz que subía desde la tierra y llamaba a la puerta de tu nombre. Esa voz tiene dueño. Se llama Aelthar... y lleva trescientos años esperando que alguien la oiga.',
+    text: 'Despierta, Portador. Tres noches dormiste junto al Santuario y tres noches algo cantó bajo tus sueños: una voz que subía desde la tierra y llamaba a la puerta de tu nombre, muy despacio, para no despertarte del todo. Esa voz tiene dueño. Se llama Aelthar... y lleva trescientos años esperando que alguien la oiga. Esta mañana ha callado de golpe: ya no necesita soñarte. Te tiene delante.',
     next: 'brisa_intro2',
   },
   brisa_intro2: {
     name: 'Anciana Brisa', portrait: 'brisa',
-    text: 'Hace 300 años, en la Noche del Silencio, mataron al dios-tejedor. Su canto se rompió en siete Ecos y desde entonces la Niebla Muda avanza borrando aldeas, recuerdos y nombres: primero se oyen menos pájaros; después, menos voces. Merrow, al sur, ya no recuerda su propio nombre.',
+    text: 'Hace 300 años, en la Noche del Silencio, mataron al dios-tejedor. Su canto se rompió en siete Ecos y desde entonces la Niebla Muda avanza borrando aldeas, recuerdos y nombres: primero se oyen menos pájaros; después, menos voces; y cuando ya nadie queda que diga un nombre en voz alta —un nombre dicho es una vela—, la Niebla entra a apagar. Merrow, al sur, ya no recuerda su propio nombre.',
     next: 'brisa_intro3',
   },
   brisa_intro3: {
     name: 'Anciana Brisa', portrait: 'brisa',
-    text: 'Tú puedes OÍR los Ecos, y eso te hace distinto... o señal. El primer fragmento duerme en la Cripta del Primer Canto, al otro lado del Bosque. Pero antes de enviarte hacia ese silencio, necesito saber si puedes sostener un arma.',
+    text: 'Tú puedes OÍR los Ecos, y eso te hace distinto... o señal: en un valle que aprende a callarse, el que todavía suena llama a algo. El primer fragmento duerme en la Cripta del Primer Canto, al otro lado del Bosque. Pero antes de enviarte hacia ese silencio, necesito saber si puedes sostener un arma.',
     options: [
       { text: 'Cuéntame qué se perdió aquella noche. Quiero entenderlo de verdad.', next: 'brisa_lore', tone: 'empatico' },
       { text: 'Sé usar un arma. Dime qué hay que hacer y lo haré.', next: 'brisa_quest2', tone: 'pragmatico' },
@@ -142,7 +142,7 @@ const D: Record<string, DialogueNode> = {
   },
   brisa_fragment: {
     name: 'Anciana Brisa', portrait: 'brisa',
-    text: '¿Lo sentiste? El Fragmento ha despertado tu resonancia: ahora puedes alternar entre el presente y el PASADO de estas tierras. Pulsa Q y mira el valle como era antes del Silencio. No temas si algo del pasado te mira de vuelta: lleva mucho tiempo esperando a que alguien vuelva.',
+    text: '¿Lo sentiste? El Fragmento ha despertado tu resonancia: ahora puedes alternar entre el presente y el PASADO de estas tierras. Pulsa Q y mira el valle como era antes del Silencio. No temas si algo del pasado te mira de vuelta: lleva mucho tiempo esperando a que alguien vuelva... y todavía más ensayando cómo saludar.',
     next: 'brisa_fragment2',
   },
   brisa_fragment2: {
@@ -156,7 +156,7 @@ const D: Record<string, DialogueNode> = {
   },
   brisa_final: {
     name: 'Anciana Brisa', portrait: 'brisa',
-    text: 'El Eco de la Voz... después de 300 años vuelve a sonar en Lunaris. Escucha: ahora la melodía lleva tu nombre entre sus notas, y hay oídos que no perdonan ser excluidos. Los Guardianes ya cantan en la capilla. Esta era solo la primera nota, Portador: quedan seis Ecos... y la Niebla seguirá avanzando mientras no los reúnas.',
+    text: 'El Eco de la Voz... después de 300 años vuelve a sonar en Lunaris. Escucha: ahora la melodía lleva tu nombre entre sus notas, y hay oídos que no perdonan ser excluidos. Esta noche, cuando la tararees, fíjate si el valle calla a la vez: es su manera de darte las gracias... o de aprendértela. Los Guardianes ya cantan en la capilla. Esta era solo la primera nota, Portador: quedan seis Ecos... y la Niebla seguirá avanzando mientras no los reúnas.',
     options: [
       { text: 'El mar llama y yo tengo oídos. Hablemos del sur.', next: 'brisa_acto2' },
       { text: 'Aún tengo cosas que hacer por Velmora.', next: 'brisa_stay' },
@@ -196,16 +196,16 @@ const D: Record<string, DialogueNode> = {
   },
   brisa_idle: {
     name: 'Anciana Brisa', portrait: 'brisa',
-    text: 'El valle respira y el mundo suena más lejos, Portador: el mar llama desde el sur y la montaña aguarda al norte. Cuando quieras ponerle final a la demo, vuelve a mí y lo cantaremos juntos.',
+    text: 'El valle respira y el mundo suena más lejos, Portador: el mar llama desde el sur y la montaña aguarda al norte. Yo pongo una silla para la noche y me quedo escuchando qué calla. Cuando quieras ponerle final a la demo, vuelve a mí y lo cantaremos juntos.',
   },
   // variantes por tono dominante (biblia: los PNJ tratan distinto al Portador)
   brisa_idle_emp: {
     name: 'Anciana Brisa', portrait: 'brisa',
-    text: 'Ahí estás, alma. Ahora que el valle respira, el resto del mundo suena más lejos: el mar al sur, las cumbres al norte, y tú en medio con una melodía que ya no es solo tuya. La demo seguirá esperándote aquí, junto a la taza llena.',
+    text: 'Ahí estás, alma. Ahora que el valle respira, el resto del mundo suena más lejos: el mar al sur, las cumbres al norte, y tú en medio con una melodía que ya no es solo tuya — hay noches en que el eco la devuelve antes de que acabes de silbarla. La demo seguirá esperándote aquí, junto a la taza llena.',
   },
   brisa_idle_amenaz: {
     name: 'Anciana Brisa', portrait: 'brisa',
-    text: '...El pueblo cruza de acera cuando pasas y hasta la bruma te deja pasar primero, Portador. Modera esa lengua con la Orden de Vesh: toman los silencios por amenazas, y la Ciudadela ya oye tu melodía. La demo seguirá esperándote aquí.',
+    text: '...El pueblo cruza de acera cuando pasas y hasta la bruma te deja pasar primero, Portador. Hasta los lobos han aprendido tu paso y se apartan sin ladrar, y eso no me gusta: lo que se aparta está contando dónde estás. Modera esa lengua con la Orden de Vesh: toman los silencios por amenazas, y la Ciudadela ya oye tu melodía. La demo seguirá esperándote aquí.',
   },
 
   // ----- Toln -----
@@ -328,15 +328,15 @@ const D: Record<string, DialogueNode> = {
   },
   voz_vesh: {
     name: 'Gran Inquisidor Vesh', portrait: 'sombra',
-    text: 'Puedo oírte, Portador. Cada paso que das hacia el Eco resuena en MI ciudadela: esta piedra lo guarda todo, y tu nombre ya está escrito en ella. Sube. Reúne las migajas de tu dios... y yo recogeré lo que quede de ti.',
+    text: 'Puedo oírte, Portador. Cada paso que das hacia el Eco resuena en MI ciudadela: esta piedra lo guarda todo, y tu nombre ya está escrito en ella, junto al de todos los que subieron. Sube. Reúne las migajas de tu dios... y yo recogeré lo que quede de ti. Para eso están estas paredes: para recordar a los que ya no pueden.',
   },
   voz_guardian: {
     name: 'Guardián Hueco', portrait: 'guardian',
-    text: 'EL CORO... SE ME QUEDÓ DENTRO... Y NO CABE... TÚ... LLEVAS... RESONANCIA... DÉJALA... AQUÍ... Y ASÍ... DESCANSAMOS... TODOS...',
+    text: 'EL CORO... SE ME QUEDÓ DENTRO... Y NO CABE... LLEVA TRESIENTOS AÑOS SIN CABER... TÚ... LLEVAS... RESONANCIA... LA OIGO... DETRÁS DE TUS DIENTES... DÉJALA... AQUÍ... Y ASÍ... DESCANSAMOS... TODOS... Y NADIE... MÁS... TIENE... QUE CANTAR...',
   },
   eco_voz: {
     name: 'Eco de la Voz', portrait: 'fragment',
-    text: 'El primer canto vuelve a nacer entre tus manos y, por un latido, oyes a todas las cosas escuchando. «Cuando el miedo te hable, canta más alto.» (Eco de la Voz recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
+    text: 'El primer canto vuelve a nacer entre tus manos y, por un latido, oyes a todas las cosas escuchando: la hierba, el agua, y la Niebla quieta de golpe, con la cabeza inclinada, aprendiendo. «Cuando el miedo te hable, canta más alto.» (Eco de la Voz recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
     onEnd: 'eco_taken_mem',
     options: [
       { text: 'Tu nana... era esta melodía, ¿verdad? La recordaba sin saber de quién.', next: 'eco_voz_emp', tone: 'empatico' },
@@ -396,7 +396,7 @@ const D: Record<string, DialogueNode> = {
   // ----- Heraldo de Vesh (aparece tras el Eco de la Voz · biblia: Orden de Vesh) -----
   heraldo_intro: {
     name: 'Heraldo de Vesh', portrait: 'kael',
-    text: 'Así que este es el recipiente. No te arrodilles: no sería sincero. El Gran Inquisidor sabía que la Niebla escondía el primero de los siete... y ahora dice: «la Lanza ya está preparada para la segunda vez». Yo solo repito las palabras. Al recipiente no le hace falta entenderlas: basta con que contenga.',
+    text: 'Así que este es el recipiente. No te arrodilles: no sería sincero. El Gran Inquisidor sabía que la Niebla escondía el primero de los siete... y ahora dice: «la Lanza ya está preparada para la segunda vez». Yo solo repito las palabras. Al recipiente no le hace falta entenderlas: basta con que contenga. Y lo que se echa dentro, una vez, ya no suele pedir permiso para quedarse.',
     options: [
       { text: 'Dile a tu Inquisidor que si quiere lo que llevo, que baje a buscarlo.', next: 'heraldo_amenaz', action: 'rep_orden_-5', tone: 'amenazante' },
       { text: 'No soy «recipiente» de nadie. Pero de momento hablaremos.', next: 'heraldo_prag', tone: 'pragmatico' },
@@ -443,7 +443,7 @@ const D: Record<string, DialogueNode> = {
   // ----- Mara, la farera (Costa de Bruma · biblia: la luz como gesto de memoria) -----
   mara_intro: {
     name: 'Mara, la farera', portrait: 'maelis',
-    text: '¿Vivo? Hacía meses que no bajaba nadie por el camino del valle... Un Portador, dice la bruma. Pues mira: el faro lleva trescientos años apagado y mi familia lleva trescientas noches encendiéndole una cerilla a la esperanza. Mi abuelo juraba que el mar guarda las notas que el dios no pudo cantar. Yo digo que algo ha empezado a usarlas.',
+    text: '¿Vivo? Hacía meses que no bajaba nadie por el camino del valle... Un Portador, dice la bruma. Pues mira: el faro lleva trescientos años apagado y mi familia lleva trescientas noches encendiéndole una cerilla a la esperanza. Mi abuelo juraba que el mar guarda las notas que el dios no pudo cantar. Yo digo que algo ha empezado a usarlas... y que las últimas notas que ensayaba sonaban sospechosamente a gente de aquí.',
     action: 'mara_met',
     options: [
       { text: 'Lo siento por tu faro... y por los que no vuelven. ¿Qué es eso que canta?', next: 'mara_sirena', tone: 'empatico' },
@@ -454,7 +454,7 @@ const D: Record<string, DialogueNode> = {
   },
   mara_sirena: {
     name: 'Mara, la farera', portrait: 'maelis',
-    text: 'Al este hay un naufragio que la marea no se lleva; la Sirena canta debajo de la quilla. Cuando canta, los pescados suben a oírla y no vuelven... y los pescadores que la siguen, menos. Si vas —y vas, se te nota en la cara— llévate sal, silencio y no le sigas la letra.',
+    text: 'Al este hay un naufragio que la marea no se lleva; la Sirena canta debajo de la quilla. Cuando canta, los pescados suben a oírla y no vuelven... y los pescadores que la siguen, menos. Lo peor no es eso, Portador: es que la marea los devuelve del revés, empapados y sonriendo, y que los barcos amarran solos cuando ella ensaya. Si vas —y vas, se te nota en la cara— llévate sal, silencio y no le sigas la letra.',
   },
   mara_sarc: {
     name: 'Mara, la farera', portrait: 'maelis',
@@ -471,7 +471,7 @@ const D: Record<string, DialogueNode> = {
   // variantes por tono dominante
   mara_idle_emp: {
     name: 'Mara, la farera', portrait: 'maelis',
-    text: 'Eres de los que escuchan antes de pisar. Mi abuelo decía que así empezaron todos los fareros: el mar guarda las notas que el dios no pudo cantar, y alguien tiene que quedarse en la orilla anotando las que vuelven. Vuelve tú, ¿eh? Anota las mías.',
+    text: 'Eres de los que escuchan antes de pisar. Mi abuelo decía que así empezaron todos los fareros: el mar guarda las notas que el dios no pudo cantar, y alguien tiene que quedarse en la orilla anotando las que vuelven. Las demás también vuelven, pero no preguntan: se quedan junto a la ventana hasta que alguien cierra. Vuelve tú, ¿eh? Anota las mías.',
   },
   mara_idle_sarc: {
     name: 'Mara, la farera', portrait: 'maelis',
@@ -534,12 +534,12 @@ const D: Record<string, DialogueNode> = {
   },
   vult_idle: {
     name: 'Vult, cartógrafo de la Liga', portrait: 'corvin',
-    text: 'Sigo sin poner nombre al promontorio del faro. «Punta de la Cerilla», dice la letra; «Punta de Mara», dice mi conciencia. Los mapas mienten mejor cuando les das tiempo.',
+    text: 'Sigo sin poner nombre al promontorio del faro. «Punta de la Cerilla», dice la letra; «Punta de Mara», dice mi conciencia. Y junto al naufragio hay un cabo que dibuja una silueta distinta cada noche: no lo nombro, ni lo miro dos veces. Los mapas mienten mejor cuando les das tiempo.',
   },
   // variante por tono dominante
   vult_idle_prag: {
     name: 'Vult, cartógrafo de la Liga', portrait: 'corvin',
-    text: 'Si vas al este, memoriza el camino del naufragio: los clientes preguntan por rutas y yo vendo atajos. Los mapas sin nombres venden caros, Portador... pero los mapas con leyendas venden mejor. Y tú ya vas siendo leyenda.',
+    text: 'Si vas al este, memoriza el camino del naufragio: los clientes preguntan por rutas y yo vendo atajos. Los mapas sin nombres venden caros, Portador... pero los mapas con leyendas venden mejor. Y una advertencia de oficio: si me ves allá abajo, en la playa, cuando yo estoy aquí delante — no le compres. Aprendió mi letra.',
   },
 
   // ----- Espectro de Merrow (Aldea de Merrow · q8: los Faroles del Recuerdo) -----
@@ -597,7 +597,7 @@ const D: Record<string, DialogueNode> = {
   },
   mera_idle: {
     name: 'Espectro de Merrow', portrait: 'nimue',
-    text: 'El presente aprendió otra vez a iluminarse. Si me buscas, estaré junto a un farol encendido: es el sitio más parecido a una cita.',
+    text: 'El presente aprendió otra vez a iluminarse. Si me buscas, estaré junto a un farol encendido: es el sitio más parecido a una cita... y donde la sombra, al menos, ya no me pregunta el nombre.',
   },
 
   // ----- Ivo, cazador de cumbres (Cumbres Heladas · gruñón de raíz bondadosa) -----
@@ -618,7 +618,7 @@ const D: Record<string, DialogueNode> = {
   },
   ivo_golem: {
     name: 'Ivo, cazador de cumbres', portrait: 'brokk',
-    text: 'El Gólem guarda el altar del Segundo Canto. Es hielo con memoria: lento, y cada paso suyo es una leyenda entera. Cuando se detenga a reunir la ventisca, pega al quiebre: la montaña también estuvo hecha de canciones, y las canciones se rompen por la mitad.',
+    text: 'El Gólem guarda el altar del Segundo Canto. Es hielo con memoria: lento, y cada paso suyo es una leyenda entera. No duerme, Portador: escucha. Lleva trescientos años contando los pasos de todo el que subió y no bajó. Cuando se detenga a reunir la ventisca, pega al quiebre: la montaña también estuvo hecha de canciones, y las canciones se rompen por la mitad.',
   },
   ivo_sarc: {
     name: 'Ivo, cazador de cumbres', portrait: 'brokk',
@@ -630,12 +630,12 @@ const D: Record<string, DialogueNode> = {
   },
   ivo_idle: {
     name: 'Ivo, cazador de cumbres', portrait: 'brokk',
-    text: 'Las cumbres estaban hechas para cantar por turnos, como los pastores de la vieja historia. Ahora solo cantan cuando el viento se equivoca. Si subes a la cumbre, lleva fuego... y vuelve por otro camino, que el de subir ya lo conocen las arpías.',
+    text: 'Las cumbres estaban hechas para cantar por turnos, como los pastores de la vieja historia. Ahora solo cantan cuando el viento se equivoca... o cuando algo debajo de la escarcha quiere que parezca que se equivoca. Si subes a la cumbre, lleva fuego... y vuelve por otro camino, que el de subir ya lo conocen las arpías.',
   },
   // variante por tono dominante
   ivo_idle_emp: {
     name: 'Ivo, cazador de cumbres', portrait: 'brokk',
-    text: 'Buen viento traes, Portador. Los del Círculo Verde dicen que la montaña no está muerta, solo a la escucha. Ojalá tengan razón: sería una lástima que el segundo canto se quedara dentro para siempre... igual que mi padre se quedó sin volver a nevar tranquilo.',
+    text: 'Buen viento traes, Portador. Los del Círculo Verde dicen que la montaña no está muerta, solo a la escucha. Yo casi lo creo: hay noches en que la nieve se para en el aire, como si esperara permiso para seguir cayendo. Ojalá tengan razón: sería una lástima que el segundo canto se quedara dentro para siempre... igual que mi padre se quedó sin volver a nevar tranquilo.',
   },
   ivo_after: {
     name: 'Ivo, cazador de cumbres', portrait: 'brokk',
@@ -645,7 +645,7 @@ const D: Record<string, DialogueNode> = {
   // ----- Ecos del Acto II (el motor abre estos nodos desde el altar: onEnd contractual, no renombrar) -----
   eco_mareas: {
     name: 'Eco de las Mareas', portrait: 'fragment',
-    text: 'El segundo canto asciende del naufragio, salado y vivo. «Guardé mi nota bajo la quilla de un barco que soñaba con estrellas —dice la voz—. La que me custodiaba olvidó su propia letra: cantaba a la Niebla lo que era mío. Cántala tú, Portador: hay mareas que solo se curan devolviendo la nota.» (Eco de las Mareas recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
+    text: 'El segundo canto asciende del naufragio, salado y vivo. «Guardé mi nota bajo la quilla de un barco que soñaba con estrellas —dice la voz—. La que me custodiaba olvidó su propia letra: cantaba a la Niebla lo que era mío... y la Niebla la ensaya desde entonces, noche tras noche, un tono más cerca de mi voz. Cántala tú, Portador: hay mareas que solo se curan devolviendo la nota.» (Eco de las Mareas recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
     onEnd: 'eco_mareas_taken',
     options: [
       { text: 'Tu nota ya no duerme bajo ninguna quilla, Eco. Ahora cántame tú.', next: 'eco_mareas_emp', tone: 'empatico' },
@@ -667,7 +667,7 @@ const D: Record<string, DialogueNode> = {
   },
   eco_cumbres: {
     name: 'Eco de las Cumbres', portrait: 'fragment',
-    text: 'El tercer canto desciende con la ventisca, limpio y paciente. «Las montañas aprendieron a guardar voces bajo el hielo —dice la voz—. La primera fue la de los pastores que cantaban por turnos para no dormirse. Toma la suya: ahora la cumbre canta contigo, y el frío ya no es silencio: es compás.» (Eco de las Cumbres recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
+    text: 'El tercer canto desciende con la ventisca, limpio y paciente. «Las montañas aprendieron a guardar voces bajo el hielo —dice la voz—. La primera fue la de los pastores que cantaban por turnos para no dormirse. Todavía se turnan, Portador: todas las noches, en el mismo orden, aunque ya nadie las oiga. Toma la suya: ahora la cumbre canta contigo, y el frío ya no es silencio: es compás.» (Eco de las Cumbres recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
     onEnd: 'eco_cumbres_taken',
     options: [
       { text: 'Descansad, pastores. Vosotros cantasteis primero; ahora canto yo por todos.', next: 'eco_cumbres_emp', tone: 'empatico' },
@@ -1068,7 +1068,7 @@ const D_ACTO3: Record<string, DialogueNode> = {
   // ----- q11 · El Canto al Revés -----
   acto3_brisa_alba: {
     name: 'Anciana Brisa', portrait: 'brisa',
-    text: '¿Lo oíste anoche, Portador? El Canto sonó AL REVÉS: las notas de Aelthar bajaron cuando debían subir. Toln jura que su forja cantó su nana del final al principio... y lo que se canta al revés no tarda en abrirse paso. Ve a la forja y escúchalo tú: esta noche se han torcido tres ecos, y los ecos torcidos llaman a la Niebla.',
+    text: '¿Lo oíste anoche, Portador? El Canto sonó AL REVÉS: las notas de Aelthar bajaron cuando debían subir. Toln jura que su forja cantó su nana del final al principio... y esta madrugada he visto pasar pájaros hacia el mar, de noche y sin cantar: los pájaros solo hacen eso cuando ya saben lo que viene. Lo que se canta al revés no tarda en abrirse paso. Ve a la forja y escúchalo tú: esta noche se han torcido tres ecos, y los ecos torcidos llaman a la Niebla.',
     onEnd: 'accept_q11',
     options: [
       { text: 'Descansa, Brisa. Yo puse el Eco en marcha: yo enderezaré la melodía.', tone: 'empatico' },
@@ -1204,7 +1204,7 @@ const D_ACTO3: Record<string, DialogueNode> = {
   // ----- q13 · La Primera Portadora -----
   acto3_velmora_revela: {
     name: 'Velmora', portrait: 'wisp',
-    text: '...Al fin. Trescientos años esperando un oído que no temblara. Escucha, Portador, porque la letra que te contaron es verdad a medias: Aelthar no murió por su PODER. Murió por su HAMBRE. Cada nota del Canto le costaba un ayer del mundo —un día entero de vidas ajenas, comido y digerido en melodía—. El mundo se quedaba sin ayeres para que un dios tuviera canción. ¿Sigues ahí? Los oídos que no temblan suelen ser los primeros en huir.',
+    text: '...Al fin. Trescientos años esperando un oído que no temblara. Escucha, Portador, porque la letra que te contaron es verdad a medias: Aelthar no murió por su PODER. Murió por su HAMBRE. Cada nota del Canto le costaba un ayer del mundo —un día entero de vidas ajenas, comido y digerido en melodía—. El mundo se quedaba sin ayeres para que un dios tuviera canción. ¿Sigues ahí? No hace falta que contestes: sigo oyéndote el pulso. Los oídos que no temblan suelen ser los primeros en huir... y yo he tenido trescientos años para contarlos todos.',
     onEnd: 'accept_q13',
     options: [
       { text: 'Sigo aquí. Si tu verdad pesa, la sostengo contigo.', next: 'acto3_velmora_escucha', tone: 'empatico' },
@@ -1625,7 +1625,7 @@ const D_ACTO4: Record<string, DialogueNode> = {
   },
   acto4_heraldo_aviso: {
     name: 'Heraldo de Vesh', portrait: 'kael',
-    text: '...Ya lo sabes, ¿verdad? Se te nota en la manera de mirar los campanarios. Sí: bajé a la Sala. Mi Gran Inquisidor dejó una orden escrita antes de morir: «si alguien reúne el Canto, baja y sé su última nota». Yo creí que era un honor. Es un CASTIGO, recipiente: la última nota de un canto se queda vibrando para siempre, sin poder bajar del aire... (se ajusta la capucha) Nos vemos en la Sala. Y reza por que tu melodía sea más terca que mi obediencia.',
+    text: '...Ya lo sabes, ¿verdad? Se te nota en la manera de mirar los campanarios. Sí: bajé a la Sala. Mi Gran Inquisidor dejó una orden escrita antes de morir: «si alguien reúne el Canto, baja y sé su última nota». Yo creí que era un honor. Es un CASTIGO, recipiente: la última nota se queda vibrando para siempre, sin poder bajar del aire, oyendo apagarse el resto del canto nota a nota... hasta sonar sola, para nadie. (se ajusta la capucha) Nos vemos en la Sala. Y reza por que tu melodía sea más terca que mi obediencia.',
     options: [
       { text: 'No eres tu obediencia, Heraldo. Baja, escucha y descansa.', tone: 'empatico' },
       { text: 'La última nota de un canto también es la más alta. Nos vemos.', tone: 'pragmatico' },

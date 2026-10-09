@@ -41,6 +41,23 @@
 //  · band?     → diadema/cinta 1px en accent sobre la corona (Maelis).
 //  Todos son OPCIONALES: si no se definen, el dibujado es idéntico al
 //  de R2-A1 (retrocompatible, coste 0).
+//
+// R6-V9 — humanoides v3 (el MISMO personaje, mejor ejecutado):
+//  · Proporciones: cintura 1px más estrecha por lado que los hombros
+//    (fila del cinturón de 6 px frente al talle de 8; 4 frente a 6 de
+//    perfil) + brillo de hombrera 1px sobre cada brazo.
+//  · Mechón de vuelo 1px en la coronilla, que se mece en las fases
+//    de pase (acompaña al bob existente).
+//  · Perfil de nariz 1px en los frames laterales (bajo la curva
+//    frontal del cráneo; la máscara lisa se queda lisa).
+//  · Insignia de gremio sutil de 2-3 px en accent: pecho de frente,
+//    espalda de espaldas y 1-2 px de perfil. Quien ya tiene emblema
+//    propio (chest) o es puro hueso (ribs) no la lleva.
+//  · Andar verificado: bob vertical 1px en las fases centrales (pase
+//    2 y 5 + aire idle 7) y swing de brazos opuesto; frameIndex y
+//    entityFrame conservan firma y comportamiento. Suela oscura de
+//    bota y cinturón accent ya horneados se conservan. Canvas 16×H
+//    intacto y todos los flags de paleta se siguen respetando.
 // ============================================================
 
 import { mkCanvas, px, type Frames } from './util';
@@ -164,6 +181,9 @@ function drawFrame(
   const hs = pal.hairS ?? pal.hair;
   const ls = pal.legsS ?? pal.legs;
   const idle = ph >= 6;                                  // frames 6/7 de reposo
+  // R6-V9 · andar verificado: bob vertical 1px en las fases CENTRALES
+  // de cada paso (pase 2 y 5, más el aire idle 7) y swing de brazos
+  // OPUESTO entre ambos lados; frameIndex/entityFrame lo consumen igual.
   const bob = bobFix ?? ((ph === 2 || ph === 5 || ph === 7) ? -1 : 0);
   const hy = dread ? 1 : 0;                              // encorvado: cabeza 1px más baja
   const hT = L.headTop + bob;                            // ancla de cabeza (con bamboleo)
@@ -205,13 +225,17 @@ function drawFrame(
 
   if (dir === 'down' || dir === 'up') {
     // ---------- torso (primero: la cabeza encorvada solapa el pecho) ----------
-    px(x, 4, bT, 8, L.bodyH, pal.body);
+    // R6-V9: talle recto y CINTURA 1px más estrecha por lado — la fila
+    // del cinturón (bT+bodyH-2) mide 6 px frente a las 8 del talle.
+    px(x, 4, bT, 8, L.bodyH - 2, pal.body);              // talle: hombros → cintura
+    px(x, 5, bT + L.bodyH - 2, 6, 1, pal.body);          // fila de cintura (la cubre el cinturón)
     px(x, 4, bT, 8, 1, pal.bodyS);
     // doble contorno lateral: borde oscuro + medio tono interior
-    px(x, 4, bT, 1, L.bodyH - 1, pal.outline);
-    px(x, 11, bT, 1, L.bodyH - 1, pal.outline);
-    px(x, 5, bT + 1, 1, L.bodyH - 2, halfB);
-    px(x, 10, bT + 1, 1, L.bodyH - 2, halfB);
+    // (se detienen 1 fila antes para que la cintura afine)
+    px(x, 4, bT, 1, L.bodyH - 2, pal.outline);
+    px(x, 11, bT, 1, L.bodyH - 2, pal.outline);
+    px(x, 5, bT + 1, 1, L.bodyH - 3, halfB);
+    px(x, 10, bT + 1, 1, L.bodyH - 3, halfB);
     // sombra de cuello bajo la barbilla
     px(x, 6, bT, 4, 1, neckC);
     // costillas más marcadas (esqueleto): surco / hueso / surco
@@ -222,10 +246,17 @@ function drawFrame(
     }
     // emblema/broche 1px en el pecho, solo de frente (R2-A6)
     if (pal.chest && dir === 'down') px(x, 8, bT + 1, 1, 1, pal.chest);
-    // cinturón con hebilla 1px
+    // insignia de gremio en accent (R6-V9): 3 px de frente y de
+    // espaldas (2 si el talle es small); sin ella quien ya luce
+    // emblema propio (chest) o es esqueleto (ribs)
+    if (!pal.chest && !pal.ribs) {
+      px(x, 7, bT + 1, 2, 1, pal.accent);
+      if (L.bodyH > 4) px(x, 8, bT + 2, 1, 1, pal.accent);
+    }
+    // cinturón con hebilla 1px (ocupa toda la cintura estrechada)
     px(x, 5, bT + L.bodyH - 2, 6, 1, pal.accent);
     px(x, 7, bT + L.bodyH - 2, 2, 1, buckle);
-    px(x, 4, bodyBot, 8, 1, pal.outline);
+    px(x, 5, bodyBot, 6, 1, pal.outline);                // bajo de la túnica, alineado a la cintura
     // brillo 1px en hombros (luz arriba-izquierda)
     px(x, 4, bT, 2, 1, hiBody);
     if (pal.pauldrons) {
@@ -245,6 +276,9 @@ function drawFrame(
     px(x, 4, Hh + 1, 1, 4, halfH);
     px(x, 11, Hh + 1, 1, 4, halfH);
     px(x, 4, Hh + 1, 2, 1, hiHair);                      // brillo 1px en el cráneo
+    // mechón de vuelo 1px (R6-V9): rompe la silueta superior y se
+    // mece 1px en las fases de pase, acompañando al bob
+    px(x, ph === 2 || ph === 5 ? 6 : 7, Math.max(0, Hh - 1), 1, 1, pal.hair);
     if (pal.band) px(x, 5, Hh + 1, 6, 1, pal.accent);    // diadema/cinta 1px en accent (R2-A6)
     if (pal.hood) { px(x, 3, Ff + 2, 10, 2, pal.hair); px(x, 4, Ff + 3, 8, 1, hs); }
     if (dir === 'down') {
@@ -304,6 +338,12 @@ function drawFrame(
       px(x, 13, bT + offR - 2, 1, L.armLen + 2, '#7a5c3a');
       px(x, 12, bT + offR - 4, 3, 2, '#9aa4b4');
     }
+    // brillo de hombrera 1px sobre cada brazo (R6-V9): ensancha la
+    // línea de hombro; pauldrons/leafy ya la marcan por su cuenta
+    if (!pal.pauldrons && !pal.leafy) {
+      px(x, 3, bT, 1, 1, hiBody);
+      px(x, 12, bT, 1, 1, hiBody);
+    }
     if (pal.cape) {
       // capa: paneles 1px a los costados + bordado accent aclarado (R2-A6)
       const cc = pal.capeC ?? pal.bodyS;
@@ -337,12 +377,15 @@ function drawFrame(
   } else {
     // ---------- dir === 'side' (mirando a la derecha; render voltea para 'left') ----------
     // torso
-    px(x, 5, bT, 6, L.bodyH, pal.body);
+    // R6-V9: cintura de perfil 1px más estrecha por lado (4 px de
+    // cinturón frente a las 6 del talle)
+    px(x, 5, bT, 6, L.bodyH - 2, pal.body);              // talle
+    px(x, 6, bT + L.bodyH - 2, 4, 1, pal.body);          // fila de cintura (la cubre el cinturón)
     px(x, 5, bT, 6, 1, pal.bodyS);
-    px(x, 5, bT, 1, L.bodyH - 1, pal.outline);           // doble contorno: espalda
-    px(x, 10, bT, 1, L.bodyH - 1, pal.outline);          // y pecho
-    px(x, 6, bT + 1, 1, L.bodyH - 2, halfB);
-    px(x, 9, bT + 1, 1, L.bodyH - 2, halfB);
+    px(x, 5, bT, 1, L.bodyH - 2, pal.outline);           // doble contorno: espalda
+    px(x, 10, bT, 1, L.bodyH - 2, pal.outline);          // y pecho
+    px(x, 6, bT + 1, 1, L.bodyH - 3, halfB);
+    px(x, 9, bT + 1, 1, L.bodyH - 3, halfB);
     px(x, 7, bT, 3, 1, neckC);                           // sombra de cuello
     if (pal.ribs) {
       px(x, 6, bT + 1, 3, 1, tone(pal.bodyS, 0.62));
@@ -350,9 +393,14 @@ function drawFrame(
       px(x, 6, bT + 3, 3, 1, tone(pal.bodyS, 0.62));
     }
     if (pal.chest) px(x, 9, bT + 1, 1, 1, pal.chest);    // emblema 1px al frente (R2-A6)
-    px(x, 6, bT + L.bodyH - 2, 4, 1, pal.accent);        // cinturón
+    // insignia de gremio al frente, 1-2 px según el talle (R6-V9)
+    if (!pal.chest && !pal.ribs) {
+      px(x, 9, bT + 1, 1, 1, pal.accent);
+      if (L.bodyH > 4) px(x, 9, bT + 2, 1, 1, pal.accent);
+    }
+    px(x, 6, bT + L.bodyH - 2, 4, 1, pal.accent);        // cinturón (toda la cintura)
     px(x, 9, bT + L.bodyH - 2, 1, 1, buckle);            // hebilla al frente
-    px(x, 5, bodyBot, 6, 1, pal.outline);
+    px(x, 6, bodyBot, 4, 1, pal.outline);                // bajo alineado a la cintura
     px(x, 5, bT, 2, 1, hiBody);                          // brillo de hombro
     if (pal.pauldrons) { px(x, 4, bT, 2, 2, pal.accent); px(x, 4, bT, 2, 1, tone(pal.accent, 1.3)); }
     if (pal.leafy) px(x, 4, bT, 2, 1, '#8ac05a');
@@ -366,6 +414,8 @@ function drawFrame(
     px(x, 12, Hh + 1, 1, 2, pal.outline);                // y curva frontal
     px(x, 5, Hh + 1, 1, 3, halfH);
     px(x, 5, Hh + 1, 2, 1, hiHair);
+    // mechón de vuelo 1px de perfil (R6-V9), hacia la nuca
+    px(x, ph === 2 || ph === 5 ? 5 : 6, Math.max(0, Hh - 1), 1, 1, pal.hair);
     if (pal.band) px(x, 6, Hh + 1, 4, 1, pal.accent);    // diadema 1px de perfil (R2-A6)
     if (pal.hood) px(x, 4, Ff + 2, 8, 2, pal.hair);
     const faceH = jawLoose ? 3 : 4;
@@ -381,6 +431,9 @@ function drawFrame(
     } else {
       px(x, 8, Ff + 1, 3, 1, '#eae6dc');
     }
+    // perfil de nariz 1px (R6-V9): sobresale bajo la curva frontal
+    // del cráneo; la máscara lisa se queda lisa
+    if (!pal.mask) px(x, 12, Ff + 2, 1, 1, faceC);
     if (jawLoose) {
       // mandíbula suelta de perfil: hueco + hueso descolgado 1px
       px(x, 7, Ff + 3, 4, 1, voidC);
@@ -402,6 +455,8 @@ function drawFrame(
       px(x, 11, bT + sw - 2, 1, 5, '#7a5c3a');
       px(x, 10, bT + sw - 4, 3, 2, '#9aa4b4');
     }
+    // brillo de hombrera 1px trasero (R6-V9); pauldrons/leafy ya lo marcan
+    if (!pal.pauldrons && !pal.leafy) px(x, 4, bT, 1, 1, hiBody);
     if (pal.cape) {
       // capa de perfil: borde 1px a la espalda + bordado accent (R2-A6)
       const cc = pal.capeC ?? pal.bodyS;

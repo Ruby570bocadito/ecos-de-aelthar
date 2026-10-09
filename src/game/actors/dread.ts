@@ -34,7 +34,9 @@
 //   dreadInit()              → perezosa (updateDread la llama sola);
 //                              ideal llamarla junto a audio.resume()
 //                              en la primera interacción del usuario.
-//   updateDread(g, dt)       → 1× por frame en el bucle (update.ts).
+//   updateDread(g, dt, tension?) → 1× por frame en el bucle (update.ts);
+//                              `tension` (R6-V5) es OPCIONAL: lowHp/aggroCount
+//                              para tensión extra; si falta, se deriva de g.
 //   dreadStinger('boss')     → cuando bossActive pasa a true (junto a
 //                              audio.playTrack('boss') en update.ts).
 //   dreadStinger('susto')    → emboscadas / aparición de sombras.
@@ -343,11 +345,24 @@ export function setDreadEnabled(b: boolean): void {
 // ---------------- Update por frame ----------------
 
 /**
+ * Tensión extra opcional (R6-V5) para updateDread. El integrador puede
+ * alimentarla para no duplicar cálculo; si no llega, se deriva del propio
+ * estado del juego (cero allocations).
+ */
+export interface DreadTension {
+  lowHp?: boolean;      // jugador por debajo del 30% de vida
+  aggroCount?: number;  // nº de enemigos con aggro activo
+}
+
+/**
  * Sube/baja las capas de pavor según el contexto del juego:
  * cripta > bosque-noche > noche exterior > día; bossActive = máximo.
- * Solo escribe nodos PROPIOS: jamás corta la música ni los sfx.
+ * R6-V5: tensión extra si el jugador está <30% de vida (+0.14) o rodeado
+ * por 3+ enemigos en aggro (+0.1) — vía `tension` opcional al final o
+ * derivada de g si no llega. Solo escribe nodos PROPIOS: jamás corta la
+ * música ni los sfx.
  */
-export function updateDread(g: Game, dt: number): void {
+export function updateDread(g: Game, dt: number, tension?: DreadTension): void {
   void dt; // las rampas viven en el tiempo del AudioContext (setTargetAtTime)
   if (!dread.ready) dreadInit();
   if (!dread.ready || !dread.ctx) return;
@@ -369,7 +384,21 @@ export function updateDread(g: Game, dt: number): void {
       auto = night ? 0.3 : 0;                      // lunaris: solo de noche
     }
     if (g.epoch === 'pasado') auto = clamp01(auto + 0.1); // el pasado susurra más
-    if (g.bossActive) auto = 1;                    // jefe activo: pavor máximo
+
+    // ---- tensión extra (R6-V5): vida baja o 3+ aggro (O(n) barato, sin allocs) ----
+    const lowHp = tension?.lowHp ?? (g.player !== null && g.player.hp < g.player.maxHp * 0.3);
+    if (lowHp) auto = clamp01(auto + 0.14); // el corazón te delata
+    let aggroN = tension?.aggroCount;
+    if (aggroN === undefined) {
+      aggroN = 0;
+      for (let i = 0; i < g.enemies.length; i++) {
+        const e = g.enemies[i];
+        if (e.aggro && !e.dead) aggroN++;
+      }
+    }
+    if (aggroN >= 3) auto = clamp01(auto + 0.1); // te están rodeando
+
+    if (g.bossActive) auto = 1;                    // jefe activo: pavor máximo (intocable)
   }
   // en title/pause/dead/end el auto decae a 0 (las rampas son suaves)
 

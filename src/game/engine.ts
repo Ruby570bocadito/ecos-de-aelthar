@@ -44,7 +44,7 @@ import {
 import {
   ARMORS, ARMOR_HEAVY_SPEED, armorActive, armorActiveId, armorDefFor, armorReduction, armorTick,
 } from './armor';
-import { initPerf, perfFrame, drawPerfOverlay, togglePerfOverlay } from './perf'; // R5-O1: supervisión de rendimiento
+import { initPerf, perfFrame, drawPerfOverlay, togglePerfOverlay, perfQuality } from './perf'; // R5-O1: supervisión · R6-V10: consume perfQuality
 
 // 14-b (auditoría de cooldowns): el motor aplica skillCdMult AL FIJAR el cd
 // en useSkill (camino B del contrato skilltree.ts) → el decaimiento extra por
@@ -84,6 +84,15 @@ export const BOSS_DEFEAT_FLAG: Record<string, string> = {
 // Recortar las más viejas mantiene el coste de update/render acotado.
 const MAX_PARTICLES = 400;
 const MAX_FLOATS = 64;
+
+// R6-V10 (calidad adaptativa): tope de ancho de vista en BAJA sostenida.
+// El coste de drawGame escala con VIEW_W×VIEW_H: recortar el ancho extra que
+// ganan las pantallas muy anchas (fitViewToWindow llega a 1600 px) alivia el
+// fill-rate en máquinas flojas SIN tocar gameplay: la vista base 960×540 de
+// 16:9 nunca se ve afectada (el tope solo actúa por encima de 1280 px).
+const LOWQ_VIEW_MAX_W = 1280; // ancho máximo del buffer con calidad baja sostenida
+const LOWQ_VIEW_BASE_H = 540; // alto base que fitViewToWindow mantiene a 16:9 exacto
+const LOWQ_SUSTAIN_S = 5;     // segundos SEGUIDOS en calidad baja para activar el tope
 
 export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end' | 'skills';
 
@@ -197,6 +206,12 @@ export class Game {
   private lastTs = 0;
   private running = false;
   loopError: string | null = null;
+
+  // R6-V10: histéresis propia del tope de vista (perf.ts NO exporta cuánto
+  // tiempo lleva el escalón en baja → se mide aquí, en tiempo real).
+  private perfLastTick = -1;  // performance.now() del tick anterior (hueco >1 s → tramo roto)
+  private perfLowSince = -1;  // inicio del tramo continuo en calidad baja (-1 = fuera de baja)
+  private perfCapOn = false;  // true = el tope LOWQ_VIEW_MAX_W está aplicado ahora mismo
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -328,6 +343,7 @@ export class Game {
         if (this.state === 'play' || this.state === 'dialogue') this.update(dt);
         drawGame(this);
         perfFrame(this, dt); drawPerfOverlay(this); // R5-O1: muestreo + overlay 1×/frame, tras update+draw
+        this.perfViewTick(); // R6-V10: histéresis del tope de vista en baja sostenida
         this.loopError = null;
       } catch (err) {
         this.loopError = err instanceof Error ? (err.stack ?? String(err)) : String(err);
@@ -1398,6 +1414,13 @@ export class Game {
   private fitCanvas() {
     const before = `${VIEW_W}x${VIEW_H}`;
     fitViewToWindow(window.innerWidth, window.innerHeight);
+    // R6-V10: baja sostenida ≥ LOWQ_SUSTAIN_S s → re-pide el ajuste con el
+    // aspecto recortado a LOWQ_VIEW_MAX_W×540; fitViewToWindow clampéa a sus
+    // mínimos/máximos, así que el resultado es exactamente ese par. Vistas ya
+    // ≤1280 px (p. ej. 960×540 en 16:9) quedan intactas.
+    if (this.perfCapOn && VIEW_W > LOWQ_VIEW_MAX_W) {
+      fitViewToWindow(LOWQ_VIEW_MAX_W, LOWQ_VIEW_BASE_H);
+    }
     if (this.canvas.width !== VIEW_W || this.canvas.height !== VIEW_H) {
       this.canvas.width = VIEW_W;
       this.canvas.height = VIEW_H;
@@ -1407,6 +1430,32 @@ export class Game {
   }
 
   private onResize = () => { this.fitCanvas(); };
+
+  /**
+   * R6-V10 · Histéresis del tope de vista (1×/frame, O(1), cero allocs).
+   * Mide en tiempo REAL (performance.now, como perfFrame) cuánto lleva el
+   * escalón de perf.ts en calidad baja: solo tras LOWQ_SUSTAIN_S s seguidos
+   * activa el tope de ancho (re-fit con cap). Si la calidad sube (perf.ts ya
+   * exige 6 s por encima de 58 fps para subir), el tope se retira y la vista
+   * vuelve al ajuste completo de la ventana. Un hueco >1 s (alt-tab/pestaña
+   * oculta) rompe el tramo, igual que perf.ts descarta su ventana móvil.
+   */
+  private perfViewTick() {
+    const now = performance.now();
+    const prev = this.perfLastTick;
+    this.perfLastTick = now;
+    if (prev >= 0 && now - prev > 1000) this.perfLowSince = -1; // hueco: tramo no sostenido
+    if (perfQuality() === 2) {
+      if (this.perfLowSince < 0) this.perfLowSince = now;
+      else if (!this.perfCapOn && now - this.perfLowSince >= LOWQ_SUSTAIN_S * 1000) {
+        this.perfCapOn = true;
+        this.fitCanvas(); // aplica el tope y reajusta canvas + cámara
+      }
+    } else {
+      this.perfLowSince = -1;
+      if (this.perfCapOn) { this.perfCapOn = false; this.fitCanvas(); } // recuperado → vista completa
+    }
+  }
 
   private onLoseFocus = () => {
     this.keys.clear();
