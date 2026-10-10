@@ -221,3 +221,36 @@ commit → merge a main → push. QA de solo lectura en cada ronda.
 >   primer jefe de la sesión y podía quedarse sobre el mapa siguiente).
 > - Smoke nuevo `scripts/smoke_r17.mts`; batería 16/16 + tsc 0 + build verde
 >   + E2E en navegador con consola limpia.
+
+> **Ronda R18 «El Portador y el mundo»** (v0.9.0) — historia guiada, mapas
+> más grandes, personaje nuevo, combate más rápido y épocas que se notan:
+> - **Historia**: `gates.ts` (sellos de Niebla por misión, empuje + aviso),
+>   `cutscene.ts` (motor de escenas: cámara, diálogo, actores, rótulos, fundidos;
+>   el juego se congela y el HUD se oculta) y `storybeats.ts` (despertar, Eco,
+>   Cripta, Costa, Sirena, Merrow, Cumbres, rótulos de ACTO II–V y llegadas a las
+>   secciones). Intro: parallax de cordilleras, asesinos con el sprite de sombra
+>   y el Portador v4 tumbado → de rodillas → en pie.
+> - **Portador v4 (`actors/hero.ts`)**: búfer de materiales → sombreado
+>   automático de 3 tonos con desplazamiento de tono → contorno selectivo;
+>   frames perezosos cacheados por disciplina|armadura|arma|dirección|acción|frame.
+>   El retrato del creador usa los mismos frames.
+> - **Movimiento/combate (`update.ts`, `skilltree.ts`)**: sprint con histéresis
+>   de Aguante, inercia exponencial, la esquiva cancela el final del ataque,
+>   alarma de manada (6 tiles), grimorio de dos páginas con recargas propias.
+> - **Mundo (`maps_r18.ts`)**: 5 secciones (molino, hondonada, acantilado,
+>   pantano, glaciar) enlazadas con `applyR18Links`; `pruneChests` deja 12 cofres
+>   en las regiones; diferencias de época que exigen viajar (altar de savia,
+>   botella de la caleta, velas y cristales solo en el pasado).
+> - **Criaturas (`actors/sculpt.ts`, `creatures_r18.ts`, `enemies_r18.ts`,
+>   `data_r18.ts`)**: 4 enemigos y 5 mini-jefes con fases, quiebre y patrones
+>   propios; guardia frontal del cangrejo, veneno de telaraña, congelación.
+> - **Misiones secundarias y reliquias (`sidequests.ts`)**: progreso por hechos
+>   (flags), recompensas sin cofres; pestaña ENCARGOS en la pausa con misión
+>   fijada (`sq_pin`) y reliquia equipable.
+> - **Épocas**: filtro de música por época con eco de memoria y «remolino» al
+>   viajar (`audio.setEpoch`), esfera de reloj + cartela, ceniza en el presente.
+> - **Volumen (`actors/volume.ts`)**: pase horneado de luz/sombra para todos los
+>   humanoides (NPCs y enemigos), sin coste en runtime.
+> - Smoke nuevo `scripts/smoke_r18.mts`; batería 17/17 + tsc 0 + build verde
+>   + E2E en navegador (intro, cinemáticas, sello, viaje de época, misión,
+>   combate, mini-jefe, pausa) con consola limpia.

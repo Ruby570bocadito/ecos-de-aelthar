@@ -969,6 +969,9 @@ interface CacheEntry { c: HTMLCanvasElement; sig: string }
 const cache = new Map<string, CacheEntry>();
 
 /** Devuelve el canvas 44×62 del retrato, re-renderizando solo si cambia blink/paso de t. */
+/** R18: ¿existe retrato propio para esta clave? (screens lo usa para no caer en el fuego fatuo) */
+export function hasPortrait(key: string): boolean { return key in PORTRAITS; }
+
 function getPortrait(key: string, blink: boolean, t: number): HTMLCanvasElement {
   const def = PORTRAITS[key] ?? PORTRAITS['wisp'];
   const ck = PORTRAITS[key] !== undefined ? key : 'wisp';

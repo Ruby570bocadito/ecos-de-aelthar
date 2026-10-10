@@ -370,12 +370,13 @@ function drawWorld(g: Game) {
     const a = g.epochFx / 0.8;
     // R13: tercer estado 'aun' — plata pálida, el tiempo sin estrenar
     const isPast = g.epoch === 'pasado', isAun = g.epoch === 'aun';
-    ctx.fillStyle = isPast ? `rgba(255, 216, 138, ${a * 0.5})` : isAun ? `rgba(200, 208, 232, ${a * 0.5})` : `rgba(120, 140, 190, ${a * 0.5})`;
+    // R18: destello concentrado al principio (el resto lo cuenta la onda de R17)
+    const fl = Math.max(0, a * 1.6 - 0.6);
+    ctx.fillStyle = isPast ? `rgba(255, 216, 138, ${fl * 0.55})` : isAun ? `rgba(200, 208, 232, ${fl * 0.55})` : `rgba(120, 140, 190, ${fl * 0.55})`;
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    if (a > 0.4) {
-      textShadow(g, isPast ? '◆ EL PASADO ◆' : isAun ? '◆ EL AÚN ◆' : '◆ EL PRESENTE ◆', VIEW_W / 2, 180, 16, isPast ? COL.epochPast : isAun ? '#c8d0e8' : COL.epochNow, '#000', 'center', true);
-    }
   }
+  // R18: esfera de reloj alrededor del Portador + cartela de época legible
+  drawEpochClock(g, sx, sy);
 
   // fade de transición
   if (g.fadeT > 0) {
@@ -1205,6 +1206,86 @@ function drawResourceRow(g: Game, x: number, y: number, w: number) {
   }
 }
 
+// ---- R18 · viaje en el tiempo que SE NOTA: esfera de reloj + cartela ----
+// La esfera gira hacia atrás al ir al pasado y hacia delante al volver; la
+// cartela («EL PASADO · hace trescientos años») dura lo bastante para leerla.
+let epClockSeen = '';
+let epClockMap = '';
+let epClockT0 = -99;
+const EP_CARD_DUR = 2.6;
+const EP_SUB: Record<string, string> = {
+  pasado: 'hace trescientos años · Velmora aún canta',
+  presente: 'hoy · la Niebla del Silencio',
+  aun: 'el tiempo que nadie ha estrenado',
+  estreno: 'el primer día de la Cuna',
+};
+function drawEpochClock(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
+  const p = g.player;
+  if (!p) return;
+  if (g.mapId !== epClockMap) { epClockMap = g.mapId; epClockSeen = g.epoch; epClockT0 = -99; }
+  if (g.epoch !== epClockSeen) {
+    epClockSeen = g.epoch;
+    if (g.epochFx > 0.3 && !cutsceneActive()) epClockT0 = g.globalT;
+  }
+  const el = g.globalT - epClockT0;
+  if (el < 0 || el > EP_CARD_DUR) return;
+  const ctx = g.ctx;
+  const isPast = g.epoch === 'pasado', isAun = g.epoch === 'aun';
+  const estreno = g.map.baseEpoch === 'aun' && g.epoch === 'presente';
+  const col = isPast || estreno ? '#ffd27a' : isAun ? '#d8d8ec' : '#9ec8ff';
+  // esfera (primeros 1,1 s): 12 marcas y una manecilla que corre
+  if (el < 1.1) {
+    const k = el / 1.1;
+    const cx = sx(p.x), cy = sy(p.y - 10);
+    const dir = isPast || isAun ? -1 : 1;
+    const ease = 1 - (1 - k) * (1 - k);
+    const rot = dir * ease * Math.PI * 2.2;
+    const R = (26 + ease * 22) * (ZOOM / 2);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = Math.sin(k * Math.PI) * 0.9;
+    ctx.fillStyle = col;
+    for (let i = 0; i < 12; i++) {
+      const an = rot * 0.25 + (i * Math.PI) / 6;
+      const big = i % 3 === 0 ? 2 : 1;
+      ctx.fillRect(Math.round(cx + Math.cos(an) * R) - big, Math.round(cy + Math.sin(an) * R) - big, big * 2, big * 2);
+    }
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(rot - Math.PI / 2) * R * 0.82, cy + Math.sin(rot - Math.PI / 2) * R * 0.82);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.globalAlpha *= 0.45;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R + 5, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+  // cartela: entra deslizando, se sostiene y se funde
+  const a = Math.min(1, el / 0.25) * Math.min(1, (EP_CARD_DUR - el) / 0.6);
+  const slide = (1 - Math.min(1, el / 0.3)) * 14;
+  const title = isPast ? 'EL PASADO' : isAun ? 'EL AÚN' : estreno ? 'EL PRIMER DÍA' : 'EL PRESENTE';
+  const sub = EP_SUB[estreno ? 'estreno' : g.epoch] ?? '';
+  const y0 = Math.round(VIEW_H * 0.24 - slide);
+  ctx.save();
+  ctx.globalAlpha = a;
+  const w = 360;
+  const grd = ctx.createLinearGradient(VIEW_W / 2 - w / 2, 0, VIEW_W / 2 + w / 2, 0);
+  grd.addColorStop(0, 'rgba(8,8,16,0)');
+  grd.addColorStop(0.5, isPast || estreno ? 'rgba(40,26,8,0.72)' : 'rgba(8,12,26,0.72)');
+  grd.addColorStop(1, 'rgba(8,8,16,0)');
+  ctx.fillStyle = grd;
+  ctx.fillRect(VIEW_W / 2 - w / 2, y0 - 8, w, 50);
+  ctx.fillStyle = col;
+  ctx.fillRect(VIEW_W / 2 - 110, y0 - 8, 220, 1);
+  ctx.fillRect(VIEW_W / 2 - 110, y0 + 41, 220, 1);
+  textShadow(g, `◆ ${title} ◆`, VIEW_W / 2, y0, 18, col, '#000', 'center', true);
+  text(g, sub, VIEW_W / 2, y0 + 24, 14, isPast || estreno ? '#f0dcb0' : '#b8c4dc', 'center');
+  ctx.restore();
+}
+
 // ---- R17 (UI): distintivo de época (dónde estás en el tiempo + teclas) ----
 function drawEpochBadge(g: Game, x: number, y: number, w: number) {
   const ctx = g.ctx;
@@ -1266,8 +1347,10 @@ function drawOverlays(g: Game) {
 
   // 1) destello de pantalla (impactos en 'lighter', blancos normales)
   if (g.flashT > 0) {
-    const a = Math.min(0.85, (g.flashT / 0.18) * 0.75);
     const isWhite = g.flashColor.toLowerCase() === '#ffffff';
+    // R18: los destellos de color van en 'lighter' (suman luz): con 0,5 de
+    // alfa el Filo del Alba blanqueaba la pantalla entera. Tope 0,3.
+    const a = Math.min(isWhite ? 0.85 : 0.3, (g.flashT / 0.18) * 0.75);
     ctx.save();
     if (isWhite) {
       ctx.globalCompositeOperation = 'source-over';

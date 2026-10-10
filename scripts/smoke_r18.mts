@@ -319,5 +319,44 @@ console.log('\n=== 6) Cinemáticas y cofres ===');
   check(`menos cofres sueltos en las regiones (${total}, antes 30)`, total <= 12);
 }
 
+console.log('\n=== 7) Pasado/presente que se nota · encargos · volumen ===');
+{
+  const { volumize } = await import('../src/game/actors/volume');
+  // lienzo real mínimo (8×10): cuerpo gris medio con contorno negro a la izquierda
+  const W = 8, H = 10;
+  const data = new Uint8ClampedArray(W * H * 4);
+  for (let y = 1; y < H; y++) for (let x = 0; x < W; x++) {
+    const o = (y * W + x) * 4;
+    const c = x === 0 ? 10 : 128;
+    data[o] = c; data[o + 1] = c; data[o + 2] = c; data[o + 3] = 255;
+  }
+  const cv = { width: W, height: H, getContext: () => ({ getImageData: () => ({ data }), putImageData: () => {} }) } as unknown as HTMLCanvasElement;
+  volumize(cv);
+  const at = (x: number, y: number) => data[(y * W + x) * 4];
+  check('volumen: el lado de la luz se aclara y el de la sombra se oscurece', at(1, 3) > 128 && at(7, 3) < 128, `${at(1, 3)} / ${at(7, 3)}`);
+  check('volumen: el contorno no se toca', at(0, 3) === 10);
+  check('volumen: las botas reciben menos luz que la cabeza', at(4, 9) < at(4, 1));
+
+  const g = boot();
+  g.loadMap('molino', 16, 35);
+  g.flags.sq_molino_on = true; g.flags.sq_savia_on = true;
+  SQ.sqPin(g, 'savia');
+  check('Encargos: la misión fijada manda en el HUD aunque estés en otro mapa', SQ.sqTracked(g)?.q.id === 'savia');
+  g.flags.sq_savia_done = true;
+  check('Encargos: una misión entregada deja de estar fijada', SQ.sqTracked(g)?.q.id === 'molino');
+  let audioOk = true;
+  try { audio.setEpoch('pasado', true); audio.setEpoch('presente', true); audio.setEpoch('neutral'); } catch { audioOk = false; }
+  check('audio de época: setEpoch sin AudioContext no rompe', audioOk);
+  g.player!.hasEcho = true;
+  const ep0 = g.epoch;
+  g.epochSwitch();
+  let drawOk = true;
+  try { for (let i = 0; i < 20; i++) { step(g, 1); drawGame(g); } } catch (e) { drawOk = false; console.log(e); }
+  check('viaje en el tiempo: cambia la época y la esfera/cartela se dibujan sin errores', g.epoch !== ep0 && drawOk);
+  g.setState('pause');
+  try { drawGame(g); } catch (e) { drawOk = false; console.log(e); }
+  check('pausa con la pestaña ENCARGOS en el hub se dibuja', drawOk);
+}
+
 console.log(fails === 0 ? '\nSMOKE R18: TODO OK' : `\nSMOKE R18: ${fails} FALLOS`);
 process.exit(fails === 0 ? 0 : 1);

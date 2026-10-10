@@ -241,11 +241,21 @@ function updateCombatFx(g: Game): void {
   }
 }
 
+let audioEpochSeen = '';
+
 export function updateGame(g: Game, dt: number) {
   // cosmética siempre
   if (g.state === 'dialogue' && g.dlgNode) g.dlgCharT += dt * 45;
   g.mapTitleT = Math.max(0, g.mapTitleT - dt);
   g.epochFx = Math.max(0, g.epochFx - dt);
+  // R18: la música sigue a la época (filtro + eco de memoria); en un viaje
+  // real (Q) se hunde y emerge en la otra era
+  const audioEp = g.map.epochDiffs.length === 0 ? 'neutral'
+    : g.map.baseEpoch === 'aun' && g.epoch === 'presente' ? 'estreno' : g.epoch;
+  if (audioEp !== audioEpochSeen) {
+    audio.setEpoch(audioEp, audioEpochSeen !== '' && g.epochFx > 0.3);
+    audioEpochSeen = audioEp;
+  }
   g.shake = Math.max(0, g.shake - dt * 22);
   // R5-O10: compactación in place — mismo filtrado y mismo orden, cero arrays
   // nuevos por frame (antes .filter() alocaba 3 arrays por frame aquí)

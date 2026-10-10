@@ -458,6 +458,20 @@ export function drawEpochAtmosphere(ctx: CanvasRenderingContext2D, g: Game): voi
       ctx.fillStyle = '#ffe9a8';
       ctx.fillRect(x, y, 2, 2);
     }
+  } else {
+    // R18 · presente: ceniza de la Niebla que cae y deriva con el viento
+    // (parallax suave con la cámara; deterministas por índice, sin allocations)
+    const t = g.globalT;
+    const px = g.camX * 0.25, py = g.camY * 0.25;
+    for (let i = 0; i < 22; i++) {
+      const h1 = hash2(i * 13 + 5, 3) * 2, h2 = hash2(i * 31 + 9, 17) * 2;
+      const spd = 14 + (i % 6) * 4;
+      const x = (((h1 * VIEW_W + t * 9 + Math.sin(t * 0.7 + i * 1.3) * 16 - px) % VIEW_W) + VIEW_W) % VIEW_W;
+      const y = (((h2 * VIEW_H + t * spd - py) % VIEW_H) + VIEW_H) % VIEW_H;
+      ctx.globalAlpha = 0.18 + 0.14 * Math.sin(t * 1.3 + i);
+      ctx.fillStyle = i % 3 === 0 ? '#c8ccd8' : '#7a7e8c';
+      ctx.fillRect(x, y, i % 4 === 0 ? 3 : 2, i % 4 === 0 ? 2 : 1);
+    }
   }
   ctx.restore();
   ctx.globalAlpha = 1;

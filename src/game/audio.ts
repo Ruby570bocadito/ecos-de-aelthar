@@ -232,6 +232,11 @@ export class AudioEngine {
   musicGain!: GainNode;
   sfxGain!: GainNode;
   combatBus!: GainNode;
+  // R18 · la época se OYE: la música pasa por un filtro de época (presente
+  // apagado y estrecho; pasado brillante, con un eco de memoria)
+  private epochLp: BiquadFilterNode | null = null;
+  private epochWet: GainNode | null = null;
+  private epochWanted = 'presente';
 
   private musicTimer: number | null = null;
   private step = 0;
@@ -302,7 +307,20 @@ export class AudioEngine {
     this.master.connect(this.ctx.destination);
     this.musicGain = this.ctx.createGain();
     this.musicGain.gain.value = this.musicVol;
-    this.musicGain.connect(this.master);
+    // R18: musicGain → filtro de época → master (+ eco de memoria en paralelo)
+    this.epochLp = this.ctx.createBiquadFilter();
+    this.epochLp.type = 'lowpass';
+    this.epochLp.Q.value = 0.7;
+    const dl = this.ctx.createDelay(1);
+    dl.delayTime.value = 0.33;
+    const fb = this.ctx.createGain();
+    fb.gain.value = 0.34;
+    this.epochWet = this.ctx.createGain();
+    this.musicGain.connect(this.epochLp);
+    this.epochLp.connect(this.master);
+    this.epochLp.connect(dl); dl.connect(fb); fb.connect(dl);
+    dl.connect(this.epochWet); this.epochWet.connect(this.master);
+    this.applyEpoch(this.epochWanted, false);
     this.sfxGain = this.ctx.createGain();
     this.sfxGain.gain.value = this.sfxVol;
     this.sfxGain.connect(this.master);
@@ -317,6 +335,43 @@ export class AudioEngine {
   // NaN quedaba fijo en el bus para toda la sesión)
   setMusicVol(v: number) { v = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : this.musicVol; this.musicVol = v; if (this.musicGain) this.musicGain.gain.value = v; }
   setSfxVol(v: number) { v = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : this.sfxVol; this.sfxVol = v; if (this.sfxGain) this.sfxGain.gain.value = v; }
+
+  /** R18 · color de época para la música. `swirl` = viaje real: la música
+   *  se hunde un instante (como oída desde el agua) y emerge en la otra era. */
+  setEpoch(ep: string, swirl = false) {
+    this.epochWanted = ep;
+    this.applyEpoch(ep, swirl);
+  }
+  private applyEpoch(ep: string, swirl: boolean) {
+    if (!this.ctx || !this.epochLp || !this.epochWet) return;
+    const t = this.ctx.currentTime;
+    // 'neutral' = mapa sin otra época · 'estreno' = el primer día de la Cuna
+    const f = ep === 'pasado' ? 16000 : ep === 'aun' ? 1700 : ep === 'estreno' ? 12000 : ep === 'neutral' ? 20000 : 2600;
+    const wet = ep === 'pasado' ? 0.24 : ep === 'aun' ? 0.3 : ep === 'estreno' ? 0.1 : 0.0;
+    const fq = this.epochLp.frequency, wg = this.epochWet.gain;
+    fq.cancelScheduledValues(t); wg.cancelScheduledValues(t);
+    if (swirl) {
+      // firma sonora del viaje: campanas que suben hacia el ayer · gong grave al volver
+      if (ep === 'pasado' || ep === 'estreno') {
+        this.sTone(523, 530, 0.9, 'sine', 0.06, 0.12);
+        this.sTone(659, 666, 0.9, 'sine', 0.05, 0.22);
+        this.sTone(784, 792, 1.1, 'sine', 0.05, 0.32);
+        this.sTone(1047, 1056, 1.2, 'triangle', 0.035, 0.42);
+      } else {
+        this.sTone(130, 98, 1.1, 'sine', 0.12, 0.08);
+        this.sTone(196, 147, 0.8, 'triangle', 0.04, 0.1);
+      }
+      fq.setValueAtTime(Math.max(60, fq.value), t);
+      fq.exponentialRampToValueAtTime(240, t + 0.16);
+      fq.exponentialRampToValueAtTime(f, t + 0.9);
+      wg.setValueAtTime(wg.value, t);
+      wg.linearRampToValueAtTime(0.45, t + 0.16);
+      wg.linearRampToValueAtTime(wet, t + 1.4);
+    } else {
+      fq.setValueAtTime(f, t);
+      wg.setValueAtTime(wet, t);
+    }
+  }
 
   // ---------------- Música ----------------
 

@@ -17,6 +17,7 @@ import { paintVillage } from './world/village';
 import { paintTall } from './world/trees';
 import { px as tpx, hash2 } from './world/palette';
 
+import { volumizeAll } from './actors/volume'; // R18: profundidad para NPCs y humanoides
 export { hash2 } from './world/palette';
 export type { Frames } from './actors/util';
 export { frameIndex, entityFrame, type HumanPal } from './actors/humanoid';
@@ -54,9 +55,10 @@ function buildPickups(): void {
 
 export function initSprites(): void {
   for (const [name, pal] of Object.entries(PALS)) {
-    SPR[name] = buildHumanoid(pal);
-    ATK[name] = buildAttackPoses(pal); // R9-6
-    ROLL[name] = buildRollPoses(pal);  // R9-6
+    // R18: pase de volumen horneado (luz arriba-izquierda, sombra fría)
+    SPR[name] = volumizeAll(buildHumanoid(pal), 1.3);
+    ATK[name] = volumizeAll(buildAttackPoses(pal), 1.3); // R9-6
+    ROLL[name] = volumizeAll(buildRollPoses(pal), 1.3);  // R9-6
   }
   SPR['lobo'] = buildWolf();
   SPR['guardian'] = buildGuardian();

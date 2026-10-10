@@ -19,12 +19,15 @@ import { dominantTone, TONE_LABEL } from './hooks';
 import { drawBalancePanel, critChance } from './balance'; // 12-c: dificultad (pestaña SISTEMA) + R8-7 crítico
 import { drawArmorRow, ARMORS, armorActive, type ArmorDef } from './armor'; // 14-b: datos de corazas (solo lectura)
 import { drawPortrait } from './sprites';
+import { hasPortrait } from './actors/portraits'; // R18
 import { audio } from './audio';
 import { COL, text, textShadow, panel, bar, button, wrapText, addHit, refreshCursor, shortName } from './ui';
 import { drawSkyBackdrop } from './world/sky';
 import { drawCinematic } from './cinematic'; // R15: prólogo animado saltable
 import { openChallengeMenu, drawChallengeTitleUi, drawChallengeOverlay } from './challenge'; // 12-a (modo desafío)
 import { drawTitlePanels, openStatsPanel, openLogrosPanel } from './achievements'; // 16-c: Estadísticas y Logros
+import { SIDE_QUESTS, RELICS, sqOn, sqDone, sqCurrent, sqTracked, sqPin, relicOwned, relicEquipped, relicIs, equipRelic } from './sidequests'; // R18
+import { MAPS } from './maps';
 
 const INTRO_SLIDES = [
   {
@@ -72,7 +75,7 @@ const KEY_ITEM_FLAGS: [string, string][] = [
 const NUM_ES = ['cero', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete'];
 
 // R8-4 — pie del título: una sola línea discreta con la versión
-const GAME_VERSION = 'v0.8.0'; // R17: una sola fuente para título y pausa
+const GAME_VERSION = 'v0.9.0'; // R17: una sola fuente para título y pausa · R18: v0.9.0
 const TITLE_FOOTER = `${GAME_VERSION} · Ecos de Aelthar`; // R17: semillas del Eco · lente · equilibrio por zona
 
 export function drawScreens(g: Game) {
@@ -347,10 +350,11 @@ function drawIntro(g: Game) {
 //    + pool de UiHit) y hub/capa no se dibujan en el mismo frame, así que
 //    no hay hits solapados entre capas.
 
-const SECTIONS = ['ESTADO', 'EQUIPO', 'INVENTARIO', 'DIARIO', 'OPCIONES'];
-const SEC_TITLES = ['ESTADO DEL PORTADOR', 'ARMA Y ARMADURA', 'INVENTARIO', 'DIARIO DEL PORTADOR', 'OPCIONES Y SISTEMA'];
-const SEC_ROWS = [5, 5, 0, 0, 0]; // filas seleccionables con ↑↓ por sección
-const HUB_ROWS = ['REANUDAR', 'ESTADO', 'EQUIPO', 'INVENTARIO', 'DIARIO', 'OPCIONES', 'GUARDAR Y SALIR'];
+const SECTIONS = ['ESTADO', 'EQUIPO', 'INVENTARIO', 'DIARIO', 'ENCARGOS', 'OPCIONES'];
+const SEC_TITLES = ['ESTADO DEL PORTADOR', 'ARMA Y ARMADURA', 'INVENTARIO', 'DIARIO DEL PORTADOR', 'ENCARGOS Y RELIQUIAS', 'OPCIONES Y SISTEMA'];
+// filas seleccionables con ↑↓ por sección (R18: ENCARGOS = 5 misiones + 5 reliquias)
+const SEC_ROWS = [5, 5, 0, 0, SIDE_QUESTS.length + RELICS.length, 0];
+const HUB_ROWS = ['REANUDAR', 'ESTADO', 'EQUIPO', 'INVENTARIO', 'DIARIO', 'ENCARGOS', 'OPCIONES', 'GUARDAR Y SALIR'];
 
 // reputaciones de VELMORA — hoisted (antes: array literal nuevo por frame)
 const FACS: [string, string][] = [
@@ -366,9 +370,9 @@ for (let i = 0; i < 32; i++) NUMSTR.push(String(i));
 
 // estado del menú de pausa (patrón challenge.menuOpen): la sección elegida
 // PERSISTE entre aperturas — no perder el contexto al abrir/cerrar (3.2)
-let pauseSec = 0;           // sección activa (0..4)
+let pauseSec = 0;           // sección activa (0..5)
 let pauseLayerOpen = false; // ¿capa de sección abierta sobre el hub?
-let hubSel = 1;             // cursor del hub (0..6; arranca en ESTADO)
+let hubSel = 1;             // cursor del hub (0..7; arranca en ESTADO)
 let rowSel = 0;             // cursor de filas dentro de la sección
 let spentConf = '';         // confirmación del último gasto de atributo (3.5)
 let spentConfT = -99;
@@ -429,7 +433,7 @@ function openSection(i: number) {
 
 function hubAction(g: Game, i: number) {
   if (i === 0) { audio.sfx('confirm'); g.setState('play'); }
-  else if (i >= 1 && i <= 5) openSection(i - 1);
+  else if (i >= 1 && i <= SECTIONS.length) openSection(i - 1);
   else { g.save(); g.setState('title'); } // save() ya se blinda en desafío
 }
 
@@ -493,11 +497,13 @@ function drawPauseHub(g: Game, px: number, py: number, pw: number, ph: number) {
   if (NAV.confirm) hubAction(g, hubSel);
 
   const rx = px + 190, rw = 340;
+  const sqNew = SIDE_QUESTS.filter(q => sqOn(g, q) && !sqDone(g, q)).length;
   for (let i = 0; i < HUB_ROWS.length; i++) {
-    const y = py + 64 + i * 46;
+    const y = py + 62 + i * 44;
     menuRow(g, HUB_ROWS[i], rx, y, rw, 38, hubSel === i, () => hubAction(g, i), 12);
     if (hubSel === i) text(g, '▸', rx - 18, y + 12, 14, COL.gold, 'center', true);
     if (i === 1 && p.points > 0) badge(g, rx + rw - 28, y + 11, p.points); // 3.5
+    if (i === 5 && sqNew > 0) badge(g, rx + rw - 28, y + 11, sqNew); // R18: encargos en curso
   }
   text(g, '↑↓ elegir · E / clic confirmar · Esc reanudar', px + 24, py + ph - 24, 13, COL.dim);
   text(g, GAME_VERSION, px + pw - 24, py + ph - 24, 13, 'rgba(122,128,148,0.8)', 'right');
@@ -516,9 +522,10 @@ function drawPauseLayer(g: Game, px: number, py: number, pw: number, ph: number)
     if (NAV.down) { rowSel = (rowSel + 1) % rows; audio.sfx('blip'); }
   }
   if (NAV.confirm && pauseSec === 0) spendAttr(g, rowSel);
+  if (NAV.confirm && pauseSec === 4) encargoAction(g, rowSel);
 
   // pestañas SIEMPRE visibles (3.2) con la activa en dorado
-  const tw = 134, gap = 5;
+  const tw = 112, gap = 4;
   const tx0 = px + (pw - (SECTIONS.length * tw + (SECTIONS.length - 1) * gap)) / 2;
   for (let i = 0; i < SECTIONS.length; i++) {
     const tx = tx0 + i * (tw + gap), ty = py + 10;
@@ -540,6 +547,7 @@ function drawPauseLayer(g: Game, px: number, py: number, pw: number, ph: number)
     case 1: drawSecEquipo(g, px, py, pw, cx, cy); break;
     case 2: drawSecInventario(g, cx, cy); break;
     case 3: drawSecDiario(g, px, py, pw, ph, cx, cy); break;
+    case 4: drawSecEncargos(g, px, py, pw, ph, cx, cy); break;
     default: drawSecOpciones(g, px, py, pw, cx, cy); break;
   }
 }
@@ -815,6 +823,98 @@ function drawSecDiario(g: Game, px: number, py: number, pw: number, ph: number, 
   }
 }
 
+// ---------------- Sección ENCARGOS (R18 · misiones secundarias + reliquias) ----------------
+// Filas 0..4: misiones (E fija la que sigue el HUD) · filas 5..9: reliquias
+// (E equipa la elegida; E sobre la equipada la guarda).
+
+function encargoAction(g: Game, row: number) {
+  const nq = SIDE_QUESTS.length;
+  if (row < nq) {
+    const q = SIDE_QUESTS[row];
+    if (!sqOn(g, q) || sqDone(g, q)) { audio.sfx('error'); return; }
+    sqPin(g, q.id);
+    audio.sfx('confirm');
+    return;
+  }
+  const r = RELICS[row - nq];
+  if (!r) return;
+  if (!relicOwned(g, r.id)) { audio.sfx('error'); return; }
+  equipRelic(g, relicIs(g, r.id) ? null : r.id);
+}
+
+function drawSecEncargos(g: Game, px: number, py: number, pw: number, ph: number, cx: number, cy: number) {
+  const ctx = g.ctx;
+  const nq = SIDE_QUESTS.length;
+  const done = SIDE_QUESTS.filter(q => sqDone(g, q)).length;
+  text(g, 'MISIONES SECUNDARIAS', cx, cy, 11, COL.gold, 'left', true);
+  text(g, `${done}/${nq} completadas`, cx + 388, cy + 1, 13, COL.dim, 'right');
+  const pinned = sqTracked(g)?.q.id;
+  const colW = 396;
+  let y = cy + 20;
+  for (let i = 0; i < nq; i++) {
+    const q = SIDE_QUESTS[i];
+    const on = sqOn(g, q), fin = sqDone(g, q);
+    const sel = rowSel === i;
+    const h = 60;
+    const hov = addHit(g, cx - 8, y - 4, colW + 8, h - 4, () => { if (rowSel === i) encargoAction(g, i); else rowSel = i; });
+    if (sel || hov) { ctx.fillStyle = 'rgba(240,200,74,0.09)'; ctx.fillRect(cx - 8, y - 4, colW + 8, h - 4); }
+    if (sel) text(g, '▸', cx - 20, y, 14, COL.gold, 'center', true);
+    const where = MAPS[q.map]?.name ?? q.map;
+    if (!on && !fin) {
+      text(g, '? Encargo sin descubrir', cx, y, 15, COL.dim);
+      text(g, `Alguien espera en ${where}.`, cx + 12, y + 18, 13, 'rgba(154,160,184,0.75)');
+    } else {
+      const mark = fin ? '✔' : pinned === q.id ? '◆' : '·';
+      text(g, `${mark} ${q.name}`, cx, y, 15, fin ? '#6a8a6a' : pinned === q.id ? COL.quest : COL.goldSoft);
+      text(g, `${q.giverName} · ${where}`, cx + colW - 6, y + 2, 12, COL.dim, 'right');
+      if (fin) {
+        const r = RELICS.find(x => x.id === q.reward.relic);
+        text(g, `Entregada · recompensa: ${r?.name ?? 'reliquia'}`, cx + 12, y + 18, 13, '#6a8a6a');
+      } else {
+        const cur = sqCurrent(g, q) ?? '';
+        wrapText(`▸ ${cur}`, 54).slice(0, 2).forEach((l, k) => text(g, l, cx + 12, y + 18 + k * 14, 13, COL.text));
+      }
+    }
+    y += h;
+  }
+
+  // reliquias (columna derecha)
+  const rx = cx + colW + 24, rw = pw - (rx - px) - 28;
+  text(g, 'RELIQUIAS', rx, cy, 11, COL.gold, 'left', true);
+  const eq = relicEquipped(g);
+  text(g, eq ? 'una equipada a la vez' : 'ninguna equipada', rx + rw, cy + 1, 12, COL.dim, 'right');
+  let ry = cy + 20;
+  for (let j = 0; j < RELICS.length; j++) {
+    const r = RELICS[j];
+    const row = nq + j;
+    const own = relicOwned(g, r.id);
+    const isEq = eq === r.id;
+    const sel = rowSel === row;
+    const h = 60;
+    const hov = addHit(g, rx - 6, ry - 4, rw + 10, h - 4, () => { if (rowSel === row) encargoAction(g, row); else rowSel = row; });
+    if (sel || hov) { ctx.fillStyle = 'rgba(240,200,74,0.09)'; ctx.fillRect(rx - 6, ry - 4, rw + 10, h - 4); }
+    if (sel) text(g, '▸', rx - 16, ry + 4, 14, COL.gold, 'center', true);
+    // ficha del icono
+    ctx.fillStyle = own ? 'rgba(20,18,30,0.95)' : 'rgba(14,14,20,0.8)';
+    ctx.fillRect(rx, ry, 30, 30);
+    ctx.strokeStyle = isEq ? COL.gold : own ? r.color : '#3a3a48';
+    ctx.lineWidth = isEq ? 2 : 1;
+    ctx.strokeRect(rx + 0.5, ry + 0.5, 29, 29);
+    text(g, own ? r.icon : '?', rx + 15, ry + 6, 16, own ? r.color : '#4a4a58', 'center');
+    if (own) {
+      text(g, r.name, rx + 40, ry, 14, isEq ? COL.gold : COL.goldSoft);
+      wrapText(r.desc, 30).slice(0, 2).forEach((l, k) => text(g, l, rx + 40, ry + 17 + k * 13, 12, COL.text));
+      if (isEq) text(g, '◆', rx + rw, ry, 13, COL.gold, 'right');
+    } else {
+      const q = SIDE_QUESTS.find(x => x.reward.relic === r.id);
+      text(g, 'Reliquia oculta', rx + 40, ry, 14, COL.dim);
+      text(g, q ? `Recompensa de «${q.name}»` : '', rx + 40, ry + 17, 12, 'rgba(154,160,184,0.75)');
+    }
+    ry += h;
+  }
+  text(g, '↑↓ elegir · E fija la misión en el HUD / equipa la reliquia', cx, py + ph - 26, 13, COL.dim);
+}
+
 // ---------------- Sección OPCIONES (antes SISTEMA) ----------------
 
 function drawSecOpciones(g: Game, px: number, py: number, pw: number, cx: number, cy: number) {
@@ -947,7 +1047,7 @@ function mapPortrait(p: string): string {
     case 'teo': return 'teo';
     case 'doran': return 'doran';
     case 'nimue': return 'nimue';
-    default: return 'wisp';
+    default: return hasPortrait(p) ? p : 'wisp'; // R18: aldara, fenna, bram, ysolde, haldor…
   }
 }
 

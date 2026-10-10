@@ -10,7 +10,7 @@
 // objetivo ya aparece cumplido; si cargas una partida vieja, nada se rompe.
 // Flags: sq_<id>_on (aceptada) · sq_<id>_done (entregada) · hechos propios.
 //
-// Reliquias (una equipada a la vez, se elige en la pausa · Equipo):
+// Reliquias (una equipada a la vez, se elige en la pausa · Encargos):
 //   pluma      Pluma de la Reina     +8% velocidad
 //   corona     Corona de Ramas       −10% daño recibido
 //   caracola   Caracola del Faro     +1,5 de Resonancia por segundo
@@ -51,7 +51,7 @@ function grantRelic(g: Game, id: string): void {
   g.flags[`reliquia_${id}`] = true;
   if (!relicEquipped(g)) g.flags.reliquia = id;
   const r = RELICS.find(x => x.id === id)!;
-  g.toast(`¡Reliquia: ${r.name}! ${r.desc} (pausa · Equipo para cambiarla)`, r.color);
+  g.toast(`¡Reliquia: ${r.name}! ${r.desc} (pausa · Encargos para cambiarla)`, r.color);
 }
 
 // ---------------------------------------------------------------- misiones
@@ -118,10 +118,15 @@ export function sqCurrent(g: Game, q: SideQuest): string | null {
 }
 function sqReady(g: Game, q: SideQuest): boolean { return q.objectives.every(o => o.done(g)); }
 
-/** Misión secundaria a mostrar en el HUD: la del mapa actual o la última activa. */
+/** Fija (desde la pausa · Encargos) la misión que sigue el HUD. */
+export function sqPin(g: Game, id: string): void { g.flags.sq_pin = id; }
+
+/** Misión secundaria a mostrar en el HUD: la fijada, la del mapa actual o la última activa. */
 export function sqTracked(g: Game): { q: SideQuest; text: string } | null {
   let pick: SideQuest | null = null;
-  for (const q of SIDE_QUESTS) if (sqOn(g, q) && !sqDone(g, q) && q.map === g.mapId) pick = q;
+  const pin = SIDE_QUESTS.find(q => q.id === g.flags.sq_pin);
+  if (pin && sqOn(g, pin) && !sqDone(g, pin)) pick = pin;
+  if (!pick) for (const q of SIDE_QUESTS) if (sqOn(g, q) && !sqDone(g, q) && q.map === g.mapId) pick = q;
   if (!pick) for (const q of SIDE_QUESTS) if (sqOn(g, q) && !sqDone(g, q)) pick = q;
   if (!pick) return null;
   const t = sqCurrent(g, pick);
