@@ -18,6 +18,7 @@ import { COL, text, textShadow, panel, bar, button, wrapText, addHit } from './u
 import { openChallengeMenu, drawChallengeTitleUi, drawChallengeOverlay } from './challenge'; // 12-a (modo desafío)
 import { drawTitlePanels, openStatsPanel, openLogrosPanel } from './achievements'; // 16-c: Estadísticas y Logros
 import { interludioTick18F, bannerActo18F } from './interludios'; // 18-f: interludios de acto + banner (agente historia-transiciones)
+import { drawMagiasPanelR19 } from './magias_r19'; // 19-b: pestaña MAGIAS de pausa
 
 const INTRO_SLIDES = [
   {
@@ -199,7 +200,7 @@ function drawTitle(g: Game) {
   textShadow(g, 'AELTHAR', VIEW_W / 2, 110 + bob, 42, COL.gold, '#2a1a08', 'center', true);
   ctx.fillStyle = COL.gold;
   ctx.fillRect(VIEW_W / 2 - 180, 168, 360, 2);
-  text(g, 'RPG 2D de acción y exploración · Demo jugable · Acto II incluido', VIEW_W / 2, 180, 17, COL.dim, 'center');
+  text(g, 'RPG 2D de acción y exploración · Acto IV incluido · 3 jefes de zona + arena', VIEW_W / 2, 180, 17, COL.dim, 'center');
 
   // botones (con brillo de hover). 16-c: menú ampliado — Estadísticas y
   // Logros en una rejilla secundaria de 2 columnas (mismo lenguaje visual)
@@ -230,7 +231,7 @@ function drawTitle(g: Game) {
   }
 
   text(g, 'Basado en el Documento de Diseño de @papito · 8 oct 2026', VIEW_W / 2, VIEW_H - 40, 15, 'rgba(154,160,184,0.8)', 'center');
-  text(g, 'v0.5.0 · Lunaris — Bosque — Cripta — Costa de Bruma — Merrow — Cumbres Heladas · Logros', VIEW_W / 2, VIEW_H - 20, 14, 'rgba(122,128,148,0.7)', 'center');
+  text(g, 'v0.6.0 · Lunaris — Bosque — Cripta — Costa de Bruma — Merrow — Cumbres Heladas — Sala del Primer Canto — Arena · Logros', VIEW_W / 2, VIEW_H - 20, 14, 'rgba(122,128,148,0.7)', 'center');
 }
 
 // helpers deterministas locales (evitan importar hash2 aquí)
@@ -346,7 +347,7 @@ function drawIntro(g: Game) {
 
 // ---------------- Pausa ----------------
 
-const TABS = ['ESTADO', 'EQUIPO', 'DIARIO', 'SISTEMA'];
+const TABS = ['ESTADO', 'EQUIPO', 'DIARIO', 'SISTEMA', 'MAGIAS']; // 19-b: +pestaña de magias
 
 function drawPause(g: Game) {
   const ctx = g.ctx;
@@ -363,7 +364,7 @@ function drawPause(g: Game) {
   for (let i = 0; i < TABS.length; i++) {
     const tw = 140;
     const selected = g.pauseTab === i;
-    const hover = addHit(g, tx, py + 44, tw, 30, () => { g.pauseTab = i as 0 | 1 | 2 | 3; });
+    const hover = addHit(g, tx, py + 44, tw, 30, () => { g.pauseTab = i as 0 | 1 | 2 | 3 | 4; }); // 19-b: +MAGIAS
     panel(g, tx, py + 44, tw, 30, selected || hover ? COL.gold : COL.panelBorder, selected ? 'rgba(60,48,24,0.9)' : COL.panel);
     text(g, TABS[i], tx + tw / 2, py + 52, 11, selected ? COL.gold : COL.dim, 'center', true);
     tx += tw + 8;
@@ -513,6 +514,9 @@ function drawPause(g: Game) {
       ctx.stroke();
       my += 7;
     }
+  } else if (g.pauseTab === 4) {
+    // 19-b: pestaña MAGIAS (grimorio + loadout de 4 slots; gate tomo_canto)
+    drawMagiasPanelR19(g, cx, cy, pw - 56);
   } else {
     // SISTEMA
     text(g, 'VOLUMEN DE MÚSICA', cx, cy, 16, COL.text);

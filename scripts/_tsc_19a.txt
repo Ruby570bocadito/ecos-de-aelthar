@@ -1,0 +1,4 @@
+src/game/acto5_narrativa_r19.ts(88,15): error TS2305: Module '"./types"' has no exported member 'CompassTarget'.
+src/game/enemigos_r19.ts(918,10): error TS2678: Type '"eco_desvanecido"' is not comparable to type 'EnemyType'.
+src/game/enemigos_r19.ts(919,10): error TS2678: Type '"vigia_tinta"' is not comparable to type 'EnemyType'.
+EXIT=1

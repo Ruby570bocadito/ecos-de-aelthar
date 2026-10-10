@@ -1,0 +1,21 @@
+=== heraldo refs ===
+src/game/interaccion.ts:442:    'El Heraldo de la Orden apunta los silencios largos. Sé breve.',
+src/game/types.ts:13:export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian' | 'neumo' | 'espectro' | 'arpi' | 'sirena' | 'golem' | 'vult' | 'coro' | 'ecodesg' | 'satiro' | 'heraldo'; // 16-a: jefe final del Acto IV
+src/game/maps.ts:277:      // Heraldo de la Orden de Vesh (biblia) — aparece tras recuperar el Eco de la Voz
+src/game/maps.ts:278:      { id: 'heraldo', x: 28, y: 17, sprite: 'sombra', name: 'Heraldo de Vesh', showFlag: 'ecoVoz' },
+src/game/data.ts:185:    text: 'Dos voces más... tres Ecos de siete. La Niebla retrocede en el mapa de los Guardianes: ya se lee el valle, ya se oye el mar, y las cumbres recuerdan el invierno sin frío. Pero el Heraldo tenía razón en una cosa, Portador: la Ciudadela también oye tu melodía ahora. (Fin del Acto II — la demo continúa hasta que tú decidas partir.)',
+src/game/data.ts:400:  // ----- Heraldo de Vesh (aparece tras el Eco de la Voz · biblia: Orden de Vesh) -----
+src/game/data.ts:401:  heraldo_intro: {
+src/game/data.ts:402:    name: 'Heraldo de Vesh', portrait: 'kael',
+src/game/data.ts:405:      { text: 'Dile a tu Inquisidor que si quiere lo que llevo, que baje a buscarlo.', next: 'heraldo_amenaz', action: 'rep_orden_-5', tone: 'amenazante' },
+src/game/data.ts:406:      { text: 'No soy «recipiente» de nadie. Pero de momento hablaremos.', next: 'heraldo_prag', tone: 'pragmatico' },
+src/game/data.ts:407:      { text: '¿Qué es «la segunda vez»?', next: 'heraldo_emp', tone: 'empatico' },
+src/game/data.ts:410:  heraldo_amenaz: {
+src/game/data.ts:411:    name: 'Heraldo de Vesh', portrait: 'kael',
+src/game/data.ts:414:  heraldo_prag: {
+src/game/data.ts:415:    name: 'Heraldo de Vesh', portrait: 'kael',
+src/game/data.ts:418:  heraldo_emp: {
+src/game/data.ts:419:    name: 'Heraldo de Vesh', portrait: 'kael',
+src/game/data.ts:719:  if (nid === 'heraldo') return 'heraldo_intro';
+src/game/data.ts:1436://   7) ENEMY_DEFS_16A — el jefe final 'heraldo' (makeEnemy lee
+src/game/data.ts:1463:      'Abre la Sala del Primer Canto y derrota a El Heraldo — Vesh, la Última Nota',

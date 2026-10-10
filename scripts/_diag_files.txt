@@ -1,0 +1,62 @@
+achievements.ts
+armor.ts
+audio.ts
+balance.ts
+biomas_costa.ts
+biomas_cumbres.ts
+challenge.ts
+data.ts
+enemies_expansion.ts
+engine.ts
+faro_historia.ts
+fx.ts
+fxcore.ts
+hooks.ts
+interaccion.ts
+interludios.ts
+maps.ts
+maps_expansion.ts
+render.ts
+screens.ts
+skilltree.ts
+sprites.ts
+sprites_expansion.ts
+timeskip.ts
+types.ts
+ui.ts
+update.ts
+world
+worldlife.ts
+  21620 src/game/achievements.ts
+   6081 src/game/armor.ts
+  25320 src/game/audio.ts
+  22812 src/game/balance.ts
+  43559 src/game/biomas_costa.ts
+  30275 src/game/biomas_cumbres.ts
+  31551 src/game/challenge.ts
+ 131862 src/game/data.ts
+  73364 src/game/enemies_expansion.ts
+  89930 src/game/engine.ts
+  44869 src/game/faro_historia.ts
+  34443 src/game/fx.ts
+   1757 src/game/fxcore.ts
+  30374 src/game/hooks.ts
+  25552 src/game/interaccion.ts
+  17587 src/game/interludios.ts
+  19874 src/game/maps.ts
+  25956 src/game/maps_expansion.ts
+  47236 src/game/render.ts
+  33615 src/game/screens.ts
+  45602 src/game/skilltree.ts
+  66389 src/game/sprites.ts
+  72840 src/game/sprites_expansion.ts
+  18692 src/game/timeskip.ts
+   9246 src/game/types.ts
+   4660 src/game/ui.ts
+  37101 src/game/update.ts
+  35178 src/game/worldlife.ts
+1047345 total
+api
+globals.css
+layout.tsx
+page.tsx

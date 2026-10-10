@@ -6,6 +6,12 @@
 import type { QuestDef, DialogueNode, DialogueOption, EnemyType, Element, ToneKind } from './types';
 import { INTERLUDIOS } from './interludios'; // 18-f: nodos de los interludios de acto (se registran en D al final del archivo)
 import { FARO_DIALOGUES, faroRouteDialogue } from './faro_historia'; // 18-e: los tres del faro
+import { SQ_R19_DIALOGUES, SQ_R19_QUESTS, sqDialogueR19 } from './sidequests_r19'; // 19-a: secundarias
+import {
+  QUESTS_ACTO5, COMPASS_ACTO5, D_ACTO5, INTERLUDIOS_ACTO5, MEMORIA_ACTO5, KEY_ITEM_ACTO5,
+} from './acto5_narrativa_r19'; // 19-f: Acto V «La Última Nota»
+import { MAREA_DEF_R19 } from './jefe_marea_r19'; // 19-c: def del jefe Marea (type-safe: el módulo solo importa tipos de aquí)
+import { VESH_DEF_R19 } from './jefe_vesh_r19'; // 19-h: def del jefe final
 
 // ---------------- Misiones (cadena principal de la demo) ----------------
 
@@ -1473,6 +1479,14 @@ QUESTS.push(
   },
 );
 
+// ==== R19 (integración): misiones del Acto V (19-f) y secundarias (19-a) ====
+// ORDEN DELIBERADO: q17/q18/q19 en los índices 16/17/18 que el módulo 19-f
+// hard-codea en su auto-reparación de questIdx (no importa QUESTS por diseño
+// anti-ciclos). Las secundarias sq4/sq5/sq6 van después (19/20/21) — trabajan
+// por FLAGS y son ajenas a questIdx.
+QUESTS.push(...QUESTS_ACTO5);    // 19-f
+QUESTS.push(...SQ_R19_QUESTS);   // 19-a
+
 // ---------------- Brújula de Ecos (12-b): objetivos de las misiones nuevas ----------------
 
 QUEST_COMPASS[13] = [{ npc: 'toln' }, { npc: 'mera' }, { npc: 'brisa' }];
@@ -1480,6 +1494,10 @@ QUEST_COMPASS[13] = [{ npc: 'toln' }, { npc: 'mera' }, { npc: 'brisa' }];
 // el objetivo lleva map:'cripta' para que la Brújula señale la salida correcta.
 QUEST_COMPASS[14] = [{ npc: 'guarda' }, { etype: 'heraldo', map: 'cripta' }, { npc: 'brisa' }];
 QUEST_COMPASS[15] = [{ npc: 'brisa' }];
+// ==== R19: brújula del Acto V (19-f). Con el push de QUESTS_ACTO5 delante,
+// q17/q18/q19 ocupan los índices 16/17/18 — EXACTAMENTE las claves internas de
+// COMPASS_ACTO5 (el remap del integrador no hace falta).
+Object.assign(QUEST_COMPASS, COMPASS_ACTO5); // 19-f: claves 16/17/18
 
 // ---------------- Objeto clave de la campana (sabor; sin gate de motor) ----------------
 
@@ -1751,6 +1769,11 @@ export const ENEMY_DEFS_16A: Record<string, EnemyDef> = {
 };
 Object.assign(ENEMY_DEFS, ENEMY_DEFS_16A);
 
+// ==== R19 (integración): defs de los jefes nuevos (ceniza se auto-inyecta al
+// cargar jefe_ceniza_r19 desde update.ts; eco_desvanecido/vigia_tinta desde engine.ts) ====
+Object.assign(ENEMY_DEFS, { marea: MAREA_DEF_R19 }); // 19-c: La Marea Sin Nombre (costa)
+Object.assign(ENEMY_DEFS, { vesh: VESH_DEF_R19 });   // 19-h: Vesh, el Primer Cantor (ciudadela)
+
 // ---------------- Envoltorio de getDialogue (ruteo del Acto IV) ----------------
 /**
  * Segunda capa del envoltorio (13-a → 16-a): captura la función VIGENTE
@@ -1824,6 +1847,28 @@ function getDialogueActo4(nid: string, ctx: DialogueCtx): string {
 getDialogue = getDialogueActo4;
 
 // ═══════ FIN DEL BLOQUE 16-a ═══════
+
+// ---------------- R19: capa de ruteo del Acto V + secundarias (19-a/19-f) ----------------
+// Tercera capa (captura la capa del Acto IV ya reasignada). Orden deliberado:
+//   1) interceptores narrativos del Acto V (brisa/guarda — ANTES de que la capa
+//      del Acto IV los capture con sus rutas q14-q16),
+//   2) ruteo de los NPCs nuevos de las secundarias (iria/odrik/erev — sin ellos
+//      caerían al fallback 'brisa_idle' del motor con nombre ajeno),
+//   3) delegación limpia a la capa del Acto IV.
+const GET_DIALOGUE_ACTO4_R19 = getDialogue;
+
+function getDialogueActo5R19(nid: string, ctx: DialogueCtx): string {
+  // 19-f: interceptores del Acto V (usa flags tal como los escribió el agente)
+  if (nid === 'brisa' && ctx.flags.acto4Done && ctx.flags.heraldoDerrotado && !ctx.flags.q17) return 'acto5_brisa_puerta'; // ofrece q17
+  if (nid === 'brisa' && ctx.flags.acto5_intro_vista && !ctx.flags.acto5_brisa_reacc) return 'acto5_brisa'; // la confesión (40 años)
+  if (nid === 'guarda' && ctx.flags.acto5_intro_vista && !ctx.flags.acto5_kael_reacc) return 'acto5_kael'; // la duda de Kael
+  // 19-a: Guardiana Iria / Herrera Odrik / Custodio Erev (NPCs nuevos)
+  { const sr = sqDialogueR19(nid, ctx); if (sr) return sr; }
+  return GET_DIALOGUE_ACTO4_R19(nid, ctx);
+}
+// @ts-expect-error R19: misma técnica de reasignación del binding vivo (capa Acto V)
+getDialogue = getDialogueActo5R19;
+// ═══════ FIN DEL BLOQUE R19 · ruteo ═══════
 
 // ============================================================
 // ==== 16-b ==== (interacción-compañeros): SEÑUELO DE CAZA
@@ -1907,4 +1952,14 @@ Object.assign(D, D_REACC_18F);
 void D_REACC_18F; // (la referencia viva es D/DIALOGUES; la const documenta el bloque)
 
 // ═══════ FIN DEL BLOQUE 18-f ═══════
+
+// ════════════════════════════════════════════════════════════════
+// R19 (integración): registro de diálogos/memoria/item de 19-a y 19-f
+// ════════════════════════════════════════════════════════════════
+Object.assign(D, SQ_R19_DIALOGUES);          // 19-a: 30 nodos de secundarias
+Object.assign(DIALOGUES, D_ACTO5);           // 19-f: nodos del Acto V
+Object.assign(DIALOGUES, INTERLUDIOS_ACTO5); // 19-f: interludios del Acto V
+Object.assign(MEMORIES, MEMORIA_ACTO5);      // 19-f: memoria «La Última Nota»
+Object.assign(KEY_ITEMS, KEY_ITEM_ACTO5);    // 19-f: item «Sello de Vesh»
+// ═══════ FIN DEL BLOQUE R19 · datos ═══════
 

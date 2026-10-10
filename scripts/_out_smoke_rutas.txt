@@ -110,6 +110,14 @@ SMOKE RUTAS · BFS de accesibilidad peatonal (todas las épocas)
 [arena · presente]
   ✓ salida «Valle de Lunaris» zona (20,32 4×2) alcanzable vía (20,32)
 
+[ciudadela · presente]
+  ✓ salida «Cripta del Primer Canto» zona (25,42 4×2) alcanzable vía (25,42)
+  ✓ NPC eco_guia (30,39) con acceso peatonal
+  ✓ cofre acto5_c1 (9,36) alcanzable en presente
+  ✓ cofre acto5_c2 (48,27) alcanzable en presente
+  ✓ cofre acto5_c3 (21,8) alcanzable en presente
+  ✓ ALTAR acto5_altar_vacio (27,7) alcanzable en presente
+
 [cripta · diagnóstico fino bosque→cripta]
   ✓ presente: norte del bosque bloqueado por el puzzle del ayer (diseño intacto)
   ✓ corredor de la puerta de la cripta libre de pinos en presente (0 pinos)
@@ -133,4 +141,4 @@ SMOKE RUTAS · BFS de accesibilidad peatonal (todas las épocas)
      ..........
      ..........
 
-RESULTADO: 93 ok, 0 fallos
+RESULTADO: 99 ok, 0 fallos

@@ -1,0 +1,53 @@
+== sidequests_r19 ==
+import type { Game } from './engine'; // SOLO tipo (borrado en runtime: sin ciclo)
+import type { DialogueNode, MapId, NpcDef, PropDef, QuestDef } from './types';
+import { MAPS } from './maps';
+import { audio } from './audio';
+== magias_r19 ==
+import type { Game } from './engine';
+import type { Enemy, Element, Player } from './types';
+import { COL, text, textShadow, panel, bar, wrapText, addHit, button } from './ui';
+import { registerSpr, getSpr } from './sprites';
+import { audio } from './audio'; // llamado SOLO dentro de funciones
+== jefe_marea_r19 ==
+import type { Game } from './engine';
+import type { Enemy, MapId, Player } from './types';
+import type { EnemyDef } from './data'; // type-only: sin carga del módulo de datos
+import { audio } from './audio';
+import { addFlash, addShake, requestSlowmo } from './fxcore';
+import { registerSpr } from './sprites';
+import type { Frames } from './sprites';
+== jefe_ceniza_r19 ==
+import type { Game } from './engine';
+import type { Enemy, EnemyType } from './types';
+import type { EnemyDef } from './data';
+import { ENEMY_DEFS } from './data';
+import { registerSpr } from './sprites';
+import type { Frames } from './sprites';
+import { audio } from './audio'; // usado SOLO dentro de funciones (sin FX al cargar)
+import { addShake, addFlash, requestSlowmo } from './fxcore';
+== enemigos_r19 ==
+import type { Game } from './engine';
+import type { Enemy, EnemyType, Projectile, Element } from './types';
+import type { EnemyDef } from './data';
+import { ENEMY_DEFS } from './data';
+import { audio } from './audio';
+import { registerSpr, getSpr } from './sprites';
+import type { Frames } from './sprites';
+import { stepKnockback } from './fxcore';
+import { MAPS } from './maps';
+== maps_acto5_r19 ==
+import type { EnemyType, MapDef, MapId } from './types';
+import type { Game } from './engine';
+import { EXPANSION_MAPS } from './maps_expansion';
+== acto5_narrativa_r19 ==
+import type { Game } from './engine';
+import type { DialogueNode, MapId, QuestDef } from './types';
+import { audio } from './audio';
+== jefe_vesh_r19 ==
+import type { Game } from './engine';
+import type { Enemy, Player } from './types';
+import type { EnemyDef } from './data';
+import { audio } from './audio';
+import { registerSpr } from './sprites';
+import type { Frames } from './sprites';

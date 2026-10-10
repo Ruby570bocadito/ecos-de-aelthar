@@ -1,0 +1,81 @@
+=== 1) QUESTDEFS: sq4 / sq5 / sq6 bien formados ===
+  ✓ 3 QuestDefs exportados
+  ✓ sq4 «La Marea que Fue Canción»: nombre evocador
+  ✓ sq4: 2 pasos con objetivo claro
+  ✓ sq4 en posición 0 (orden estable)
+  ✓ sq5 «El Yunque Susurrado»: nombre evocador
+  ✓ sq5: 2 pasos con objetivo claro
+  ✓ sq5 en posición 1 (orden estable)
+  ✓ sq6 «El Custodio del Tomo»: nombre evocador
+  ✓ sq6: 2 pasos con objetivo claro
+  ✓ sq6 en posición 2 (orden estable)
+  ✓ cero Math.random en el código del módulo
+  ✓ mulberry32 local con semilla fija presente
+
+=== 2) DIÁLOGOS: 30 nodos, cadena válida y alcanzable ===
+  ✓ 30 nodos de diálogo (10 sq4 · 10 sq5 · 10 sq6)
+  ✓ encadenado next/options/onEnd válido y con tonos (0 defectos)
+  ✓ sq4: los 10 nodos alcanzables (diálogo + ruteo)
+  ✓ sq5: los 10 nodos alcanzables (diálogo + ruteo)
+  ✓ sq6: los 10 nodos alcanzables (diálogo + ruteo)
+  ✓ sin colisión de claves con DIALOGUES (Object.assign seguro)
+  ✓ los 4 ToneKind presentes (4)
+
+=== 3) NPCs/PROPS: coordenadas legales + instalación idempotente ===
+  ✓ 11 posiciones legales (11/11 transitables en ambas épocas, con acceso y sin pisar nada)
+  ✓ instalación idempotente (3 llamadas → mismo tamaño)
+  ✓ MAPS contienen los 3 NPCs y los 8 props tras instalar
+
+=== 4) FLUJO REAL sq4: accept → campanas → recompensa UNA vez ===
+  ✓ sqPropLabelR19 → null con la quest sin aceptar
+  ✓ sqPropTargetR19 → null sin quest activa
+  ✓ ruteo limpio → sq4_iria_intro
+  ✓ accept_sq4: flags.accept_sq4/sq4/sq4_step=0
+  ✓ toast de misión secundaria
+  ✓ regla «una sola»: accept_sq5 rechazado con toast «Termínala primero»
+  ✓ sqPropTargetR19 junto a la campana oeste → sq4_c1
+  ✓ etiqueta «Recoger campana de bruma» activa
+  ✓ campana oeste recogida (1/3, step 0)
+  ✓ toast de progreso (1/3)
+  ✓ reusar la misma campana NO consume (anti-doble)
+  ✓ 3/3 campanas → sq4_step 1 + toast de vuelta
+  ✓ etiqueta → null en fase de vuelta
+  ✓ recompensa exacta: +150 coronas +1 poción +120 XP (sq4_done, sq4 off)
+  ✓ segunda llamada a sq4_reward = no-op (recompensa UNA vez)
+  ✓ ruteo → done tras cobrar
+
+=== 5) FLUJO REAL sq5: vetas → arma +1 exacta (y tope +5) ===
+  ✓ accept_sq5 → activa, paso 0
+  ✓ etiqueta «Extraer veta de hierro-niebla»
+  ✓ progreso (1/2)
+  ✓ 2/2 vetas → step 1
+  ✓ arma +1 exacta (0→1) y +80 coronas
+  ✓ segunda sq5_reward = no-op
+  ✓ tope +5: sin subida de arma, compensación +140 coronas
+
+=== 6) FLUJO REAL sq6: lámparas → tomo_canto + XP (y vía lightLamp) ===
+  ✓ tras cobrar sq4, accept_sq6 pasa (una en curso, no dos)
+  ✓ 3/3 lámparas → step 1
+  ✓ tomo_canto=true · +100 coronas · +200 XP
+  ✓ recuperación: tick reconcilia lámparas encendidas por el motor → step 1
+
+=== 7) RUTEO + ETIQUETAS + BUSY por NPC ===
+  ✓ odrik limpio → intro
+  ✓ «una sola en curso»: odrik y erev derivan a su nodo busy
+  ✓ activa → progress (dueña) y busy (la otra)
+  ✓ objetivo completo → nodo listo
+  ✓ done tiene prioridad sobre todo
+  ✓ NPC ajenos → null (no secuestra el ruteo)
+  ✓ sqNpcLabelR19(Iria) exacto
+  ✓ sqNpcLabelR19(Mara) → null
+
+=== 8) TICKS sin NaN en varios estados + reparación de flags ===
+  ✓ tick en estado title sin jugador: sin lanzar
+  ✓ 600 ticks en play/dialogue sin lanzar
+  ✓ challengeRun: el tick no reconcilia la campaña
+  ✓ NaN reparado → 0
+  ✓ step fuera de rango (42) reparado → 0
+  ✓ cero flags NaN tras la batería completa
+
+SMOKE SECUNDARIAS R19: TODO OK
+EXIT=0

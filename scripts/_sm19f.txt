@@ -1,0 +1,77 @@
+=== 1) Estructura: quests, brújula, colisiones y GRAFO COMPLETO ===
+  ✓ push de misiones: 16 → 19 (q17/q18/q19 en índices 16/17/18)
+  ✓ ids en orden: q17 (idx 16), q18 (idx 17), q19 (idx 18)
+  ✓ 3 quests bien formadas (id, nombre, pasos con texto)
+  ✓ COMPASS_ACTO5: claves 16/17/18 con objetivos con formato CompassTarget
+  ✓ cero colisiones de claves con DIALOGUES/MEMORIES/KEY_ITEMS existentes
+  ✓ nodos de diálogo del Acto V: 31 (D_ACTO5) + 6 (INTERLUDIOS_ACTO5) = 37 (≥30)
+  ✓ grafo íntegro: 24 aristas next todas resueltas · tonos válidos · textos completos
+
+=== 2) Watcher (A): Heraldo caído → aviso → accept_q17 → interludio_acto5_a ===
+  ✓ watcher (A): acto5_aviso + acto5_q17_activa tras heraldoDerrotado
+  ✓ toast exacto del aviso presente
+  ✓ el tick NO toca questIdx (gestión solo vía accept_q*)
+  ✓ accept_q17: consumida, flag q17 + questIdx 15→16 (auto-reparación con acto4Done)
+  ✓ toast de nueva misión presente
+  ✓ interludio_acto5_a encolado y ABIERTO por el tick
+  ✓ interludio navegado de punta a punta (3 saltos) y cierre a 'play'
+  ✓ flags interludio_acto5_a + _vista marcadas
+  ✓ sin re-apertura del interludio (idempotente)
+
+=== 3) Ciudadela: intro de entrada + cruce del umbral (q17 completa) ===
+  ✓ fuera de la ciudadela no se dispara nada
+  ✓ primera entrada en la Ciudadela: cadena acto5_intro_a abierta
+  ✓ acto5_intro_fin: q17 paso 0 → 1 (la Puerta ya te reconoce)
+  ✓ toast de objetivo del umbral presente
+  ✓ umbral acto5_puerta (radio 40 px): cadena del cruce abierta
+  ✓ acto5_puerta_fin: q17 → q18 «El Coro de Ceniza» (toast de questAdvance)
+  ✓ toast «Nueva misión: El Coro de Ceniza» (lo emite questAdvance)
+
+=== 4) Sellos vía dynNodes[voz_fragment] + elección MORAL (despertar) ===
+  ✓ override dynNodes[voz_fragment] = nodo del sello más cercano (s1)
+  ✓ E del motor abre el sello correcto sin tocar engine
+  ✓ acto5_sello_tomado_1: flag + contador (1/3)
+  ✓ override re-armado al siguiente sello sin tomar (s2)
+  ✓ sello 2 registrado (2/3)
+  ✓ sello 3: contador completo + toast del silencio antes de Vesh
+  ✓ q18 paso 0 → 1 (3/3)
+  ✓ interludio_acto5_b «El silencio antes de Vesh» encolado y abierto
+  ✓ interludio b navegado y marcado _vista
+  ✓ watcher (E): los tres sellos abren la Sala del Silencio (elección moral)
+  ✓ «(Aún no...)» cierra sin elegir (no atrapa al jugador)
+  ✓ tregua activa: la Sala NO se re-abre inmediatamente
+  ✓ pasada la tregua, la Sala se re-abre DIRECTO en el nodo de la elección (pv_vista)
+  ✓ elección DESPERTAR: flags acto5_camino + acto5_sala_abierta (señal para el 19-h)
+  ✓ q18 → q19 «Vesh, la Última Nota» tras la elección
+  ✓ cierre de la cadena de la Sala: el mundo espera al jefe
+  ✓ toast de la elección presente
+
+=== 5) veshDefeated → epílogo «despertar» UNA vez + memoria + FIN VERDADERO ===
+  ✓ watcher (F): epílogo del camino «despertar» abierto
+  ✓ epílogo navegado completo (3 nodos) y cerrado
+  ✓ flag acto5_fin fijada por acto5_fin_verdadero
+  ✓ toast «FIN VERDADERO — La Última Nota ha sonado»
+  ✓ acto5_report19: +150 coronas y +1 poción (pago único)
+  ✓ Memoria VIII «La Última Nota» otorgada con revelación
+  ✓ acto5_memoria idempotente (sin doble otorgamiento)
+  ✓ q19 bien formada (2 pasos) — el clamp de questAdvance es seguro
+  ✓ 2ª llamada tras veshDefeated: NO-OP (el epílogo no se repite)
+  ✓ acto5_fin_verdadero idempotente (sin FIN duplicado)
+
+=== 6) Camino «apagar» (partida limpia): epílogo alternativo ===
+  ✓ con pv_vista, la Sala se abre directo en la elección
+  ✓ acto5CaminoR19 → «apagar» (helper para el 19-h)
+  ✓ q18 → q19 también en el camino «apagar»
+  ✓ epílogo «apagar» disparado (texto distinto por camino)
+  ✓ el epílogo «apagar» tiene texto propio (no reutiliza el de despertar)
+  ✓ epílogo apagar completado: acto5_fin
+
+=== 7) Ilwen + dispararActo5 + limpieza del override + tick sin NaN ===
+  ✓ Ilwen canta la primera armonía (una vez, con compañera en la ciudadela)
+  ✓ la reacción de Ilwen no se repite
+  ✓ override re-armado al volver a la ciudadela
+  ✓ override RETIRADO al salir de la ciudadela (voz_fragment original intacto)
+  ✓ dispararActo5 encola y el tick abre (API pública)
+  ✓ acto5TickR19 600 frames en play/dialogue/pause sin NaN ni excepciones
+
+SMOKE ACTO5 NARRATIVA: TODO OK

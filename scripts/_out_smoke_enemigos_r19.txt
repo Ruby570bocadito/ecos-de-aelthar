@@ -1,0 +1,63 @@
+=== 1) ÉLITE determinista: seed → resultado y mults exactos ===
+  ✓ esEliteR19/eliteSeedR19: mismas args → mismo resultado (×50)
+  ✓ tasa de élites en bosque: 7.8% de 1000 spawns (objetivo ~8%)
+  ✓ tasa de élites en costa: 9.2% de 1000 spawns (objetivo ~8%)
+  ✓ eliteMultR19 = { hp:1.35, dmg:1.25, xp:2, gold:1.8 }
+  ✓ hp/maxHp ×1.35 exacto: 30 → 41
+  ✓ marca eliteR19 + rasgo asignado: tirodoble
+  ✓ eliteDmgR19 = def.dmg ×1.25 (7.5)
+  ✓ dmgEliteR19: élite usa su mult, el regular usa el def
+  ✓ misma seed → mismo hp/rasgo/dmg en otro enemigo
+  ✓ aplicarEliteR19 idempotente (2.ª llamada no-op)
+  ✓ los 4 rasgos asignables por seed: escudo, aullido, tirodoble, tp
+  ✓ eliteIdxPorPosR19: el spawn zone:boss (Guardián) devuelve -1
+  ✓ eliteIdxPorPosR19 resuelve spawns regulares por posición (idx 0)
+
+=== 2) Rasgos: aullido / escudo / tirodoble / tp (tick sin NaN) ===
+  ✓ semillas de rasgo halladas: {"aullido":1,"escudo":0,"tirodoble":2,"tp":3}
+  ✓ aullido a los 8 s: 1 enemigo a <120 px buffeado (+ partículas/sfx)
+  ✓ buff de velocidad real: 60 px naturales → 69.0 px (+15%)
+  ✓ el buff no compone sin desplazamiento natural (estable)
+  ✓ el buff de aullido expira a los 5 s
+  ✓ escudo: 1 activación en 21 s con invulT 0.5 (sin decaer aquí, no re-dispara)
+  ✓ tirodoble: clon a 8.0° con la misma velocidad (lado determinista por seed)
+  ✓ sin re-clonado del mismo proyectil (2.º tick estable)
+  ✓ no clona proyectiles lejanos ni aliados
+  ✓ golpes 1-2: sin teleport
+  ✓ 3.er golpe: teleport a 80.0 px detrás del Portador + invulT 0.40
+  ✓ partículas de tp (35)
+  ✓ cooldown de tp: 3 golpes más no teleportan antes de 3 s
+  ✓ tras el cooldown, el siguiente ciclo de 3 golpes vuelve a teleportar
+  ✓ 400 ticks de eliteTick con 4 élites (1 de cada rasgo): sin NaN
+  ✓ drawEliteAuraR19 dibuja élite y early-return en regular sin excepción
+
+=== 3) Defs + spawns: BFS transitable, alcanzable e idempotente ===
+  ✓ def eco_desvanecido bien formado (element sombra, weakTo sagrado — literal real de types.ts:14)
+  ✓ def vigia_tinta bien formado (element sombra, weakTo rayo — no existe 'agua' en Element)
+  ✓ nombres exactos: «Eco Desvanecido» / «Vigía de Tinta»
+  ✓ spawns instalados: eco_desvanecido ×4 bosque + ×2 cripta, vigia_tinta ×3 costa
+  ✓ instalarEnemigosR19 idempotente (2.ª llamada = mismos spawns)
+  ✓ los 9 spawns nuevos: transitables (ambas épocas), alcanzables por BFS y con separación
+  élites esperadas: lunaris=0 bosque=0 cripta=0 costa=0 aldea=1 cumbres=1 (total 2 de 53 spawns)
+  ✓ cómputo de élites por mapa estable (2 pasadas idénticas)
+
+=== 4) Sprites: 3 frames cada uno, tamaños correctos, idempotentes ===
+  ✓ eco_desv: 3 frames 14×14 (contorno discontinuo · bob · fragmentado)
+  ✓ vigia_tinta: 3 frames 16×16 (abierto · parpadeo coral · telegraph)
+  ✓ initEnemigosR19Sprites idempotente (2.ª llamada sin duplicar/lanzar)
+  ✓ entityFrame compatible: eco moviéndose=0, vigia quieto=0
+
+=== 5) Cerebros: 400-820 ticks sin NaN y proyectiles esperados ===
+  ✓ eco_desvanecido: 400 ticks de r19Tick sin NaN
+  ✓ proyectil de eco en pares: 6 'nota' (disparo + ECO a 0.4 s)
+  ✓ desvanecer: 1× (invulT 0.8 + teleport determinista a 100 px, spec 90-130)
+  ✓ el eco se dejó acercar (<60 px) para poder desvanecerse (mín 41 px)
+  ✓ cerebro determinista: 2 reconstrucciones → misma trayectoria
+  ✓ vigia_tinta: 960 ticks de r19Tick sin NaN
+  ✓ estela de tinta: 12 'orb' en abanicos escalonados (grupos de 3)
+  ✓ especial MANCHA a los 12 s: 1 proyectil lento radius 9 (dmg 10)
+  ✓ mantenedor de distancia: banda 120-160 respetada (rango real 130-130 px)
+  ✓ r19Tick: tipos ajenos → false (IA genérica del motor)
+  ✓ R19_TYPES = { eco_desvanecido, vigia_tinta } (para el gate de update.ts:704)
+
+SMOKE ENEMIGOS R19: TODO OK

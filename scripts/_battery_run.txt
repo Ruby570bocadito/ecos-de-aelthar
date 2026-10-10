@@ -1,0 +1,28 @@
+ROJO    smoke_acto2.ts
+VERDE   smoke_acto3.ts
+ROJO    smoke_acto4.ts
+ROJO    smoke_acto5_r19.ts
+VERDE   smoke_arbol.ts
+VERDE   smoke_balance.ts
+VERDE   smoke_costa_bioma.ts
+VERDE   smoke_cumbres_bioma.ts
+VERDE   smoke_desafio.ts
+VERDE   smoke_enemigos_r19.ts
+VERDE   smoke_faro.ts
+VERDE   smoke_hero_fx.ts
+VERDE   smoke_interaccion.ts
+VERDE   smoke_interludios.ts
+VERDE   smoke_jefe_ceniza_r19.ts
+ROJO    smoke_jefe_marea_r19.ts
+ROJO    smoke_jefe_vesh_r19.ts
+VERDE   smoke_jefes_sprites.ts
+VERDE   smoke_logros.ts
+VERDE   smoke_magias_r19.ts
+VERDE   smoke_mapa_acto5_r19.ts
+VERDE   smoke_motor_acto2.ts
+ROJO    smoke_rutas.ts
+ROJO    smoke_secundarias_r19.ts
+VERDE   smoke_timeskip.ts
+VERDE   smoke_worldlife.ts
+TOTAL: 19 verdes, 7 rojos
+EXIT=0

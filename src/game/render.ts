@@ -17,6 +17,7 @@ import { drawCostaBiomaGround, drawCostaBiomaOverlay } from './biomas_costa'; //
 import { drawCumbresBiomaOverlay } from './biomas_cumbres'; // 18-b: Cumbres Heladas
 import { drawSkillTree } from './skilltree';
 import { drawWorldLife } from './worldlife';
+import { drawEliteAuraR19 } from './enemigos_r19'; // 19-e: aura + corona de élite
 import { tileAt } from './maps';
 import {
   fxFrame, updateAmbient, drawAmbient, getRollTrail,
@@ -328,6 +329,9 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
   ctx.beginPath();
   ctx.ellipse(sx(e.x), sy(e.y + 4), (e.w / 2 + 3) * ZOOM, 3 * ZOOM, 0, 0, Math.PI * 2);
   ctx.fill();
+  ctx.globalAlpha = 1;
+
+  if (e.kind === 'enemy') drawEliteAuraR19(g, e as Enemy, g.globalT); // 19-e: aura + corona de élite (bajo el sprite)
 
   let fi = entityFrame(spr, e.dir, e.moving, e.anim);
   // 18-c: frames de telegraph/ataque/estado de los jefes y enemigos de la

@@ -1,6 +1,6 @@
 === 1) ESTRUCTURA: misiones, memoria VII, jefe final, Guarda, brújula ===
   ✓ q14/q15/q16 presentes: Las Campanas de Antes · La Sala del Primer Canto · El Eco que Elegiste
-  ✓ QUESTS.length = 16 (q1..q16, Acto IV incluido)
+  ✓ QUESTS.length = 22 (q1..q16 + sq4..sq6 19-a + q17..q19 Acto V)
   ✓ pasos: q14 3 · q15 3 · q16 2
   ✓ memoria VII mem_ultimacanto definida
   ✓ jefe final 'heraldo': hp 640, quiebre 130, sprite existente 'inquisidor'
@@ -43,7 +43,7 @@
   ✓ anti-doble-pago q16: ni oro ni memoria duplicados
   ✓ final dinámico: menciona al Coro Roto y a Vult al haber caído
   ✓ textos de jefes del epílogo definidos en data.ts
-  ✓ post-epílogo: despedida con opción de terminar el viaje (end_demo)
+  ✓ post-epílogo: el Acto V ARRANCA — Brisa ofrece q17 «La Puerta que Canta»
 
 === 5) Juego FUERA DE ORDEN: voces/jefe/recuerdos ANTES de aceptar ===
   ✓ q14 fuera de orden: voces previas + catchUp cierran el paso

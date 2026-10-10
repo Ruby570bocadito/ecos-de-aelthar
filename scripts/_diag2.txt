@@ -1,0 +1,63 @@
+=== R17 FILES ===
+---
+grass.ts
+lighting.ts
+minimap.ts
+palette.ts
+props.ts
+sky.ts
+stone.ts
+trees.ts
+village.ts
+water.ts
+weather.ts
+=== GLOB r17 anywhere ===
+=== E2E pngs ===
+_e2e1.txt
+_e2e10.txt
+_e2e11.txt
+_e2e12.txt
+_e2e13.txt
+_e2e2.txt
+_e2e3.txt
+_e2e4.txt
+_e2e5.txt
+_e2e6.txt
+_e2e7.txt
+_e2e8.txt
+_e2e9.txt
+e2e_10_interludio.png
+e2e_11_interludio2.png
+e2e_12_barrera.png
+e2e_13_cumbres.png
+e2e_1_titulo.png
+e2e_2_creacion.png
+e2e_3_juego.png
+e2e_4_left.png
+e2e_4_left_crop.png
+e2e_5_costa.png
+e2e_6_uso.png
+e2e_7_uso2.png
+e2e_8_uso3.png
+e2e_9_uso4.png
+=== page.tsx head ===
+'use client';
+
+import dynamic from 'next/dynamic';
+
+const EcosGame = dynamic(() => import('@/components/game/EcosGame'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-screen w-screen items-center justify-center bg-black">
+      <p className="animate-pulse font-mono text-sm text-amber-200/70">Tejiendo el canto de Aelthar…</p>
+    </div>
+  ),
+});
+
+export default function Home() {
+  return (
+    <main className="h-screen w-screen overflow-hidden bg-black">
+      <EcosGame />
+    </main>
+  );
+}

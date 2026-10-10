@@ -1,0 +1,2 @@
+src/game/enemigos_r19.ts(918,10): error TS2678: Type '"eco_desvanecido"' is not comparable to type 'EnemyType'.
+src/game/enemigos_r19.ts(919,10): error TS2678: Type '"vigia_tinta"' is not comparable to type 'EnemyType'.

@@ -1,0 +1,5 @@
+[agent-browser] launched browser
+✓ Ecos de Aelthar — Demo jugable (RPG 2D)
+  http://localhost:3000/
+✓ Done
+✓ Screenshot saved to scripts/_preview_vivo.png

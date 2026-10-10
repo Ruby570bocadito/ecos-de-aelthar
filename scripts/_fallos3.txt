@@ -1,0 +1,40 @@
+######## acto2 ########
+2:  ✗ QUESTS.length = 22, se esperaban 16
+8:  ✗ nodo sq4_iria_pedir: option.action → 'accept_sq4' sin handler
+9:  ✗ nodo sq4_iria_pedir: option.action → 'accept_sq4' sin handler
+10:  ✗ nodo sq4_iria_duda: onEnd → 'accept_sq4' sin handler
+11:  ✗ nodo sq4_iria_listo: option.action → 'sq4_reward' sin handler
+12:  ✗ nodo sq4_iria_listo: option.action → 'sq4_reward' sin handler
+13:  ✗ nodo sq5_odrik_pedir: option.action → 'accept_sq5' sin handler
+14:  ✗ nodo sq5_odrik_pedir: option.action → 'accept_sq5' sin handler
+15:  ✗ nodo sq5_odrik_temor: onEnd → 'accept_sq5' sin handler
+16:  ✗ nodo sq5_odrik_listo: option.action → 'sq5_reward' sin handler
+######## acto4 ########
+3:  ✗ QUESTS.length = 22, se esperaban 16
+46:  ✗ post-epílogo: dlgKey=acto5_brisa_puerta
+######## acto5_r19 ########
+3:  ✗ ids/tipo: sq4/sq5/sq6
+6:  ✗ colisiones: acto5_brisa_puerta,acto5_intro_a,acto5_intro_b,acto5_intro_c,acto5_intro_d,acto5_puerta_a,acto5_puerta_b,acto5_puerta_c,acto5_sello_1,acto5_sello_2,acto5_sello_3,acto5_puerta_vesh_a,acto5_puerta_vesh_b,acto5_puerta_vesh,acto5_puerta_despues,acto5_puerta_despues_b,acto5_brisa,acto5_brisa_b,acto5_brisa_c,acto5_kael,acto5_kael_b,acto5_kael_c,acto5_ilwen,acto5_ilwen_b,acto5_ilwen_c,acto5_final_despertar_a,acto5_final_despertar_b,acto5_final_despertar_c,acto5_final_apagar_a,acto5_final_apagar_b,acto5_final_apagar_c,interludio_acto5_a,interludio_acto5_a2,interludio_acto5_a3,interludio_acto5_b,interludio_acto5_b2,interludio_acto5_b3,mem_ultimanota,sello_vesh
+28:  ✗ falta el toast de q18
+######## jefe_marea_r19 ########
+7:  ✗ sin spawns regulares a <4 tiles del jefe (esperado 0, obtenido 1)
+9:[3] cerebro tickMareaR19 · 600 ticks × 3 hp%
+######## jefe_vesh_r19 ########
+6:  ✗ name "Vesh, el Primer Cantor"
+14:  ✗ banner mal formado
+19:  ✓ caja de jefe auto-sanada (22×16)
+72:[9] SPRITE: 5 frames 30×24 · determinismo FNV ×2 builds
+74:  ✓ todos los frames miden 30×24
+######## rutas ########
+4:  ✓ salida «Bosque Susurrante» zona (23,0 6×2) alcanzable vía (23,0)
+5:  ✓ salida «Costa de Bruma» zona (25,36 3×2) alcanzable vía (25,36)
+16:  ✓ salida «Bosque Susurrante» zona (23,0 6×2) alcanzable vía (23,0)
+17:  ✓ salida «Costa de Bruma» zona (25,36 3×2) alcanzable vía (25,36)
+28:  ✓ salida «Valle de Lunaris» zona (24,42 6×2) alcanzable vía (24,42)
+29:  ✓ salida «Cripta del Primer Canto» zona (8,2 5×2) alcanzable vía (8,2)
+30:  ✓ salida «Cumbres Heladas» zona (54,6 2×3) alcanzable vía (54,6)
+40:  ✓ salida «Valle de Lunaris» zona (24,42 6×2) alcanzable vía (24,42)
+41:  ✓ salida «Cripta del Primer Canto» zona (8,2 5×2) alcanzable vía (8,2)
+42:  ✓ salida «Cumbres Heladas» zona (54,6 2×3) alcanzable vía (54,6)
+######## secundarias_r19 ########
+21:  ✗ claves ya presentes en DIALOGUES: sq4_iria_intro, sq4_iria_sarc, sq4_iria_historia, sq4_iria_pedir, sq4_iria_duda, sq4_iria_progress, sq4_iria_manos, sq4_iria_listo, sq4_iria_done, sq4_iria_busy, sq5_odrik_intro, sq5_odrik_sarc, sq5_odrik_historia, sq5_odrik_pedir, sq5_odrik_temor, sq5_odrik_progress, sq5_odrik_manos, sq5_odrik_listo, sq5_odrik_done, sq5_odrik_busy, sq6_erev_intro, sq6_erev_exigir, sq6_erev_tomo, sq6_erev_pedir, sq6_erev_duda, sq6_erev_progress, sq6_erev_precio, sq6_erev_listo, sq6_erev_done, sq6_erev_busy

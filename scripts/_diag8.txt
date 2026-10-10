@@ -1,0 +1,20 @@
+=== SMOKE ENEMIGOS ===
+EXIT=0
+  ✓ vigia_tinta: 960 ticks de r19Tick sin NaN
+  ✓ estela de tinta: 12 'orb' en abanicos escalonados (grupos de 3)
+  ✓ especial MANCHA a los 12 s: 1 proyectil lento radius 9 (dmg 10)
+  ✓ mantenedor de distancia: banda 120-160 respetada (rango real 130-130 px)
+  ✓ r19Tick: tipos ajenos → false (IA genérica del motor)
+  ✓ R19_TYPES = { eco_desvanecido, vigia_tinta } (para el gate de update.ts:704)
+
+SMOKE ENEMIGOS R19: TODO OK
+=== SMOKE ACTO5 ===
+EXIT=0
+  ✓ Ilwen canta la primera armonía (una vez, con compañera en la ciudadela)
+  ✓ la reacción de Ilwen no se repite
+  ✓ override re-armado al volver a la ciudadela
+  ✓ override RETIRADO al salir de la ciudadela (voz_fragment original intacto)
+  ✓ dispararActo5 encola y el tick abre (API pública)
+  ✓ acto5TickR19 600 frames en play/dialogue/pause sin NaN ni excepciones
+
+SMOKE ACTO5 NARRATIVA: TODO OK

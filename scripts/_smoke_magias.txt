@@ -1,0 +1,78 @@
+=== 1) Estructura del grimorio + sprite + determinismo ===
+  ✓ 6 magias en el grimorio
+  ✓ ids únicos
+  ✓ todas con id/nombre/cd>0/desc/color/letra y escuela alba|tejedor
+  ✓ los 6 ids del diseño están (curativo/vendaval/estandarte/2 hielos/escudo)
+  ✓ sprite 'vendaval_p' registrado (canvas 12×12, 1 frame, idempotente)
+  ✓ cero Math.random en el CÓDIGO del módulo (solo en comentarios)
+
+=== 2) Gate del Tomo del Canto ===
+  ✓ sin tomo_canto el gate cierra
+  ✓ sin tomo: castMagiaR19 → false (y no cura)
+  ✓ sin tomo: no se fijó cooldown
+  ✓ panel de gate dibuja sin lanzar (alto 172)
+  ✓ panel de gate: sin zonas de click (solo-lectura)
+
+=== 3) Loadout: asignar/quitar/validación + save→continueGame ===
+  ✓ slots vacíos de serie
+  ✓ asignar vendaval → slot 0
+  ✓ asignar nota_hielo → slot 3
+  ✓ id inventado RECHAZADO
+  ✓ slots fuera de rango rechazados
+  ✓ quitar (id '') → slot vacío
+  ✓ save() → continueGame(): los ids de los slots sobreviven
+  ✓ tomo_canto también sobrevive al guardado
+
+=== 4) Lanzamiento, cooldowns y efectos ===
+  ✓ canto_curativo se lanza con tomo
+  ✓ cura exacta: +39 (35% de 110)
+  ✓ cd 45 s fijado
+  ✓ recast con cd activo → false
+  ✓ el tick decae el cd (45 → 42.5 en 2.5 s)
+  ✓ vendaval: proyectil perforante (pierce 2, sprite propio, from player)
+  ✓ vendaval dmg = 18 + esp·1.2 = 20
+  ✓ vendaval vuela hacia el aim (velocidad no nula)
+  ✓ cd 6 s del vendaval
+  ✓ nota_hielo: proyectil hielo dmg 14
+  ✓ cd 8 s de la nota
+  ✓ nota_hielo_mayor se lanza
+  ✓ nova daña al cercano (500 → 474)
+  ✓ a >90 px la nova NO alcanza
+  ✓ slow 3 s aplicado (slowT=3.0)
+  ✓ estado congelado del motor presente (elemento hielo)
+  ✓ cd 18 s de la nova
+  ✓ estandarte: buff 8 s en flag
+  ✓ cd 40 s del estandarte (fijado al lanzar)
+  ✓ anillo visual del estandarte en waves
+  ✓ aura 4/s: hp del enemigo en radio baja (500 → 496)
+  ✓ aura marca hitFlash (vía damageEnemy del motor)
+  ✓ pulso del aura con anillo propio
+  ✓ buff decae con el tick (quedan 6.85 s)
+  ✓ buff expira a 0 exacto
+  ✓ cd del estandarte decayó con los ticks (40 → 30.85 tras 9.15 s)
+  ✓ eco_escudo: 6 s / 40 hp en flags
+  ✓ absorbe 25 → atraviesa 0, quedan 15 de escudo
+  ✓ escudo roto con 15: absorbe 15 y atraviesa 10 (flags a 0)
+  ✓ sin escudo: el daño atraviesa íntegro
+  ✓ slot vacío → false con aviso
+  ✓ índices de cast fuera de rango → false
+  ✓ fuera de 'play' no se lanza
+
+=== 5) Boost de velocidad +20% del Estandarte ===
+  ✓ desplazamiento 148.0 px sin buff → 177.4 px con buff (×1.20 ≈ +20%)
+
+=== 6) Pestaña MAGIAS: interacción real (addHit) y draw sin lanzar ===
+  ✓ panel completo dibuja sin lanzar (alto 298)
+  ✓ hits de una pasada: 4 slots + 6 magias (10)
+  ✓ click en slot 0 abre la lista
+  ✓ draw con lista abierta OK
+  ✓ click en magia de la lista → asignada al slot 0 abierto
+  ✓ botón QUITAR vacía el slot
+  ✓ panel con cooldown activo dibuja sin lanzar
+
+=== 7) Tick robusto: 3 estados + dt hostiles (sin NaN) ===
+  ✓ tick 120 frames en 3 estados (play/pause/dialogue) sin NaN en flags
+  ✓ dt NaN/Infinity/-1/0 → el tick no toca nada
+  ✓ arrays acotados (partículas 35, ondas 3)
+
+SMOKE MAGIAS R19: TODO OK

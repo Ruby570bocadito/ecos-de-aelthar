@@ -12,6 +12,8 @@ import { ACTO3_ELITE } from './data';
 import { ACTO4_BOSS, ACTO4_FIN_BASE, ACTO4_FIN_JEFES } from './data';
 import { dispararInterludio18F } from './interludios'; // 18-f: interludios de acto (cine de transición)
 import { audio } from './audio';
+import { sqActionR19 } from './sidequests_r19'; // 19-a: acciones de secundarias
+import { acto5ActionR19 } from './acto5_narrativa_r19'; // 19-f: acciones del Acto V
 
 const TONES: ToneKind[] = ['empatico', 'pragmatico', 'sarcastico', 'amenazante'];
 
@@ -59,6 +61,8 @@ export function toneFlagOf(flags: Record<string, number | boolean>): ToneKind | 
 export function handleCustomAction(g: Game, action: string): boolean {
   const p = g.player;
   if (!p || !action) return false;
+
+  if (sqActionR19(g, action)) return true; // 19-a: accept_sq4..6 / sqN_reward
 
   // memoria_<id>: memorias del séptimo Eco (biblia)
   if (action.startsWith('memory_')) {
@@ -504,6 +508,7 @@ export function handleCustomAction(g: Game, action: string): boolean {
     return true;
   }
 
+  if (acto5ActionR19(g, action)) return true; // 19-f: Acto V (accept_q17..19, sellos, caminos)
   return false;
 }
 

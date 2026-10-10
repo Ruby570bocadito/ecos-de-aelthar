@@ -13,6 +13,17 @@ import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from '
 import { initCostaBioma, costaBiomaTick } from './biomas_costa'; // 18-a: Costa de Bruma
 import { initCumbresBioma } from './biomas_cumbres'; // 18-b: Cumbres Heladas
 import { initFaroSprites } from './faro_historia'; // 18-e: los tres del faro
+import {
+  initSecundariasR19, sqPropTargetR19, sqPropUseR19,
+} from './sidequests_r19'; // 19-a: secundarias sq4/sq5/sq6
+import { initMagiasR19, castMagiaR19, ecoEscudoAbsorbR19 } from './magias_r19'; // 19-b: menú de magias
+import {
+  esEliteR19, aplicarEliteR19, eliteIdxPorPosR19, eliteSeedR19, eliteMultR19,
+  initEnemigosR19Sprites, ENEMY_DEFS_R19,
+} from './enemigos_r19'; // 19-e: élites + eco_desvanecido/vigia_tinta
+import { initJefeMareaR19Sprites } from './jefe_marea_r19'; // 19-c: La Marea Sin Nombre
+import { initJefeCenizaR19Sprites } from './jefe_ceniza_r19'; // 19-d: Heraldo de Ceniza (auto-inyecta su def)
+import { initJefeVeshR19Sprites, veshDeathFxR19 } from './jefe_vesh_r19'; // 19-h: Vesh, la Última Nota
 import { audio } from './audio';
 import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue, SENNUEL } from './data';
 import { updateGame } from './update';
@@ -87,7 +98,15 @@ export const BOSS_DEFEAT_FLAG: Record<string, string> = {
   golem: 'golemDefeated',
   vult: 'vultDefeated', // 14-a
   coro: 'coroDefeated', // 14-a
+  marea: 'mareaDefeated', // 19-c
+  ceniza: 'cenizaDefeated', // 19-d
+  vesh: 'veshDefeated', // 19-h
 };
+
+// ==== R19 (integración): registro de las defs de los enemigos nuevos (19-e).
+// ceniza (19-d) se auto-inyecta al cargar su módulo; marea/vesh (19-c/19-h) las
+// registra data.ts. Debe correr antes del primer makeEnemy → top-level del motor.
+Object.assign(ENEMY_DEFS, ENEMY_DEFS_R19); // 19-e: eco_desvanecido + vigia_tinta
 
 export type GState = 'title' | 'controls' | 'intro' | 'play' | 'pause' | 'dialogue' | 'dead' | 'end' | 'skills';
 
@@ -171,7 +190,7 @@ export class Game {
   uiHit: UiHit[] = [];
   mouse = { x: 0, y: 0, down: false, rdown: false, worldX: 0, worldY: 0 };
   keys = new Set<string>();
-  pauseTab: 0 | 1 | 2 | 3 = 0;
+  pauseTab: 0 | 1 | 2 | 3 | 4 = 0; // 19-b: +pestaña MAGIAS
   introIdx = 0;
   endStats = '';
 
@@ -207,6 +226,12 @@ export class Game {
     initCostaBioma();   // 18-a: pre-rasterizado del bioma de la Costa de Bruma (idempotente)
     initCumbresBioma(); // 18-b: pre-rasterizado del bioma de las Cumbres Heladas (idempotente)
     initFaroSprites();  // 18-e: sprites propios de Mara/Uso/Tina en el faro (idempotente)
+    initSecundariasR19(); // 19-a: NPCs/props de las secundarias sq4/sq5/sq6 (idempotente)
+    initMagiasR19(); // 19-b: registra el sprite 'vendaval_p' (idempotente)
+    initEnemigosR19Sprites(); // 19-e: sprites eco_desv + vigia_tinta (idempotente)
+    initJefeMareaR19Sprites(); // 19-c: sprite del jefe Marea (idempotente)
+    initJefeCenizaR19Sprites(); // 19-d: sprite del Heraldo de Ceniza (idempotente)
+    initJefeVeshR19Sprites(); // 19-h: sprite de Vesh (idempotente)
     this.bindInput();
     // volúmenes persistidos (sistema → sliders)
     try {
@@ -616,15 +641,20 @@ export class Game {
     // balanceador de dificultad (12-c): multiplica hp del spawn (neutro en desafío)
     const bm = enemyStatMult(this);
     const hp = Math.max(1, Math.round(d.hp * bm.hp));
-    return {
+    const e: Enemy = {
       kind: 'enemy', etype: type, x, y,
-      w: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' ? 22 : 12,
-      h: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' ? 16 : 10,
+      w: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' || type === 'marea' || type === 'ceniza' || type === 'vesh' ? 22 : 12, // R19: +3 jefes (19-c/19-d/19-h)
+      h: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' || type === 'marea' || type === 'ceniza' || type === 'vesh' ? 16 : 10, // R19: +3 jefes
       vx: 0, vy: 0, dir: 'down', hp, maxHp: hp, sprite: d.sprite, anim: Math.random() * 9, moving: false,
       ai: 'patrulla', aiT: Math.random() * 2, homeX: x, homeY: y, patrolAngle: Math.random() * Math.PI * 2,
       aggro: false, windup: 0, atkCd: Math.random(), sta: d.breakBar ?? 0, maxSta: d.breakBar ?? 0,
       statuses: [], slowT: 0, phase: 1, sumT: 0, hitFlash: 0, spawnGuard: zone === 'boss' ? 0.5 : 0,
     };
+    // ==== 19-e: élites deterministas (8% de los spawns regulares; los jefes —
+    // zone:'boss' y spawns fuera de tabla — JAMÁS son élite) ====
+    const _ri = eliteIdxPorPosR19(this.mapId, x, y);
+    if (_ri >= 0 && esEliteR19(this.mapId, _ri)) aplicarEliteR19(e, eliteSeedR19(this.mapId, _ri)); // 19-e
+    return e;
   }
 
   spawnNpcs() {
@@ -895,6 +925,11 @@ export class Game {
       else if (pr.kind === 'altarEcho') consider(px, py, 'altar', 'Altar del Eco', () => this.tryTakeEco(), 30);
       else if (pr.kind === 'sign') consider(px, py, 'sign', 'Leer cartel', () => this.readSign(pr.label ?? ''), 28);
       else if (pr.kind === 'lamp' && !this.flags[pr.id]) consider(px, py, 'lamp', 'Encender el Farol del Recuerdo', () => this.lightLamp(pr.id), 28);
+      else if (pr.id === 'acto5_puerta_cripta') consider(px, py, 'gate', 'Puerta de la Ciudadela', () => {
+        // 19-g/19-f: la Ciudadela de Vesh solo abre su canto tras el Acto IV
+        if (this.flags.heraldoDerrotado) this.applyAction('travel_ciudadela');
+        else this.toast('La puerta no canta aún: la Ciudadela duerme', '#9aa0b8');
+      }, 30);
     }
     for (const ec of this.map.echoes) {
       if (this.takenEchoes.has(ec.id)) continue;
@@ -1240,6 +1275,7 @@ export class Game {
   sanctuaryPos(id: MapId): [number, number] {
     if (id === 'lunaris') return [25, 19];
     if (id === 'bosque') return [38, 27];
+    if (id === 'ciudadela') return [27, 41]; // 19-g: explanada sur de la Ciudadela (garantizada pisable)
     return [19, 24];
   }
 
@@ -1457,6 +1493,7 @@ export class Game {
       else if (k === 't') cycleCompanionMode(this);
       else if (k === '8') useSenno(this);
       else if (['1', '2', '3', '4'].includes(k)) this.useSkill(parseInt(k, 10) - 1);
+      else if (['z', 'x', 'c', 'v'].includes(k)) castMagiaR19(this, ['z', 'x', 'c', 'v'].indexOf(k)); // 19-b: lanzar la magia del slot 1-4
       else if (k === 'k') { this.setState('skills'); audio.sfx('uiOpen'); }
     } else if (this.state === 'pause') {
       if (k === 'escape' || k === 'm') this.setState('play');
@@ -1525,6 +1562,10 @@ export class Game {
     // ==== 16-b: E de nuevo justo tras cerrar un diálogo → rumor corto del NPC
     // (ventana 2.5 s, cooldown 60 s por NPC; si no toca, abre el diálogo normal) ====
     if (rumorAfterDialogue16b(this)) { audio.sfx('select'); return; }
+    { const sqt = sqPropTargetR19(this); // 19-a: campanas/vetas/lámparas de secundarias
+      // IMPRESCINDIBLE antes de nearestInteract: el motor etiqueta por su cuenta
+      // los kind 'fragment'/'lamp' y ROBARÍA la interacción de sq5/sq6.
+      if (sqt) { audio.sfx('select'); sqPropUseR19(this, sqt); return; } }
     const it = this.nearestInteract();
     if (it) { audio.sfx('select'); it.act(); }
     // micro-interacciones del mundo vivo (13-b): pozo, lápidas, agua, faroles…
@@ -1821,8 +1862,9 @@ export class Game {
     p.kills++;
     const espMult = 1 + p.attrs.esp * 0.1;
     p.res = Math.min(p.maxRes, p.res + 10 * espMult);
-    this.gainXp(Math.max(1, Math.round(def.xp * enemyStatMult(this).xp)));
-    const gold = Math.round(def.gold[0] + Math.random() * (def.gold[1] - def.gold[0]));
+    // 19-e: el mult de élite paga de verdad (XP ×2 / oro ×1.8)
+    this.gainXp(Math.max(1, Math.round(def.xp * enemyStatMult(this).xp * ((e as unknown as { eliteR19?: boolean }).eliteR19 ? eliteMultR19.xp : 1))));
+    const gold = Math.round((def.gold[0] + Math.random() * (def.gold[1] - def.gold[0])) * ((e as unknown as { eliteR19?: boolean }).eliteR19 ? eliteMultR19.gold : 1));
     p.gold += gold;
     // ==== 16-c (logros-stats): combate acumulado + chequeo puntual de logros ====
     if (!this.challengeRun) {
@@ -1904,6 +1946,33 @@ export class Game {
       p.potions += 1;
       p.gold += 60;
       this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción, +60 coronas', '#f0c84a');
+    } else if (e.etype === 'marea') {
+      // 19-c: jefe de la Costa de Bruma (opcional, tras la Sirena)
+      this.flags.mareaDefeated = true;
+      this.flags.perla_marea = true; // NO es item clave (arco principal intacto)
+      delete this.flags.bossHp_costa;
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('costa');
+      this.shake = 8;
+      audio.sfx('song');
+      this.toast('La Marea Sin Nombre se deshace en espuma que recuerda un nombre...', '#bff0f4');
+      this.toast('La perla de la Marea brilla en tu bolsillo', '#ffe9a0');
+      p.potions += 1; // 19-c: +1 poción (economía 10-b)
+      this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción · Perla de la Marea', '#7ef0a0');
+    } else if (e.etype === 'vesh') {
+      // 19-h: JEFE FINAL del Acto V — la flag dispara el epílogo (19-f)
+      this.flags.veshDefeated = true;
+      delete this.flags.bossHp_ciudadela;
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('boss');
+      this.shake = 10;
+      veshDeathFxR19(this, e); // onda dorada + partículas (guard anti-doble)
+      audio.sfx('holy'); audio.sfx('song');
+      this.toast('La Última Nota ha sonado', '#ffd88a');
+      p.potions += 2;
+      this.floatAt(e.x, e.y - 34, 'Botín del jefe: +2 pociones', '#7ef0a0');
     }
   }
 
@@ -1932,6 +2001,8 @@ export class Game {
     const p = this.player!;
     // balanceador (12-c): embudo único de todo el daño enemigo (neutro en desafío)
     dmg = Math.max(1, Math.round(dmg * enemyStatMult(this).dmg));
+    dmg = ecoEscudoAbsorbR19(this, dmg); // 19-b: el Eco Escudo absorbe hasta 40 de daño
+    if (dmg <= 0) return; // 19-b: absorción total del escudo
     if (p.iframes > 0 || p.rollT > 0 || this.state !== 'play') return;
     if (p.parryT > 0) {
       // ¡parada perfecta!

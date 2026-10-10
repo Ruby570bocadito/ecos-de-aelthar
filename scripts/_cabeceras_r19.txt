@@ -1,0 +1,812 @@
+########## sidequests_r19 ##########
+// ============================================================
+// ECOS DE AELTHAR — 19-a · MISIONES SECUNDARIAS (sq4 · sq5 · sq6)
+// «La Marea que Fue Canción» · «El Yunque Susurrado» · «El Custodio del Tomo»
+// Módulo 100% ADITIVO: no edita ningún fichero existente. Estado por partida
+// en WeakMap<Game,…>, cero Math.random (mulberry32 local, semilla fija) y
+// solo `import type { Game }` desde engine (sin ciclos de valor).
+//
+// PUNTOS DE CABLEADO PARA EL INTEGRADOR (nombres exactos — verificados en el
+// árbol post-R18; líneas actuales del árbol):
+//
+//  (1) engine.ts:210 — tras `initFaroSprites();` dentro del constructor:
+//        initSecundariasR19(); // 19-a: NPCs/props de las secundarias (idempotente)
+//      OPCIONAL: si no se llama, instalarSecundariasR19() se auto-instala de
+//      forma perezosa en la primera interacción/tick (patrón biomas 18-a).
+//
+//  (2) data.ts:~1766 — dentro de getDialogueActo4, justo DESPUÉS de la ruta
+//      del faro `{ const fr = faroRouteDialogue(nid, ctx); if (fr) return fr; }`:
+//        { const sr = sqDialogueR19(nid, ctx); if (sr) return sr; } // 19-a: Iria/Odrik/Erev
+//
+//  (3) data.ts:~1909 — al final del fichero (tras el bloque 18-f), con
+//      `import { SQ_R19_DIALOGUES, SQ_R19_QUESTS } from './sidequests_r19';` arriba:
+//        Object.assign(D, SQ_R19_DIALOGUES);          // 19-a: 30 nodos de secundarias
+//        QUESTS.push(...SQ_R19_QUESTS);               // 19-a: sq4/sq5/sq6 al final del array
+//      NOTA: hacer el push al FINAL es seguro (questAdvance nunca se dispara
+//      en q16 paso 1 — el epílogo cierra con 'end_demo'; el clamp de
+//      Math.min(QUESTS.length-1) queda así sin efecto práctico).
+//
+//  (4) hooks.ts:59 — PRIMERA línea de handleCustomAction (fallback de
+//      engine.applyAction, engine.ts:1235):
+//        if (sqActionR19(g, action)) return true; // 19-a: accept_sq4..6 / sqN_reward
+//
+//  (5) update.ts:389 — tras `cumbresBiomaTick(g, dt); // 18-b`:
+//        secundariasTickR19(g, dt); // 19-a: reconciliación de pasos (O(1))
+//
+//  (6) engine.ts tryInteract (~1524) — tras el rumor 16-b (1527) y ANTES de
+//      `const it = this.nearestInteract();` (1528), con el import arriba:
+//        { const sqt = sqPropTargetR19(this); // 19-a: campanas/vetas/lámparas
+//          if (sqt) { audio.sfx('select'); sqPropUseR19(this, sqt); return; } }
+//      IMPRESCINDIBLE que corra ANTES de nearestInteract: el motor etiqueta
+//      por su cuenta los kind 'fragment' ('Fragmento de Eco' → voz_fragment)
+//      y 'lamp' ('Encender el Farol del Recuerdo' → lightLamp) y ROBARÍA la
+//      interacción de las vetas sq5_v* y las lámparas sq6_l*. Alternativa
+//      aceptada: mismo código al inicio de interaccion.interaccionInteract16b
+//      (interaccion.ts:351) — pero entonces sq4 (kind 'wreck', sin rama del
+//      motor) no roba nada y sq5/sq6 necesitarían el sitio ANTES igualmente.
+//      sqNpcLabelR19 es OPCIONAL: el motor ya etiqueta los NPC por dispName
+//      («Hablar con Guardiana Iria»); se expone por contrato.
+// ============================================================
+
+import type { Game } from './engine'; // SOLO tipo (borrado en runtime: sin ciclo)
+import type { DialogueNode, MapId, NpcDef, PropDef, QuestDef } from './types';
+import { MAPS } from './maps';
+import { audio } from './audio';
+
+/** RNG determinista local (regla de la ronda: cero Math.random). Semilla fija:
+ *  misma secuencia en cada arranque → comportamiento reproducible en smokes. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const TILE = 16; // literal (precedente interludios.ts 18-f: cero aristas de valor)
+
+// Deriva determinista de la semilla fija: margen anti-spam de los avisos
+// (idéntico en cada arranque — sustituye con rigor a Math.random).
+const SPAM_CD_19 = 1.5 + mulberry32(191909)() * 0.01;
+
+// ============================================================
+// 1) QUESTDEFS (2 pasos: objetivo por props → volver con el NPC)
+// ============================================================
+
+export const SQ_R19_QUESTS: QuestDef[] = [
+  {
+    id: 'sq4', name: 'La Marea que Fue Canción',
+    steps: [
+      'Recupera las 3 campanas de bruma de los restos hundidos de la Costa de Bruma (0/3)',
+      'Vuelve con la Guardiana Iria en la orilla este de la costa',
+    ],
+  },
+  {
+    id: 'sq5', name: 'El Yunque Susurrado',
+    steps: [
+      'Extrae 2 vetas de hierro-niebla en las Cumbres Heladas (0/2)',
+      'Vuelve con la Herrera Odrik en la plaza de Merrow',
+    ],
+  },
+  {
+    id: 'sq6', name: 'El Custodio del Tomo',
+    steps: [
+      'Enciende las 3 lámparas de eco: Bosque Susurrante, Costa de Bruma y Aldea de Merrow (0/3)',
+      'Vuelve con el Custodio Erev, junto al altar de la Cripta',
+    ],
+  },
+];
+
+// ============================================================
+// 2) NPCs y PROPS (auto-instalables en MAPS mediante instalarSecundariasR19)
+//    Coordenadas verificadas transitables en AMBAS épocas (probe R19) y sin
+//    pisar NPCs/cofres/ecos/spawns/props/salidas existentes.
+// ============================================================
+
+export const SQ_R19_NPCS: Record<string, { map: MapId; def: NpcDef }> = {
+  iria: { map: 'costa', def: { id: 'iria', x: 44, y: 26, sprite: 'maelis', name: 'Guardiana Iria' } },
+  odrik: { map: 'aldea', def: { id: 'odrik', x: 26, y: 15, sprite: 'brokk', name: 'Herrera Odrik' } },
+  erev: { map: 'cripta', def: { id: 'erev', x: 26, y: 26, sprite: 'sombra', name: 'Custodio Erev' } },
+};
+
+export const SQ_R19_PROPS: Record<string, { map: MapId; def: PropDef }> = {
+  // sq4 · campanas de bruma (restos de la flota que las llevó, kind 'wreck')
+  sq4_c1: { map: 'costa', def: { id: 'sq4_c1', kind: 'wreck', x: 12
+########## magias_r19 ##########
+// ============================================================
+// ECOS DE AELTHAR — SISTEMA DE MAGIAS CON MENÚ (19-b)
+// Grimorio de 6 magias (2 escuelas: alba/tejedor) + loadout de
+// 4 slots + lanzamiento con cooldown + pestaña MAGIAS de pausa.
+// Módulo 100% ADITIVO: no edita ningún fichero ajeno.
+// ============================================================
+//
+// PUNTOS DE CABLEADO PARA EL INTEGRADOR (nombres exactos):
+// -----------------------------------------------------
+// (1) pestaña en pausa — screens.ts:349:
+//       const TABS = ['ESTADO', 'EQUIPO', 'DIARIO', 'SISTEMA', 'MAGIAS'];
+//     y en la línea 366 de screens.ts ampliar el cast del click de pestaña:
+//       () => { g.pauseTab = i as 0 | 1 | 2 | 3 | 4; }
+//     y en engine.ts:174 ampliar el campo (necesario para que compile):
+//       pauseTab: 0 | 1 | 2 | 3 | 4 = 0;
+// (2) rama de dibujo — screens.ts · drawPause, justo ANTES del `} else {`
+//     de SISTEMA (línea ~516; el último `else if` actual es `pauseTab === 2`):
+//       } else if (g.pauseTab === 4) {
+//         drawMagiasPanelR19(g, cx, cy, pw - 56);   // 19-b: pestaña MAGIAS
+//       }
+//     (cx = px + 28, cy = py + 92; pw - 56 = 664 px de ancho; devuelve alto
+//      usado ~304 px, cabe de sobra en el panel de 470 px.)
+// (3) tick — update.ts:389, justo tras `cumbresBiomaTick(g, dt);`:
+//       magiasTickR19(g, dt);   // 19-b: cooldowns/buffs/aura de magias
+//     + import { magiasTickR19 } from './magias_r19';
+// (4) hotkeys — engine.ts:1459 (zona input, `['1','2','3','4']` ya está
+//     TOMADA por useSkill). Dos opciones documentadas:
+//       a) RECOMENDADA — magias en 5-8:
+//            else if (['5', '6', '7', '8'].includes(k)) castMagiaR19(this, parseInt(k, 10) - 5);
+//       b) si el diseño final quiere 1-4 para magias, re-rutear useSkill a
+//          Shift+1..4 y usar parseInt(k)-1. La API de este módulo es la misma.
+//     Tecla M para abrir la pestaña directamente (misma zona de input):
+//            else if (k === 'm') { this.pauseTab = 4; this.setState('pause'); audio.sfx('uiOpen'); }
+// (5) init — engine.ts constructor (~línea 203, tras initFaroSprites()):
+//       initMagiasR19();   // 19-b: registra el sprite 'vendaval_p'
+//     (opcional: castMagiaR19/draw llaman initMagiasR19() perezosamente).
+// (6) OPCIONAL — absorción de Eco Escudo: engine.damagePlayer (engine.ts:1931),
+//     primera línea del método:
+//       dmg = ecoEscudoAbsorbR19(this, dmg);   // 19-b: escudo absorbe 40
+//     Si NO se cablea, el escudo solo daña-visualiza (el buff caduca igual
+//     y no rompe nada); con él, absorbe daño exactamente 1 vez por punto.
+// (7) OPCIONAL — +20% velocidad del Estandarte: ya lo aplica magiasTickR19
+//     (empuje proporcional con moveEntity, respeta colisiones). NO añadir
+//     TAMBIÉN el multiplicador en update.ts:197 o se sumaría dos veces.
+//     Alternativa preferida del integrador (elige UNA):
+//       update.ts:197 → const spd = 74 * (Number(g.flags['estandarte_t']) > 0 ? 1.2 : 1);
+//       y desactivar el boost de mi tick (ver ESTANDARTE_BOOST en magiasTickR19).
+// (8) OPCIONAL — vendaval perforante: update.ts:455 hoy mata el proyectil al
+//     primer impacto (el campo pierce existe pero el motor lo ignora). Para
+//     honrarlo, en update.ts (bloque proyectiles, tras damageEnemy):
+//       dead = pr.pierce-- <= 0;   // 19-b: vendaval atraviesa 2 enemigos
+//     Sin esa línea el Vendaval funciona normal (1 impacto).
+//
+// DECISIONES DOCUMENTADAS (desviaciones del enunciado, verificadas en fuente):
+//  · p.cds NO es un Record: es number[] (types.ts:163, índices de useSkill).
+//    Los cooldowns de magias viven en flags numéricos 'magia_cd_<id>'
+//    (serializan solos en save(), engine.ts:470).
+//  · Los ids de magia de los slots ('magia_slot_0..3') son STRINGS en flags.
+//    El tipo público dice number|boolean; se escribe con cast localizado y
+//    es seguro: save() hace spread+JSON (engine.ts:470) y continueGame
+//    restaura Object-spread (engine.ts:424) — los strings viajan intactos.
+//  · Aura del Estandarte: usa g.damageEnemy (embudo público del motor, mismo
+//    patrón que skilltree.ts:720) para golpear a TODOS los enemigos en radio;
+//    el enunciado sugería un proyectil invisible, pero el bucle de proyectiles
+//    muere en el primer impacto (update.ts:448-456) y solo golpearía a 1.
+//  · Nota de Hielo Mayor: g.aoeHit público (engine.ts:1709) + slowT=3 manual.
+//  · Sprite 'vendaval_p': registrado vía registerSpr (sprites.ts:692, hoja
+//    sin ciclos). render.ts:577 no lo conoce aún → cae al else (cuadradito
+//    4px) hasta que el integrador añada la rama del punto (8); mientras
+//    tanto mi tick le da estela propia de partículas (visual digno).
+//
+// DETERMINISMO: cero Math.random en este módulo (fases por Math.sin/cos de
+// g.globalT e índices). Estado por partida en WeakMap (HMR/multi-instancia).
+// ============================================================
+
+import type { Game } from './engine';
+import type { Enemy, Element, Player } from './types';
+import { COL, text, textShadow, panel, bar, wrapText, addHit, button } from './ui';
+import { registerSpr, getSpr } from './sprites';
+import { audio } from './audio'; // llamado SOLO dentro de funciones
+
+// ---------------- tabla del grimorio ----------------
+
+export interface MagiaDef {
+  id: string;                       // id de flag de slot / cooldown
+  nombre: string;
+  escuela: 'alba' | 'tejedor';
+  element: Element;                 // elemento de daño ('ninguno' = puro apoyo)
+  cd: number;                       // cooldown en segundos
+  desc: string;
+  color: string;                    // color de icono/acentos en UI
+  letra: string;                    // letra estilizada del icono
+}
+
+export const MAGIAS_R19: MagiaDef[] = [
+  {
+    id: 'canto_curativo', nombre: 'Canto Curativo', escuela: 'alba',
+    element: 'sagrado', cd: 45, color: '#ffe9b0', letra: 'C',
+    desc: 'Un acorde cá
+########## jefe_marea_r19 ##########
+// ============================================================
+// ECOS DE AELTHAR — 19-c · JEFE «LA MAREA SIN NOMBRE»
+// (Costa de Bruma · agente 19-c, módulo autocontenido)
+//
+// La marea que arrastró a los primeros cantores. JEFE de 3 fases
+// por hp% (patrón guardianBrain / tickVult / tickSirena):
+//
+//   FASE 1 · FLUJO  (>60%): avanza lento (speed 34). Cada atkCd:
+//     · d ≥ 150 px → OLA EN ABANICO: 3 proyectiles 'orb' (element
+//       'hielo', el literal acuático del proyecto) en abanico de 25°.
+//     · d < 150 px → BARRIDO melee telegrafiado: windup 0.9 con
+//       e.telegraphKind='aro' + telegraph (r 64) que explota al
+//       expirar (el motor aplica el daño en update.ts:518-531).
+//
+//   FASE 2 · PLEAMAR (60-30%, transición UNA vez): toast + sfx
+//     'roar' + invulT 1.2 s (render la dibuja sumergida, frame 4) +
+//     flash/shake/slowmo. speed sube a 44. Dos mecánicas nuevas:
+//     · ESPUMA-LÍNEA: cada 7 s, muro lineal de 4 orbes lentos
+//       (|v| 55) que avanza desde su flanco — velocidad PERPENDICULAR
+//       al eje jefe→Portador, flanco alternante determinista.
+//     · LLAMARADA DE SAL: ciclo de ataques alterna abanico → salto:
+//       windup 0.9 telegrafiado sobre el Portador (invulT en el
+//       aire, patrón saltoVult) y al caer onda de choque g.waves
+//       (maxR 110, speed 150) + burst de espuma.
+//
+//   FASE 3 · RESACA (<30%): comportamiento desesperado. NOTA DE
+//     DISEÑO (19-c): la misión pedía «sta -extra al recibir daño»,
+//     pero damageEnemy es del motor (congelado) — se aplica la
+//     alternativa documentada: sus ataques pasan al 60% de cadencia
+//     (atkCd × 1/0.6) y su daño sube un 20% (todo lo que emite:
+//     orbes, barrido, onda y espuma). Al entrar invoca 2
+//     sombras-espuma (g.makeEnemy('sombra', …, 0, 'mini') — método
+//     del Game, permitido) y no vuelve a hacerlo hasta recomenzar
+//     el combate (memoria por enemigo en WeakMap).
+//
+//   · Anti-spam de weakTo: nada especial — el motor ya aplica
+//     weakTo ×1.5 (engine.ts:1763). El quiebre/aturdido usa
+//     e.sta/maxSta (breakBar 90) EXACTAMENTE como los demás jefes:
+//     damageEnemy baja sta y fija ai='aturdido' (engine.ts:1769-1779);
+//     este cerebro solo gestiona la cuenta atrás y la recuperación
+//     de la barra (stun 2.6 s, como la sirena).
+//   · Determinismo: CERO Math.random — mulberry32 local con semilla
+//     derivada de homeX/homeY (estable por partida). Estado por
+//     partida en WeakMap<Enemy, MareaMem> (seguro HMR/multi-instancia).
+//   · Daño al Portador SOLO vía proyectiles from:'enemy', g.waves,
+//     telegraphs y g.damagePlayer del motor (i-frames/parada = motor).
+//   · Movimiento SOLO vía g.moveEntity (colisión de tiles = motor).
+//
+// ============================================================
+// ════════════════════════════════════════════════════════════
+// PUNTOS DE CABLEADO PARA EL INTEGRADOR (nombres exactos)
+// ════════════════════════════════════════════════════════════
+//
+// (1) src/game/types.ts:13 — EnemyType: añadir 'marea' a la unión:
+//       … | 'satiro' | 'heraldo' | 'marea' // 19-c: jefe La Marea Sin Nombre
+//
+// (2) src/game/data.ts — registrar la def (patrón ENEMY_DEFS_14A:1404):
+//       import { MAREA_DEF_R19 } from './jefe_marea_r19';   // 19-c
+//       Object.assign(ENEMY_DEFS, { marea: MAREA_DEF_R19 }); // 19-c (tras el literal base o tras ENEMY_DEFS_16A)
+//
+// (3) src/game/engine.ts:621-622 — hitbox grande de jefe: añadir
+//     `|| type === 'marea'` a AMBOS condicionales (22×16, igual que
+//     guardian|sirena|golem|vult|coro).
+//
+// (4) src/game/engine.ts:84-91 — BOSS_DEFEAT_FLAG: añadir
+//       marea: 'mareaDefeated', // 19-c
+//
+// (5) src/game/engine.ts killEnemy (~1907, tras la rama 'coro') — BOTÍN 19-c:
+//     (el oro 260-340 y la XP 380 salen solos del def arriba):
+//       } else if (e.etype === 'marea') {
+//         this.flags.mareaDefeated = true;
+//         this.flags.perla_marea = true;          // NO es item clave (arco principal intacto)
+//         delete this.flags.bossHp_costa;
+//         this.bossActive = false;
+//         audio.setCombat(false);
+//         audio.playTrack('costa');
+//         this.shake = 8;
+//         audio.sfx('song');
+//         this.toast('La Marea Sin Nombre se deshace en espuma que recuerda un nombre...', '#bff0f4');
+//         this.toast('La perla de la Marea brilla en tu bolsillo', '#ffe9a0');
+//         p.potions += 1;                          // +1 poción (economía 10-b)
+//         this.floatAt(e.x, e.y - 34, 'Botín del jefe: +1 poción · Perla de la Marea', '#7ef0a0');
+//       }
+//
+// (6) src/game/update.ts:65 — EXPANSION_TYPES: añadir 'marea' al Set.
+//
+// (7) src/game/enemies_expansion.ts:1822 — expansionTick, añadir el case
+//     (la firma de tickMareaR19 REPLICA la forma del dispatcher; el 5º
+//     parámetro se acepta y se IGNORA: el cerebro lleva su propia WeakMap):
+//       case 'marea': return tickMareaR19(g, e, dt, def, mem(e)); // 19-c
+//     Import: `import { tickMareaR19 } from './jefe_marea_r19';`
+//     (jefe_marea_r19 NO importa enemies_expansion ni update.ts → sin ciclos).
+//
+// (8) src/game/update.ts:415-424 — activación del jefe (opcional, rama de
+//     toasts): añadir
+//       } else if (bossSpawn.type === 'marea') {
+//         g.toast('La Marea Sin Nombre despierta: ROMPE SU BARRA DE QUIEBRE', '#bff0f4');
+//         audio.sfx('splash');
+//       }
+//
+// (9) src/game/engine.ts constructor — sprites (idempotente):
+//       import { initJefeMareaR19Sprites } from './jefe_marea_r19'; // 19-c
+//       initJefeMareaR19Sprites();   // tras initExpansionSprites()
+//
+// (10) src/game/challenge.ts:52-56 — BO
+########## jefe_ceniza_r19 ##########
+// ============================================================
+// ECOS DE AELTHAR — RONDA 19 · Task 19-d
+// JEFE OPCIONAL «EL HERALDO DE CENIZA» — Cumbres Heladas (norte)
+// ============================================================
+// Heraldo de la Ciudadela que subió a las Cumbres «a apagar el último
+// canto»: ceniza que recuerda ser llama. Módulo AUTOCONTENIDO (def +
+// cerebro + sprite + watcher + botín) que NO edita ningún fichero ajeno.
+//
+// ══ PUNTOS DE CABLEADO PARA EL INTEGRADOR (nombres exactos) ══
+//
+// (1) src/game/update.ts · updateEnemy, línea ~704, JUSTO TRAS la línea
+//     `if (EXPANSION_TYPES.has(e.etype) && expansionTick(g, e, dt, def)) return;`
+//     añadir:
+//       if ((e.etype as string) === 'ceniza' && cenizaTickR19(g, e, dt, def)) return; // 19-d
+//     (mismo contrato que expansionTick: true = frame consumido, el motor
+//     salta su IA genérica. El cast `(e.etype as string)` existe porque
+//     types.ts está CONGELADO y 'ceniza' no está en la unión EnemyType;
+//     si el integrador añade 'ceniza' a la unión, puede escribir
+//     e.etype === 'ceniza' a secas.)
+//
+// (2) src/game/update.ts · updateGame, línea ~432, junto a
+//     `expansionBossWatchers(g);` añadir:
+//       cenizaWatchR19(g); // 19-d: spawn + barra de jefe + botín al morir
+//     (O(1)/frame: early-out por mapa y por estado de la partida.)
+//
+// (3) OPCIONAL src/game/engine.ts · constructor, tras initExpansionSprites():
+//       initJefeCenizaR19Sprites(); // 19-d
+//     (sin cablear, cenizaWatchR19 lo llama perezosamente — idempotente.)
+//
+// (4) OPCIONAL src/game/engine.ts:84 · BOSS_DEFEAT_FLAG añadir
+//       ceniza: 'cenizaDefeated',
+//     (sin ello, stats.jefesDerrotados no cuenta este jefe — killEnemy del
+//     motor solo incrementa la estadística para etypes con flag registrada.)
+//
+// (5) OPCIONAL src/game/render.ts · drawEntity, contrato de frames de
+//     sprites_expansion.ts (los índices >= 2 son opcionales; sin cablear,
+//     el ciclo 0/1 funciona igual):
+//       ceniza (5): 0 idle A · 1 idle B (capa suelta motas) ·
+//                   2 TELEGRAPH (pulso/cono: grietas al núcleo) ·
+//                   3 ATTACK/despersonado (capa MÁS DISPERSA) ·
+//                   4 LLUVIA (brazos alzados, fase 3)
+//     Con la regla genérica de 18-c sirve tal cual:
+//       e.ai==='carga'&&e.windup>0 → 2 · e.ai==='ataca' → 3 ·
+//       e.phase===3 (ceniza) → 4 como base de reposo si se prefiere.
+//
+// (6) Los proyectiles reutilizan sprites EXISTENTES ('shard' cono/lluvia
+//     sombra, 'orb' ascuas fuego) → drawExpansionProjectile los anima sin
+//     tocar render. Nada más pendiente: la def se inyecta sola en
+//     ENEMY_DEFS al cargar el módulo (Object.assign, patrón ENEMY_DEFS_16A).
+//
+// ── DETERMINISMO ──
+// CERO Math.random en este módulo: mulberry32 local (semilla portick para
+// la lluvia de ceniza, igual a la técnica del contrato del bioma 18-a/b).
+// El estado por partida vive en WeakMap<Game,…> y por jefe en
+// WeakMap<Enemy,…> (HMR / multi-instancia seguro). Math.random interno del
+// motor (makeEnemy anim, críticos de damageEnemy) queda fuera de alcance.
+//
+// ── DECISIONES DOCUMENTADAS ──
+// · etype 'ceniza' NO está en la unión EnemyType (types.ts congelado): el
+//   cast vive AQUÍ (spawnCenizaR19) y en el snippet de cableado (1).
+// · Proyectiles del cono/lluvia: element 'sombra' (ceniza apagada del
+//   Heraldo; la misión daba 'hielo' con libertad de literal — 'hielo' se
+//   reserva al def para la identidad fría de las Cumbres y evita apilar
+//   congelado con el Gólem). Las ascuas del PULSO sí son element 'fuego'.
+// · «Quema» del Pulso: el motor NO aplica estados al Portador (Player no
+//   tiene statuses; damagePlayer no recibe elemento) → la quema se
+//   representa con las 8 ascuas element 'fuego' del estallido (daño propio
+//   pequeño + paleta de fuego), no con un estado.
+// · El botín vive en cenizaWatchR19 (killEnemy del motor no tiene rama
+//   'ceniza' y no se puede editar): flag cenizaDefeated + ascua_ceniza,
+//   +1 poción, toasts, disolución de los siervos. XP/oro los da el motor
+//   por la def genérica (360 / 240–320).
+// · Spawn (BFS verificado en scripts/smoke_jefe_ceniza_r19.ts): tile
+//   (13,8) de Cumbres Heladas — interior NORTE, orilla occidental del
+//   paso, a 11 tiles del Gólem (24,8) y a 43 pasos BFS de la única
+//   salida (24,40). Componente transitable desde allí: 1462 tiles.
+// ============================================================
+
+import type { Game } from './engine';
+import type { Enemy, EnemyType } from './types';
+import type { EnemyDef } from './data';
+import { ENEMY_DEFS } from './data';
+import { registerSpr } from './sprites';
+import type { Frames } from './sprites';
+import { audio } from './audio'; // usado SOLO dentro de funciones (sin FX al cargar)
+import { addShake, addFlash, requestSlowmo } from './fxcore';
+
+// ============================================================
+// 1) DEF — EnemyDef bien formado (mismo contrato que ENEMY_DEFS.guardian)
+// ============================================================
+
+export const CENIZA_DEF_R19: EnemyDef = {
+  name: 'El Heraldo de Ceniza',
+  hp: 540, dmg: 15, speed: 38, xp: 360, gold: [240, 320],
+  sprite: 'ceniza', aggroR: 175, atkR: 44,
+  windup: 0.75, atkCd: 2.0,
+  element: 'hielo',      // literales REALES de Element (types.ts:14)
+  weakTo: 'fuego',
+  breakBar: 85,
+  desc: 'Heraldo de la Ciudadela: vinieron a «apagar el último canto». Ceniza que recuerda ser llama; refleja el spam de golpes con el PULSO DEL FARO y siembra brasa donde hubo canto. Débil al fuego.',
+};
+
+/** Inyección idempotente en ENEMY_DEFS (patrón ENEMY_DEFS_16A de data.ts):
+ *  makeEnemy lee ENEMY_DEFS[etype] por índice → 'ceniza' queda servible sin
+ *  tocar data.ts. Record<string, EnemyDef> acepta la clave nueva sin cast. */
+Object.assign(ENEMY_DEFS, { ceniza: CENIZA_DEF_R1
+########## enemigos_r19 ##########
+// ============================================================
+// ECOS DE AELTHAR — R19 · SISTEMA DE ÉLITES + 2 ENEMIGOS NUEVOS
+// (AGENTE 19-e · élites y enemigos nuevos · módulo ADITIVO)
+//
+// PARTE 1 — ÉLITES (8% de los spawns regulares, determinista):
+//   · esEliteR19(mapId, spawnIdx)  — mulberry32(hash(mapId)+idx*φ) < 0.08
+//   · eliteMultR19                 — { hp:1.35, dmg:1.25, xp:2.0, gold:1.8 }
+//   · aplicarEliteR19(e, seed)     — hp/maxHp ×1.35, dmg ×1.25 (def leído al
+//     aplicar vía e.eliteDmgR19), 1 rasgo de 4 por seed:
+//       - 'aullido'    : cada 8 s buffea enemigos a <120 px (+15% speed 5 s)
+//                        implementado con registro propio (BUFFS) + partículas;
+//                        el buff AÑADE desplazamiento (15% del delta del frame
+//                        previo vía g.moveEntity) — funciona con CUALQUIER IA.
+//       - 'escudo'     : cada 10 s gana invulT 0.5 s (damageEnemy del motor ya
+//                        respeta invulT, engine.ts:1750) con telegraph visual.
+//       - 'tirodoble'  : los proyectiles enemigos que nacen junto a él salen
+//                        en par de 2: clon a ±8° (lado determinista por seed).
+//       - 'tp'         : al 3.er golpe recibido (contador WeakMap por hitFlash
+//                        ascendente) se teleporta 80 px DETRÁS del Portador con
+//                        partículas + invulT 0.4 (cooldown 3 s).
+//   · drawEliteAuraR19(g, e, t)    — aura pulsante dorada/roja bajo el enemigo
+//     + corona «ÉLITE» (icono + rótulo) sobre la barra de vida.
+//   · eliteTickR19(g, dt)          — O(n): aullido/escudo/tp/tirodoble + buffs.
+//
+// PARTE 2 — DOS ENEMIGOS NUEVOS:
+//   · eco_desvanecido (bosque ×4 + cripta ×2) — recuerdo translúcido que se
+//     DESVANECE (invulT 0.8 + teleport corto determinista a 90-130 px cada 6 s
+//     si el Portador está a <60 px) y dispara un proyectil 'nota' con ECO
+//     (un segundo proyectil idéntico a los 0.4 s desde el MISMO sitio).
+//   · vigia_tinta (costa ×3) — ojo de tinta que mantiene banda 120-160 px,
+//     dispara «estela de tinta» (3 'orb' escalonados en abanico estrecho ±6°,
+//     documentado como simulación del arco: el motor no tiene gravedad en
+//     proyectiles) y su especial cada 12 s: MANCHA — proyectil grande lento
+//     (radius 9, dmg 10) + nube de tinta (sin slow: el motor no tiene slow en
+//     proyectiles — documentado).
+//
+// ══ PUNTOS DE CABLEADO PARA EL INTEGRADOR (nombres exactos) ══
+//  (a) engine.ts · makeEnemy — convertir el `return {...}` en
+//      `const e: Enemy = {...};` y ANTES del return añadir EXACTAMENTE:
+//          const _ri = eliteIdxPorPosR19(this.mapId, x, y);   // 19-e (1/2)
+//          if (_ri >= 0 && esEliteR19(this.mapId, _ri)) aplicarEliteR19(e, eliteSeedR19(this.mapId, _ri)); // 19-e (2/2)
+//      (eliteIdxPorPosR19 resuelve el índice de spawn por posición; devuelve -1
+//       para spawns zone:'boss' → los jefes NUNCA son élite. Funciona igual
+//       desde spawnEnemies() y desde invocaciones directas de makeEnemy.)
+//  (b) render.ts · drawEntity — justo tras el bloque de la sombra (la elipse
+//      negra, línea ~330) y ANTES de `let fi = entityFrame(...)`:
+//          if (e.kind === 'enemy') drawEliteAuraR19(g, e as Enemy, g.globalT); // 19-e: aura+corona de élite
+//      con `import { drawEliteAuraR19 } from './enemigos_r19'; // 19-e`
+//      (OPCIONAL para el frame del Eco Desvanecido: si
+//       (e as Enemy).etype === 'eco_desvanecido' && (e as Enemy).invulT! > 0 → fi = 2,
+//       el sprite 14×14 tiene el frame 2 fragmentado; sin cablear, el motor ya
+//       lo hace translúcido por invulT>0, render.ts:321-323.)
+//  (c) update.ts · updateGame — línea 389, justo tras `cumbresBiomaTick(g, dt);`:
+//          eliteTickR19(g, dt); // 19-e: rasgos de élite (O(n), ANTES del bucle de enemigos, igual que updateCombatFx)
+//      IMPORTA el orden: eliteTickR19 cuenta golpes por hitFlash ASCENDENTE y
+//      clona proyectiles recién nacidos → debe correr ANTES del bucle de
+//      enemigos (línea ~392), nunca después.
+//  (d) update.ts · updateEnemy — línea 704, justo tras
+//      `if (EXPANSION_TYPES.has(e.etype) && expansionTick(g, e, dt, def)) return;`:
+//          if (R19_TYPES.has(e.etype) && r19Tick(g, e, dt, def)) return; // 19-e: cerebros eco_desvanecido/vigia_tinta
+//  (e) data.ts — tras la definición de ENEMY_DEFS (línea ~850):
+//          Object.assign(ENEMY_DEFS, ENEMY_DEFS_R19); // 19-e: defs eco_desvanecido + vigia_tinta
+//      (DEBE ejecutarse ANTES de cargar cualquier mapa: makeEnemy lee ENEMY_DEFS.)
+//  (f) engine.ts · constructor — tras `initFaroSprites();` (línea ~209):
+//          initEnemigosR19Sprites(); // 19-e: sprites eco_desv + vigia_tinta (idempotente)
+//  (g) OPCIONAL (para que el mult de élite pague de verdad en el motor):
+//      engine.ts · killEnemy línea 1824:
+//          this.gainXp(Math.max(1, Math.round(def.xp * enemyStatMult(this).xp * (e.eliteR19 ? eliteMultR19.xp : 1))));
+//      engine.ts · killEnemy línea 1825:
+//          const gold = Math.round((def.gold[0] + Math.random() * (def.gold[1] - def.gold[0])) * (e.eliteR19 ? eliteMultR19.gold : 1));
+//      update.ts · updateEnemy línea 812 (golpe melee genérico):
+//          g.damagePlayer(dmgEliteR19(e, def), e.x, e.y);
+//      (Los cerebros 19-e ya usan dmgEliteR19(e, def) por su cuenta.)
+//  (h) SPAWNS: instalarEnemigosR19() se EJECUTA AL CARGAR este módulo
+//      (patrón puestarSpawns14a de enemies_expansion.ts) — no hay que llamarla.
+//      Llamada extra = no-op (guard + check por mapa).
+//  (i) TIPOS: EnemyType (types.ts:13) es una unión CERRADA y types.ts está
+//      congelado → los spawns/defs viajan con el cast documentado
+//      `as unknown as EnemyType` (mismo precedente que ARENA_MAP_ID en
+//      maps_expansion.ts:324). Si el integrador amplía la unión con
+//      'eco_desvanecido' | 'vigia_t
+########## maps_acto5_r19 ##########
+// ============================================================
+// ECOS DE AELTHAR — ACTO V (19-g): CIUDADELA DE VESH
+// «Donde el canto se hizo silencio»
+// ============================================================
+//
+// Mapa 54×44 de piedra oscura en 3 anillos concéntricos (bandas
+// sur→norte) conectados por pasillos de 4 tiles:
+//   · ANTEPORTÓN (sur, y35..41): explanada de entrada con 2 estatuas
+//     (props 'sign'), 3 eco_desvanecido, sello acto5_s1, santuario,
+//     cofre y el Eco Guía (NPC).
+//   · EL CORO DE CENIZA (anillo medio, y24..32): sala grande con
+//     columnas de 2×2 en patrón regular, vigia_tinta ×2 +
+//     eco_desvanecido ×2 (élites, las marca 19-e), sello acto5_s2,
+//     santuario, cofre, eco menor. Capillas laterales O/E (la oeste
+//     guarda el sello acto5_s3 y un santuario: ALGO debe dar el 3er
+//     sello SIN cruzar la puerta del jefe — evita deadlock).
+//   · LA SALA DEL PRIMER SILENCIO (norte, centro): sala circular
+//     (r<8 libre, centro 26.5,13) del jefe 'vesh' (27,10) zone
+//     'boss', altar vacío en el centro-norte (27,7) y cofre de 200
+//     coronas tras la puerta.
+//
+// DETERMINISMO: builder puro + mulberry32(SEMILLA) para los restos
+// de ceniza ('r') — cero Math.random. Dos llamadas → mismo raster
+// (verificado en scripts/smoke_mapa_acto5_r19.ts).
+//
+// PALETA DE TILES (SOLO chars ya dibujados y verificados):
+//   '#'  muro de piedra (paintStone)      — SÓLIDO
+//   'V'  roca maciza exterior (paintStone)— SÓLIDO (como la cripta)
+//   'P'  columnas/jambas (paintStone)     — SÓLIDO
+//   'R','r' escombros/estatuas caídas (paintVillage) — SÓLIDO
+//   ':'  suelo de losa (buildArena usa ':' como suelo base; para
+//        mapId 'ciudadela' drawExpansionTile devuelve false y pinta
+//        el drawTile genérico = MISMO aspecto que la cripta) — pisable
+//   '='  calzada/pasillos y dais del altar — pisable
+//   NO se usa 'n' (drawTile la cae al verde por defecto: no es muro
+//   legible en interior). NO se usa '.','s','S','i','r'-suelo ('r' es
+//   SÓLIDO en SOLID_CHARS, sprites.ts:1595 — verificado).
+//
+// MINIMAPA (engine.buildGround:591-596, congelado): ':'→gris azulado,
+// '='→tan; 'P','V','R','r' caen al verde por defecto — MISMO
+// comportamiento que cripta/arena (precedente aceptado). Si el
+// integrador lo quiere gris: 1 línea opcional en ese switch:
+//   ch === 'P' || ch === 'V' ? '#8a8a9a' :
+//
+// ----------------------------------------------------------------
+// PUNTOS DE CABLEADO PARA EL INTEGRADOR (nombres exactos)
+// ----------------------------------------------------------------
+//
+// (1) REGISTRO DEL MAPA — LA ÚNICA LÍNEA CORRECTA (en maps_expansion.ts):
+//     ORDEN REAL VERIFICADO: maps.ts:8 hace
+//     `import { EXPANSION_MAPS } from './maps_expansion'` y
+//     maps_expansion.ts SOLO importa './types' (grep verificado) → el
+//     módulo maps_expansion se evalúa COMPLETO antes de que maps.ts
+//     ejecute `MAPS = {...BASE_MAPS, ...EXPANSION_MAPS}` (maps.ts:410).
+//     Por eso, al final de maps_expansion.ts (tras el literal, línea
+//     ~508) el integrador añade:
+//       // ==== ACTO V (19-g): Ciudadela de Vesh ====
+//       import { ACTO5_MAP_DEF_R19 } from './maps_acto5_r19'; // (junto a los demás imports, arriba)
+//       Object.assign(EXPANSION_MAPS, { ciudadela: ACTO5_MAP_DEF_R19 });
+//     ESO corre en la evaluación de maps_expansion → ANTES del spread
+//     de maps.ts:410 → MAPS queda con 'ciudadela' sin más cambios.
+//     NO auto-instalo nada al cargar este módulo (regla de la tarea):
+//     instalarMapaActo5R19() existe como parche manual idempotente que
+//     muta EXPANSION_MAPS, pero AVISO: llamada DESPUÉS del arranque NO
+//     repone el mapa en MAPS (el spread de maps.ts:410 es de una vez),
+//     solo sirve si se invoca antes de que maps.ts se evalúe. La línea
+//     de arriba es la ÚNICA robusta.
+//     Ciclo resultante maps_acto5_r19 ⇄ maps_expansion: INOFENSIVO y
+//     verificado: este módulo NO lee ningún binding de maps_expansion
+//     en top-level (solo dentro de instalarMapaActo5R19, en tiempo de
+//     llamada) y ACTO5_MAP_DEF_R19 se construye sin tocar nada externo.
+//
+// (2) ENTRADA DESDE LA CRIPTA (recíproco del exit sur). ExitDef NO
+//     tiene flag/puerta, así que la entrada la gestiona el integrador
+//     con el prop gate 'acto5_puerta_cripta' + acción travel_ciudadela:
+//       · Añadir a cripta.props (maps.ts:402-405) el prop:
+//           { id: 'acto5_puerta_cripta', kind: 'gate', x: 20, y: 2 }
+//         (sala del altar de la cripta, x15..24/y2..6 — la Ciudadela
+//         se alza «tras» el Primer Canto; el kind 'gate' ya se dibuja:
+//         world/props.ts:542 drawGate).
+//       · engine.nearestInteract (congelado) no da interacción al kind
+//         'gate' → 1 línea en ese método (engine.ts:888-898):
+//           else if (pr.id === 'acto5_puerta_cripta') consider(px, py, 'gate', 'Puerta de la Ciudadela', () => this.applyAction('travel_ciudadela'), 30);
+//         applyAction('travel_…') (engine.ts:1209) exige MAPS['ciudadela']
+//         → requiere el cableado (1). Aterriza en sanctuaryPos('ciudadela').
+//       · sanctuaryPos (engine.ts:1240-1244) sin tocar devuelve [19,24]
+//         para mapas nuevos → GARANTIZO ese tile pisable (pasillo
+//         superior del Coro). Si el integrador prefiere aterrizar en la
+//         explanada sur como pide el diseño, 1 línea en sanctuaryPos:
+//           if (id === 'ciudadela') return [27, 41];
+//         (27,41) está GARANTIZADO libre y pisable para esa variante.
+//       · ALTERNATIVA cero-cambios-de-motor: ExitDef en cripta.exits
+//         { x: 20, y: 2, w: 2, h: 1, to: ACTO5_MAP_ID, tx: 27, ty: 41,
+//           label: 'Ciudadela de Vesh' } — pisar (20..21, 2) viaja y
+//         aterriza en la explanada (27,41). No solapa con la salida al
+//         Bosque de la cripta (y31..33).
+//
+// (3) EXIT RECÍPROCO (hecho aquí): ciudade
+########## acto5_narrativa_r19 ##########
+// ============================================================
+// ECOS DE AELTHAR — 19-f (acto 5 narrativa) «LA ÚLTIMA NOTA»
+// ============================================================
+// Tras derrotar al Heraldo (Acto IV, flag 'heraldoDerrotado'), el Canto
+// Residual despierta a la Ciudadela de Vesh —el mito— y su puerta se abre
+// para quien lleve tres Ecos. Dentro, la verdad: Vesh no es un villano; es
+// EL PRIMER CANTOR, atrapado desde antes del silencio en su propia nota
+// final. La Orden no quiere despertarlo: quiere SILENCIARLO para reinar
+// sobre un mundo sin canto. El Portador elige: DESPERTARLO o APAGARLO.
+// Ambos caminos llevan al mismo jefe (que instancia el agente 19-h) y a
+// dos epílogos distintos con cierre de todos los arcos.
+//
+// ─── PUNTOS DE CABLEADO PARA EL INTEGRADOR (nombres exactos) ──────────
+//
+// 1) data.ts (~línea 1474, justo tras el push de q14-q16):
+//      import { QUESTS_ACTO5 } from './acto5_narrativa_r19';
+//      QUESTS.push(...QUESTS_ACTO5);
+//    → q17/q18/q19 ocupan los ÍNDICES de misión 16/17/18 (son la 17ª/18ª/19ª
+//      misiones del juego; los «índices 17/18/19» del encargo se refieren a
+//      los IDs). El push DEBE preceder a cualquier uso de accept_q17/18/19:
+//      engine.questAdvance lee QUESTS[questIdx].
+//
+// 2) data.ts (~1482, tras QUEST_COMPASS[15]):
+//      Object.assign(QUEST_COMPASS, COMPASS_ACTO5);   // claves 16/17/18
+//
+// 3) data.ts (~1907, tras el bloque 18-f):
+//      Object.assign(DIALOGUES, D_ACTO5);
+//      Object.assign(DIALOGUES, INTERLUDIOS_ACTO5);
+//      Object.assign(MEMORIES, MEMORIA_ACTO5);
+//      Object.assign(KEY_ITEMS, KEY_ITEM_ACTO5);
+//
+// 4) hooks.ts · handleCustomAction (hooks.ts:59+; al final, antes del
+//    return false de la función):
+//      import { acto5ActionR19 } from './acto5_narrativa_r19';
+//      if (acto5ActionR19(g, action)) return true;
+//    Acciones que consume este módulo: 'accept_q17' | 'accept_q18' |
+//    'accept_q19' | 'acto5_intro_fin' | 'acto5_puerta_fin' |
+//    'acto5_sello_tomado_1' | 'acto5_sello_tomado_2' | 'acto5_sello_tomado_3' |
+//    'acto5_camino_despertar' | 'acto5_camino_apagar' | 'acto5_pv_luego' |
+//    'acto5_report19' | 'acto5_memoria' | 'acto5_fin_verdadero'.
+//    Las reacciones usan el handler genérico 'flag_...' de hooks
+//    (flag_acto5_brisa_reacc / flag_acto5_kael_reacc / flag_acto5_pv_vista /
+//    flag_acto5_intro_vista / flag_acto5_puerta_vista / flag_acto5_epilogo_vista):
+//    no hace falta delegarlas.
+//
+// 5) update.ts (~389, junto a faroTick/cumbresBiomaTick, dentro de updateGame):
+//      import { acto5TickR19 } from './acto5_narrativa_r19';
+//      acto5TickR19(g, dt);
+//
+// 6) Ruteo de NPCs (capa nueva getDialogueActo5 en data.ts, patrón 16-a:
+//    captura getDialogueActo4 y delega el resto). ANTES de delegar:
+//      if (nid === 'brisa'  && ctx.flags.acto4Done && ctx.flags.heraldoDerrotado && !ctx.flags.q17)               return 'acto5_brisa_puerta'; // ofrece q17
+//      if (nid === 'brisa'  && ctx.flags.acto5_intro_vista && !ctx.flags.acto5_brisa_reacc)                       return 'acto5_brisa';        // la confesión (40 años)
+//      if (nid === 'guarda' && ctx.flags.acto5_intro_vista && !ctx.flags.acto5_kael_reacc)                        return 'acto5_kael';         // la duda de Kael
+//    (acto4CatchUp/acto3CatchUp corren en hooks sin cambios; 'guarda' caería
+//    en las rutas del Acto IV, por eso el interceptor va PRIMERO.)
+//
+// 7) Mapa de la ciudadela (agente 19-g): MapId 'ciudadela'. Este módulo usa
+//    el cast 'ciudadela' as MapId — cuando 19-g/integrador amplíen MapId en
+//    types.ts, retirar el cast (marcado con TODO-19g). Props OBLIGATORIOS:
+//      · 'acto5_puerta'  kind 'gate'  — el umbral de la Puerta que Canta
+//        (kind 'gate' = sin interacción del motor; el watcher del tick la narra).
+//      · 'acto5_s1' | 'acto5_s2' | 'acto5_s3'  kind 'fragment' — los tres
+//        Sello-Nota. NO hace falta interacción nueva: acto5TickR19 instala
+//        g.dynNodes['voz_fragment'] (copia del nodo del sello más cercano sin
+//        tomar) mientras el Portador anda por la ciudadela con el Acto V en
+//        marcha, y lo RETIRA al salir del mapa; el E del motor abre así el
+//        nodo correcto sin tocar engine.ts.
+//
+// 8) Jefe final (agente 19-h): la elección moral fija
+//      flags.acto5_sala_abierta = true  → señal para instanciar el jefe
+//      flags.acto5_camino = 'despertar'|'apagar'  (leer con acto5CaminoR19(g))
+//    Patrón de spawn: acto4_subir de hooks.ts:430 (makeEnemy + bossRef +
+//    bossActive + banner). El etype sugerido es 'vesh' (añadirlo a EnemyType
+//    si 19-h usa ese nombre; este módulo no lo toca). Al morir el jefe,
+//    19-h fija  flags.veshDefeated = true  (killEnemy del motor no tiene rama
+//    para etypes nuevos — precedentes: guardianRecordadoDerrotado,
+//    heraldoDerrotado) → mi watcher (F) encola el epílogo del camino elegido,
+//    UNA sola vez (flag acto5_fin).
+//
+// 9) IMPORTS de este módulo: SOLO tipos (types.ts + type Game) y audio.ts
+//    (hoja). Cero imports de valor de data/engine/hooks → sin ciclos, igual
+//    que interludios.ts. El cast de flags string sigue el precedente de
+//    hooks.ts:557 (flags.tonoDominante).
+// ──────────────────────────────────────────────────────────────────────
+
+import type { Game } from './engine';
+import type { DialogueNode, MapId, QuestDef } from './types';
+import { audio } from './audio';
+
+/**
+ * Formato EXACTO de CompassTarget (data.ts:996 — el original vive en data.ts y
+ * este módulo no importa valores de ahí): npc/etype/prop/lamp/map. El
+ * Object.assign(QUEST_COMPASS, COMPASS_ACTO5) del integrador type-checka
+ * estructuralmente contra la interfaz original.
+ */
+interface CompassTarget { npc?: string; etype?:
+########## jefe_vesh_r19 ##########
+// ============================================================
+// ECOS DE AELTHAR — R19 · AGENTE 19-h · JEFE FINAL
+// «VESH, LA ÚLTIMA NOTA» — Sala del Primer Silencio (ciudadela)
+// ============================================================
+// El primer cantor, convertido en la nota que nadie se atrevió a
+// terminar. Pelea en COMPASES de 4 tiempos (1 tiempo = 0.75 s;
+// Fase 3 = 0.5 s) marcados con pulsos dorados de partículas:
+//
+//   FASE 1 «LA BATUTA»   (>60% hp): flota en diente de sierra; en cada
+//     compás: tiempo 1 = telegrafía (3 partículas + anillo), tiempos
+//     2-3 = salva en arco (3 notas a 0°/±20°), tiempo 4 = pausa (el
+//     compás enseña el ritmo). Cada 4 compases: ACORDE (8 notas en
+//     círculo completo).
+//   FASE 2 «EL SILENCIO» (60-30%): transición con toast «El Silencio
+//     desciende…», sfx propios, invulT 1.5 y penumbra (partículas
+//     oscuras + flash violáceo — el flash del motor es ADITIVO
+//     ('lighter'): la oscuridad real la dan los motes). Vesh se
+//     desvanece y REAPARECE TRAS EL PORTADOR cada compás y deja 3
+//     «nodos de silencio» (sombra estática, 90 hp): si sobreviven 3
+//     compases, ESTALLAN en una onda cada uno (máx 3 vivos siempre).
+//   FASE 3 «EL ACORDE FINAL» (<30%): compás acelerado (0.5 s/tiempo),
+//     DOBLE acorde (2 círculos de 8 desfasados 22.5°) cada 4 compases
+//     y ONDA DE COMPÁS: shockwave radial enorme (maxR 230) cada 6 s
+//     con telegrafía de 1 s. A <15% hp: «CODA» — se queda quieto 2 s
+//     cargando (telegrafía grande) y lanza 16 notas en espiral
+//     (ángulo = base + i·22.5°, determinista).
+//   ANTI-COWBOY: si el Portador se mantiene a >300 px, Vesh teleporta
+//     a media distancia y castea un acorde (castiga el kite).
+//   Quiebre con e.sta/maxSta (mismo patrón que el dispatcher 14-a).
+//
+// DETERMINISMO: cero Math.random en este módulo — mulberry32 local de
+// semilla FIJA dentro de un WeakMap POR ENEMIGO (memoria de cerebro) y
+// WeakMap POR PARTIDA (semilla base, HMR/multi-instancia seguro).
+// Proyectiles siempre sprite 'nota' (from:'enemy') — el motor gestiona
+// i-frames/parada/estelas. Daño al Portador SOLO vía proyectiles,
+// ondas, telegrafías y g.damagePlayer().
+//
+// ═══════════════════════════════════════════════════════════════
+// PUNTOS DE CABLEADO PARA EL INTEGRADOR (nombres exactos)
+// ═══════════════════════════════════════════════════════════════
+// NINGÚN fichero ajeno fue editado por 19-h. Cableado exacto:
+//
+// (1) types.ts — ampliar las uniones (2 palabras):
+//       EnemyType: añadir | 'vesh'      (junto a 'heraldo')
+//       MapId:     añadir | 'ciudadela' (mapa del agente 19-g, 54×44)
+//
+// (2) data.ts — registrar la def (patrón ENEMY_DEFS_14A/16A, tras el
+//     bloque 16-a):
+//       import { VESH_DEF_R19 } from './jefe_vesh_r19';
+//       Object.assign(ENEMY_DEFS, { vesh: VESH_DEF_R19 });
+//     (Object.assign ya no hace falta si se prefiere: la def viaja
+//      auto-inyectada por CARGA de este módulo — ver más abajo.)
+//
+// (3) update.ts — despachar el cerebro (línea ~704, patrón expansionTick):
+//       import { veshTickR19 } from './jefe_vesh_r19';
+//       if (EXPANSION_TYPES.has('vesh') && e.etype === 'vesh' && veshTickR19(g, e, dt, def)) return;
+//     (o añadir 'vesh' a EXPANSION_TYPES línea 65 + case 'vesh' en
+//      expansionTick de enemies_expansion.ts:1822 con el import —
+//      CUALQUIERA de las dos vale; NUNCA antes del bloque común.)
+//
+// (4) engine.ts — flag de derrota (línea ~84-91):
+//       BOSS_DEFEAT_FLAG: añadir  vesh: 'veshDefeated',
+//     y rama killEnemy (línea ~1894, patrón 'coro'):
+//       else if (e.etype === 'vesh') {
+//         this.flags.veshDefeated = true;          // ⚠ dispara el EPÍLOGO (agente 19-f)
+//         delete this.flags.bossHp_ciudadela;
+//         this.bossActive = false;
+//         audio.setCombat(false);
+//         audio.playTrack('boss');                 // o tema de epílogo
+//         this.shake = 10;
+//         veshDeathFxR19(this, e);                 // onda dorada + partículas (guard anti-doble)
+//         audio.sfx('holy'); audio.sfx('song');
+//         this.toast('La Última Nota ha sonado', '#ffd88a');
+//         p.potions += 2;
+//         this.floatAt(e.x, e.y - 34, 'Botín del jefe: +2 pociones', '#7ef0a0');
+//       }
+//     (el XP 800 y el oro 500-650 ya los paga el tronco común de
+//      killEnemy leyendo ENEMY_DEFS.vesh; «veshDefeated» es LA flag
+//      exacta que espera el 19-f para el epílogo.)
+//
+// (5) Spawn — MAPS.ciudadela (módulo del 19-g) o data de spawns:
+//       { type: 'vesh', x: 27, y: 10, patrol: 0, zone: 'boss' }
+//     (= VESH_SPAWN_R19). Sala del Primer Silencio, al norte. Si el
+//     plano final de 19-g moviera la sala, ajustar SOLO aquí.
+//     makeEnemy('vesh') necesita ENEMY_DEFS.vesh (punto 2) y da caja
+//     12×10: el cerebro la auto-sana a 22×16 en su primer tick (el
+//     integrador TAMBIÉN puede añadir 'vesh' al ternario de
+//     makeEnemy engine.ts:621 — opcional, no requerido).
+//
+// (6) render.ts — OPCIONAL (frames de pose; sin cablear, el juego
+//     funciona con el ciclo 0/1 de entityFrame):
+//       import { veshPoseR19 } from './jefe_vesh_r19';
+//       // en drawEntity, para etype 'vesh':
+//       //   'idle' → frames 0/1 (entityFrame) · 'cast' → 2
+//       //   'batuta' → 3 · 'coda' → 4
+//
+// (7) engine constructor — OPCIONAL: initJefeVeshR19Sprites() tras
+//     initExpansionSprites() (si no, el primer tick lo auto-instala).
+//
+// (8) challenge.ts BOSS_INFO — OPCIONAL (solo si se añade duelo de
+//     arena 'vesh').
+//
+// Banner de jefe: el CEREBRO lo dispara solo (flags.veshIntro +
+// 

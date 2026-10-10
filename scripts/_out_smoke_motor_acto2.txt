@@ -10,7 +10,7 @@
   ✓ killEnemy(sirena): paso 1→2, flag + botín poción
   ✓ botín garantizado de la jefa: +1 poción
   ✓ eco_mareas_taken: q7 → q8 (paso 2 completado)
-  ✓ grantQuestLoot(q7): +40 coronas pagadas (228 ≥ 228)
+  ✓ grantQuestLoot(q7): +40 coronas pagadas (219 ≥ 219)
   ✓ recompensa q7 (grantQuestLoot): +1 poción
   ✓ loadMap(aldea): paso 0→1
   ✓ 2 faroles en desorden: sin avance prematuro (2/3)

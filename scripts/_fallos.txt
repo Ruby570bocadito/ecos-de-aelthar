@@ -1,0 +1,91 @@
+######## acto2 ########
+  ✓ costa/aldea/cumbres: spawns, NPCs, cofres y props revisados
+
+=== 8) FAROLES DE MERROW (contrato lightLamp) ===
+  ✓ ids exactos: lamp1, lamp2, lamp3
+  ✓ los 3 faroles con needPast:true
+
+=== 9) CONSTANTES ===
+  ✓ TILE = 16
+  ✓ SOLID_CHARS = 16 chars (tp#HrFRwgPAV~dxn)
+
+================================
+RESULTADO: ✗ 32 FALLOS, ⚠ 1 avisos
+######## acto4 ########
+  ✓ guarda paso 1 → ofrecimiento de la puerta
+  ✓ guarda con Sala abierta → re-entrada (anti-bloqueo)
+  ✓ guarda tras el jefe → gratitud
+  ✓ guarda antes de q15 → silencio (la Sala aún duerme)
+  ✓ heraldo NPC durante el Acto IV → último aviso
+  ✓ heraldo tras su muerte → delega (aviso retirado)
+  ✓ brisa q15 paso 0 → guía hacia la Cripta
+  ✓ brisa q15 paso 1 con jefe vivo → "no la dejes esperando"
+  ✓ brisa q15 con jefe caído → informe inmediato (anti-bloqueo)
+  ✓ epílogo por flags espejo: verdad
+
+SMOKE ACTO IV: 2 FALLOS
+######## acto5_r19 ########
+  ✓ el epílogo «apagar» tiene texto propio (no reutiliza el de despertar)
+  ✓ epílogo apagar completado: acto5_fin
+
+=== 7) Ilwen + dispararActo5 + limpieza del override + tick sin NaN ===
+  ✓ Ilwen canta la primera armonía (una vez, con compañera en la ciudadela)
+  ✓ la reacción de Ilwen no se repite
+  ✓ override re-armado al volver a la ciudadela
+  ✓ override RETIRADO al salir de la ciudadela (voz_fragment original intacto)
+  ✓ dispararActo5 encola y el tick abre (API pública)
+  ✓ acto5TickR19 600 frames en play/dialogue/pause sin NaN ni excepciones
+
+SMOKE ACTO5 NARRATIVA: 3 FALLO(S)
+######## jefe_marea_r19 ########
+
+[1] MAREA_DEF_R19 / banner / spawn
+
+[2] BFS costa (spawn alcanzable desde la exit de lunaris)
+  · nota: el (25,39) propuesto es '~' → SÓLIDO (oleaje), spawn corregido a (25,33) playa sur
+  ✗ sin spawns regulares a <4 tiles del jefe (esperado 0, obtenido 1)
+
+[3] cerebro tickMareaR19 · 600 ticks × 3 hp%
+
+[4] sprite buildMareaR19 / initJefeMareaR19Sprites
+
+SMOKE JEFE MAREA R19: 1 FALLOS
+######## jefe_vesh_r19 ########
+  ✓ 2 builds byte a byte idénticas (e50e0032, 274e5c37, 9c8bb5d2)
+  ✓ initJefeVeshR19Sprites idempotente: registerSpr('vesh') con la misma firma
+
+[10] veshDeathFxR19: onda dorada + partículas · guard anti-doble
+  ✓ ondas doradas emitidas: 3 (≥1)
+  ✓ partículas doradas masivas: 46
+  ✓ FX de muerte sin NaN
+  ✓ guard anti-doble: segunda llamada no emite
+  ✓ drawVeshDeathFxR19 es alias exacto (integrador: cualquiera de las dos)
+  ✓ llamada sin e: cae a bossRef/Portador sin lanzar
+
+SMOKE JEFE VESH R19: 2 FALLOS
+######## rutas ########
+  ✓ zona de salida a la cripta (8-12, 2-3) alcanzable en pasado vía (8,2)
+  ✓ corredor de la puerta de la cripta libre de pinos en pasado (0 pinos)
+  ✓ cartel sign_b3 (27,13) legible en pasado
+   mapa 6..15 × 1..6 (pasado):
+     #########t
+     #:::::::#.
+     #:::A:::#.
+     ###===###.
+     ..........
+     ..........
+
+RESULTADO: 93 ok, 6 fallos
+######## secundarias_r19 ########
+  ✓ sqNpcLabelR19(Iria) exacto
+  ✓ sqNpcLabelR19(Mara) → null
+
+=== 8) TICKS sin NaN en varios estados + reparación de flags ===
+  ✓ tick en estado title sin jugador: sin lanzar
+  ✓ 600 ticks en play/dialogue sin lanzar
+  ✓ challengeRun: el tick no reconcilia la campaña
+  ✓ NaN reparado → 0
+  ✓ step fuera de rango (42) reparado → 0
+  ✓ cero flags NaN tras la batería completa
+
+SMOKE SECUNDARIAS R19: 1 FALLOS

@@ -1,0 +1,12 @@
+=== SMOKE 19-c · JEFE MAREA SIN NOMBRE ===
+
+[1] MAREA_DEF_R19 / banner / spawn
+
+[2] BFS costa (spawn alcanzable desde la exit de lunaris)
+  · nota: el (25,39) propuesto es '~' → SÓLIDO (oleaje), spawn corregido a (25,33) playa sur
+
+[3] cerebro tickMareaR19 · 600 ticks × 3 hp%
+
+[4] sprite buildMareaR19 / initJefeMareaR19Sprites
+
+SMOKE JEFE MAREA R19: TODO OK

@@ -1,0 +1,19 @@
+=== R19 FILES ===
+-rw-rw-r-- 1 z z 25044 Oct 10 11:07 scripts/smoke_acto5_r19.ts
+-rw-rw-r-- 1 z z 30696 Oct 10 11:06 scripts/smoke_enemigos_r19.ts
+-rw-rw-r-- 1 z z 28127 Oct 10 11:05 scripts/smoke_jefe_ceniza_r19.ts
+-rw-rw-r-- 1 z z 25916 Oct 10 11:03 scripts/smoke_jefe_marea_r19.ts
+-rw-rw-r-- 1 z z 23508 Oct 10 11:05 scripts/smoke_jefe_vesh_r19.ts
+-rw-rw-r-- 1 z z 22487 Oct 10 10:57 scripts/smoke_magias_r19.ts
+-rw-rw-r-- 1 z z 14356 Oct 10 10:59 scripts/smoke_mapa_acto5_r19.ts
+-rw-rw-r-- 1 z z 26320 Oct 10 10:59 scripts/smoke_secundarias_r19.ts
+-rw-rw-r-- 1 z z 49831 Oct 10 11:01 src/game/acto5_narrativa_r19.ts
+-rw-rw-r-- 1 z z 47891 Oct 10 11:08 src/game/enemigos_r19.ts
+-rw-rw-r-- 1 z z 33631 Oct 10 10:55 src/game/jefe_ceniza_r19.ts
+-rw-rw-r-- 1 z z 33168 Oct 10 11:01 src/game/jefe_marea_r19.ts
+-rw-rw-r-- 1 z z 35775 Oct 10 11:03 src/game/jefe_vesh_r19.ts
+-rw-rw-r-- 1 z z 28468 Oct 10 10:50 src/game/magias_r19.ts
+-rw-rw-r-- 1 z z 22027 Oct 10 10:57 src/game/maps_acto5_r19.ts
+-rw-rw-r-- 1 z z 35521 Oct 10 10:58 src/game/sidequests_r19.ts
+=== TSC ===
+EXIT=0

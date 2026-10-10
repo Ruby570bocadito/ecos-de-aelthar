@@ -1,0 +1,95 @@
+== sidequests exports ==
+76:export const SQ_R19_QUESTS: QuestDef[] = [
+106:export const SQ_R19_NPCS: Record<string, { map: MapId; def: NpcDef }> = {
+112:export const SQ_R19_PROPS: Record<string, { map: MapId; def: PropDef }> = {
+209:export function instalarSecundariasR19(): void {
+226:export function initSecundariasR19(): void {
+240:export function sqDialogueR19(
+264:export function sqActionR19(g: Game, action: string): boolean {
+366:export function sqPropLabelR19(g: Game, prop: PropDef): string | null {
+382:export function sqPropUseR19(g: Game, prop: PropDef): boolean {
+413:export function sqPropTargetR19(g: Game): PropDef | null {
+430:export function sqNpcLabelR19(g: Game, npc: { nid: string; dispName: string }): string | null {
+445:export function secundariasTickR19(g: Game, dt: number): void {
+476:export const SQ_R19_DIALOGUES: Record<string, DialogueNode> = {
+== magias exports ==
+84:export interface MagiaDef {
+95:export const MAGIAS_R19: MagiaDef[] = [
+128:export function magiaDefR19(id: string): MagiaDef | null {
+170:export function magiasGateR19(g: Game): boolean {
+175:export function magiaSlotR19(g: Game, slot: number): string {
+182:export function setMagiaSlotR19(g: Game, slot: number, id: string): boolean {
+190:export function magiaCdLeftR19(g: Game, id: string): number {
+215:export function castMagiaR19(g: Game, slotIdx: number): boolean {
+333:export function ecoEscudoAbsorbR19(g: Game, dmg: number): number {
+362:export function magiasTickR19(g: Game, dt: number): void {
+492:export function initMagiasR19(): void {
+518:export function drawMagiasPanelR19(g: Game, x: number, y: number, w: number): number {
+== enemigos exports ==
+152:export const eliteMultR19 = { hp: 1.35, dmg: 1.25, xp: 2.0, gold: 1.8 } as const;
+161:export function eliteSeedR19(mapId: string, spawnIdx: number): number {
+170:export function esEliteR19(mapId: string, spawnIdx: number): boolean {
+175:export function rasgoEliteR19(seed: number): EliteTraitR19 {
+185:export function eliteIdxPorPosR19(mapId: string, x: number, y: number): number {
+229:export function aplicarEliteR19(e: Enemy, seed: number): void {
+247:export function dmgEliteR19(e: Enemy, def: EnemyDef): number {
+378:export function eliteTickR19(g: Game, dt: number): void {
+453:export function drawEliteAuraR19(g: Game, e: Enemy, t: number): void {
+645:export function tickEcoDesvR19(g: Game, e: Enemy, dt: number, def: EnemyDef, m: R19Mem): boolean {
+780:export function tickVigiaTintaR19(g: Game, e: Enemy, dt: number, def: EnemyDef, m: R19Mem): boolean {
+917:export const R19_TYPES: ReadonlySet<string> = new Set<string>(['eco_desvanecido', 'vigia_tinta']);
+919:export function r19Tick(g: Game, e: Enemy, dt: number, def: EnemyDef): boolean {
+1078:export function initEnemigosR19Sprites(): void {
+1094:export const SPAWNS_R19: readonly SpawnR19[] = [
+1116:export function instalarEnemigosR19(): void {
+1142:export const ENEMY_DEFS_R19: Record<string, EnemyDef> = {
+1163:export function __r19Debug(): { buffsActivos: number } {
+== acto5 exports ==
+107:export const QUESTS_ACTO5: QuestDef[] = [
+132:export const COMPASS_ACTO5: Record<number, CompassTarget[]> = {
+148:export const D_ACTO5: Record<string, DialogueNode> = {
+385:export const INTERLUDIOS_ACTO5: Record<string, DialogueNode> = {
+427:export const MEMORIA_ACTO5: Record<string, { id: string; title: string; text: string }> = {
+435:export const KEY_ITEM_ACTO5: Record<string, { name: string; desc: string }> = {
+463:export function acto5CaminoR19(g: Game): 'despertar' | 'apagar' {
+477:export function dispararActo5(g: Game, key: string): void {
+523:export function acto5TickR19(g: Game, dt: number): void {
+636:export function acto5ActionR19(g: Game, action: string): boolean {
+== marea tick firma ==
+475:export function tickMareaR19(g: Game, e: Enemy, dt: number, def: EnemyDef, _m: unknown): boolean {
+== ceniza firmas ==
+639:export function cenizaWatchR19(g: Game): void {
+785:export function initJefeCenizaR19Sprites(): void {
+== vesh firmas ==
+590:export function veshTickR19(g: Game, e: Enemy, dt: number, def: EnemyDef): boolean {
+697:export function veshDeathFxR19(g: Game, e?: Enemy): void {
+884:export function initJefeVeshR19Sprites(): void {
+== marea init ==
+783:export function initJefeMareaR19Sprites(): void {
+== getDialogue let ==
+1340:getDialogue = getDialogueActo3;
+1824:getDialogue = getDialogueActo4;
+== DialogueCtx ==
+src/game/data.ts:30:export interface DialogueCtx { questIdx: number; questStep: number; flags: Record<string, number | boolean>; companion: boolean }
+== engine keys zona ==
+        // accesibilidad / QoL: esperar hasta el alba
+        this.dayT = 0.22;
+        this.toast('Esperas junto al camino hasta el alba...', '#ffe86a');
+        audio.sfx('save');
+      }
+      // ==== 16-b (interacción-compañeros): órdenes tácticas (T) y señuelo (8;
+      // las teclas 5/6/7 son de las herramientas del árbol, 12-b) ====
+      else if (k === 't') cycleCompanionMode(this);
+      else if (k === '8') useSenno(this);
+      else if (['1', '2', '3', '4'].includes(k)) this.useSkill(parseInt(k, 10) - 1);
+      else if (k === 'k') { this.setState('skills'); audio.sfx('uiOpen'); }
+    } else if (this.state === 'pause') {
+      if (k === 'escape' || k === 'm') this.setState('play');
+    } else if (this.state === 'skills') {
+      if (k === 'escape' || k === 'k' || k === 'm') { this.setState('play'); audio.sfx('uiOpen'); }
+    } else if (this.state === 'dead') {
+      if (k === 'e' || k === 'enter') this.respawn();
+    } else if (this.state === 'end') {
+      if (k === 'enter' || k === 'e') this.setState('title');
+    }
+  };

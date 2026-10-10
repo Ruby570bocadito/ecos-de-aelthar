@@ -1,0 +1,8 @@
+=== magia_slot ===
+=== tomo_canto ===
+=== mb_marea/mb_heraldo ===
+=== SQ_DEFS/sq4 ===
+=== castMagia/drawMenuMagias ===
+=== interludio cableado ===
+=== barrera altar ===
+src/game/maps.ts:3

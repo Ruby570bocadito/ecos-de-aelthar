@@ -20,6 +20,14 @@ import { tileAt } from './maps'; // solo lectura (mapas propiedad de otro agente
 import { interaccionTick, companionOrdersMove, lureActive, sennoChase } from './interaccion'; // 16-b: órdenes tácticas + señuelo
 import { faroTick } from './faro_historia'; // 18-e: escucha nocturna del faro + pago único
 import { cumbresBiomaTick } from './biomas_cumbres'; // 18-b: fases del bioma de cumbres
+import { secundariasTickR19 } from './sidequests_r19'; // 19-a: reconciliación de secundarias
+import { magiasTickR19 } from './magias_r19'; // 19-b: cooldowns/buffs de magias
+import { eliteTickR19, R19_TYPES, r19Tick } from './enemigos_r19'; // 19-e: élites + cerebros nuevos
+import { acto5TickR19 } from './acto5_narrativa_r19'; // 19-f: watchers del Acto V
+import { ciudadelaGateTickR19 } from './maps_acto5_r19'; // 19-g: puerta de la Sala del Primer Silencio
+import { tickMareaR19 } from './jefe_marea_r19'; // 19-c: cerebro de La Marea Sin Nombre
+import { tickCenizaR19, cenizaWatchR19 } from './jefe_ceniza_r19'; // 19-d: Heraldo de Ceniza
+import { veshTickR19 } from './jefe_vesh_r19'; // 19-h: Vesh, la Última Nota
 
 const DIRS: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
 
@@ -386,6 +394,11 @@ export function updateGame(g: Game, dt: number) {
   interaccionTick(g, dt);
   faroTick(g);            // 18-e: arco del faro (O(1), early-out fuera de costa)
   cumbresBiomaTick(g, dt); // 18-b: huellas/aliento/chispas de cumbres (O(1))
+  secundariasTickR19(g, dt); // 19-a: reconciliación de pasos de secundarias (O(1))
+  magiasTickR19(g, dt);      // 19-b: cooldowns/buffs/aura de magias
+  eliteTickR19(g, dt);       // 19-e: rasgos de élite (O(n), ANTES del bucle de enemigos)
+  acto5TickR19(g, dt);       // 19-f: watchers narrativos del Acto V
+  ciudadelaGateTickR19(g);   // 19-g: puerta de la Sala del Primer Silencio
 
   // ---------------- enemigos ----------------
   let anyAggro = false;
@@ -403,8 +416,10 @@ export function updateGame(g: Game, dt: number) {
   if (g.bossRef && g.bossRef.dead) g.bossRef = null;
   audio.setCombat(anyAggro);
 
-  // ---------------- jefe: activación (generalizada Acto II) ----------------
-  const bossSpawn = g.map.spawns.find(s => s.zone === 'boss');
+  // ---------------- jefe: activación (generalizada Acto II; R19: elige el
+  // PRIMER spawn zone:'boss' NO derrotado → La Marea (19-c) activa al volver a
+  // la costa tras la Sirena; la ciudadela ya trae su 'vesh' como único boss) ----
+  const bossSpawn = g.map.spawns.find(s => s.zone === 'boss' && !g.flags[BOSS_DEFEAT_FLAG[s.type] ?? 'x_defeated']);
   if (bossSpawn && !g.flags[BOSS_DEFEAT_FLAG[bossSpawn.type] ?? 'x_defeated'] && !g.bossActive) {
     const boss = g.enemies.find(e => e.etype === bossSpawn.type);
     if (boss) {
@@ -421,6 +436,12 @@ export function updateGame(g: Game, dt: number) {
         } else if (bossSpawn.type === 'golem') {
           g.toast('El Gólem de Escarcha despierta: ROMPE SU BARRA DE QUIEBRE', '#a8d8ff');
           audio.sfx('roar');
+        } else if (bossSpawn.type === 'marea') {
+          g.toast('La Marea Sin Nombre despierta: ROMPE SU BARRA DE QUIEBRE', '#bff0f4'); // 19-c
+          audio.sfx('splash');
+        } else if (bossSpawn.type === 'vesh') {
+          g.toast('VESH despliega su batuta: aprende su compás', '#ffd88a'); // 19-h
+          audio.sfx('roar');
         }
       }
     }
@@ -430,6 +451,7 @@ export function updateGame(g: Game, dt: number) {
   // Cripta post-Acto III) — spawn + activación de barra al estilo del bloque
   // anterior. Barato: el watcher filtra primero por mapa.
   expansionBossWatchers(g);
+  cenizaWatchR19(g); // 19-d: spawn/barra/botín del Heraldo de Ceniza (O(1))
 
   // ---------------- proyectiles ----------------
   for (let i = g.projectiles.length - 1; i >= 0; i--) {
@@ -702,6 +724,12 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
   // Acto II: decae la fase intangible y delega en el cerebro propio si lo maneja
   if (e.invulT !== undefined && e.invulT > 0) e.invulT -= dt;
   if (EXPANSION_TYPES.has(e.etype) && expansionTick(g, e, dt, def)) return;
+  // ==== R19: cerebros propios de los jefes/enemigos nuevos (contrato: true =
+  // frame consumido, el motor salta su IA genérica; después del bloque común) ====
+  if (e.etype === 'marea' && tickMareaR19(g, e, dt, def, undefined)) return; // 19-c
+  if (e.etype === 'ceniza' && tickCenizaR19(g, e, dt, def)) return; // 19-d
+  if (e.etype === 'vesh' && veshTickR19(g, e, dt, def)) return; // 19-h
+  if (R19_TYPES.has(e.etype) && r19Tick(g, e, dt, def)) return; // 19-e: eco_desvanecido/vigia_tinta
 
   const d = dist(e.x, e.y, p.x, p.y);
   const nightMult = isNight(g) ? 1.3 : 1;

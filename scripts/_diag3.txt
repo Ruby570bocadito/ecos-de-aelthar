@@ -1,0 +1,30 @@
+=== GREP R17 CONTENT in src/game ===
+src/game/engine.ts
+src/game/interaccion.ts
+src/game/interludios.ts
+src/game/update.ts
+src/game/sprites_expansion.ts
+src/game/maps.ts
+src/game/types.ts
+src/game/biomas_costa.ts
+src/game/faro_historia.ts
+src/game/data.ts
+src/game/enemies_expansion.ts
+src/game/challenge.ts
+src/game/render.ts
+src/game/hooks.ts
+src/game/maps_expansion.ts
+src/game/worldlife.ts
+src/game/screens.ts
+=== sq4/sq5/sq6 sidequests ===
+src/game/world/trees.ts
+src/game/screens.ts
+=== components/game ===
+total 16
+drwxr-xr-x 2 z z 4096 Oct 10 08:52 .
+drwxr-xr-x 4 z z 4096 Oct 10 08:52 ..
+-rwxr-xr-x 1 z z 6151 Oct  8 16:15 EcosGame.tsx
+=== dev server check ===
+200
+=== tsc ===
+TSC_EXIT=0

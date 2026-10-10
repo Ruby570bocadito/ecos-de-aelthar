@@ -1,0 +1,5 @@
+Bundled 41 modules in 42ms
+
+  _bundle_check.js  0.96 MB  (entry point)
+
+BUNDLE_EXIT=0

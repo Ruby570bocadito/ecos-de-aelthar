@@ -1,0 +1,33 @@
+=== worklog lines ===
+1155 worklog.md
+=== last Task IDs ===
+576:Task ID: 10-b
+611:Task ID: 11-a
+648:Task ID: 10-int
+659:Task ID: 11-int
+671:Task ID: 12
+690:Task ID: 12-c
+734:Task ID: 12-a
+749:Task ID: 12-b
+764:Task ID: 12-int
+781:Task ID: 12-push
+793:Task ID: 13-c
+820:Task ID: 13-b
+859:Task ID: 13-a
+873:Task ID: 13-int
+887:Task ID: 14
+905:Task ID: 15
+921:Task ID: 16-c
+943:Task ID: 16-a
+958:Task ID: 16-b
+971:Task ID: 16-int
+985:Task ID: 18-pre
+1001:Task ID: 18-c
+1027:Task ID: 18-b
+1043:Task ID: 18-f
+1067:Task ID: 18-a
+1086:Task ID: 18-d
+1100:Task ID: 18-e
+1114:Task ID: 18-int
+1128:Task ID: 18-e2e
+1144:Task ID: 18-cierre

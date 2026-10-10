@@ -1,0 +1,60 @@
+== ceniza funciones ==
+383:export function tickCenizaR19(g: Game, e: Enemy, dt: number, def: EnemyDef): boolean {
+581:export function spawnCenizaR19(g: Game): Enemy {
+639:export function cenizaWatchR19(g: Game): void {
+688:export function buildCenizaR19(): Frames {
+785:export function initJefeCenizaR19Sprites(): void {
+793:export function __cenizaDebug(): { sprInited: boolean; builds: number; runs: number; defInENEMY_DEFS: boolean } {
+804:export function __cenizaReset(): void {
+== sqDialogueR19 firma ==
+export function sqDialogueR19(
+  nid: string,
+  ctx: { questIdx: number; questStep: number; flags: Record<string, number | boolean>; companion: boolean },
+): string | null {
+  const f = ctx.flags;
+  const activa = (id: SqId): boolean => !!f[id] && !f[`${id}_done`];
+  for (const c of SQ_LIST) {
+    if (c.nid !== nid) continue;
+    if (f[`${c.id}_done`]) return `${c.id}_${nid}_done`;
+    if (activa(c.id)) {
+      return Number(f[`${c.id}_step`] ?? 0) >= 1 ? `${c.id}_${nid}_listo` : `${c.id}_${nid}_progress`;
+    }
+    const otra = SQ_LIST.find(o => o.id !== c.id && activa(o.id));
+    if (otra) return `${c.id}_${nid}_busy`;
+    return `${c.id}_${nid}_intro`;
+  }
+  return null;
+}
+
+// ============================================================
+// 6) ACCIONES DE DIÁLOGO (delegación desde hooks.handleCustomAction).
+//    'accept_sqN' y 'sqN_reward'. Devuelve true si la acción es de 19-a.
+// ============================================================
+== getDialogue decl ==
+696:export function getDialogue(nid: string, ctx: DialogueCtx): string {
+1020:// getDialogue: captura la función original (GET_DIALOGUE_BASE) y la
+1275: * completa del trato de jefes del Acto II). getDialogue (envoltorio) y hooks
+1277: * Se guarda en data.ts y no en hooks.ts porque el envoltorio de getDialogue
+1282:// ---------------- Envoltorio de getDialogue (ruteo del Acto III) ----------------
+1289:const GET_DIALOGUE_ACTO1_2 = getDialogue;
+1292:function getDialogueActo3(nid: string, ctx: DialogueCtx): string {
+1340:getDialogue = getDialogueActo3;
+== teclas usadas ==
+1430:      if (k === 'enter' || k === 'e' || k === ' ') { /* botones por click; enter = nueva partida */ }
+1432:      if (k === 'e' || k === ' ' || k === 'enter') {
+1438:      if (k === 'e' || k === ' ' || k === 'enter') this.advanceDialogue();
+1439:      else if (k === 'arrowup' || k === 'w') { if (this.dlgNode?.options) { this.dlgSel = (this.dlgSel + this.dlgNode.options.length - 1) % this.dlgNode.options.length; audio.sfx('blip'); } }
+1440:      else if (k === 'arrowdown' || k === 's') { if (this.dlgNode?.options) { this.dlgSel = (this.dlgSel + 1) % this.dlgNode.options.length; audio.sfx('blip'); } }
+1442:      if (k === ' ' && this.player && this.player.rollT <= 0 && this.player.attackT <= 0 && this.player.sta >= 20) {
+1445:      if (k === 'e') this.tryInteract();
+1446:      else if (k === 'q') this.epochSwitch();
+1447:      else if (k === 'escape' || k === 'm') { this.setState('pause'); audio.sfx('uiOpen'); }
+1448:      else if (k === 'f') this.drinkPotion();
+1449:      else if (k === 't' && e.shiftKey) {
+1457:      else if (k === 't') cycleCompanionMode(this);
+1458:      else if (k === '8') useSenno(this);
+1460:      else if (k === 'k') { this.setState('skills'); audio.sfx('uiOpen'); }
+1462:      if (k === 'escape' || k === 'm') this.setState('play');
+1464:      if (k === 'escape' || k === 'k' || k === 'm') { this.setState('play'); audio.sfx('uiOpen'); }
+1466:      if (k === 'e' || k === 'enter') this.respawn();
+1468:      if (k === 'enter' || k === 'e') this.setState('title');

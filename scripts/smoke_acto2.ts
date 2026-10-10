@@ -18,15 +18,15 @@ const warn = (m: string) => { console.log('  ⚠ ' + m); warns++; };
 const ok = (m: string) => console.log('  ✓ ' + m);
 
 console.log('=== 1) MISIONES (cadena principal) ===');
-if (QUESTS.length === 16) ok(`QUESTS.length = ${QUESTS.length} (q1..q16, Acto IV incluido)`);
-else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 16`);
+if (QUESTS.length === 22) ok(`QUESTS.length = ${QUESTS.length} (q1..q16 + sq4..sq6 19-a + q17..q19 Acto V)`);
+else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 22`);
 QUESTS.forEach((q, i) => {
   if (!q.id || !q.name || !q.steps?.length) bad(`QUESTS[${i}] (${q.id}) incompleta`);
   else if (q.steps.some(s => !s)) bad(`QUESTS[${i}] (${q.id}) tiene un paso vacío`);
 });
 const ids = QUESTS.map(q => q.id);
 if (new Set(ids).size !== ids.length) bad('ids de misión duplicados');
-if (QUESTS.length === 16) ok('sin huecos: ' + ids.join(','));
+if (QUESTS.length === 22) ok('sin huecos: ' + ids.join(','));
 
 console.log('\n=== 2) ENEMY_DEFS (10 tipos) ===');
 const TYPES: (keyof typeof ENEMY_DEFS)[] = ['lobo', 'esqueleto', 'sombra', 'guardian', 'neumo', 'espectro', 'arpi', 'sirena', 'golem', 'heraldo']; // heraldo: jefe final del Acto IV (16-a)
@@ -61,8 +61,15 @@ const HOOKS_EXACT = new Set(['eco_taken_mem', 'mara_met', 'mara_gift', 'mera_eco
   'acto3_verdad', 'acto3_silencio', 'acto3_subir', 'acto3_velmora_fn',
   // Acto IV (16-a): handlers en hooks.handleCustomAction
   'accept_q14', 'acto4_toln', 'acto4_cam_mera', 'acto4_cam_ivo', 'accept_q15',
-  'acto4_guarda', 'acto4_subir', 'acto4_report', 'accept_q16', 'acto4_epilogo']);
-const HOOKS_PREFIX = ['memory_', 'rep_', 'flag_'];
+  'acto4_guarda', 'acto4_subir', 'acto4_report', 'accept_q16', 'acto4_epilogo',
+  // 19-a (secundarias): handlers en hooks.handleCustomAction → sqActionR19
+  'accept_sq4', 'sq4_reward', 'accept_sq5', 'sq5_reward', 'accept_sq6', 'sq6_reward',
+  // 19-f (Acto V): handlers en hooks.handleCustomAction → acto5ActionR19
+  'accept_q17', 'accept_q18', 'accept_q19', 'acto5_intro_fin', 'acto5_puerta_fin',
+  'acto5_sello_tomado_1', 'acto5_sello_tomado_2', 'acto5_sello_tomado_3',
+  'acto5_camino_despertar', 'acto5_camino_apagar', 'acto5_pv_luego', 'acto5_report19',
+  'acto5_memoria', 'acto5_fin_verdadero']);
+const HOOKS_PREFIX = ['memory_', 'rep_', 'flag_', 'acto5_', 'sq4_', 'sq5_', 'sq6_']; // R19: prefijos de los módulos nuevos
 const ENGINE_PREFIX = ['armor_']; // 14-b: armor_N → engine.applyAction (case action.startsWith('armor_'))
 const actionHandled = (a: string) =>
   ENGINE_ACTIONS.has(a) || HOOKS_EXACT.has(a) || HOOKS_PREFIX.some(p => a.startsWith(p)) || ENGINE_PREFIX.some(p => a.startsWith(p));
@@ -101,7 +108,7 @@ ok('SKILLS: 4 habilidades por disciplina');
 
 console.log('\n=== 5) MAPAS: filas w×h correctas ===');
 const MAP_IDS = Object.keys(MAPS) as MapId[];
-if (MAP_IDS.length === 7) ok(`MAPS tiene 7 mapas: ${MAP_IDS.join(', ')}`); // 6 campaña + arena (12-a)
+if (MAP_IDS.length === 8) ok(`MAPS tiene 8 mapas: ${MAP_IDS.join(', ')}`); // 6 campaña + arena (12-a) + ciudadela (R19/19-g)
 else bad(`MAPS tiene ${MAP_IDS.length} mapas`);
 for (const id of MAP_IDS) {
   const m = MAPS[id];

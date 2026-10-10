@@ -1,0 +1,4 @@
+spawns costa total: 8
+CERCANO neumo (20,34) dist=5.10 zone=costa
+CERCANO marea (25,33) dist=0.00 zone=boss
+EXIT=0

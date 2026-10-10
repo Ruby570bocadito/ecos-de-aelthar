@@ -6,11 +6,11 @@
 export type Dir = 'down' | 'up' | 'left' | 'right';
 export interface Vec { x: number; y: number }
 
-export type MapId = 'lunaris' | 'bosque' | 'cripta' | 'costa' | 'aldea' | 'cumbres';
+export type MapId = 'lunaris' | 'bosque' | 'cripta' | 'costa' | 'aldea' | 'cumbres' | 'ciudadela'; // R19: +Ciudadela de Vesh (19-g)
 export type Epoch = 'presente' | 'pasado';
 export type TrackName = 'village' | 'forest' | 'crypt' | 'boss' | 'title' | 'costa' | 'aldea' | 'cumbres';
 
-export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian' | 'neumo' | 'espectro' | 'arpi' | 'sirena' | 'golem' | 'vult' | 'coro' | 'ecodesg' | 'satiro' | 'heraldo'; // 16-a: jefe final del Acto IV
+export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian' | 'neumo' | 'espectro' | 'arpi' | 'sirena' | 'golem' | 'vult' | 'coro' | 'ecodesg' | 'satiro' | 'heraldo' | 'marea' | 'ceniza' | 'vesh' | 'eco_desvanecido' | 'vigia_tinta'; // 16-a: jefe final del Acto IV · R19: 19-c marea · 19-d ceniza · 19-h vesh · 19-e eco_desvanecido/vigia_tinta
 export type Element = 'fuego' | 'hielo' | 'rayo' | 'sombra' | 'sagrado' | 'ninguno';
 export type StatusKind = 'quemado' | 'congelado' | 'aturdido' | 'marcado';
 

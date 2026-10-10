@@ -100,6 +100,10 @@ const SEMILLAS: Record<string, P[]> = {
   aldea: [{ x: 3, y: 18 }, { x: 17, y: 21 }],
   cumbres: [{ x: 25, y: 38 }, { x: 14, y: 24 }, { x: 24, y: 6 }],
   arena: [{ x: 21, y: 16 }],
+  // R19 (19-g): Ciudadela de Vesh — semillas = llegada del travel (27,41),
+  // centro del Coro de Ceniza y explanada del jefe (la entrada real es el
+  // prop gate de la cripta → travel_ciudadela, no un exit).
+  ciudadela: [{ x: 27, y: 41 }, { x: 27, y: 27 }, { x: 26, y: 13 }],
 };
 
 console.log('SMOKE RUTAS · BFS de accesibilidad peatonal (todas las épocas)');

@@ -38,7 +38,7 @@
 
 === 5) 600 frames sin lanzar + arrays acotados (residuos del canto) ===
   ✓ 600 frames (2 flips + 2 huellas bidireccionales) sin lanzar
-  ✓ partículas acotadas (máx 35; residuos ≤ cap ~30 + notas de transición)
+  ✓ partículas acotadas (máx 34; residuos ≤ cap ~30 + notas de transición)
   ✓ floats acotados (máx 2)
   ✓ toasts acotados (máx 4)
   ✓ ondas acotadas (máx 2)

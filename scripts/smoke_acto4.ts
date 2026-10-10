@@ -109,8 +109,8 @@ console.log('=== 1) ESTRUCTURA: misiones, memoria VII, jefe final, Guarda, brúj
   const q14 = QUESTS.find(q => q.id === 'q14'), q15 = QUESTS.find(q => q.id === 'q15'), q16 = QUESTS.find(q => q.id === 'q16');
   if (q14 && q15 && q16) ok('q14/q15/q16 presentes: ' + [q14, q15, q16].map(q => q.name).join(' · '));
   else bad('faltan misiones del Acto IV');
-  if (QUESTS.length === 16) ok(`QUESTS.length = ${QUESTS.length} (q1..q16, Acto IV incluido)`);
-  else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 16`);
+  if (QUESTS.length === 22) ok(`QUESTS.length = ${QUESTS.length} (q1..q16 + sq4..sq6 19-a + q17..q19 Acto V)`);
+  else bad(`QUESTS.length = ${QUESTS.length}, se esperaban 22`);
   if (q14 && q14.steps.length === 3 && q15 && q15.steps.length === 3 && q16 && q16.steps.length === 2) ok('pasos: q14 3 · q15 3 · q16 2');
   else bad('pasos de las misiones del Acto IV incompletos');
   if (MEMORIES['mem_ultimacanto' as keyof typeof MEMORIES]) ok('memoria VII mem_ultimacanto definida');
@@ -249,11 +249,13 @@ console.log('\n=== 4) q16 · Epílogo: ramas por reputación, pago, memoria UNA 
   else bad('el final dinámico no reacciona a los jefes opcionales');
   if (ACTO4_FIN_JEFES.coro && ACTO4_FIN_JEFES.vult) ok('textos de jefes del epílogo definidos en data.ts');
   else bad('ACTO4_FIN_JEFES incompleto');
-  // post-epílogo: Brisa sirve el nodo de despedida con end_demo
+  // post-epílogo: R19-int — Brisa ya NO sirve la despedida del Acto IV: el
+  // interceptor del Acto V (getDialogueActo5R19) abre acto5_brisa_puerta
+  // (heraldoDerrotado && acto4Done && !q17) → la historia CONTINÚA.
   g.closeDialogue();
   routeBrisa();
-  if (g.dlgKey === 'acto4_epilogo_stay' && (g.dlgNode?.options ?? []).some(o => o.action === 'end_demo')) ok('post-epílogo: despedida con opción de terminar el viaje (end_demo)');
-  else bad(`post-epílogo: dlgKey=${g.dlgKey}`);
+  if (g.dlgKey === 'acto5_brisa_puerta') ok('post-epílogo: el Acto V ARRANCA — Brisa ofrece q17 «La Puerta que Canta»');
+  else bad(`post-epílogo: dlgKey=${g.dlgKey} (esperado acto5_brisa_puerta)`);
 }
 
 console.log('\n=== 5) Juego FUERA DE ORDEN: voces/jefe/recuerdos ANTES de aceptar ===');

@@ -4,7 +4,7 @@
   ✓ T: agresivo → defensivo
   ✓ T: defensivo → seguir
   ✓ agresivo: la compañera abre fuego
-  ✓ agresivo: aborda al objetivo (55 → 29 px)
+  ✓ agresivo: aborda al objetivo (55 → 28 px)
   ✓ agresivo: con HP<30% vuelve al Portador (escolta original)
   ✓ defensivo: se queda a 2 tiles del Portador
   ✓ defensivo: NO dispara a un enemigo a >2 tiles del Portador
@@ -36,7 +36,7 @@
   ✓ examen con rng forzado 0.9: nada útil (75%)
   ✓ cadáver a >0.8 tile: fuera de alcance
   ✓ FuerzaBruta (30 intentos, Math.random): todo botín en [1,5]
-  ✓ FuerzaBruta: 6/30 éxitos ≈ 25% (25% forzado, sin rng inyectado)
+  ✓ FuerzaBruta: 7/30 éxitos ≈ 25% (25% forzado, sin rng inyectado)
 === 4) Cofres ya abiertos: reinteractuar cuenta, no lootea ===
   ✓ reinteractuar un cofre abierto NO da loot
   ✓ y suelta el texto «vacío… pero huele a antes»

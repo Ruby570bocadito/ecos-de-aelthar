@@ -1,0 +1,86 @@
+· (1) builder determinista
+  ✓ 2 llamadas → mismo raster
+  ✓ MapDef.rows === builder()
+· (2) dimensiones y paleta
+  ✓ 44 filas (44)
+  ✓ todas las filas miden 54
+  ✓ solo chars ya dibujados por el motor (0 ajenos)
+· (3) BFS completo desde (27,41)
+  ✓ llegada sur (27,41) pisable (explanada)
+  ✓ cero islas: 855/855 tiles pisables alcanzables
+  ✓ alcanzable: sello acto5_s1 (anteportón) (12,39)
+  ✓ alcanzable: sello acto5_s2 (coro) (41,31)
+  ✓ alcanzable: sello acto5_s3 (capilla oeste) (4,26)
+  ✓ alcanzable: santuario anteportón (42,38)
+  ✓ alcanzable: santuario capilla oeste (6,30)
+  ✓ alcanzable: spawn jefe vesh (27,10)
+  ✓ alcanzable: cofre c1 (80) (9,36)
+  ✓ alcanzable: cofre c2 (120+poción) (48,27)
+  ✓ alcanzable: cofre c3 (200) (21,8)
+  ✓ alcanzable: zona de exit sur (27,42)
+  ✓ alcanzable: NPC Eco Guía (30,39)
+  ✓ alcanzable: altar vacío (27,7)
+  ✓ alcanzable: prop gate acto5_puerta (26,22)
+  ✓ alcanzable: estatua 1 (18,37)
+  ✓ alcanzable: estatua 2 (35,37)
+  ✓ alcanzable: cartel entrada (32,41)
+  ✓ alcanzable: cartel puerta (24,24)
+  ✓ alcanzable: aterrizaje sanctuaryPos por defecto (19,24)
+· (4) spawns de enemigos
+  ✓ 8 spawns (3 eco anteportón + 2 vigía + 2 eco coro + jefe) (8)
+  ✓ todos los spawns en tile transitable
+  ✓ ningún spawn sobre la zona de exit
+  ✓ spawns separados ≥3 (mín 5.00 entre (16,25)-(21,25))
+  ✓ spawns vs NPC ≥3 (mín 7.07)
+  ✓ spawns vs props ≥3 (mín 3.00 vs acto5_altar_vacio)
+· (5) MapDef
+  ✓ id 'ciudadela' (ciudadela)
+  ✓ name
+  ✓ subtitle
+  ✓ w/h 54×44
+  ✓ dark: true
+  ✓ música 'crypt' (existente en TrackName) (crypt)
+  ✓ epochDiffs vacío
+  ✓ 3 sellos acto5_s1..s3
+  ✓ los 3 sellos son kind fragment
+  ✓ 2 santuarios
+  ✓ 1 gate 'acto5_puerta'
+  ✓ 4 sign (2 estatuas + 2 carteles)
+  ✓ 3 cofres
+  ✓ oro 80/120/200
+  ✓ 1 cofre con poción
+  ✓ 2 ecos menores
+  ✓ NPC 'eco_guia' sprite 'wisp'
+  ✓ jefe en (27,10) zone boss
+  ✓ gate en (26,22) delante de la sala del jefe
+· (6) no bloqueo por la puerta (BFS sin radio del gate)
+  ✓ los 3 sellos siguen alcanzables sin cruzar la puerta
+  ✓ los 2 santuarios siguen alcanzables sin cruzar la puerta
+  ✓ cofres c1/c2, NPC y exit alcanzables sin cruzar la puerta
+  ✓ la sala del jefe (27,10) queda INALCANZABLE sin cruzar el radio del gate
+  ✓ c3 (200) queda tras la puerta (por diseño)
+  ✓ el radio de 1.5 tiles cubre las 4 casillas del hueco de la puerta
+· (7) bounds de entidades
+  ✓ exits dentro de bounds
+  ✓ exit único → cripta (20,30) legal y sin bucle
+  ✓ npcs en bounds y pisables
+  ✓ props en bounds y pisables
+  ✓ cofres en bounds y pisables
+  ✓ ecos en bounds y pisables
+  ✓ spawns en bounds
+  ✓ aterrizaje cripta (20,30) pisable en buildCripta
+  ✓ (20,30) fuera de la zona de salida cripta→bosque (sin bucle)
+· (8) instalarMapaActo5R19
+  ✓ EXPANSION_MAPS[ciudadela] === MapDef tras 2 llamadas (guard idempotente)
+· (9) ciudadelaGateTickR19 (stub de Game)
+  ✓ empuje 1 tile atrás: (424,392)
+  ✓ velocidad anulada en el empuje
+  ✓ toast exacto de la puerta
+  ✓ anti-spam: 60 reintentos con globalT congelado → 1 toast (1)
+  ✓ toast cada 3 s: segundo aviso a los 3.1 s
+  ✓ con acto5_sellos_3: no empuja ni avisa
+  ✓ jugador lejos del gate: nada
+  ✓ empuje converge hacia el sur desde el hueco (392)
+  ✓ early-out fuera de la ciudadela
+
+SMOKE MAPA ACTO5: TODO OK (75 checks)

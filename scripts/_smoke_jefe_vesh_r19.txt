@@ -1,0 +1,86 @@
+=== SMOKE 19-h · JEFE VESH «LA ÚLTIMA NOTA» ===
+
+[1] def · spawn · banner · registro
+  ✓ hp 750
+  ✓ breakBar 110 (barra de quiebre)
+  ✓ name exacto
+  ✓ sprite 'vesh'
+  ✓ element 'sombra' · weakTo 'ninguno' (literales Element de types.ts:14)
+  ✓ element sombra · weakTo ninguno (sin debilidad, patrón Guardián)
+  ✓ speed 42 · xp 800 · aggroR 190 · atkR 50 · windup 0.7 · atkCd 1.8
+  ✓ oro [500, 650]
+  ✓ desc: «el primer cantor…»
+  ✓ spawn ciudadela (27,10) zone 'boss' (plano 19-g)
+  ✓ banner: name + sub exactos
+  ✓ ENEMY_DEFS.vesh registrado (vía Object.assign, patrón 14-a)
+
+[2] FASE 1 «LA BATUTA»: compás de 4 tiempos + acorde cada 4
+  ✓ compás exacto: 0,0,3,3,0,0,3,3,0,0,3,3,0,8,3,3,0,0,3,3,0 (tiempos 2-3 disparan 3, tiempo 4 pausa, acorde de 8 cada 4 compases)
+  ✓ caja de jefe auto-sanada (22×16)
+  ✓ banner: bossRef/bossActive activados por el cerebro
+  ✓ flag de intro veshIntro fijada
+  ✓ arco puntual ±20° verificado (spread 40.0°)
+  ✓ veshPoseR19 válida (idle)
+
+[3] FASE 2 «EL SILENCIO»: teleport tras el Portador + 3 nodos (máx 3 vivos)
+  ✓ toast «El Silencio desciende…»
+  ✓ transición con invulT 1.50 s
+  ✓ fase 2 alcanzada
+  ✓ 3 nodos de silencio vivos (sombra estática 90 hp, spawnGuard congelado)
+  ✓ nodos con mucha vida (90 hp)
+  ✓ Vesh se teleporta cada compás (partículas + reaparición)
+  ✓ reaparición tras el Portador (175 px)
+  ✓ F2 sin acordes: salvas dirigidas de 3 como máximo
+  ✓ nodos no destruidos ESTALLAN a los 3 compases (killEnemy)
+  ✓ estallido de nodo: onda de 12 con maxR 74
+  ✓ máx 3 nodos vivos en todo momento (16 compases verificados)
+
+[4] FASE 3 «EL ACORDE FINAL»: onda de compás + doble acorde
+  ✓ toast «EL ACORDE FINAL resuena»
+  ✓ fase 3 alcanzada
+  ✓ F3 no crea nodos de silencio
+  ✓ onda de compás: telegrafía de 1 s (aro r=90)
+  ✓ onda de compás: shockwave radial enorme (maxR 230, dmg 18)
+  ✓ doble acorde: círculos de 8 dos veces (1 vez/veces, push máx 19)
+
+[5] CODA: carga de 2 s + espiral de 16 (22.5°, determinista)
+  ✓ telegrafía grande de la coda (aro r=74, 2 s)
+  ✓ pose 'coda' expuesta durante la carga (veshPoseR19)
+  ✓ espiral de 16 notas lanzada (frame-tick 8)
+  ✓ ángulos exactos: base + i·22.5° (determinista, π/8)
+  ✓ coda con cd 9 s: gaps entre espirales 24, 24 calls (≥17)
+
+[6] ANTI-COWBOY: >300 px → teleport a media distancia + acorde
+  ✓ Vesh teleportó a media distancia (160 px < 220)
+  ✓ castigo: acorde inmediato (círculo de 8)
+  ✓ aviso anti-kite emitido (1)
+
+[7] QUIEBRE: e.sta/maxSta → aturdido → persigue con barra restaurada
+  ✓ aturdido resuelto (2.2 s propios) → persigue
+  ✓ barra de quiebre restaurada (110/110)
+
+[8] ROBUSTEZ: 800 ticks (motor real + cerebro) sin NaN ni excepciones
+  ✓ 800 ticks (13,3 s: F1→F2→F3→coda) sin excepciones
+  ✓ estado del jefe sin NaN (x/y/hp/anim)
+  ✓ proyectiles/partículas/ondas sin NaN
+  ✓ proyectiles acotados (máx 20)
+  ✓ partículas acotadas (máx 251)
+  ✓ ondas acotadas (máx 1)
+  ✓ toasts acotados (máx 3)
+  ✓ el jefe sobrevivió a su propia sinfonía (vivo, sin flag de derrota)
+
+[9] SPRITE: 5 frames 30×24 · determinismo FNV ×2 builds
+  ✓ 5 frames (idle 2 + cast + batuta + coda)
+  ✓ todos los frames miden 30×24
+  ✓ 2 builds byte a byte idénticas (e50e0032, 274e5c37, 9c8bb5d2)
+  ✓ initJefeVeshR19Sprites idempotente: registerSpr('vesh') con la misma firma
+
+[10] veshDeathFxR19: onda dorada + partículas · guard anti-doble
+  ✓ ondas doradas emitidas: 3 (≥1)
+  ✓ partículas doradas masivas: 46
+  ✓ FX de muerte sin NaN
+  ✓ guard anti-doble: segunda llamada no emite
+  ✓ drawVeshDeathFxR19 es alias exacto (integrador: cualquiera de las dos)
+  ✓ llamada sin e: cae a bossRef/Portador sin lanzar
+
+SMOKE JEFE VESH R19: TODO OK

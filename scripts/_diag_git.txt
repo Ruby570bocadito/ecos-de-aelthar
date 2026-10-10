@@ -1,0 +1,37 @@
+=== GIT STATUS ===
+?? ../../scripts/_diag_git.txt
+=== GIT LOG ===
+dd44c6b 13a7e84c-d76e-4989-a741-097ae54bc9ac
+4b26a5f R18 fix: passthrough de retratos nuevos en mapPortrait + fusion perezosa FARO_PORTRAITS en drawPortrait; E2E en vivo verificado (facing, faro, interludio, barrera altar, cumbres)
+512f82e R18: revisualización Costa+Cumbres, sprites jefes/enemigos, héroe detallado, fix retrato Brisa, fix facing lateral, fix cripta bloqueada, faro 3 NPCs únicos + historia, interludios de acto, barrera altares (18/18 smokes, tsc 0)
+ef039e5 e01e63af-6522-46c1-9dcd-520386db583a
+67b1608 5bdd9798-f032-4fe1-b914-280f3746eafb
+b807610 5d49ddc7-5e48-48a2-8cbe-8f1cee9bafb3
+8f9c0bc 9d44b609-7191-43f3-8579-101334eb64c6
+19e040e fa310c8a-f291-4036-860e-c6a6d0092829
+6ae3554 c5172c4e-40f7-44d1-925f-e7c646c6358f
+b3e0c5c 8fd76671-f672-4818-a7a1-954c28a0964b
+2b1a141 7fda1c57-4ce7-416e-a49f-2ffd87dba322
+6255857 f523d555-f468-4dcc-9e1e-e4924634e993
+3428819 b6acfcff-d1d7-4144-850e-11067412d91b
+ed34b5f e89d5a77-68db-4418-9792-58ae518f7fdb
+df715cf Initial commit
+=== DIFF SRC vs REPO ===
+Only in /home/z/my-project/src/game: biomas_costa.ts
+Only in /home/z/my-project/src/game: biomas_cumbres.ts
+Files /home/z/my-project/src/game/data.ts and /home/z/my-project/.zpackage/ecos-de-aelthar/src/game/data.ts differ
+Files /home/z/my-project/src/game/engine.ts and /home/z/my-project/.zpackage/ecos-de-aelthar/src/game/engine.ts differ
+Only in /home/z/my-project/src/game: faro_historia.ts
+Files /home/z/my-project/src/game/fx.ts and /home/z/my-project/.zpackage/ecos-de-aelthar/src/game/fx.ts differ
+Files /home/z/my-project/src/game/hooks.ts and /home/z/my-project/.zpackage/ecos-de-aelthar/src/game/hooks.ts differ
+Only in /home/z/my-project/src/game: interludios.ts
+Files /home/z/my-project/src/game/maps.ts and /home/z/my-project/.zpackage/ecos-de-aelthar/src/game/maps.ts differ
+Files /home/z/my-project/src/game/maps_expansion.ts and /home/z/my-project/.zpackage/ecos-de-aelthar/src/game/maps_expansion.ts differ
+Files /home/z/my-project/src/game/render.ts and /home/z/my-project/.zpackage/ecos-de-aelthar/src/game/render.ts differ
+Files /home/z/my-project/src/game/screens.ts and /home/z/my-project/.zpackage/ecos-de-aelthar/src/game/screens.ts differ
+Files /home/z/my-project/src/game/sprites.ts and /home/z/my-project/.zpackage/ecos-de-aelthar/src/game/sprites.ts differ
+Files /home/z/my-project/src/game/sprites_expansion.ts and /home/z/my-project/.zpackage/ecos-de-aelthar/src/game/sprites_expansion.ts differ
+Files /home/z/my-project/src/game/update.ts and /home/z/my-project/.zpackage/ecos-de-aelthar/src/game/update.ts differ
+=== rsync check ===
+Files /home/z/my-project/src/game/update.ts and /home/z/my-project/.zpackage/ecos-de-aelthar/src/game/update.ts differ
+update.ts DISTINTO

@@ -6,6 +6,7 @@
 
 import type { MapDef, MapId, EpochDiff, Epoch } from './types';
 import { EXPANSION_MAPS } from './maps_expansion';
+import { ACTO5_MAP_DEF_R19 } from './maps_acto5_r19'; // 19-g
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -402,12 +403,19 @@ const BASE_MAPS: Record<'lunaris' | 'bosque' | 'cripta', MapDef> = {
     props: [
       { id: 'sanc_c', kind: 'sanctuary', x: 19, y: 23 },
       { id: 'altar_c', kind: 'altarEcho', x: 19, y: 4 },
+      { id: 'acto5_puerta_cripta', kind: 'gate', x: 20, y: 2 }, // 19-g: entrada a la Ciudadela (viaja a (27,41) tras el Acto IV)
     ],
   },
 };
 
 // Mundo completo: mapa base + expansión del Acto II (Costa, Aldea, Cumbres)
-export const MAPS: Record<MapId, MapDef> = { ...BASE_MAPS, ...EXPANSION_MAPS };
+// + Ciudadela de Vesh (R19/19-g): va en el spread para satisfacer Record<MapId, MapDef>
+export const MAPS: Record<MapId, MapDef> = { ...BASE_MAPS, ...EXPANSION_MAPS, ciudadela: ACTO5_MAP_DEF_R19 };
+
+// ==== R19 (19-c): La Marea Sin Nombre — segundo jefe de la Costa de Bruma
+// (opcional: se activa al volver a la costa tras la Sirena Abisal — el despacho
+// de update.ts ahora elige el PRIMER spawn zone:'boss' no derrotado).
+MAPS.costa.spawns.push({ type: 'marea', x: 25, y: 33, patrol: 0, zone: 'boss' }); // 19-c (BFS verificado por el smoke del agente)
 
 // Rellena filas cortas por seguridad
 export function mapRows(m: MapDef): string[] {

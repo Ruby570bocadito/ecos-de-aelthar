@@ -469,6 +469,13 @@ const RUMOR_LINES_16B: Record<MapId, string[]> = {
     'El polvo aquí no se posa: espera.',
     'Bajar es fácil. Subir canta.',
   ],
+  ciudadela: [
+    // R19 (19-g): rumores de la Ciudadela de Vesh
+    'La Ciudadela no está abandonada: está conteniendo la respiración desde hace siglos.',
+    'Las columnas del Coro de Ceniza vibran en compás. Cuenta cuatro y no te muevas.',
+    'Dicen que el que duerme arriba no es un rey. Es una nota que nadie terminó.',
+    'Los sellos-nota pesan como culpas. Llévalos con las dos manos.',
+  ],
 };
 
 /** El motor la llama en Game.closeDialogue: recuerda junto a qué NPC cerró. */

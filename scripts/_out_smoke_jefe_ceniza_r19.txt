@@ -1,0 +1,107 @@
+=== 1) DEF bien formada + inyección + exports ===
+  ✓ name === 'El Heraldo de Ceniza'
+  ✓ hp 540
+  ✓ dmg 15
+  ✓ speed 38
+  ✓ xp 360
+  ✓ gold [240,320]
+  ✓ sprite 'ceniza'
+  ✓ aggroR 175
+  ✓ atkR 44
+  ✓ windup 0.75
+  ✓ atkCd 2.0
+  ✓ element 'hielo' · weakTo 'fuego' (literales reales de Element)
+  ✓ breakBar 85 (quiebre de jefe)
+  ✓ desc con identidad («apagar el último canto» + ceniza)
+  ✓ inyectada en ENEMY_DEFS['ceniza'] (patrón ENEMY_DEFS_16A)
+  ✓ __cenizaDebug().defInENEMY_DEFS === true
+  ✓ CENIZA_BOSS_INFO_R19 exacto (name + sub)
+  ✓ CENIZA_SPAWN_R19 = cumbres (13,8) → px (216,136)
+
+=== 2) BFS del spawn (interior norte, lejos de salida y Gólem) ===
+  ✓ cumbres 50×42
+  ✓ tile (13,8) transitable (char 'S')
+  ✓ margen 5×3 libre alrededor del spawn (kite orbital)
+  ✓ componente transitable desde el spawn: 1462 tiles (≥ 1400)
+  ✓ cumbres tiene 1 salida (leída de maps_expansion)
+  ✓ BFS spawn→salida (24,40): 43 pasos (≥ 30, lejos del exit)
+  ✓ spawn de jefe de cumbres es el Gólem (24,8)
+  ✓ distancia spawn→Gólem: 11.0 tiles (≥ 10, sin solaparse)
+  ✓ interior NORTE: ty=8 ≤ 14 (bajo la cordillera 2-5, sobre el paso central)
+
+=== 3) CEREBRO: fases, pulso anti-spam, cono, invocaciones, lluvia, quiebre, botín ===
+  ✓ aggro por proximidad (<175 px)
+  ✓ flag cenizaIntro (banner UNA vez)
+  ✓ banner del jefe con CENIZA_BOSS_INFO_R19
+  ✓ fase 1 «CENIZA»: sin invocaciones
+  ✓ fase 1 kite: se aparta perpendicular (desplazamiento 12.6 px en 80 ticks)
+  ✓ el kite NO se pega: d final 60 px
+  ✓ cono: entra en carga con telegraph (frame TELEGRAPH)
+  ✓ cono de ceniza: 5 proyectiles (fase 1)
+  ✓ abanico ≤ 40° (40.0°)
+  ✓ lentos: speed 92 px/s (≈92)
+  ✓ element 'sombra' · t 2.2
+  ✓ atkCd repuesto tras el cono (2.0 - 0.67 s de ticks)
+  ✓ pulso anti-spam: 4 hits/ventana → telegrafía 0.8 s
+  ✓ telegraph de aviso del pulso (r 48 · dmg 0 · t 0.8)
+  ✓ PULSO: shockwave generada (dmg 12 · maxR 96 · speed 190)
+  ✓ PULSO: 8 ascuas element 'fuego' (la «quema» del estallido)
+  ✓ telegraphKind limpio tras el pulso
+  ✓ 3 hits tras el reset NO disparan otro pulso (umbral 4 en fase 1)
+  ✓ ventana 2.5 s: 4 hits frescos vuelven a reflejar (pulso 2)
+  ✓ fase 2 «BRASA» al 65-35%
+  ✓ transición BRASA: invulT 1 s (0.98)
+  ✓ toast «¡El Heraldo aviva su fuego!»
+  ✓ invoca 2 cenizas menores (esqueletos, lados alternos)
+  ✓ las cenizas menores nacen aggro
+  ✓ 9 s después con 2 vivas: NO invoca más (tope 2)
+  ✓ repesca a los 9 s con <2 vivas: vuelve a 2
+  ✓ el tope de cenizas menores nunca se supera
+  ✓ cono en carga (fase 2)
+  ✓ doble abanico fase 2: 10 proyectiles (2×5)
+  ✓ fase 3 «EL ÚLTIMO ALIENTO» al <35%
+  ✓ toast de fase 3
+  ✓ lluvia de ceniza: 6 proyectiles desde arriba (cada 8 s)
+  ✓ lluvia: vy positivo y nacen por encima del jefe
+  ✓ lluvia: element 'sombra' · t 2 s
+  ✓ segunda lluvia a los 8 s
+  ✓ partida paralela: primera lluvia en el mismo tick
+  ✓ lluvia determinista: vx idénticos por mulberry32 sembrado con el tick count
+  ✓ la partida acumulada también soltó sus 6 gotas (semilla por tickN propia)
+  ✓ fase 3: umbral anti-spam BAJO a 3 golpes/2.5 s
+  ✓ pulso fase 3 generó su shockwave
+  ✓ barra de quiebre 85 (makeEnemy la lee de breakBar)
+  ✓ quebrado tras 9 golpes (sta 0/85)
+  ✓ sale del quebrado con la barra LLENA (patrón dispatcher)
+  ✓ killEnemy del motor ejecutado (dead=true, XP/oro de la def)
+  ✓ flag cenizaDefeated
+  ✓ flag ascua_ceniza (la Ascua queda con el Portador)
+  ✓ botín: +1 poción
+  ✓ toast de derrota del Heraldo
+  ✓ barra de jefe desactivada
+  ✓ botín UNA vez (watcher repetido no duplica)
+
+=== 4) SPRITE: 5 frames (26×22), build determinista (FNV-1a) ===
+  ✓ initJefeCenizaR19Sprites idempotente (2ª llamada no reconstruye)
+  ✓ build con 187 ops de dibujo (fillRect/alpha) — no vacío
+  ✓ build determinista: FNV-1a idéntico en 2 builds (0x438f0202)
+  ✓ frames registrados: 5 (≥ 4; contrato 5: 0/1 patrulla, 2 telegraph, 3 dispersa, 4 lluvia)
+  ✓ lienzo 26×22
+  ✓ los 5 frames miden 26×22
+  ✓ __cenizaDebug: sprInited true, builds 3 (+2 forzados)
+  ✓ buildCenizaR19() exportado: 5 × 26×22
+
+=== 5) INTEGRACIÓN: 900 frames g.update + tick (sin NaN, acotado) ===
+  ✓ 900 frames (motor + cerebro) sin excepciones ni NaN
+  ✓ cenizas menores acotadas (máx 2 ≤ 2)
+  ✓ proyectiles acotados (máx 17)
+  ✓ ondas acotadas (máx 0)
+  ✓ telegraphs acotados (máx 0)
+  ✓ partículas acotadas (máx 207)
+  ✓ la simulación recorrió las 3 fases (fase 3 al cierre)
+  ✓ cenizaWatchR19 integrado: spawn/barra/botín sin lanzar
+  ✓ a >260 px del spawn el watcher NO convoca
+  ✓ a <260 px el watcher convoca al Heraldo
+  ✓ cenizaDefeated cierra el spawn para siempre
+
+SMOKE JEFE CENIZA R19: TODO OK (96 checks)

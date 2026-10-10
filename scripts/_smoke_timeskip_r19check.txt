@@ -1,0 +1,48 @@
+=== 1) VETO narrativo: enemigo con aggro <5 tiles ===
+  ✓ epochSwitch vetado: la época NO cambia
+  ✓ sin FX de transición (flash/ondas limpios)
+  ✓ frase evocadora de veto: «El Eco calla: primero silencia lo que te m...»
+  ✓ sacudida aplicada (shake=2.9)
+  ✓ 3 frases de veto rotativas y distintas
+  ✓ a ≥5 tiles el viaje ya no se veta
+
+=== 2) Sin amenaza: transición programa FX (2 mapas con diffs × 2 épocas) ===
+  ✓ mapas con diffs: lunaris (15) + bosque (21)
+  ✓ beginEpochShift → true sin amenaza
+  ✓ beginEpochShift NO alterna la época (lo hace el motor tras true)
+  ✓ onda expansiva doble inocua (2 ondas, dmg 0)
+  ✓ flash suave programado (flashT=0.12)
+  ✓ ráfaga de notas musicales (18 partículas)
+  ✓ epochSwitch: presente → pasado
+  ✓ timeTick 120 frames en lunaris/pasado sin lanzar
+  ✓ viaje a Bosque Susurrante (la época se conserva)
+  ✓ bosque: pasado → presente (2 mapas × 2 épocas verificados)
+  ✓ timeTick 120 frames en bosque/presente sin lanzar
+
+=== 3) HUELLAS: farol + eco menor (una vez) y cobertizo (adquisición→recuerdo) ===
+  ✓ lamp1: toast evocador al volver al presente
+  ✓ marca persistente ts_lamp1 en flags (viaja en save())
+  ✓ eco menor: floatText evocador (ts_eco_e1)
+  ✓ marca persistente ts_eco_e1
+  ✓ segunda vuelta: ni farol ni eco se repiten (UNA VEZ por huella)
+  ✓ pista sutil al tocar la huella («...el ayer toma nota...»)
+  ✓ cobertizo: el presente recuerda la ruina que ayer estaba en pie (ts_cobertizo)
+  ✓ cobertizo NO se repite en la siguiente vuelta
+
+=== 4) NPCs DUALES: Brisa cerca/lejos + cooldown 30 s + Mera en la aldea ===
+  ✓ versos superpuestos de Brisa durante ~3 s (hasta 3 líneas solapadas)
+  ✓ cooldown activo: sin segunda ronda inmediata
+  ✓ lejos de Brisa: sin versos
+  ✓ tras 30 s el duelo de versos vuelve a despertar
+  ✓ Mera (aldea): versos duales al cambiar de época junto a ella
+
+=== 5) 600 frames sin lanzar + arrays acotados (residuos del canto) ===
+  ✓ 600 frames (2 flips + 2 huellas bidireccionales) sin lanzar
+  ✓ partículas acotadas (máx 36; residuos ≤ cap ~30 + notas de transición)
+  ✓ floats acotados (máx 2)
+  ✓ toasts acotados (máx 4)
+  ✓ ondas acotadas (máx 2)
+  ✓ huellas bidireccionales en las lápidas: ts_flores (presente→pasado) y ts_lapidas (pasado→presente)
+  ✓ sin falsos positivos: el cobertizo no se tocó en este bloque
+
+SMOKE TIMESKIP: TODO OK

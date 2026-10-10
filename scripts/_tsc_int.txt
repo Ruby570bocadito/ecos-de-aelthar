@@ -1,0 +1,3 @@
+src/game/interaccion.ts(399,7): error TS2741: Property 'ciudadela' is missing in type '{ lunaris: string[]; bosque: string[]; costa: string[]; aldea: string[]; cumbres: string[]; cripta: string[]; }' but required in type 'Record<MapId, string[]>'.
+src/game/maps.ts(411,14): error TS2741: Property 'ciudadela' is missing in type '{ costa: MapDef; aldea: MapDef; cumbres: MapDef; arena: MapDef; lunaris: MapDef; bosque: MapDef; cripta: MapDef; }' but required in type 'Record<MapId, MapDef>'.
+EXIT=2
