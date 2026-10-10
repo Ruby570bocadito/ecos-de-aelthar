@@ -1,0 +1,754 @@
+     1→// ============================================================
+     2→// ECOS DE AELTHAR — Pantallas y overlays (AGENTE 3-a · visuales;
+     3→// pestañas y final actualizados al ACTO II por el agente 10-a)
+     4→// Título (niebla en capas + notas flotantes), controles, intro,
+     5→// pausa (Estado con "Velmora te observa", Diario con memorias y
+     6→// misiones del Acto II), diálogo con retratos, muerte y final.
+     7→// ============================================================
+     8→
+     9→import type { Game } from './engine';
+    10→import { VIEW_W, VIEW_H, QUESTS, getSpr, playerMeleeDmg } from './engine';
+    11→import { ATTR_INFO, KEY_ITEMS, MEMORIES } from './data';
+    12→import { dominantTone, TONE_LABEL } from './hooks';
+    13→import { drawBalancePanel } from './balance'; // 12-c: dificultad (pestaña SISTEMA)
+    14→import { drawArmorRow } from './armor'; // 14-b: armadura activa (pestaña ESTADO)
+    15→import { drawPortrait } from './sprites';
+    16→import { audio } from './audio';
+    17→import { COL, text, textShadow, panel, bar, button, wrapText, addHit } from './ui';
+    18→import { openChallengeMenu, drawChallengeTitleUi, drawChallengeOverlay } from './challenge'; // 12-a (modo desafío)
+    19→import { drawTitlePanels, openStatsPanel, openLogrosPanel } from './achievements'; // 16-c: Estadísticas y Logros
+    20→import { interludioTick18F, bannerActo18F } from './interludios'; // 18-f: interludios de acto + banner (agente historia-transiciones)
+    21→
+    22→const INTRO_SLIDES = [
+    23→  {
+    24→    title: 'ERA DEL CANTO',
+    25→    lines: 'Hace mil años, el dios-tejedor Aelthar sostenía el mundo con su canto. Cinco pueblos crecieron a su abrigo y las ciudades se alzaron con cada nota.',
+    26→  },
+    27→  {
+    28→    title: 'LA NOCHE DEL SILENCIO',
+    29→    lines: 'Hace 300 años, la Orden de Vesh asesinó al dios. Su canto se quebró en siete Ecos y sin él la Niebla Muda avanza, borrando pueblos, recuerdos y nombres.',
+    30→  },
+    31→  {
+    32→    title: 'ERA DE LAS CENIZAS',
+    33→    lines: 'Hoy despiertas en el Valle de Lunaris. Eres un Portador: puedes oír los Ecos. Recupera el primero... y recuerda que la voz de un dios no siempre dice la verdad.',
+    34→  },
+    35→];
+    36→
+    37→// pistas sugerentes de las memorias bloqueadas (biblia)
+    38→const LOCKED_HINT: Record<string, string> = {
+    39→  mem_nana: 'Una nana medio oída te persigue desde el valle...',
+    40→  mem_casa: '¿Dos tazas en un umbral? El olor a pan te resulta conocido...',
+    41→  mem_madre: 'Unas manos cosen algo en tu memoria. No ves su rostro.',
+    42→  mem_faro: 'Un faro apagado sueña con una cerilla y una canción...',
+    43→  mem_invierno: 'Bajo el hielo de las cumbres aguardan voces dormidas...',
+    44→};
+    45→
+    46→// Acto II — teasers de las zonas nuevas (Diario, solo misiones futuras:
+    47→// al activarse la misión el paso real los sustituye, y al completarla callan)
+    48→const ZONE_TEASERS: Record<string, string> = {
+    49→  q6: '«Costa de Bruma — el mar guarda las notas»',
+    50→  q8: '«Merrow — la aldea que olvidó su nombre»',
+    51→  q9: '«Cumbres Heladas — el frío que aprendió a escuchar»',
+    52→};
+    53→
+    54→// objetos clave: flag del motor/hooks → clave en KEY_ITEMS (orden de obtención).
+    55→// Lista dinámica: cualquier Eco u objeto nuevo aparece al activarse su flag.
+    56→const KEY_ITEM_FLAGS: [string, string][] = [
+    57→  ['fragmentTouched', 'fragment'],
+    58→  ['ecoVoz', 'ecoVoz'],
+    59→  ['ecoMareas', 'ecoMareas'],
+    60→  ['ecoCumbres', 'ecoCumbres'],
+    61→  ['ecoNombres', 'ecoNombres'],
+    62→];
+    63→
+    64→// números en letra para la pantalla final (restantes de 7)
+    65→const NUM_ES = ['cero', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete'];
+    66→
+    67→export function drawScreens(g: Game) {
+    68→  if (g.state !== 'end') endArmed = false; // rearma la escalonada del final
+    69→  switch (g.state) {
+    70→    case 'title':
+    71→      drawTitle(g);
+    72→      // 12-a: sub-menú de selección del Desafío / panel de resultados (dibujados
+    73→      // por challenge.ts sobre el título; limpian los uiHit del título de fondo)
+    74→      drawChallengeTitleUi(g);
+    75→      // 16-c: paneles de Estadísticas y Logros (mismo patrón de overlay; se
+    76→      // dibujan al final y limpian uiHit para que el título de fondo quede
+    77→      // inalcanzable mientras están abiertos)
+    78→      drawTitlePanels(g);
+    79→      break;
+    80→    case 'controls': drawControls(g); break;
+    81→    case 'intro': drawIntro(g); break;
+    82→    case 'pause': drawPause(g); break;
+    83→    case 'dialogue':
+    84→      drawDialogue(g);
+    85→      drawBannerActo18F(g); // 18-f: el banner de acto sigue durante la cinemática
+    86→      break;
+    87→    case 'dead': drawDead(g); break;
+    88→    case 'end': drawEnd(g); break;
+    89→    case 'play':
+    90→      // ==== 18-f (historia-transiciones): tick de los interludios de acto +
+    91→      // barrera de los altares del Eco. Corre en el camino de dibujo porque
+    92→      // update.ts/render.ts son de otros agentes — ver la cabecera de
+    93→      // interludios.ts para el punto alternativo EXACTO en update.ts:384.
+    94→      // Guard interno: solo estado 'play', con jugador y fuera de la arena.
+    95→      interludioTick18F(g);
+    96→      // 12-a: HUD del modo desafío (oleada/enemigos/puntos, cuenta atrás y banner)
+    97→      if (g.challengeRun) drawChallengeOverlay(g);
+    98→      drawBannerActo18F(g); // 18-f: banner «ACTO N — título» (fade 2,5 s)
+    99→      break;
+   100→    default: break;
+   101→  }
+   102→}
+   103→
+   104→// ---------------- Título ----------------
+   105→
+   106→// nota musical pixel (sin depender de glifos de fuente)
+   107→function drawNote(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, color: string, variant: number) {
+   108→  ctx.fillStyle = color;
+   109→  ctx.fillRect(x, y + s * 3, s * 2, s * 1.5);          // cabeza
+   110→  ctx.fillRect(x + s * 1.5, y, s * 0.75, s * 3.6);     // palo
+   111→  if (variant === 0) {
+   112→    ctx.fillRect(x + s * 2, y, s * 1.25, s * 1.1);     // banderín
+   113→  } else {
+   114→    ctx.fillRect(x + s * 2.6, y + s * 2.4, s * 2, s * 1.5); // segunda cabeza
+   115→    ctx.fillRect(x + s * 1.5, y, s * 3, s * 0.8);      // barra
+   116→  }
+   117→}
+   118→
+   119→function drawTitle(g: Game) {
+   120→  const ctx = g.ctx;
+   121→  const t = g.globalT;
+   122→  // fondo
+   123→  const grad = ctx.createLinearGradient(0, 0, 0, VIEW_H);
+   124→  grad.addColorStop(0, '#0a0c1e');
+   125→  grad.addColorStop(0.6, '#141830');
+   126→  grad.addColorStop(1, '#1e1830');
+   127→  ctx.fillStyle = grad;
+   128→  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   129→  // estrellas
+   130→  for (let i = 0; i < 70; i++) {
+   131→    const x = (i * 137.5) % VIEW_W;
+   132→    const y = (i * 89.7) % (VIEW_H * 0.7);
+   133→    const tw = 0.4 + Math.abs(Math.sin(t * 1.5 + i)) * 0.6;
+   134→    ctx.fillStyle = `rgba(220,228,255,${tw * 0.5})`;
+   135→    ctx.fillRect(x, y, 2, 2);
+   136→  }
+   137→  // silueta de la cripta / obelisco
+   138→  ctx.fillStyle = '#0c0e1c';
+   139→  ctx.fillRect(VIEW_W / 2 - 30, VIEW_H - 150, 60, 150);
+   140→  ctx.fillRect(VIEW_W / 2 - 44, VIEW_H - 130, 88, 130);
+   141→  ctx.globalAlpha = 0.6 + Math.sin(t * 2) * 0.2;
+   142→  ctx.fillStyle = '#8ef0ff';
+   143→  ctx.fillRect(VIEW_W / 2 - 6, VIEW_H - 120, 12, 40);
+   144→  ctx.globalAlpha = 1;
+   145→
+   146→  // niebla en 3 capas sinusoidales (profundidad)
+   147→  const fogLayer = (alpha: number, speed: number, yBase: number, w: number, h: number, col: string, seed: number) => {
+   148→    ctx.globalAlpha = alpha;
+   149→    ctx.fillStyle = col;
+   150→    for (let i = 0; i < 5; i++) {
+   151→      const fx = ((t * speed + i * 240 + seed) % (VIEW_W + 360)) - 180;
+   152→      const fy = yBase + Math.sin(t * 0.5 + i * 1.3 + seed) * 12 + (i % 3) * 22;
+   153→      ctx.beginPath();
+   154→      ctx.ellipse(fx, fy, w, h, 0, 0, Math.PI * 2);
+   155→      ctx.fill();
+   156→    }
+   157→    ctx.globalAlpha = 1;
+   158→  };
+   159→  fogLayer(0.05, 10, VIEW_H - 130, 190, 30, '#9ec4b4', 40);
+   160→  fogLayer(0.08, 16, VIEW_H - 90, 170, 34, '#9ec4b4', 0);
+   161→  fogLayer(0.11, 26, VIEW_H - 48, 150, 26, '#b8d4c4', 120);
+   162→
+   163→  // wisps flotantes (guard: durante HMR el módulo de sprites puede estar
+   164→  // vacío un frame — antes drawImage(undefined) lanzaba y mataba el frame)
+   165→  for (let i = 0; i < 5; i++) {
+   166→    const wx = (VIEW_W / 6) * i + Math.sin(t + i * 2) * 40 + 60;
+   167→    const wy = 330 + Math.cos(t * 0.8 + i * 1.7) * 30;
+   168→    const wisp = getSprWisp(t, i);
+   169→    if (!wisp) continue;
+   170→    ctx.globalAlpha = 0.5;
+   171→    ctx.drawImage(wisp, wx, wy, 20, 20);
+   172→    ctx.globalAlpha = 1;
+   173→  }
+   174→
+   175→  // notas musicales que ascienden (motivo: el mundo cantado)
+   176→  for (let i = 0; i < 9; i++) {
+   177→    const seed = i * 17 + 3;
+   178→    const speed = 0.045 + hashT(i, 7) * 0.04;
+   179→    const prog = (t * speed + hashT(i, 3)) % 1;
+   180→    const nx = (hashT(i, 5) * VIEW_W) + Math.sin(t * 1.4 + i * 1.9) * 16;
+   181→    const ny = VIEW_H + 20 - prog * (VIEW_H + 60);
+   182→    const na = Math.sin(prog * Math.PI) * 0.55;
+   183→    if (na <= 0.02) continue;
+   184→    drawNote(ctx, nx, ny, 2.2, `rgba(255,233,160,${na})`, i % 3 === 0 ? 1 : 0);
+   185→    drawNote(ctx, nx + 26, ny - 14, 1.7, `rgba(158,196,180,${na * 0.7})`, i % 2);
+   186→  }
+   187→
+   188→  // logo con brillo periódico
+   189→  const bob = Math.sin(t * 1.4) * 3;
+   190→  const glow = Math.pow(Math.max(0, Math.sin(t * 0.7)), 14);
+   191→  if (glow > 0.02) {
+   192→    ctx.save();
+   193→    ctx.globalCompositeOperation = 'lighter';
+   194→    ctx.globalAlpha = glow * 0.55;
+   195→    textShadow(g, 'AELTHAR', VIEW_W / 2, 110 + bob, 42, '#fff3c0', '#3a2a08', 'center', true);
+   196→    ctx.restore();
+   197→  }
+   198→  textShadow(g, 'ECOS DE', VIEW_W / 2, 78 + bob, 20, '#b0b8d0', '#000', 'center', true);
+   199→  textShadow(g, 'AELTHAR', VIEW_W / 2, 110 + bob, 42, COL.gold, '#2a1a08', 'center', true);
+   200→  ctx.fillStyle = COL.gold;
+   201→  ctx.fillRect(VIEW_W / 2 - 180, 168, 360, 2);
+   202→  text(g, 'RPG 2D de acción y exploración · Demo jugable · Acto II incluido', VIEW_W / 2, 180, 17, COL.dim, 'center');
+   203→
+   204→  // botones (con brillo de hover). 16-c: menú ampliado — Estadísticas y
+   205→  // Logros en una rejilla secundaria de 2 columnas (mismo lenguaje visual)
+   206→  const bx = VIEW_W / 2 - 130, bw = 260;
+   207→  const sw = (bw - 8) / 2; // ancho de los botones secundarios (2 columnas)
+   208→  button(g, 'NUEVA PARTIDA', bx, 236, bw, 44, () => g.requestCreate(), 13);
+   209→  hoverCorners(g, bx, 236, bw, 44);
+   210→  if (g.hasSave()) {
+   211→    button(g, 'CONTINUAR', bx, 290, bw, 44, () => g.continueGame(), 13);
+   212→    hoverCorners(g, bx, 290, bw, 44);
+   213→    button(g, 'CONTROLES', bx, 346, sw, 34, () => { g.setState('controls'); }, 9);
+   214→    hoverCorners(g, bx, 346, sw, 34);
+   215→    button(g, 'DESAFÍO', bx + sw + 8, 346, sw, 34, () => openChallengeMenu(), 9);
+   216→    hoverCorners(g, bx + sw + 8, 346, sw, 34);
+   217→    button(g, 'ESTADÍSTICAS', bx, 388, sw, 34, () => openStatsPanel(), 9);
+   218→    hoverCorners(g, bx, 388, sw, 34);
+   219→    button(g, 'LOGROS', bx + sw + 8, 388, sw, 34, () => openLogrosPanel(), 9);
+   220→    hoverCorners(g, bx + sw + 8, 388, sw, 34);
+   221→  } else {
+   222→    button(g, 'CONTROLES', bx, 290, sw, 34, () => { g.setState('controls'); }, 9);
+   223→    hoverCorners(g, bx, 290, sw, 34);
+   224→    button(g, 'DESAFÍO', bx + sw + 8, 290, sw, 34, () => openChallengeMenu(), 9);
+   225→    hoverCorners(g, bx + sw + 8, 290, sw, 34);
+   226→    button(g, 'ESTADÍSTICAS', bx, 332, sw, 34, () => openStatsPanel(), 9);
+   227→    hoverCorners(g, bx, 332, sw, 34);
+   228→    button(g, 'LOGROS', bx + sw + 8, 332, sw, 34, () => openLogrosPanel(), 9);
+   229→    hoverCorners(g, bx + sw + 8, 332, sw, 34);
+   230→  }
+   231→
+   232→  text(g, 'Basado en el Documento de Diseño de @papito · 8 oct 2026', VIEW_W / 2, VIEW_H - 40, 15, 'rgba(154,160,184,0.8)', 'center');
+   233→  text(g, 'v0.5.0 · Lunaris — Bosque — Cripta — Costa de Bruma — Merrow — Cumbres Heladas · Logros', VIEW_W / 2, VIEW_H - 20, 14, 'rgba(122,128,148,0.7)', 'center');
+   234→}
+   235→
+   236→// helpers deterministas locales (evitan importar hash2 aquí)
+   237→function hashT(i: number, k: number): number {
+   238→  let h = (i + k * 57) * 2654435761;
+   239→  h = (h ^ (h >> 13)) * 1274126177;
+   240→  return ((h ^ (h >> 16)) >>> 0) / 4294967295;
+   241→}
+   242→function getSprWisp(t: number, i: number): HTMLCanvasElement {
+   243→  const frames = getSpr('wisp');
+   244→  const f = frames?.length ? frames[Math.floor(t * 3 + i) % frames.length] : (undefined as unknown as HTMLCanvasElement);
+   245→  if (!f) {
+   246→    const w = window as unknown as { __wispMiss?: unknown[] };
+   247→    if (!w.__wispMiss) w.__wispMiss = [];
+   248→    if (w.__wispMiss.length < 3) {
+   249→      w.__wispMiss.push({
+   250→        t: Math.round(performance.now()), i,
+   251→        hasFrames: !!frames, len: frames?.length ?? -1,
+   252→        hasG: !!(window as unknown as { __g?: unknown }).__g,
+   253→        heroAlba: !!getSpr('hero_alba'),
+   254→      });
+   255→    }
+   256→  }
+   257→  return f;
+   258→}
+   259→
+   260→// esquinas doradas al pasar el ratón (hover más vivo)
+   261→function hoverCorners(g: Game, x: number, y: number, w: number, h: number, col = COL.gold) {
+   262→  const hov = g.mouse.x >= x && g.mouse.x <= x + w && g.mouse.y >= y && g.mouse.y <= y + h;
+   263→  if (!hov) return;
+   264→  const ctx = g.ctx;
+   265→  const c = 7;
+   266→  ctx.fillStyle = col;
+   267→  ctx.fillRect(x - 2, y - 2, c, 2); ctx.fillRect(x - 2, y - 2, 2, c);
+   268→  ctx.fillRect(x + w + 2 - c, y - 2, c, 2); ctx.fillRect(x + w, y - 2, 2, c);
+   269→  ctx.fillRect(x - 2, y + h, c, 2); ctx.fillRect(x - 2, y + h - c, 2, c);
+   270→  ctx.fillRect(x + w + 2 - c, y + h, c, 2); ctx.fillRect(x + w, y + h - c, 2, c);
+   271→}
+   272→
+   273→// ---------------- Controles ----------------
+   274→
+   275→const CONTROLS: [string, string][] = [
+   276→  ['Moverse', 'W A S D'],
+   277→  ['Ataque ligero (combo ×3)', 'Clic izquierdo (mantén: ataque cargado)'],
+   278→  ['Ataque cargado', 'Mantén clic izquierdo y suelta'],
+   279→  ['Esquivar (i-frames)', 'Espacio'],
+   280→  ['Parada perfecta (0,2 s)', 'Clic derecho'],
+   281→  ['Habilidades ×4', 'Teclas 1 – 4'],
+   282→  ['Interactuar / hablar', 'E'],
+   283→  ['Cambiar de época (con Eco)', 'Q'],
+   284→  ['Beber poción', 'F'],
+   285→  ['Menú y mapa', 'Esc / M'],
+   286→  ['Esperar al alba (accesibilidad)', 'Shift + T'],
+   287→];
+   288→
+   289→function drawControls(g: Game) {
+   290→  const ctx = g.ctx;
+   291→  ctx.fillStyle = '#0a0c1e';
+   292→  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   293→  const pw = 620, ph = 430;
+   294→  const px = (VIEW_W - pw) / 2, py = (VIEW_H - ph) / 2 - 10;
+   295→  panel(g, px, py, pw, ph);
+   296→  textShadow(g, 'CONTROLES', VIEW_W / 2, py + 18, 16, COL.gold, '#000', 'center', true);
+   297→  let y = py + 60;
+   298→  for (const [action, key] of CONTROLS) {
+   299→    text(g, action, px + 28, y, 16, COL.text);
+   300→    text(g, key, px + pw - 28, y, 16, COL.goldSoft, 'right');
+   301→    y += 30;
+   302→  }
+   303→  ctx.strokeStyle = COL.panelBorder;
+   304→  ctx.strokeRect(px + 20, y + 6, pw - 40, 64);
+   305→  text(g, 'Consejo del GDD: «la posición y el ritmo importan más que los números».', px + 28, y + 14, 15, COL.dim);
+   306→  text(g, 'Esquiva con los i-frames de la voltereta y clava la parada perfecta (0,2 s)', px + 28, y + 32, 15, COL.dim);
+   307→  text(g, 'para aturdir. Los enemigos grandes tienen barra de QUIEBRE.', px + 28, y + 50, 15, COL.dim);
+   308→  button(g, 'VOLVER (ESC)', VIEW_W / 2 - 90, py + ph + 12, 180, 36, () => g.setState('title'), 11);
+   309→  hoverCorners(g, VIEW_W / 2 - 90, py + ph + 12, 180, 36);
+   310→  if (g.keys.has('escape')) g.setState('title');
+   311→}
+   312→
+   313→// ---------------- Intro ----------------
+   314→
+   315→function drawIntro(g: Game) {
+   316→  const ctx = g.ctx;
+   317→  ctx.fillStyle = '#06070f';
+   318→  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   319→  // motas de polvo doradas flotando (atmósfera de memoria)
+   320→  for (let i = 0; i < 24; i++) {
+   321→    const x = hashT(i, 11) * VIEW_W;
+   322→    const y = (hashT(i, 13) * VIEW_H + g.globalT * (4 + hashT(i, 5) * 5)) % VIEW_H;
+   323→    ctx.globalAlpha = 0.12 + Math.abs(Math.sin(g.globalT + i)) * 0.2;
+   324→    ctx.fillStyle = '#ffe9a0';
+   325→    ctx.fillRect(x, y, 2, 2);
+   326→  }
+   327→  ctx.globalAlpha = 1;
+   328→  const slide = INTRO_SLIDES[Math.min(g.introIdx, INTRO_SLIDES.length - 1)];
+   329→  const a = 0.75 + Math.sin(g.globalT * 2) * 0.25;
+   330→  ctx.globalAlpha = a;
+   331→  textShadow(g, slide.title, VIEW_W / 2, 150, 18, COL.goldSoft, '#000', 'center', true);
+   332→  ctx.fillStyle = COL.gold;
+   333→  ctx.fillRect(VIEW_W / 2 - 60, 190, 120, 2);
+   334→  const lines = wrapText(slide.lines, 52);
+   335→  lines.forEach((l, i) => text(g, l, VIEW_W / 2, 226 + i * 26, 20, COL.text, 'center'));
+   336→  ctx.globalAlpha = 1;
+   337→  // puntos de progreso
+   338→  for (let i = 0; i < INTRO_SLIDES.length; i++) {
+   339→    ctx.fillStyle = i === g.introIdx ? COL.gold : 'rgba(255,255,255,0.2)';
+   340→    ctx.fillRect(VIEW_W / 2 - 24 + i * 18, 400, 10, 4);
+   341→  }
+   342→  if (Math.sin(g.globalT * 4) > -0.2) {
+   343→    text(g, 'E ▸', VIEW_W - 80, VIEW_H - 50, 16, COL.dim, 'center');
+   344→  }
+   345→}
+   346→
+   347→// ---------------- Pausa ----------------
+   348→
+   349→const TABS = ['ESTADO', 'EQUIPO', 'DIARIO', 'SISTEMA'];
+   350→
+   351→function drawPause(g: Game) {
+   352→  const ctx = g.ctx;
+   353→  ctx.fillStyle = 'rgba(4,5,12,0.78)';
+   354→  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   355→  const p = g.player!;
+   356→  const pw = 720, ph = 470;
+   357→  const px = (VIEW_W - pw) / 2, py = (VIEW_H - ph) / 2;
+   358→  panel(g, px, py, pw, ph);
+   359→  textShadow(g, '— PAUSA —', VIEW_W / 2, py + 14, 14, COL.gold, '#000', 'center', true);
+   360→
+   361→  // pestañas
+   362→  let tx = px + 20;
+   363→  for (let i = 0; i < TABS.length; i++) {
+   364→    const tw = 140;
+   365→    const selected = g.pauseTab === i;
+   366→    const hover = addHit(g, tx, py + 44, tw, 30, () => { g.pauseTab = i as 0 | 1 | 2 | 3; });
+   367→    panel(g, tx, py + 44, tw, 30, selected || hover ? COL.gold : COL.panelBorder, selected ? 'rgba(60,48,24,0.9)' : COL.panel);
+   368→    text(g, TABS[i], tx + tw / 2, py + 52, 11, selected ? COL.gold : COL.dim, 'center', true);
+   369→    tx += tw + 8;
+   370→  }
+   371→
+   372→  const cx = px + 28, cy = py + 92;
+   373→
+   374→  if (g.pauseTab === 0) {
+   375→    // ESTADO
+   376→    text(g, `${p.name} — Portador nivel ${p.level}`, cx, cy, 20, COL.goldSoft);
+   377→    bar(g, cx, cy + 28, 240, 8, p.xp / g.xpNext(p.level), COL.xp, '#241a30');
+   378→    text(g, `XP ${Math.floor(p.xp)} / ${g.xpNext(p.level)}`, cx + 250, cy + 24, 15, COL.dim);
+   379→    text(g, `Puntos de atributo: ${p.points}`, cx, cy + 46, 17, p.points > 0 ? '#ffe86a' : COL.dim);
+   380→    let y = cy + 72;
+   381→    for (const at of ATTR_INFO) {
+   382→      text(g, at.name, cx, y, 16, COL.text);
+   383→      text(g, `${p.attrs[at.id]}`, cx + 120, y, 16, COL.goldSoft);
+   384→      text(g, at.desc, cx + 165, y + 2, 13, COL.dim);
+   385→      if (p.points > 0) {
+   386→        button(g, '+', cx + 396, y - 4, 30, 24, () => {
+   387→          p.attrs[at.id]++; p.points--;
+   388→          audioClick();
+   389→        }, 12);
+   390→      }
+   391→      y += 26;
+   392→    }
+   393→    // stats derivados
+   394→    const melee = playerMeleeDmg(p); // fuente única de verdad (motor)
+   395→    const spell = 6 + p.attrs.int * 1.6 + p.level + p.weaponPlus * 1.5;
+   396→    text(g, `Daño melé: ${Math.round(melee)}   Daño de Cantos: ${Math.round(spell)}   Crítico: ${Math.min(40, 5 + p.attrs.des * 2)}%`, cx, y + 6, 14, COL.dim);
+   397→    text(g, `Vida: ${p.maxHp}   Reducción: ${Math.min(50, p.attrs.vig)}%   Resonancia máx: ${p.maxRes}`, cx, y + 24, 14, COL.dim);
+   398→
+   399→    // ---- VELMORA TE OBSERVA (reputaciones, tono y memorias) ----
+   400→    const vy0 = y + 50;
+   401→    ctx.strokeStyle = 'rgba(90,74,48,0.7)';
+   402→    ctx.lineWidth = 1;
+   403→    ctx.beginPath();
+   404→    ctx.moveTo(cx, vy0 - 8);
+   405→    ctx.lineTo(px + pw - 28, vy0 - 8);
+   406→    ctx.stroke();
+   407→    text(g, '◆ VELMORA TE OBSERVA ◆', cx + 246, vy0, 13, COL.gold, 'center', true);
+   408→    const dom = dominantTone(p);
+   409→    const memCount = p.memories?.length ?? 0;
+   410→    text(g, `Tono dominante: ${dom ? TONE_LABEL[dom] : 'Aún por definir'}`, cx, vy0 + 24, 15, '#c8b0e8');
+   411→    text(g, `Memorias recuperadas: ${memCount}/${Object.keys(MEMORIES).length}`, cx + 340, vy0 + 24, 15, memCount > 0 ? COL.goldSoft : COL.dim);
+   412→    const rep = p.repFacciones ?? {};
+   413→    const FACS: [string, string][] = [
+   414→      ['guardianes', 'Guardianes del Canto'],
+   415→      ['orden', 'Orden de Vesh'],
+   416→      ['circulo', 'Círculo Verde'],
+   417→      ['liga', 'Liga de Mercaderes'],
+   418→    ];
+   419→    FACS.forEach(([id, label], i) => {
+   420→      const fx = cx + (i % 2) * 336;
+   421→      const fy = vy0 + 50 + Math.floor(i / 2) * 24;
+   422→      const v = rep[id] ?? 0;
+   423→      text(g, label, fx, fy, 15, COL.text);
+   424→      const vc = v > 0 ? '#8ef0b0' : v < 0 ? '#ff7060' : COL.dim;
+   425→      text(g, `${v > 0 ? '+' : ''}${v}`, fx + 300, fy, 15, vc, 'right');
+   426→    });
+   427→    // 14-b: armadura activa (fila compacta, contrato armor.ts)
+   428→    drawArmorRow(g, cx, py + 440, pw - 56);
+   429→  } else if (g.pauseTab === 1) {
+   430→    // EQUIPO
+   431→    text(g, 'ARMA', cx, cy, 16, COL.gold);
+   432→    text(g, p.discipline === 'alba' ? 'Espada y escudo del Alba' : 'Báculo del Tejedor', cx + 100, cy, 18, COL.text);
+   433→    text(g, `+${p.weaponPlus}`, cx + 380, cy, 18, COL.goldSoft);
+   434→    text(g, 'CORONAS', cx, cy + 30, 16, COL.gold);
+   435→    text(g, `${p.gold}`, cx + 100, cy + 30, 18, COL.text);
+   436→    text(g, 'POCIONES', cx, cy + 58, 16, COL.gold);
+   437→    text(g, `${p.potions}  (beber con F)`, cx + 100, cy + 58, 18, COL.text);
+   438→    text(g, 'OBJETOS CLAVE', cx, cy + 96, 16, COL.gold);
+   439→    let ky = cy + 120;
+   440→    for (const [flag, id] of KEY_ITEM_FLAGS) {
+   441→      if (!g.flags[flag]) continue;
+   442→      const it = KEY_ITEMS[id];
+   443→      if (!it) continue;
+   444→      text(g, `◆ ${it.name}`, cx, ky, 16, id === 'fragment' ? COL.text : '#ffe9a0');
+   445→      text(g, it.desc, cx + 16, ky + 17, 13, COL.dim);
+   446→      ky += 34;
+   447→    }
+   448→    if (ky === cy + 120) { text(g, '(aún no llevas ninguno)', cx, ky, 15, COL.dim); ky += 22; }
+   449→    text(g, 'FACCIÓN: Guardianes del Canto', cx, ky + 8, 16, COL.quest);
+   450→    bar(g, cx, ky + 30, 200, 8, (p.repGuardianes + 100) / 200, '#4a8a5c', '#1a2a1c', COL.panelBorder);
+   451→    text(g, `${p.repGuardianes >= 0 ? '+' : ''}${p.repGuardianes} / +100`, cx + 210, ky + 26, 15, COL.dim);
+   452→    text(g, g.companion ? 'Compañera: Ilwen (Arquera Sylvar) — te cubre con su arco' : 'Compañeros: ninguno aún (Ilwen espera en el Bosque)', cx, ky + 56, 15, COL.dim);
+   453→  } else if (g.pauseTab === 2) {
+   454→    // DIARIO — misiones por acto (izquierda) + memorias del Portador (derecha)
+   455→    text(g, 'CADENA PRINCIPAL · ACTO I', cx, cy, 15, COL.gold);
+   456→    let y = cy + 22;
+   457→    for (let i = 0; i < QUESTS.length; i++) {
+   458→      // sub-cabecera del Acto II justo antes de q6 (leída de QUESTS, sin hardcodear nombres)
+   459→      if (i === 5) {
+   460→        y += 4;
+   461→        text(g, '◆ ACTO II · LAS NOTAS PERDIDAS', cx, y, 14, g.questIdx >= 5 ? COL.quest : 'rgba(142,240,176,0.45)');
+   462→        y += 20;
+   463→      }
+   464→      const q = QUESTS[i];
+   465→      const done = i < g.questIdx;
+   466→      const active = i === g.questIdx;
+   467→      text(g, `${done ? '✔' : active ? '◆' : '·'} ${q.name}`, cx, y, 16, done ? '#6a8a6a' : active ? COL.quest : COL.dim);
+   468→      y += 18;
+   469→      if (active) {
+   470→        const stepText = g.questProgressText() ?? q.steps[g.questStep];
+   471→        for (const l of wrapText(stepText, 42)) { text(g, '   ' + l, cx, y, 14, COL.text); y += 15; }
+   472→        y += 4;
+   473→      } else if (ZONE_TEASERS[q.id] && i > g.questIdx) {
+   474→        // rumor de zona nueva: solo mientras la misión siga en el futuro
+   475→        text(g, `   ${ZONE_TEASERS[q.id]}`, cx, y, 13, 'rgba(154,160,184,0.75)');
+   476→        y += 14;
+   477→      }
+   478→    }
+   479→    text(g, `Ecos menores escuchados: ${g.takenEchoes.size}`, cx, py + ph - 52, 14, COL.dim);
+   480→    text(g, `Enemigos derrotados: ${p.kills} · Muertes: ${p.deaths}`, cx, py + ph - 32, 14, COL.dim);
+   481→
+   482→    // ---- memorias del Portador (biblia: cada Eco devuelve un recuerdo) ----
+   483→    // Con las 5 memorias del Acto II el reparto es fijo y compacto: máximo 3
+   484→    // líneas de texto por recuerdo para que la columna nunca desborde el panel
+   485→    // (el texto íntegro ya se muestra en el overlay de memoria al desbloquearla).
+   486→    const mx0 = cx + 316;
+   487→    text(g, 'MEMORIAS DEL PORTADOR', mx0, cy, 15, COL.gold);
+   488→    let my = cy + 20;
+   489→    const got = p.memories ?? [];
+   490→    for (const mid of Object.keys(MEMORIES)) {
+   491→      const m = MEMORIES[mid];
+   492→      const unlocked = got.includes(mid);
+   493→      text(g, unlocked ? m.title : '??? · Recuerdo perdido', mx0, my, 14, unlocked ? COL.goldSoft : COL.dim);
+   494→      my += 15;
+   495→      if (unlocked) {
+   496→        const all = wrapText(m.text, 58);
+   497→        const shown = all.slice(0, 3);
+   498→        if (all.length > 3 && shown.length === 3) {
+   499→          shown[2] = shown[2].replace(/[.,;:]?$/, '…');
+   500→        }
+   501→        shown.forEach((l, i) => text(g, l, mx0, my + i * 13, 13, COL.text));
+   502→        my += shown.length * 13 + 3;
+   503→      } else {
+   504→        text(g, LOCKED_HINT[mid] ?? 'La Niebla aún oculta este recuerdo.', mx0, my, 13, 'rgba(154,160,184,0.75)');
+   505→        my += 16;
+   506→      }
+   507→      // divisor sutil entre memorias
+   508→      ctx.strokeStyle = 'rgba(90,74,48,0.45)';
+   509→      ctx.lineWidth = 1;
+   510→      ctx.beginPath();
+   511→      ctx.moveTo(mx0, my);
+   512→      ctx.lineTo(mx0 + 330, my);
+   513→      ctx.stroke();
+   514→      my += 7;
+   515→    }
+   516→  } else {
+   517→    // SISTEMA
+   518→    text(g, 'VOLUMEN DE MÚSICA', cx, cy, 16, COL.text);
+   519→    drawSlider(g, cx, cy + 26, 300, v => { audioSetMusic(g, v); }, g.musicVolUi);
+   520→    text(g, 'VOLUMEN DE EFECTOS', cx, cy + 76, 16, COL.text);
+   521→    drawSlider(g, cx, cy + 102, 300, v => { audioSetSfx(g, v); }, g.sfxVolUi);
+   522→    text(g, '«La música adaptativa añade una capa de combate cuando', cx, cy + 150, 15, COL.dim);
+   523→    text(g, 'los enemigos te ven, y cada región tiene su melodía.»', cx, cy + 168, 15, COL.dim);
+   524→    // dificultad dinámica del mundo (12-c): AUTO por defecto, editable aquí
+   525→    drawBalancePanel(g, cx, cy + 196, pw - 56);
+   526→    button(g, 'GUARDAR Y SALIR AL TÍTULO', cx, py + ph - 96, 280, 40, () => {
+   527→      g.save();
+   528→      g.setState('title');
+   529→    }, 11);
+   530→    hoverCorners(g, cx, py + ph - 96, 280, 40);
+   531→    text(g, '(el juego también autoguarda en Santuarios y al cambiar de zona)', cx, py + ph - 46, 14, COL.dim);
+   532→  }
+   533→  text(g, 'Esc para volver al juego', VIEW_W / 2, py + ph + 10, 15, COL.dim, 'center');
+   534→}
+   535→
+   536→function drawSlider(g: Game, x: number, y: number, w: number, cb: (v: number) => void, cur: number) {
+   537→  const ctx = g.ctx;
+   538→  addHit(g, x, y - 4, w, 22, () => {
+   539→    const v = Math.max(0, Math.min(1, (g.mouse.x - x) / w));
+   540→    cb(v);
+   541→  });
+   542→  bar(g, x, y, w, 14, cur, COL.res, '#123038');
+   543→  ctx.fillStyle = '#fff';
+   544→  ctx.fillRect(x + cur * w - 3, y - 3, 6, 20);
+   545→}
+   546→
+   547→// ==== 18-f (historia-transiciones): banner «ACTO N — título del acto» ====
+   548→// Una línea, tipografía del juego, banda translúcida con filetes dorados y
+   549→// fade de 2,5 s (0,35 entrada · mantiene · 0,6 salida — lo calcula
+   550→// interludios.bannerActo18F). Se dibuja en 'play' y 'dialogue' (la
+   551→// cinemática es un diálogo del sistema existente). Sin uiHit: no roba clics.
+   552→function drawBannerActo18F(g: Game) {
+   553→  const b = bannerActo18F(g);
+   554→  if (!b || b.alpha <= 0) return;
+   555→  const ctx = g.ctx;
+   556→  const y = 96, h = 34;
+   557→  ctx.save();
+   558→  ctx.globalAlpha = b.alpha;
+   559→  ctx.fillStyle = 'rgba(4,5,12,0.62)';
+   560→  ctx.fillRect(0, y, VIEW_W, h);
+   561→  ctx.fillStyle = 'rgba(240,200,74,0.55)';
+   562→  ctx.fillRect(0, y, VIEW_W, 1);
+   563→  ctx.fillRect(0, y + h - 1, VIEW_W, 1);
+   564→  textShadow(g, b.texto, VIEW_W / 2, y + 9, 16, COL.goldSoft, '#000', 'center', true);
+   565→  ctx.restore();
+   566→}
+   567→
+   568→function audioClick() { audio.sfx('select'); }
+   569→function audioSetMusic(g: Game, v: number) {
+   570→  g.musicVolUi = v; audio.setMusicVol(v * 0.9);
+   571→  try { localStorage.setItem('ecos-vol', JSON.stringify({ m: g.musicVolUi, s: g.sfxVolUi })); } catch { /* noop */ }
+   572→}
+   573→function audioSetSfx(g: Game, v: number) {
+   574→  g.sfxVolUi = v; audio.setSfxVol(v * 0.9);
+   575→  try { localStorage.setItem('ecos-vol', JSON.stringify({ m: g.musicVolUi, s: g.sfxVolUi })); } catch { /* noop */ }
+   576→}
+   577→
+   578→// ---------------- Diálogo ----------------
+   579→
+   580→function drawDialogue(g: Game) {
+   581→  const ctx = g.ctx;
+   582→  const node = g.dlgNode;
+   583→  if (!node) return;
+   584→  const bw = VIEW_W - 80, bx = 40;
+   585→  // la caja crece según texto y opciones para que nunca se solapen
+   586→  const fullLines = wrapText(node.text, 76).length;
+   587→  const nOpts = node.options?.length ?? 0;
+   588→  const bh = Math.max(150, 46 + fullLines * 19 + (nOpts > 0 ? nOpts * 26 + 14 : 0));
+   589→  const by = VIEW_H - bh - 24;
+   590→  ctx.fillStyle = 'rgba(4,5,12,0.4)';
+   591→  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   592→  panel(g, bx, by, bw, bh, '#6a5a38', 'rgba(10,12,22,0.96)');
+   593→  // borde doble pulido + remaches
+   594→  ctx.strokeStyle = 'rgba(240,200,74,0.4)';
+   595→  ctx.lineWidth = 1;
+   596→  ctx.strokeRect(bx + 4.5, by + 4.5, bw - 9, bh - 9);
+   597→  ctx.fillStyle = COL.gold;
+   598→  for (const [cxx, cyy] of [[bx + 7, by + 7], [bx + bw - 7, by + 7], [bx + 7, by + bh - 7], [bx + bw - 7, by + bh - 7]]) {
+   599→    ctx.fillRect(cxx - 1.5, cyy - 1.5, 3, 3);
+   600→  }
+   601→
+   602→  // retrato pixel (respira 1px y parpadea de vez en cuando)
+   603→  const pkey = mapPortrait(node.portrait);
+   604→  const blink = (g.globalT % 3.7) < 0.14;
+   605→  const bob = Math.round(Math.sin(g.globalT * 2.3) * 0.9);
+   606→  const frS = 74;
+   607→  const frX = bx + 14, frY = by + 14;
+   608→  ctx.fillStyle = '#0e0c18';
+   609→  ctx.fillRect(frX, frY, frS, frS);
+   610→  drawPortrait(ctx, pkey, frX + (frS - 28 * 1.72) / 2, frY + (frS - 40 * 1.72) / 2 + bob, 1.72, blink);
+   611→  ctx.strokeStyle = '#6a5a38';
+   612→  ctx.strokeRect(frX, frY, frS, frS);
+   613→  ctx.strokeStyle = 'rgba(240,200,74,0.35)';
+   614→  ctx.strokeRect(frX + 2.5, frY + 2.5, frS - 5, frS - 5);
+   615→
+   616→  // nombre y texto
+   617→  text(g, node.name, bx + 104, by + 12, 17, COL.goldSoft);
+   618→  const shown = node.text.slice(0, Math.floor(g.dlgCharT));
+   619→  const lines = wrapText(shown, 76);
+   620→  lines.forEach((l, i) => text(g, l, bx + 104, by + 36 + i * 19, 17, COL.text));
+   621→
+   622→  // opciones (debajo de la última línea de texto, sin solaparse nunca)
+   623→  if (node.options && node.options.length > 0 && g.dlgCharT >= node.text.length) {
+   624→    const oy = by + 36 + fullLines * 19 + 12;
+   625→    for (let i = 0; i < node.options.length; i++) {
+   626→      const opt = node.options[i];
+   627→      const selected = g.dlgSel === i;
+   628→      const ox = bx + 104;
+   629→      const hover = addHit(g, ox, oy + i * 26, 400, 24, () => {
+   630→        g.dlgSel = i;
+   631→        g.advanceDialogue();
+   632→      });
+   633→      if (selected || hover) {
+   634→        ctx.fillStyle = 'rgba(240,200,74,0.14)';
+   635→        ctx.fillRect(ox - 4, oy + i * 26, 404, 24);
+   636→      }
+   637→      text(g, `${selected ? '▸' : ' '} ${opt.text}`, ox, oy + i * 26 + 3, 16, selected || hover ? COL.gold : COL.text);
+   638→    }
+   639→  } else if (g.dlgCharT >= node.text.length) {
+   640→    if (Math.sin(g.globalT * 5) > -0.2) text(g, 'E ▸', bx + bw - 44, by + bh - 30, 16, COL.dim, 'center');
+   641→  }
+   642→}
+   643→
+   644→/**
+   645→ * Claves de retrato: las existentes se mantienen y se añaden las de
+   646→ * los nuevos personajes de la biblia. drawPortrait ya aplica fallback
+   647→ * seguro a 'wisp' para cualquier clave desconocida.
+   648→ */
+   649→function mapPortrait(p: string): string {
+   650→  switch (p) {
+   651→    case 'brisa': return 'brisa';
+   652→    case 'toln': return 'toln';
+   653→    case 'ilwen': return 'ilwen';
+   654→    case 'fragment': return 'fragment';
+   655→    case 'guardian': return 'guardian';
+   656→    case 'sombra': return 'sombra';
+   657→    case 'sanctuary': return 'sanctuary';
+   658→    case 'wisp': return 'wisp';
+   659→    case 'sasha': return 'sasha';
+   660→    case 'brokk': return 'brokk';
+   661→    case 'maelis': return 'maelis';
+   662→    case 'corvin': return 'corvin';
+   663→    case 'kael': return 'kael';
+   664→    case 'inquisidor': return 'inquisidor';
+   665→    case 'vesh': return 'inquisidor';
+   666→    case 'teo': return 'teo';
+   667→    case 'doran': return 'doran';
+   668→    case 'nimue': return 'nimue';
+   669→    // FIX R18: passthrough general — drawPortrait ya cae a 'wisp' de forma
+   670→    // segura para claves desconocidas, así que cualquier retrato nuevo (los
+   671→    // tres del faro 18-e y los futuros) se muestra sin tocar esta lista.
+   672→    default: return p;
+   673→  }
+   674→}
+   675→
+   676→// ---------------- Muerte ----------------
+   677→
+   678→function drawDead(g: Game) {
+   679→  const ctx = g.ctx;
+   680→  ctx.fillStyle = 'rgba(20,4,8,0.82)';
+   681→  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   682→  textShadow(g, 'HAS CAÍDO', VIEW_W / 2, 170, 34, '#c8384a', '#000', 'center', true);
+   683→  const p = g.player!;
+   684→  const lost = g.lastGoldLost; // oro REAL perdido (calculado en playerDied)
+   685→  const lines = [
+   686→    'La Niebla Muda susurra tu nombre...',
+   687→    lost > 0 ? `Dejas un eco con ${lost} coronas donde caíste. Vuelve por él.` : 'Tu oro queda contigo... esta vez.',
+   688→    '',
+   689→    'Pulsa E para despertar en el último Santuario',
+   690→  ];
+   691→  lines.forEach((l, i) => text(g, l, VIEW_W / 2, 250 + i * 30, 18, i === 3 ? COL.goldSoft : COL.dim, 'center'));
+   692→  if (Math.sin(g.globalT * 3) > -0.2) text(g, 'E ▸', VIEW_W / 2, 420, 18, COL.gold, 'center');
+   693→}
+   694→
+   695→// ---------------- Final de la demo (estadísticas escalonadas) ----------------
+   696→
+   697→let endArmed = false;
+   698→let endStartT = 0;
+   699→
+   700→function drawEnd(g: Game) {
+   701→  const ctx = g.ctx;
+   702→  if (!endArmed) { endArmed = true; endStartT = g.globalT; }
+   703→  const elapsed = g.globalT - endStartT;
+   704→  const grad = ctx.createLinearGradient(0, 0, 0, VIEW_H);
+   705→  grad.addColorStop(0, '#0a0c1e');
+   706→  grad.addColorStop(1, '#241a30');
+   707→  ctx.fillStyle = grad;
+   708→  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+   709→  for (let i = 0; i < 60; i++) {
+   710→    const x = (i * 149.3) % VIEW_W;
+   711→    const y = (i * 91.7) % VIEW_H;
+   712→    ctx.fillStyle = `rgba(240,200,74,${0.2 + Math.abs(Math.sin(g.globalT + i)) * 0.5})`;
+   713→    ctx.fillRect(x, y, 2, 2);
+   714→  }
+   715→  // Ecos mayores recuperados (de los 7 en que se quebró el canto de Aelthar)
+   716→  const ecoCount = (g.flags.ecoVoz ? 1 : 0) + (g.flags.ecoMareas ? 1 : 0) + (g.flags.ecoCumbres ? 1 : 0);
+   717→  const acto2End = g.questIdx >= 9; // el mismo cierre sirve al Acto I o al Acto II (motor)
+   718→  textShadow(g, acto2End ? 'TRES NOTAS COMPLETAS' : 'PRIMERA NOTA COMPLETA', VIEW_W / 2, 90, 18, COL.goldSoft, '#000', 'center', true);
+   719→  textShadow(g, 'GRACIAS POR JUGAR LA DEMO', VIEW_W / 2, 130, 26, COL.gold, '#2a1a08', 'center', true);
+   720→  ctx.fillStyle = COL.gold;
+   721→  ctx.fillRect(VIEW_W / 2 - 160, 175, 320, 2);
+   722→
+   723→  const p = g.player!;
+   724→  // estadísticas una a una (cada 0.4 s) + memorias + Ecos del Acto II
+   725→  const statLines = g.endStats.split('\n');
+   726→  const lines = [
+   727→    ...statLines,
+   728→    `Memorias recuperadas: ${(p.memories?.length ?? 0)}/${Object.keys(MEMORIES).length}`,
+   729→    `Ecos recuperados: ${ecoCount} de 7`,
+   730→  ];
+   731→  const panelH = 34 + lines.length * 26 + 10;
+   732→  panel(g, VIEW_W / 2 - 250, 200, 500, panelH, COL.panelBorder);
+   733→  lines.forEach((l, i) => {
+   734→    const la = Math.max(0, Math.min(1, (elapsed - 0.6 - i * 0.4) / 0.35));
+   735→    if (la <= 0) return;
+   736→    ctx.globalAlpha = la;
+   737→    // pequeño deslizamiento vertical al aparecer
+   738→    const off = (1 - la) * 8;
+   739→    text(g, l, VIEW_W / 2, 216 + i * 26 + off, 17, COL.text, 'center');
+   740→  });
+   741→  ctx.globalAlpha = 1;
+   742→
+   743→  // cita final tras las estadísticas (los Ecos restantes dependen del acto)
+   744→  const qa = Math.max(0, Math.min(1, (elapsed - 0.6 - lines.length * 0.4) / 0.5));
+   745→  ctx.globalAlpha = qa;
+   746→  text(g, '«Cuando el miedo te hable, canta más alto.»', VIEW_W / 2, 396, 19, COL.epochPast, 'center');
+   747→  text(g, '— Anciana Brisa', VIEW_W / 2, 418, 15, COL.dim, 'center');
+   748→  const restantes = NUM_ES[Math.max(0, Math.min(7, 7 - ecoCount))];
+   749→  text(g, `Los otros ${restantes} Ecos aguardan en Velmora...`, VIEW_W / 2, 448, 16, COL.dim, 'center');
+   750→  ctx.globalAlpha = 1;
+   751→  button(g, 'VOLVER AL TÍTULO (ENTER)', VIEW_W / 2 - 140, VIEW_H - 60, 280, 40, () => g.setState('title'), 11);
+   752→  hoverCorners(g, VIEW_W / 2 - 140, VIEW_H - 60, 280, 40);
+   753→}
+   754→

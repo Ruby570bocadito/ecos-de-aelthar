@@ -200,7 +200,7 @@ function drawTitle(g: Game) {
   textShadow(g, 'AELTHAR', VIEW_W / 2, 110 + bob, 42, COL.gold, '#2a1a08', 'center', true);
   ctx.fillStyle = COL.gold;
   ctx.fillRect(VIEW_W / 2 - 180, 168, 360, 2);
-  text(g, 'RPG 2D de acción y exploración · Acto IV incluido · 3 jefes de zona + arena', VIEW_W / 2, 180, 17, COL.dim, 'center');
+  text(g, 'RPG 2D de acción y exploración · Acto V incluido · 9 jefes + arena', VIEW_W / 2, 180, 17, COL.dim, 'center');
 
   // botones (con brillo de hover). 16-c: menú ampliado — Estadísticas y
   // Logros en una rejilla secundaria de 2 columnas (mismo lenguaje visual)
@@ -231,7 +231,7 @@ function drawTitle(g: Game) {
   }
 
   text(g, 'Basado en el Documento de Diseño de @papito · 8 oct 2026', VIEW_W / 2, VIEW_H - 40, 15, 'rgba(154,160,184,0.8)', 'center');
-  text(g, 'v0.6.0 · Lunaris — Bosque — Cripta — Costa de Bruma — Merrow — Cumbres Heladas — Sala del Primer Canto — Arena · Logros', VIEW_W / 2, VIEW_H - 20, 14, 'rgba(122,128,148,0.7)', 'center');
+  text(g, 'v0.6.0 · Lunaris — Bosque — Cripta — Costa de Bruma — Merrow — Cumbres Heladas — Sala del Primer Canto — Ciudadela de Vesh — Arena · Logros', VIEW_W / 2, VIEW_H - 20, 14, 'rgba(122,128,148,0.7)', 'center');
 }
 
 // helpers deterministas locales (evitan importar hash2 aquí)

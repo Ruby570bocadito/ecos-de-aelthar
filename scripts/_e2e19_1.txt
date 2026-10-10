@@ -1,0 +1,37 @@
+✓ Ecos de Aelthar — Demo jugable (RPG 2D)
+  http://localhost:3000/
+✓ Done
+✓ Screenshot saved to scripts/e2e19_1_titulo.png
+✗ No element found by text 'NUEVA PARTIDA'. Verify the selector, role, or name is correct and the element exists in the DOM.
+✓ Done
+✓ Screenshot saved to scripts/e2e19_2_creacion.png
+✓ Done
+✓ Done
+✓ Done
+✓ Done
+✓ Screenshot saved to scripts/e2e19_3.png
+✓ Done
+✓ Done
+✓ Screenshot saved to scripts/e2e19_4_juego.png
+✓ Done
+✓ Done
+✓ Done
+✓ Done
+✓ Done
+✓ Done
+✓ Screenshot saved to scripts/e2e19_5_magias.png
+✓ Done
+✓ Done
+✓ Done
+✓ Done
+✓ Done
+✓ Done
+✓ Screenshot saved to scripts/e2e19_6_lunaris.png
+✓ Done
+✓ Done
+✓ Done
+✓ Done
+✓ Done
+✓ Done
+✓ Screenshot saved to scripts/e2e19_7_magias.png
+✓ Done
