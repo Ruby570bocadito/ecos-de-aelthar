@@ -15,7 +15,7 @@
 
 === 4) Eco del Filo: golpe nuevo → eco retardado en área ===
   ✓ el eco no pega instantáneo (retardo ~0.16 s)
-  ✓ eco del filo conecta (hp 30 → 12)
+  ✓ eco del filo conecta (hp 30 → 21)
 
 === 5) Ojo del Mercader: +20% de oro por delta ===
   ✓ +100 coronas → +20 de bonus (total 120)

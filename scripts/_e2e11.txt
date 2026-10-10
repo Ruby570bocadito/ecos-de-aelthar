@@ -1,0 +1,4 @@
+"tp"
+"pos"
+✓ Done
+✓ Screenshot saved to scripts/e2e_7_uso2.png

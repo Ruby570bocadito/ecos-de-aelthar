@@ -666,7 +666,10 @@ function mapPortrait(p: string): string {
     case 'teo': return 'teo';
     case 'doran': return 'doran';
     case 'nimue': return 'nimue';
-    default: return 'wisp';
+    // FIX R18: passthrough general — drawPortrait ya cae a 'wisp' de forma
+    // segura para claves desconocidas, así que cualquier retrato nuevo (los
+    // tres del faro 18-e y los futuros) se muestra sin tocar esta lista.
+    default: return p;
   }
 }
 

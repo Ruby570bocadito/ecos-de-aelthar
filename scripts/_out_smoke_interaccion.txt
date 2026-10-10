@@ -36,7 +36,7 @@
   ✓ examen con rng forzado 0.9: nada útil (75%)
   ✓ cadáver a >0.8 tile: fuera de alcance
   ✓ FuerzaBruta (30 intentos, Math.random): todo botín en [1,5]
-  ✓ FuerzaBruta: 7/30 éxitos ≈ 25% (25% forzado, sin rng inyectado)
+  ✓ FuerzaBruta: 6/30 éxitos ≈ 25% (25% forzado, sin rng inyectado)
 === 4) Cofres ya abiertos: reinteractuar cuenta, no lootea ===
   ✓ reinteractuar un cofre abierto NO da loot
   ✓ y suelta el texto «vacío… pero huele a antes»

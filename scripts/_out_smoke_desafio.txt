@@ -16,7 +16,7 @@
   ✓ kills=3, score=oleadas+kills=4 (espec)
   ✓ oleada despejada → cuenta atrás de 3 s
   ✓ oleada 2 lanzada tras la cuenta atrás
-  ✓ killEnemy pagó oro de campaña (20→43); la restauración lo devuelve
+  ✓ killEnemy pagó oro de campaña (20→37); la restauración lo devuelve
   ✓ aborto: challengeRun cerrado al salir del mapa
   ✓ oro restaurado exacto (20)
   ✓ flags restauradas (sin visited_arena residual)

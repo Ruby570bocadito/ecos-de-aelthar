@@ -1,0 +1,4 @@
+✓ Done
+✓ Screenshot saved to scripts/e2e_4_left.png
+✓ Done
+"left|false"

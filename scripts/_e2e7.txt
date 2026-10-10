@@ -1,0 +1,4 @@
+"tp"
+✓ Done
+"dialogue|?"
+✓ Screenshot saved to scripts/e2e_6_uso.png

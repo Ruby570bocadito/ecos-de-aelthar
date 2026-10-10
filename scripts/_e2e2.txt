@@ -1,0 +1,4 @@
+✓ Done
+✓ Done
+✓ Done
+✓ Screenshot saved to scripts/e2e_2_creacion.png

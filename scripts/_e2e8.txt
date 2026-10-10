@@ -1,0 +1,16 @@
+"{\"dlgPortrait\":\"no_dyn\"}"
+"probe"
+51://    existente, seguro). Opcional (estética): retocar portrait: 'maelis' →
+478:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',
+487:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',
+492:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',
+497:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',
+502:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',
+511:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',
+519:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',
+478:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',
+487:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',
+492:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',
+497:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',
+502:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',
+511:    name: 'Uso, el farero tuerto', portrait: 'uso_faro',

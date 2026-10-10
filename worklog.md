@@ -1123,3 +1123,19 @@ Work Log:
 
 Stage Summary:
 - R18 íntegra en el árbol: Costa Bruma y Cumbres Heladas revisualizadas (terreno/bruma/haz del faro/gaviotas · ventisca/aurora/lago/aliento/huellas), jefes y enemigos con sprites rehechos y frames de ataque cableados, héroe y retratos al detalle (bug de Brisa incluido), faro con 3 NPCs únicos e historia propia, interludios de acto con banner, barrera narrativa de los 3 altares, facing lateral arreglado, cripta con corredor garantizado + cartel, 18/18 smokes y tsc 0. PENDIENTE: E2E en vivo + commit + push (sin token GitHub válido en este entorno: el remoto no está configurado).
+
+---
+Task ID: 18-e2e
+Agent: Super Z (agente principal — E2E en vivo Ronda 18)
+Task: Verificación end-to-end en navegador de toda la Ronda 18 + hotfixes de integración descubiertos en vivo.
+
+Work Log:
+- INCIDENCIA: el dev server murió a mitad de E2E (GET 000; procesos next colgados) — reiniciado (npm run dev, 200 OK) y sesión de navegador reabierta.
+- HOTFIX 1 (descubierto en vivo): el retrato de Uso caía a 'wisp' — NO era la fusión (mergeFaroPortraits funcionaba; verificado con probe de fillStyles en bun) sino screens.ts mapPortrait(), una lista blanca que devolvía 'wisp' para claves nuevas. FIX: passthrough en el default (drawPortrait ya tiene fallback seguro propio). Re-test en vivo: el retrato de Uso (barba de sal, gabardina) se dibuja.
+- HOTFIX 2 (robustez): fusión perezosa de FARO_PORTRAITS también dentro de drawPortrait (import directo, uso a nivel de función — ciclo sprites⇄faro_historia inofensivo), eliminando cualquier dependencia del orden de evaluación/instancias del bundle. Instrumentación de debug temporal añadida y RETIRADA.
+- E2E VERIFICADO EN VIVO (agent-browser, localhost:3000): título v0.5.0 con paneles; creación de personaje (Naia, Espada del Alba) → intro → play; FIX DE FACING verificado en pantalla: andando a la izquierda el Portador muestra PERFIL lateral (antes mostraba el frente); Costa de Bruma revisualizada en vivo (bruma con parallax, haz del faro, gaviotas, 3 NPCs del faro con sprites claramente distintos: mara_farera/uso_faro/tina_faro); diálogo de Uso con retrato propio; interludio del Acto II dispara al fijar q6+questIdx 5: banner «ACTO II — LAS NOTAS PERDIDAS» + cadena de diálogo navegable hasta volver a play; BARRERA DEL ALTAR: acercándose al altar_mareas con la Sirena viva → aggro:true + toasts «La Marea Sin Nombre se interpone entre tú y el Eco»; Cumbres Heladas revisualizada (lago con grietas, pinos con nieve acumulada); flujo completo de muerte de jefe (banner, botín, logro 'Primer Canto', eco liberado) y rumores del mundo vivos. Sin errores de página.
+- Batería final: 18/18 VERDE. npx tsc --noEmit → 0.
+- Estado git: commit 512f82e (R18) + hotfixes pendientes de commit en este momento.
+
+Stage Summary:
+- Ronda 18 verificada de punta a punta en vivo: todos los bugs de la lista del usuario corregidos y comprobados en pantalla (facing, retrato de Brisa en smokes, cripta accesible por rutas, faro con 3 NPCs únicos, altares custodiados, transiciones de acto con interludios, Costa/Cumbres profesionales, jefes y héroe rehechos). Pendiente permanente: push a GitHub (sin token válido ni remote en este entorno).

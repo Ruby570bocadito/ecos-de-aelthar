@@ -13,9 +13,9 @@
 
 === 3) rumores: cooldown por NPC y texto según progreso REAL ===
   ✓ Brisa presente en lunaris
-  ✓ rumor disparado junto al NPC (4.2 s): «Brisa: «Los lobos rondan al caer el sol. Ve co...»
+  ✓ rumor disparado junto al NPC (4.6 s): «Brisa: «Los lobos rondan al caer el sol. Ve co...»
   ✓ cooldown respetado: nada en los 5 s posteriores (mínimo 8 s)
-  ✓ segunda burbuja a los 8.4 s del reinicio (ventana 8-14 s)
+  ✓ segunda burbuja a los 8.9 s del reinicio (ventana 8-14 s)
   ✓ pool de Brisa cambia con questIdx 0 → 9 (progreso real)
   ✓ texto de rumor cambia con la misión: «Brisa: «Los lobos rondan al ca...» → «Brisa: «El silencio pesa menos...»
   ✓ tono dominante sarcástico presente en el pool de Teo
@@ -36,7 +36,7 @@
   ✓ evento pospuesto con enemigo en aggro
   ✓ evento pospuesto con diálogo abierto
   ✓ evento disparado al volver a play (el aplazamiento no lo pierde)
-  ✓ eco lejano: float + 20 partículas vivas
+  ✓ eco lejano: float + 19 partículas vivas
   ✓ viajante errante activo (entidad decorativa propia)
   ✓ el viajante se marcha solo al salir de cámara
   ✓ sin eventos en modo desafío

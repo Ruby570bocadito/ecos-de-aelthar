@@ -9,7 +9,7 @@
   ✓ 'ecos-logros' persiste Invicto una sola vez — {"v":1,"done":["invicto"]}
 --- 2) Stats acumuladas (kill/muerte/poción/época/forja/movimiento) ---
   ✓ killEnemy → enemigosDerrotados 1
-  ✓ killEnemy → coronasGanadas > 0 — 5
+  ✓ killEnemy → coronasGanadas > 0 — 7
   ✓ killEnemy dispara chequeo puntual → Primer Canto
   ✓ killEnemy jefe → jefesDerrotados 1
   ✓ flag de jefe de campaña fijada
@@ -23,9 +23,9 @@
   ✓ poción comprada → coronasGastadas 45
   ✓ grantQuestLoot → coronasGanadas suma el botín
   ✓ statsTick: tiempoJugado + memoriasHalladas
-  ✓ save() serializa stats (2 kills: lobo + jefe) — {"enemigosDerrotados":2,"jefesDerrotados":1,"muertes":1,"coronasGanadas":171,"coronasGastadas":45,"pocionesUsadas":1,"vecesCambioEpoca":1,"distanciaAndada":5,"tiempoJugado":1.5,"memoriasHalladas":2}
-  ✓ espejo 'ecos-stats' escrito — {"enemigosDerrotados":2,"jefesDerrotados":1,"muertes":1,"coronasGanadas":171,"coronasGastadas":45,"pocionesUsadas":1,"vecesCambioEpoca":1,"distanciaAndada":5,"tiempoJugado":1.5,"memoriasHalladas":2}
-  ✓ continueGame restaura stats del guardado — {"enemigosDerrotados":2,"jefesDerrotados":1,"muertes":1,"coronasGanadas":171,"coronasGastadas":45,"pocionesUsadas":1,"vecesCambioEpoca":1,"distanciaAndada":5,"tiempoJugado":1.5,"memoriasHalladas":2}
+  ✓ save() serializa stats (2 kills: lobo + jefe) — {"enemigosDerrotados":2,"jefesDerrotados":1,"muertes":1,"coronasGanadas":157,"coronasGastadas":45,"pocionesUsadas":1,"vecesCambioEpoca":1,"distanciaAndada":5,"tiempoJugado":1.5,"memoriasHalladas":2}
+  ✓ espejo 'ecos-stats' escrito — {"enemigosDerrotados":2,"jefesDerrotados":1,"muertes":1,"coronasGanadas":157,"coronasGastadas":45,"pocionesUsadas":1,"vecesCambioEpoca":1,"distanciaAndada":5,"tiempoJugado":1.5,"memoriasHalladas":2}
+  ✓ continueGame restaura stats del guardado — {"enemigosDerrotados":2,"jefesDerrotados":1,"muertes":1,"coronasGanadas":157,"coronasGastadas":45,"pocionesUsadas":1,"vecesCambioEpoca":1,"distanciaAndada":5,"tiempoJugado":1.5,"memoriasHalladas":2}
   ✓ sanitizeStats(undefined) → defaults
   ✓ sanitizeStats mezcla válidos/inválidos — {"enemigosDerrotados":3,"jefesDerrotados":0,"muertes":0,"coronasGanadas":0,"coronasGastadas":0,"pocionesUsadas":0,"vecesCambioEpoca":0,"distanciaAndada":0,"tiempoJugado":0,"memoriasHalladas":0}
 --- 3) Tolerancia a JSON corrupto (sin crash, defaults) ---

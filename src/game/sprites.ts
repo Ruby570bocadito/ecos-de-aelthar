@@ -651,6 +651,8 @@ const PALS: Record<string, HumanPal> = {
   },
 };
 
+import { FARO_PORTRAITS } from './faro_historia'; // 18-e: fusión perezosa de retratos (uso a nivel de función — ciclo inofensivo)
+
 let faroPortraitsMerged = false;
 /**
  * 18-e (faro-historia): inyección de los retratos de Mara/Uso/Tina en el
@@ -1355,6 +1357,13 @@ export function drawPortrait(
   ctx: CanvasRenderingContext2D, key: string,
   dx: number, dy: number, scale: number, blink = false,
 ): void {
+  // 18-e: fusión perezosa de los retratos del faro AL PRIMER DIBUJO — robusta
+  // frente a orden de evaluación/instancias del bundle (el merge vía
+  // initFaroSprites no siempre alcanzaba al primer retrato en dev).
+  if (!faroPortraitsMerged) {
+    faroPortraitsMerged = true;
+    Object.assign(PORTRAITS, FARO_PORTRAITS as unknown as Record<string, PortraitDef>);
+  }
   const P = PORTRAITS[key] ?? PORTRAITS['wisp'];
   const q = (X: number, Y: number, W: number, H: number, C: string) => {
     ctx.fillStyle = C;

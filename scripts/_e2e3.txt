@@ -1,0 +1,13 @@
+- Canvas [ref=e1] clickable [cursor:pointer, tabindex]
+- heading "CREA A TU PORTADOR" [level=2, ref=e2]
+- textbox "Portador" [ref=e3]
+- button "SELECCIONADA Espada del Alba Cuerpo a cuerpo equilibrado · Espada y escudo Combo de 3 golpes, parada perfecta que aturde y ondas de luz sagrada. Más vida base. Ideal para aprender el ritmo del combate. ◆ Tajo Lunar (embestida) ◆ Grito de Guerra (+50% daño) ◆ Muro de Alba (aturde en área) ◆ Filo del Alba (definitiva)" [ref=e4]
+- button "ELEGIR Tejedor de Ecos Magia elemental a distancia · Báculo de resonancia Lanza notas elementales (Fuego, Hielo, Rayo) y combina reacciones como Vapor. Menos vida, más daño a distancia. ◆ Canto de Ascuas (quema) ◆ Canto de Escarcha (ralentiza) ◆ Canto de Chispa (rebota) ◆ Canto Mayor (nota acumulada)" [ref=e5]
+- button "▶ DESPERTAR EN LUNARIS" [ref=e6]
+- button "Volver" [ref=e7]
+- button "Open Next.js Dev Tools" [expanded=false, ref=e8]
+✓ Done
+✓ Done
+✓ Done
+✓ Done
+"intro|lunaris"

@@ -1,0 +1,6 @@
+✓ Done
+✓ Done
+✓ Done
+✓ Done
+"play|lunaris"
+✓ Screenshot saved to scripts/e2e_3_juego.png

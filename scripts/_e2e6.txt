@@ -1,0 +1,3 @@
+null
+"costa|play|loop:null"
+✓ Screenshot saved to scripts/e2e_5_costa.png
