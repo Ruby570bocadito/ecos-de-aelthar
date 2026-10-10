@@ -29,6 +29,7 @@ import { updateHudFx, hudHeartbeatPulse } from './actors/hudfx';
 import { companionShotFx, setBondActive, setArrowIndex } from './actors/companfx';
 import { combatSparks, dodgeRing, critGlint } from './fx';
 import { expansionTick, expansionDeathFx, expansionBossWatchers } from './enemies_expansion';
+import { R16_TYPES, r16Tick, r16Watchers } from './enemies_r16'; // R16: centinela/raíz/Madre del Mar
 import { tileAt } from './maps'; // solo lectura (mapas propiedad de otro agente)
 import { interaccionTick, companionOrdersMove, lureActive, sennoChase } from './interaccion'; // 16-b: órdenes tácticas + señuelo
 import { perfQuality } from './perf'; // R6-V10: escalón de calidad adaptativa (0=alta · 1=media · 2=baja)
@@ -319,7 +320,7 @@ export function updateGame(g: Game, dt: number) {
     // R6-V10: polvo del rollo = cosmético → probabilidad × calidad
     if (Math.random() < 0.5 * qMul()) g.particles.push({ x: p.x, y: p.y, vx: 0, vy: 0, t: 0.25, maxT: 0.25, color: '#d8dce4', size: 2, grav: 0 });
   } else if (p.attackT > 0) {
-    p.attackT -= dt;
+    p.attackT = Math.max(0, p.attackT - dt); // R16 (#39 QA): sin residuo negativo
     p.moving = false;
     p.anim += dt;
   } else {
@@ -643,6 +644,7 @@ export function updateGame(g: Game, dt: number) {
   // Cripta post-Acto III) — spawn + activación de barra al estilo del bloque
   // anterior. Barato: el watcher filtra primero por mapa.
   expansionBossWatchers(g);
+  r16Watchers(g); // R16: La Madre del Mar despierta en los Jardines de Sal (tras la Sirena)
 
   // ---------------- proyectiles ----------------
   // R5-O10: la rejilla se reconstruye UNA vez por frame aquí — los enemigos ya
@@ -1029,6 +1031,7 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
   // Acto II: decae la fase intangible y delega en el cerebro propio si lo maneja
   if (e.invulT !== undefined && e.invulT > 0) e.invulT -= dt;
   if (EXPANSION_TYPES.has(e.etype) && expansionTick(g, e, dt, def)) return;
+  if (R16_TYPES.has(e.etype) && r16Tick(g, e, dt, def)) return; // R16: cerebros propios
 
   const d2 = dist2(e.x, e.y, p.x, p.y);
   const nightMult = curNightMult; // R5-O10: isNight memoizado 1×/frame en updateGame

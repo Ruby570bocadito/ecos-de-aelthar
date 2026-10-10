@@ -732,6 +732,8 @@ export function skillTick(g: Game, dt: number): void {
       const bonus = Math.round((p.gold - rt.prevGold) * 0.2);
       if (bonus > 0) {
         p.gold += bonus;
+        // R16 (#38 QA): el bonus también cuenta como coronas ganadas (fuera del desafío)
+        if (!g.challengeRun) g.stats.coronasGanadas += bonus;
         g.floatAt(p.x, p.y - 26, `+${bonus} (Ojo del Mercader)`, '#f0c84a');
       }
     }

@@ -164,3 +164,34 @@ commit → merge a main → push. QA de solo lectura en cada ronda.
 > al calentarse). Smoke nuevo: scripts/smoke_r15_prologo.mts (23/23 verde);
 > tsc 0 errores + build verde + E2E verificado en navegador (title→creación→
 > cinemática→skip ESC→juego→ataque). package-lock: npm install regenerado.
+
+> **Ronda R16 «El Filo y la Nota» + «Mareas y Raíces»** (v0.7.0) — QA jugando
+> en navegador real (Playwright) + cierre del informe docs/agentefalta.md +
+> efectos de combate/magia + contenido nuevo:
+> - **Bugs visuales vistos jugando**: el camino `=` no tenía pintor en
+>   lunaris/bosque/arena/cuna/ciudadela (franjas verde liso) → `paintPath`
+>   (tierra con rodadas/guijarros/hojarasca; calzada de losas en ciudades);
+>   suelo plano bajo cada árbol (cuadrados) → hierba procedural; nubes,
+>   estrellas y luna DENTRO de casas y salas → `MapDef.indoor`; niebla del
+>   alba de rectángulos tramados → bancos de niebla suaves con parallax;
+>   baldosas grises de la niebla muda `m` → manchas orgánicas que se funden.
+> - **Informe QA**: 39 de 40 hallazgos cerrados — el #37 es por diseño (ver tabla en
+>   docs/agentefalta.md §7), incluidos los 3 P1 (save tolerante `savefix.ts`,
+>   viaje/respawn en mapas sin santuario) y el contenido R10-2 que quedaba
+>   fuera de `w/h` (costa 64×40, aldea 44×44, cumbres 66×42 + cofres, ecos,
+>   carteles y enemigos que el diseño dejó planificados).
+> - **VFX (actors/vfx.ts)**: media luna de filo por golpe del combo, estrella
+>   de impacto/crítico, zarpazos al recibir daño, parada perfecta, Tajo Lunar
+>   (estela de luna), Grito de Guerra (ondas + aura de fuego), Muro de Alba
+>   (cúpula hexagonal), Filo del Alba (tres hojas solares), firmas elementales
+>   del Tejedor (columna de fuego, cristales de hielo, rayo del cielo, círculo
+>   rúnico + nova del Canto Mayor), rayo quebrado con ramas, pilar de subida
+>   de nivel y caída de jefe; halos aditivos tras la luz (brillan de noche).
+> - **Contenido (enemies_r16.ts + actors/enemies_r16.ts)**: Centinela de
+>   Cristal (rayo telegrafiado, cripta y cumbres), Raíz Hambrienta (se
+>   entierra y brota, bosque), Marinero Ahogado (costa) y la jefa opcional
+>   **La Madre del Mar** (Jardines de Sal, tras la Sirena desde q9): 3 fases
+>   — nana en anillo con hueco, ancla de coral, marea bajo los pies,
+>   tripulación, llanto en espiral y teletransporte; +1 punto y 2 pociones.
+> - Smoke nuevo `scripts/smoke_r16.mts`; batería 15/15 + tsc 0 + build verde
+>   + E2E en navegador con consola limpia.

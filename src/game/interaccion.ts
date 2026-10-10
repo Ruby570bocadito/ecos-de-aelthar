@@ -87,7 +87,7 @@ const AOE_BAND_PAD = 2;        // 2.3-b: margen de la banda de onda (px)
 // jefe final dejaba restos examinables (registerCorpse16b), no participaba del
 // botín raro de señuelo (bossSennoLoot16b 8%) y quedaba señuelizable en los
 // estados raros sin bossActive (espejo incompleto de BOSS_DEFEAT_FLAG).
-const BOSS_TYPES = new Set<string>(['guardian', 'sirena', 'golem', 'vult', 'coro', 'heraldo']);
+const BOSS_TYPES = new Set<string>(['guardian', 'sirena', 'golem', 'vult', 'coro', 'heraldo', 'madre']); // R16: +madre
 
 // ---------------- RNG inyectable (solo smoke/dev) ----------------
 

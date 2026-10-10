@@ -72,7 +72,7 @@ const KEY_ITEM_FLAGS: [string, string][] = [
 const NUM_ES = ['cero', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete'];
 
 // R8-4 — pie del título: una sola línea discreta con la versión
-const TITLE_FOOTER = 'v0.6.1 · Ecos de Aelthar'; // R15: prólogo viviente
+const TITLE_FOOTER = 'v0.7.0 · Ecos de Aelthar'; // R16: el filo y la nota · mareas y raíces
 
 export function drawScreens(g: Game) {
   installLayerGuard(g); // R8-4: capas de pausa — Esc cierra SOLO la capa activa

@@ -2589,3 +2589,33 @@ export const SPAWN_SEPULCRO_R10: SpawnDef = {
 export const SEPULCRO_BOTIN = { potions: 1, gold: 50 } as const;
 
 // ═══════ FIN DEL BLOQUE R10-9 ═══════
+
+// ═══════ R16 «Mareas y Raíces» · enemigos nuevos + jefa opcional ═══════
+// IA en enemies_r16.ts (cerebros propios), sprites en actors/enemies_r16.ts.
+export const ENEMY_DEFS_R16: Record<string, EnemyDef> = {
+  centinela: {
+    name: 'Centinela de Cristal', hp: 64, dmg: 12, speed: 26, xp: 32, gold: [9, 15],
+    sprite: 'centinela', aggroR: 150, atkR: 150, windup: 0.95, atkCd: 2.6,
+    element: 'hielo', weakTo: 'rayo',
+    desc: 'Esquirla que la Orden plantó para vigilar el silencio. Apunta, se carga de luz y dispara un rayo en línea recta: sal de la línea roja o párala en el último instante. Débil al rayo.',
+  },
+  raiz: {
+    name: 'Raíz Hambrienta', hp: 54, dmg: 11, speed: 58, xp: 28, gold: [7, 12],
+    sprite: 'raiz', aggroR: 125, atkR: 20, windup: 0.7, atkCd: 2.0,
+    element: 'ninguno', weakTo: 'fuego',
+    desc: 'Tocón al que la Niebla enseñó a tener hambre. Se entierra, viaja bajo tus pies y brota con púas: muévete al ver el círculo. Tras brotar queda al descubierto un instante. Débil al fuego.',
+  },
+  ahogado: {
+    name: 'Marinero Ahogado', hp: 46, dmg: 10, speed: 36, xp: 22, gold: [6, 10],
+    sprite: 'ahogado', aggroR: 120, atkR: 22, windup: 0.55, atkCd: 1.7,
+    element: 'hielo', weakTo: 'rayo',
+    desc: 'Tripulante de La Madre del Mar. Camina arrastrando el agua que no le dejó respirar y abraza para hundirte con él. Débil al rayo.',
+  },
+  madre: {
+    name: 'La Madre del Mar', hp: 560, dmg: 14, speed: 30, xp: 300, gold: [170, 230],
+    sprite: 'madre', aggroR: 190, atkR: 170, windup: 0.7, atkCd: 2.3,
+    element: 'hielo', weakTo: 'fuego', breakBar: 120,
+    desc: 'El mascarón de proa de la nave que llevaba a todas las madres de Merrow a cantar al cabo. El mar se quedó con ellas y ellas con su nana. Anillos de notas con un hueco hacia ella, mareas de coral bajo tus pies y, al final, el llanto en espiral. Es de madera: el fuego la hiere más.',
+  },
+};
+Object.assign(ENEMY_DEFS, ENEMY_DEFS_R16);

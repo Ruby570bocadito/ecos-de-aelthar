@@ -921,10 +921,30 @@ export function drawExpansionTile(
     }
     case '.': {
       if (mapId === 'aldea') { // —— MERROW · hierba reclamando el pueblo (R9-1)
-        rc(x, px0, py0, 16, 16, r < 0.5 ? '#7a8a58' : '#72824f');
+        // R16: la hierba ya no es un CUADRADO liso sobre el empedrado (se leía
+        // como baldosas verdes sueltas): empedrado de base y encima una mancha
+        // de hierba que se deshilacha en el borde (dither por hash) y se
+        // extiende hacia los vecinos que también son hierba (parches que se
+        // funden entre sí).
+        const gb = nbBits(CX_ALDEA_HIERBA, tx, ty, 0);
+        adoquinado(x, px0, py0, tx, ty, r, r2, r3, gb, nbBits(CX_ALDEA_AGUA, tx, ty, 0) !== 0, 0);
+        for (let j = 0; j < 16; j++) {
+          for (let i = 0; i < 16; i++) {
+            let dx = i - 7.5, dy = j - 7.5;
+            if ((dx < 0 && gb & NB_W) || (dx > 0 && gb & NB_E)) dx *= 0.2;
+            if ((dy < 0 && gb & NB_N) || (dy > 0 && gb & NB_S)) dy *= 0.2;
+            const w = 1.2 - Math.sqrt(dx * dx + dy * dy) / 8.5;
+            if (w <= 0) continue;
+            const hh = hash2(tx * 16 + i * 7 + 3, ty * 16 + j * 13 + 1) * 2;
+            if (hh < w) {
+              x.fillStyle = hash2(tx * 31 + i, ty * 17 + j) < 0.25 ? '#72824f' : hh < w * 0.5 ? '#7a8a58' : '#76864f';
+              x.fillRect(px0 + i, py0 + j, 1, 1);
+            }
+          }
+        }
         // parche de tierra desnuda
         x.globalAlpha = 0.6;
-        rc(x, px0 + Math.floor(r2 * 8), py0 + Math.floor(r3 * 8), 5, 3, '#6a5c40');
+        rc(x, px0 + 4 + Math.floor(r2 * 5), py0 + 5 + Math.floor(r3 * 5), 4, 2, '#6a5c40');
         x.globalAlpha = 1;
         // mechones cortos
         for (let i = 0; i < 4; i++) {

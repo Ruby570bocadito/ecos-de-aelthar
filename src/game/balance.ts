@@ -258,7 +258,7 @@ export function agresionPorNivel(nivel: number): number {
 /** Tipos de JEFE: no reciben la curva de agresividad en HP (sus peleas tienen
  *  fases y HP de diseño; patrones intactos). heraldo incluido por 16-a. */
 const TIPOS_JEFE: ReadonlySet<string> = new Set([
-  'guardian', 'sirena', 'golem', 'vult', 'coro', 'heraldo',
+  'guardian', 'sirena', 'golem', 'vult', 'coro', 'heraldo', 'madre', // R16
 ]);
 
 // ---------------- estado persistido ----------------

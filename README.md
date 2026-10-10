@@ -1,4 +1,4 @@
-# Ecos de Aelthar — Demo jugable (v0.2.1)
+# Ecos de Aelthar — Demo jugable (v0.7.0)
 
 RPG de acción 2D con mecánica de **Ecos**: viaja entre el presente y el pasado para
 devolver el Primer Canto al mundo. Todo el juego es procedural (pixel art y música
@@ -58,6 +58,29 @@ dominante se refleja en el Estado.
 > El juego funciona íntegramente en el cliente (canvas + WebAudio). La partida
 > se guarda en `localStorage` (Santuarios y autoguardado al cambiar de zona).
 > No requiere base de datos.
+
+## Novedades v0.7.0 (Ronda 16)
+
+- **Efectos de combate y magia** (`src/game/actors/vfx.ts`): media luna de filo
+  en cada golpe del combo, impactos y críticos, zarpazos al recibir daño,
+  Tajo Lunar, Grito de Guerra con aura, cúpula del Muro de Alba, hojas solares
+  del Filo del Alba, firmas elementales del Tejedor (fuego, hielo, rayo, círculo
+  rúnico), pilar de subida de nivel y caída de jefe. Brillan de noche.
+- **Enemigos nuevos**: Centinela de Cristal (rayo telegrafiado), Raíz Hambrienta
+  (se entierra y brota) y Marinero Ahogado.
+- **Jefa opcional «La Madre del Mar»** en los Jardines de Sal de la Costa
+  (tras derrotar a la Sirena, desde la misión 9): 3 fases.
+- Zonas de la expansión que estaban fuera del mapa ahora son jugables (naufragio,
+  mina, mirador, campamento, huerto y cementerio de Merrow).
+- Guardado tolerante a corrupción, viaje rápido seguro y ~40 arreglos de QA
+  (detalle en `docs/agentefalta.md` §7).
+
+## Pruebas
+
+```bash
+npx tsc --noEmit                 # tipos
+npx tsx scripts/smoke_r16.mts    # smoke de la ronda 16 (hay uno por ronda en scripts/)
+```
 
 ## Estructura
 

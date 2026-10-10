@@ -149,3 +149,46 @@ Se **confirmaron 40 hallazgos**: **3 P1** (rompen partidas o atrapan al jugador)
 ## 6) Veredicto
 
 La base técnica es sólida y el contenido reciente (cripta Zelda, interiores, eventos del Eco) está bien telegrafiado y balanceado. Las prioridades de arreglo son claras: **(1)** sanitizar la lectura de saves, **(2)** sincronizar las dimensiones de los mapas de expansión con su contenido, **(3)** cerrar el ciclo de vida del estado global de skilltree entre partidas, y **(4)** tender la red de catchUp narrativa. Con esas cuatro correcciones desaparecen los 3 P1 y 14 de los 17 P2, y la demo queda lista para crecer hacia el Acto V y el NG+ que la biblia de historia ya planifica.
+
+---
+
+## 7) Estado tras la Ronda R16 (v0.7.0)
+
+> Verificado con `scripts/smoke_r16.mts` (casos de reproducción del informe convertidos en
+> checks) + batería completa 15/15 + E2E en navegador real. Todos los arreglos llevan
+> comentario `R16 (#n QA)` en el código.
+
+| # | Estado | Arreglo |
+|---|--------|---------|
+| 1, 2, 4, 5, 6, 20 | ✅ | `src/game/savefix.ts` — `sanitizeSaveData()` sanea campo a campo (colecciones con `Array.isArray`, numéricos finitos con defaults y clamp, `attrs` con sus 5 claves, `questIdx` acotado) + red `try/catch` en `continueGame`. Versión futura **tolerada** (contrato QA17: rechazarla borraría la partida) pero ya inofensiva |
+| 3 | ✅ | `sanctuaryPos` cae junto a la primera salida en mapas sin santuario; `findSafeTile` acota al mapa; el menú «Viajar» solo lista mapas con santuario |
+| 7 | ✅ | El pago/cierre del epílogo pasa del `onEnd` de los nodos de entrada a las opciones de cantar |
+| 8, 9 | ✅ | catchUp por estado de q3/q4; `mara_gift` completa q6 si la Sirena cayó antes |
+| 10 | ✅ | El feedback de barrera muestrea el tile tras el borde de la caja que choca |
+| 11 | ✅ | costa 64×40 · aldea 44×44 · cumbres 66×42 + 9 cofres/ecos/carteles/enemigos planificados por R10-2; la lápida que sellaba la cripta familiar de Merrow se mueve; salida costa→aldea al borde real |
+| 12 | ✅ | El cap de invocación de la Sirena cuenta solo sus neumos (WeakSet) |
+| 13 | ✅ | Memoria de vida por jefe `bossHp_<mapa>_<tipo>` |
+| 14, 15, 16, 31 | ✅ | `equipNewSkill` re-aplica la barra; `saveTree` fusiona con disco; `resetTreeForNewGame` en `newGame`; reaplicación de equipaje por identidad |
+| 17 | ✅ | `advanceDialogue` sale si la acción cierra el diálogo |
+| 18 | ✅ | `shortName()` con elipsis en HUD/pausa/final |
+| 19, 33, 35 | ✅ | Audio en modo degradado (proxy con `try/catch` y silencio tras 20 fallos), volúmenes saneados a [0,1], `window.clearInterval` uniforme |
+| 21 | ✅ | `dayT` viaja en el save |
+| 22, 23, 24 | ✅ | Aguante con clamp a 0, tabla del combo corregida (el 3er golpe es el más fuerte), aviso flotante al quedarse sin aguante |
+| 25 | ✅ | El Tejedor despierta con 30 de resonancia y la regenera (+2/s hasta 50); el aviso explica cómo cargarla |
+| 26 | ✅ | Botón «DESPERTAR (E)» clicable en la pantalla de muerte |
+| 27 | ✅ | ESC/M en diálogo completa el texto y cierra los nodos de pura charla (las decisiones no se saltan a ciegas) |
+| 28 | ✅ | Toast «Viaje cancelado» al pausar durante el fundido |
+| 29 | ✅ | La expansión usa la curva `nightAggroMul` |
+| 30 | ✅ | `Q` re-evalúa los spawns ligados a una época (sin reaparición de los ya derrotados) |
+| 32 | ✅ | `weatherStats()` cuenta nieve, rocío, humo, pétalos, hojas, polen y cripta |
+| 34 | ✅ | `update()` sanea `dt` NaN/negativo |
+| 36 | ✅ | Caída de jefe con VFX propio para TODOS los jefes (Sepulcro y Vesh incluidos) |
+| 37 | — | Por diseño (dificultad dinámica): sin cambios |
+| 38 | ✅ | El bonus del Ojo del Mercader suma a `coronasGanadas` |
+| 39 | ✅ | `attackT` con clamp a 0 |
+| 40 | ✅ | El veto de época dice el nombre del mapa («Entre estas paredes…» en salas cubiertas) |
+
+**Bugs nuevos encontrados jugando en navegador y corregidos en R16:** camino `=` sin pintor en
+5 mapas (franjas verde liso), cuadrado de suelo plano bajo cada árbol, nubes/estrellas/luna
+dentro de casas y salas de la Ciudadela, niebla del alba en rectángulos de borde duro y
+niebla muda `m` como baldosas grises sueltas.

@@ -88,9 +88,11 @@ const BOSS_TITLES: ReadonlyArray<readonly [string, string]> = [
   ['EL CORO ROTO', 'TRES MÁSCARAS, UNA NOTA AL REVÉS'],
   ['EL HERALDO', 'VESH, LA ÚLTIMA NOTA'],
   ['EL SEPULCRO', 'GUARDA DEL UMBRAL'], // R10-9: mini-jefe de la antesala de la cripta
+  ['LA MADRE DEL MAR', 'CANTA NANAS A LOS QUE SE AHOGAN'], // R16: jefa opcional de la Costa
 ];
 const KIND_OF: Record<string, number> = {
   guardian: 0, sirena: 1, golem: 2, vult: 3, coro: 4, heraldo: 5, sepulcro: 6, // R10-9
+  madre: 7, // R16
 };
 
 // Colores constantes (el fade SIEMPRE va por globalAlpha).

@@ -52,6 +52,9 @@ import { initPerf, perfFrame, drawPerfOverlay, togglePerfOverlay, perfQuality } 
 import { lorePropsForMap, loreTextFor, noteBellRing } from './world/props'; // R10-6: lore en el mundo · R15: texto de lore + campana
 import { resetCinematic } from './cinematic'; // R15: prólogo animado saltable
 import { sanitizeSaveData } from './savefix'; // R16: lectura tolerante del guardado
+import { spawnVfx, vfxTick, resetVfx } from './actors/vfx'; // R16: VFX de combate y magia
+import { initR16Sprites } from './actors/enemies_r16';       // R16: sprites de centinela/raíz/ahogado/Madre
+import { placeR16Spawns } from './enemies_r16';               // R16: spawns de los enemigos nuevos
 
 // R10-6 · siembra de props de lore (placas/restos/altares/carteles/mojones):
 // determinista, nunca sobre sólidos. FUNCIÓN con guard — NO a nivel de módulo:
@@ -112,6 +115,7 @@ export const BOSS_DEFEAT_FLAG: Record<string, string> = {
   // XP/botín). Rama propia en killEnemy abajo + espejo en interaccion.BOSS_TYPES.
   heraldo: 'heraldoDerrotado',
   sepulcro: 'sepulcroDerrotado', // R10-9: mini-jefe de la entrada de la cripta
+  madre: 'madreDefeated',        // R16: jefa opcional de los Jardines de Sal (Costa)
 };
 
 // R5-O6 (optimización): topes duros de recursos FX. fx.ts empuja partículas
@@ -135,6 +139,9 @@ const MAX_MAP_ENEMIES = 40;    // tope de población viva total tras un evento
 // R8-1.3: los cofres se validan UNA vez por objeto/sesión (WeakSet — no toca
 // types.ts ni maps.ts; el ajuste de posición lo leen render e interacción).
 const validatedChests = new WeakSet<ChestDef>();
+
+// R16: ángulo de pantalla de cada dirección cardinal (VFX de filo)
+const DIR_ANG: Record<Dir, number> = { right: 0, down: Math.PI / 2, left: Math.PI, up: -Math.PI / 2 };
 
 // R16: enemigos nacidos de un spawn ligado a una época (needPast/needPresent)
 // → refreshEpochSpawns los retira/añade al cambiar de época con Q.
@@ -287,6 +294,8 @@ export class Game {
     seedLoreProps(); // R10-6: lore del mundo (1× por sesión, tras evaluar módulos)
     initSprites();
     initExpansionSprites(); // Acto II: sprites de neumo/espectro/arpi/sirena/golem + proyectiles
+    initR16Sprites();       // R16: Centinela de Cristal, Raíz Hambrienta, Ahogado y La Madre del Mar
+    placeR16Spawns(MAPS as unknown as Parameters<typeof placeR16Spawns>[0]);
     this.bindInput();
     initPerf(this); // R5-O1: lee localStorage['aelthar_perf'] (no-op seguro en SSR)
     // volúmenes persistidos (sistema → sliders)
@@ -329,6 +338,7 @@ export class Game {
     // bucle RAF ya acota el dt real a 0,05 s; aquí solo se sanea la forma)
     if (!Number.isFinite(dt) || dt < 0) dt = 0;
     updateGame(this, dt);
+    if (this.state === 'play') vfxTick(dt); // R16: edad de los VFX (congelados en pausa/diálogo)
     // Watchers del Acto II que viven en el motor (O(1) por frame; update.ts es
     // de otro agente). q7 paso 0→1: la Sirena entra en combate. Elección
     // documentada: watcher por ACTIVACIÓN DEL JEFE (bossActive al acercarte al
@@ -487,6 +497,7 @@ export class Game {
     resetBossIntro();
     resetBossFx();
     resetKillFx(); // Ronda 3: FX de muerte en curso, fuera
+    resetVfx();    // R16
     this.openedChests = new Set();
     this.takenEchoes = new Set();
     this.deadGolds = [];
@@ -746,6 +757,7 @@ export class Game {
     this.spawnNpcs();
     this.projectiles = []; this.waves = []; this.telegraphs = [];
     this.spellCastFx = []; this.spellImpactFx = []; // R9-4: pools de hechizo
+    resetVfx(); // R16
     this.bossRef = null; this.bossActive = false;
     audio.setCombat(false);
     // ==== 17-d (qa-mundo): la arena (modo desafío, 12-a) NO participa de la
@@ -1022,8 +1034,8 @@ export class Game {
     const hp = Math.max(1, Math.round(d.hp * bm.hp));
     return {
       kind: 'enemy', etype: type, x, y,
-      w: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' ? 22 : 12,
-      h: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' ? 16 : 10,
+      w: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' || type === 'madre' ? 22 : 12,
+      h: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' || type === 'madre' ? 16 : 10,
       vx: 0, vy: 0, dir: 'down', hp, maxHp: hp, sprite: d.sprite, anim: Math.random() * 9, moving: false,
       ai: 'patrulla', aiT: Math.random() * 2, homeX: x, homeY: y, patrolAngle: Math.random() * Math.PI * 2,
       aggro: false, windup: 0, atkCd: Math.random(), sta: d.breakBar ?? 0, maxSta: d.breakBar ?? 0,
@@ -2297,6 +2309,8 @@ export class Game {
     p.chargedHit = charged;
     this.aimAtMouse();
     audio.sfx(charged ? 'swing2' : 'swing');
+    // R16: media luna de filo (1º blanco · 2º barre al revés · remate dorado · cargado)
+    spawnVfx('smear', p.x, p.y, { ang: DIR_ANG[p.dir], flag: charged ? 3 : p.combo === 1 ? 1 : p.combo === 2 ? 2 : 4 });
     // daño del golpe ==== 17-e (qa): los multiplicadores del árbol (Filo
     // Templado/Cólera del Alba) aplican al ataque BASE del jugador ====
     // R16 (#23 QA): p.combo ya se incrementó (1→1º golpe, 2→2º, 0→3º):
@@ -2384,6 +2398,10 @@ export class Game {
   }
 
   pushSpellImpactFx(x: number, y: number, element: Element, big: boolean): void {
+    // R16: firma elemental del impacto (columna de fuego / cristales / rayo del cielo)
+    if (element === 'fuego') spawnVfx('pyre', x, y + 4, { size: big ? 1.4 : 0.85 });
+    else if (element === 'hielo') spawnVfx('frost', x, y + 4, { size: big ? 1.4 : 0.85 });
+    else if (element === 'rayo') spawnVfx('bolt', x, y, { x2: x, y2: y, flag: 1 });
     const arr = this.spellFxSlots('impact');
     for (let i = 0; i < arr.length; i++) {
       const s = arr[i];
@@ -2408,7 +2426,9 @@ export class Game {
       case 'tajo': {
         audio.sfx('dodge');
         const dash = 34;
+        const ox = p.x, oy = p.y;
         this.moveEntity(p, nx * dash, ny * dash);
+        spawnVfx('dash', ox, oy, { x2: p.x, y2: p.y }); // R16: estela de luna
         this.meleeHit(26, 22, playerMeleeDmg(p) * 1.6, 'ninguno', 90);
         this.burst(p.x + nx * 12, p.y + ny * 12, '#cdd3de', 8);
         break;
@@ -2418,14 +2438,19 @@ export class Game {
         (p as Player & { buffT?: number }).buffT = 8;
         this.toast('Grito de Guerra: +50% de daño (8 s)', '#f0a050');
         this.burst(p.x, p.y - 6, '#f0a050', 14);
+        spawnVfx('warcry', p.x, p.y); // R16: ondas de sonido + ascuas
+        this.shake = Math.max(this.shake, 3);
         break;
       case 'muro':
         audio.sfx('slam');
         this.aoeHit(p.x, p.y, 44, playerMeleeDmg(p) * 1.2, 'sagrado', true);
         this.waves.push({ x: p.x, y: p.y, r: 6, maxR: 46, speed: 120, dmg: 0, hit: true });
+        spawnVfx('dome', p.x, p.y); // R16: cúpula hexagonal dorada
         break;
       case 'filo':
         audio.sfx('holy');
+        spawnVfx('sunblades', p.x, p.y, { ang: Math.atan2(ny, nx) }); // R16: tres hojas de luz
+        this.flashT = Math.max(this.flashT, 0.12); this.flashColor = '#fff2c0';
         for (let k = 0; k < 3; k++) {
           window.setTimeout(() => {
             if (this.state !== 'play' && this.state !== 'pause') return;
@@ -2459,6 +2484,8 @@ export class Game {
         playSpellCast(); // R9-4/R9-8
         this.pushSpellCastFx(wx, wy, el); // el Canto Mayor carga en el objetivo
         const wx2 = wx, wy2 = wy;
+        spawnVfx('rune', wx2, wy2, { el });            // R16: círculo rúnico…
+        spawnVfx('nova', wx2, wy2, { el, life: 0.7 }); // …y nova elemental
         this.aoeHit(wx2, wy2, 52, spellDmg * 2.2, el, false);
         this.waves.push({ x: wx2, y: wy2, r: 4, maxR: 56, speed: 150, dmg: 0, hit: true });
         this.burst(wx2, wy2, el === 'fuego' ? '#ff9040' : el === 'hielo' ? '#a0e8ff' : '#ffe86a', 24, 90);
@@ -2511,6 +2538,7 @@ export class Game {
   }
 
   lightningFx(x0: number, y0: number, x1: number, y1: number) {
+    spawnVfx('bolt', x0, y0 + 6, { x2: x1, y2: y1 + 6 }); // R16: rayo quebrado con ramas
     const steps = 6;
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
@@ -2578,6 +2606,7 @@ export class Game {
     this.floatAt(e.x + (Math.random() - 0.5) * 8, e.y - 14, `${final}`, crit ? '#ffd24a' : '#fff');
     if (crit) this.floatAt(e.x, e.y - 22, '¡CRÍTICO!', '#ffd24a', 6);
     this.burst(e.x, e.y - 4, crit ? '#ffd24a' : '#f0e8e0', crit ? 10 : 5);
+    spawnVfx('impact', e.x, e.y - 6, { flag: crit ? 1 : 0, el: element }); // R16
     // Ronda 3: chispas direccionales del impacto + pitch que sube con el combo
     spawnHitSparks(this, e.x, e.y - 4, Math.atan2(kby, kbx) || Math.sign(e.y - p.y) * (Math.PI / 2), crit ? '#ffd24a' : '#fff0d8', crit ? 8 : 5);
     audio.sfx(crit ? 'crit' : 'hit', Math.min(1, 0.45 + comboPitch(this) * 0.55));
@@ -2625,6 +2654,12 @@ export class Game {
     this.burst(e.x, e.y - 4, e.etype === 'guardian' ? '#7ee8ff' : '#9ec4b4', e.etype === 'guardian' ? 40 : 14, e.etype === 'guardian' ? 120 : 60);
     // terror v2 (Ronda 2): el enemigo no explota alegre — se DESHACE en cenizas
     spawnDeathDissolve(this, e);
+    // R16 (#36 QA y todos los jefes): caída de jefe con rayos, triple onda y
+    // columna de luz — el Sepulcro y Vesh ya no mueren sin salva propia
+    if (BOSS_DEFEAT_FLAG[e.etype] !== undefined) {
+      spawnVfx('bossDeath', e.x, e.y, { el: def.element === 'ninguno' ? 'sagrado' : def.element });
+      this.flashT = Math.max(this.flashT, 0.2); this.flashColor = '#fff6e0';
+    }
     // Ronda 3: sello de muerte (motas de oro + anillo) y sonido propio
     onKill(this, e);
     audio.sfx('kill');
@@ -2757,6 +2792,23 @@ export class Game {
       p.potions += 1;
       p.gold += 50;
       this.floatAt(e.x, e.y - 34, 'Botín del Guarda: +1 poción, +50 coronas', '#f0c84a');
+    } else if (e.etype === 'madre') {
+      // R16 · LA MADRE DEL MAR (jefa opcional de la Costa): la nana se apaga,
+      // la tripulación descansa y el mar devuelve lo que guardaba.
+      this.flags.madreDefeated = true;
+      if (this.flags.bossHpWho_costa === 'madre') { delete this.flags.bossHp_costa; delete this.flags.bossHpWho_costa; }
+      this.bossActive = false;
+      audio.setCombat(false);
+      audio.playTrack('costa');
+      this.shake = 8;
+      audio.sfx('song');
+      for (const o of this.enemies) if (!o.dead && o.etype === 'ahogado') { o.hp = 0; this.killEnemy(o); }
+      this.toast('La Madre del Mar termina su nana. Por fin, alguien la escuchó entera.', '#9ee6ff');
+      this.toast('El mar devuelve su ofrenda: +1 punto de habilidad, +2 pociones', '#ffe9a0');
+      p.points += 1;
+      p.potions += 2;
+      this.floatAt(e.x, e.y - 40, 'Botín de la Madre: +1 punto, +2 pociones', '#f0c84a');
+      this.applyAction('rep_circulo_5');
     }
     // ==== 17-a (qa): el duelo entra en pausa dramática EN EL MISMO golpe que
     // cae al jefe — challengeTick solo corría en el update siguiente y el
@@ -2795,6 +2847,7 @@ export class Game {
       audio.sfx('levelup');
       this.toast(`¡Nivel ${p.level}! +3 puntos de atributo (menú > Estado)`, '#ffe86a');
       this.burst(p.x, p.y - 8, '#ffe86a', 20, 70);
+      spawnVfx('pillar', p.x, p.y); // R16: pilar de luz al subir de nivel
       next = this.xpNext(p.level);
     }
   }
@@ -2816,6 +2869,7 @@ export class Game {
       this.hitStop = 0.12;
       this.burst(p.x + (fromX - p.x) * 0.3, p.y - 8 + (fromY - p.y) * 0.3, '#fff8c0', 14, 100);
       this.floatAt(p.x, p.y - 22, '¡PARADA!', '#fff8c0', 7);
+      spawnVfx('parry', p.x + (fromX - p.x) * 0.3, p.y + (fromY - p.y) * 0.3); // R16
       // aturde al atacante cercano
       let best: Enemy | null = null, bd = 34;
       for (const e of this.enemies) {
@@ -2852,6 +2906,8 @@ export class Game {
     }
     this.shake = 4;
     audio.sfx('hurt');
+    // R16: zarpazo rojo orientado desde el atacante (lectura clara del golpe)
+    spawnVfx('claw', p.x, p.y, { ang: Math.atan2(p.y - fromY, p.x - fromX) + 0.5, size: final >= 15 ? 1.3 : 1 });
     this.floatAt(p.x, p.y - 16, `-${final}`, '#ff7060');
     const dx = p.x - fromX, dy = p.y - fromY;
     const l = Math.max(1, Math.hypot(dx, dy));

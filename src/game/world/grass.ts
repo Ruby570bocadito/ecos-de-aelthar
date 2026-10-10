@@ -326,17 +326,6 @@ function pintorLado(x: CanvasRenderingContext2D, X0: number, Y0: number, side: n
   return (k, m, c) => px(x, X0 + 15 - m, Y0 + k, 1, 1, c);
 }
 
-/** Diente simple de 1px con umbral (difuminados suaves entre hierbas). */
-function diente1(
-  x: CanvasRenderingContext2D, X0: number, Y0: number,
-  side: number, tx: number, ty: number, c: string, umbral: number,
-): void {
-  const p = pintorLado(x, X0, Y0, side);
-  for (let k = 0; k < 16; k++) {
-    if (h1(tx * 21 + k + side * 57, ty * 21 + side * 31) < umbral) p(k, 0, c);
-  }
-}
-
 /**
  * Borde a camino '=' v3: gradiente de motas de 1-3px — m0 tierra del
  * camino, m1 mezcla tierra/hierba oscura, m2 motas sueltas — sin
@@ -443,8 +432,8 @@ function transiciones(
     else if (nb === '~' || nb === 'B' || nb === 'x') bordeAgua(x, X0, Y0, side, tx, ty, cWet);
     else if (HIERBA.has(nb)) {
       if (ch === 'c' && nb !== 'c') bordeCultivo(x, X0, Y0, side, tx, ty, cMid);
-      else if (nb === 'm' && ch !== 'm') diente1(x, X0, Y0, side, tx, ty, TONOS_NIEBLA[3], 0.35);
-      else if (nb !== 'm' && ch === 'm') diente1(x, X0, Y0, side, tx, ty, cMid, 0.35);
+      // R16: la mancha de niebla ya se deshilacha sola (paintMist): sin dientes
+      // de borde recto entre 'm' y la hierba vecina
     } else if (nb === 'V') {
       // vacío: borde duro correcto, sin transición
     } else if (PIEDRA.has(nb)) {
@@ -586,24 +575,45 @@ function semillasDoradas(
   }
 }
 
-/** 'm' niebla muda: hierba apagada + matas de 2 alturas + semillas doradas. */
+/**
+ * 'm' niebla muda: R16 — MANCHA ORGÁNICA en vez de cuadrado. Antes el tile
+ * entero se pintaba con tonos grises + velo de borde recto y en el bosque
+ * se leía como baldosas grises sueltas sobre la hierba. Ahora: hierba normal
+ * de base y, encima, una mancha de hierba apagada cuyo peso cae con la
+ * distancia al centro (dither por hash: borde que se deshilacha) y que se
+ * EXTIENDE hacia los vecinos que también son 'm' (las manchas contiguas se
+ * funden en un solo parche). Matas y semillas solo en el núcleo.
+ */
 function paintMist(
   x: CanvasRenderingContext2D, X0: number, Y0: number,
-  tx: number, ty: number, t: number,
+  tx: number, ty: number, t: number, forest: boolean, at?: NeighborFn,
 ): void {
-  baseMoteado(x, X0, Y0, (vx, vy) => tonoEn(vx, vy, TONOS_NIEBLA));
+  const tonos = forest ? TONOS_BOSQUE : TONOS_LUNARIS;
+  baseMoteado(x, X0, Y0, (vx, vy) => tonoEn(vx, vy, tonos));
+  const nb = at ?? (() => '.');
+  const mN = nb(0, -1) === 'm', mS = nb(0, 1) === 'm', mW = nb(-1, 0) === 'm', mE = nb(1, 0) === 'm';
+  for (let j = 0; j < 16; j++) {
+    for (let i = 0; i < 16; i++) {
+      // distancia al centro, "estirada" hacia los lados que continúan en niebla
+      let dx = i - 7.5, dy = j - 7.5;
+      if ((dx < 0 && mW) || (dx > 0 && mE)) dx *= 0.25;
+      if ((dy < 0 && mN) || (dy > 0 && mS)) dy *= 0.25;
+      const d = Math.sqrt(dx * dx + dy * dy) / 8.5;
+      const w = 1.15 - d;                                   // >1 núcleo, <0 fuera
+      if (w <= 0) continue;
+      const r = h1(tx * 16 + i * 7, ty * 16 + j * 13);
+      if (r < w) px(x, X0 + i, Y0 + j, 1, 1, tonoEn(X0 + i, Y0 + j, TONOS_NIEBLA));
+    }
+  }
   const nM = 1 + pick(h1(tx * 3 + 5, ty * 7 + 9), 2); // 1-2 matas por tile
   for (let k = 0; k < nM; k++) mataNiebla(x, X0, Y0, tx, ty, k);
   semillasDoradas(x, X0, Y0, tx, ty);
-  // veladura gris-verdosa translúcida
-  x.globalAlpha = 0.16;
-  px(x, X0, Y0, 16, 16, '#9ec4b4');
   // motas claras que derivan (con t; congeladas en el prerrender se ven bien)
   x.globalAlpha = 0.4;
   const nMotas = 2 + ((h1(tx * 5 + 3, ty * 7 + 1) * 2) | 0);
   for (let k = 0; k < nMotas; k++) {
-    const mx = X0 + 1 + (((((h1(tx + k * 7, ty * 3 + k) * 12 + t * (1.2 + k * 0.8)) % 12) + 12) % 12) | 0);
-    const my = Y0 + 2 + (((((h1(tx * 3 + k, ty + k * 5) * 9 + Math.sin(t * 0.9 + tx + k * 2.1) * 2) % 9) + 9) % 9) | 0);
+    const mx = X0 + 3 + (((((h1(tx + k * 7, ty * 3 + k) * 9 + t * (1.2 + k * 0.8)) % 9) + 9) % 9) | 0);
+    const my = Y0 + 4 + (((((h1(tx * 3 + k, ty + k * 5) * 7 + Math.sin(t * 0.9 + tx + k * 2.1) * 2) % 7) + 7) % 7) | 0);
     if (k % 2 === 0) px(x, mx, my, 2, 1, '#b8d8c8');
     else px(x, mx, my, 1, 2, '#b8d8c8');
   }
@@ -629,7 +639,7 @@ export function paintGrass(
   if (ch === 'c') {
     paintCultivo(x, X0, Y0, tx, ty);
   } else if (ch === 'm') {
-    paintMist(x, X0, Y0, tx, ty, t);
+    paintMist(x, X0, Y0, tx, ty, t, forest, at);
   } else {
     const wear = at ? nivelDesgaste(at) : 0;
     const tonos = forest ? TONOS_BOSQUE : TONOS_LUNARIS;

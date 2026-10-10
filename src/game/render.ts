@@ -48,6 +48,8 @@ import { drawKillFx } from './actors/killfx';
 import { drawCompanionFx, drawMarkFx } from './actors/companfx';
 import { drawToastsV2, drawMapBannerV2 } from './actors/toasts';
 import { drawHudFx } from './actors/hudfx';
+import { drawVfxWorld, drawVfxGlow, drawWarcryAura } from './actors/vfx'; // R16: VFX de combate y magia
+import { raizFrame, madreFrame, centinelaFrame, ahogadoFrame, drawR16Fx } from './enemies_r16'; // R16
 
 const WORLD_FILTER: Record<string, string> = {
   presente: 'saturate(0.74) contrast(0.98)',
@@ -315,6 +317,13 @@ function drawWorld(g: Game) {
   drawAmbient(g, 'sky');
   // clima capa cielo (R1): luciérnagas/briznas/polen/chispas con halo 'lighter'
   drawWeatherSky(ctx, g);
+  // R16: halos aditivos de los VFX DESPUÉS de la luz — la magia alumbra la
+  // noche y la cripta (de día casi no lavan la imagen)
+  {
+    const dl = Math.max(0.1, Math.sin(g.dayT * Math.PI * 2) * 1.25 + 0.25);
+    const darkness = g.map.dark ? 1 : g.map.indoor ? 0.4 : 1 - Math.min(1, dl);
+    drawVfxGlow(ctx, sx, sy, ZOOM, darkness);
+  }
 
   // terror ambiental (Ronda 2): viñeta cardiaca + susurros junto a sombras +
   // ojos en la niebla del bosque nocturno (después de la luz, antes del HUD)
@@ -452,6 +461,14 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
       : enF.ai === 'carga' && enF.windup > 0 ? 'grito'
       : enF.sumT > 0 ? 'invoca' : 'idle';
     fi = guardianFrame(st, e.anim);
+  } else if (e.kind === 'enemy' && enF.etype === 'raiz') {
+    fi = raizFrame(enF);           // R16: acecho · emerger · púas · montículo
+  } else if (e.kind === 'enemy' && enF.etype === 'madre') {
+    fi = madreFrame(enF);          // R16: vaivén · canto · embate · quebrada
+  } else if (e.kind === 'enemy' && enF.etype === 'centinela') {
+    fi = centinelaFrame(enF);      // R16: flotación · carga · disparo
+  } else if (e.kind === 'enemy' && enF.etype === 'ahogado') {
+    fi = ahogadoFrame(enF);        // R16: andar arrastrado · carga · golpe
   } else {
     fi = entityFrame(spr, e.dir, e.moving, e.anim);
   }
@@ -574,6 +591,7 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
     }
     // buff grito
     if ((p.buffT ?? 0) > 0) {
+      drawWarcryAura(ctx, sx(p.x), sy(p.y), ZOOM, g.globalT, p.buffT ?? 0); // R16
       text(g, '⚔', sx(p.x) + 10, sy(p.y) - 26, 10, '#f0a050', 'center');
     }
   }
@@ -696,6 +714,10 @@ function drawCombatFx(g: Game, sx: (n: number) => number, sy: (n: number) => num
       drawSpellResidue(ctx, sx(f.x), sy(f.y), f.element, f.age - SPELL_IMPACT_TIME, f.seed, g.globalT);
     }
   }
+  // R16: mira/rayo del Centinela y surco de la Raíz bajo tierra
+  drawR16Fx(ctx, g, sx, sy, ZOOM);
+  // R16: filo, impactos, magias de disciplina, caída de jefe, subida de nivel…
+  drawVfxWorld(ctx, sx, sy, ZOOM, g.globalT);
 }
 
 // ---------------- Tintes de bioma y agua viva (R3-c) ----------------
