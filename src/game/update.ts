@@ -37,6 +37,10 @@ import { nightAggroMul } from './world/lighting'; // R9-2: curva suave de agresi
 import { isInteriorMap } from './maps_interiores'; // R10-5: ambientes de interiores
 import { SPELL_CAST_TIME, SPELL_IMPACT_TIME, SPELL_RESIDUE_TIME } from './actors/spells'; // R9-4: ventanas de FX
 import { hash2 } from './world/palette'; // R10-3: hash determinista de los pinchos (módulo hoja, sin ciclos)
+import { tickGrimoire } from './skilltree'; // R18: recargas de la página oculta del grimorio
+import { exitGate, bumpGate } from './gates'; // R18: sellos de la Niebla (progresión por historia)
+import { cutsceneActive, cutsceneTick, cutsceneBarsTick } from './cutscene'; // R18
+import { storyBeatsTick, storyBeatsForced } from './storybeats'; // R18
 
 // R6-V10 · Calidad adaptativa (consumidor de perf.ts): multiplicador de partículas
 // COSMÉTICAS según el escalón que perfFrame ya calcula (alta=×1 · media=×0.6 · baja=×0.35).
@@ -92,6 +96,27 @@ const iceMem = new WeakMap<Player, IceMem>();
  *  a la ventisca del gólem (enemies_expansion → getPortadorVel) para
  *  telegrafiar su posición FUTURA. Teleportes (saltos grandes) → 0. */
 let plLastX = 0, plLastY = 0, plLastOk = false, plVX = 0, plVY = 0;
+// R18 · movimiento con inercia ligera (acelera en ~0,07 s, frena en ~0,05 s)
+// y sprint (Shift) que gasta Aguante; el polvo de los pasos depende del suelo.
+const plVel = { x: 0, y: 0 };
+let sprinting = false;
+let lastStep = -1;
+const SPRINT_MULT = 1.45;
+const SPRINT_COST = 22;            // Aguante por segundo
+function stepDust(g: Game, p: Player, strong: boolean): void {
+  const ch = tileAt(g.map, g.rows, Math.floor(p.x / TILE), Math.floor((p.y + 5) / TILE), g.epoch);
+  const col = ch === 'S' || ch === ',' && g.mapId === 'cumbres' ? '#eef4ff'
+    : ch === 's' ? '#e8d8a8' : ch === '=' ? '#b89a6a' : ch === ':' || ch === '_' ? '#a8a8b0'
+    : g.mapId === 'cripta' || g.mapId === 'cuna' ? '#8a8496' : '#a8b878';
+  const n = strong ? 3 : 1;
+  for (let i = 0; i < n; i++) {
+    g.particles.push({
+      x: p.x + (hash2(i, lastStep) - 0.5) * 6, y: p.y + 5,
+      vx: (hash2(lastStep, i + 3) - 0.5) * 22 - (plVel.x * 0.12), vy: -8 - hash2(i + 7, lastStep) * 10,
+      t: 0.32, maxT: 0.32, color: col, size: strong ? 1.6 : 1.2, grav: 30,
+    });
+  }
+}
 // R5-O10: objeto reutilizado (cero alloc por llamada). Los lectores actuales
 // (ventisca/salto/balada del gólem en enemies_expansion) consumen x/y al
 // momento; si un lector futuro RETUVIERA la referencia debe copiarla antes.
@@ -250,6 +275,9 @@ export function updateGame(g: Game, dt: number) {
 
   const p = g.player;
   if (!p) return;
+  // R18: escena en curso — el mundo se congela (lo cosmético sigue arriba)
+  if (cutsceneActive()) { cutsceneTick(g, dt); return; }
+  cutsceneBarsTick(dt);
   p.playTime += dt;
   g.dayT = (g.dayT + dt / 240) % 1;
   if (p.buffT) { p.buffT -= dt; if (p.buffT <= 0) p.buffT = undefined; }
@@ -275,6 +303,8 @@ export function updateGame(g: Game, dt: number) {
     if (g.fadeT <= 0 && g.fadeDir < 0) { g.fadeT = 0; g.fadeDir = 0; }
     if (g.fadeDir !== 0) { g.updateCamera(); return; }
   }
+  // R18: hitos de la historia (solo con el bucle real; los smokes no los ven)
+  if (g.isRunning() || storyBeatsForced()) storyBeatsTick(g, dt);
 
   // ---------------- input del jugador ----------------
   const k = g.keys;
@@ -285,7 +315,15 @@ export function updateGame(g: Game, dt: number) {
   if (k.has('s') || k.has('arrowdown')) my += 1;
   const mlen = Math.hypot(mx, my) || 1;
 
-  p.sta = Math.min(p.maxSta, p.sta + (p.rollT > 0 ? 0 : 26) * dt);
+  // R18 · sprint: Shift + dirección, sin atacar/cargar/rodar; histéresis de
+  // Aguante (arranca con ≥15, aguanta hasta agotarse)
+  const wantSprint = (k.has('shift')) && (mx !== 0 || my !== 0) && p.rollT <= 0 && p.attackT <= 0 && !p.charging;
+  sprinting = wantSprint && p.sta > (sprinting ? 1 : 15);
+  if (sprinting) { p.sta = Math.max(0, p.sta - SPRINT_COST * dt); p.sprintT = 0.12; }
+  else if ((p.sprintT ?? 0) > 0) p.sprintT = Math.max(0, (p.sprintT ?? 0) - dt);
+  if (!sprinting) p.sta = Math.min(p.maxSta, p.sta + (p.rollT > 0 ? 0 : 26) * dt);
+  tickGrimoire(p, dt);
+  if (g.grimoireFlashT > 0) g.grimoireFlashT = Math.max(0, g.grimoireFlashT - dt);
   // R16 (#25 QA): el Tejedor de Ecos «respira» resonancia (+2/s, hasta 50):
   // antes arrancaba a 0 y no podía lanzar NINGÚN canto sin pegar antes en
   // melé — el mago tenía que hacer de guerrero para poder ser mago.
@@ -294,6 +332,7 @@ export function updateGame(g: Game, dt: number) {
   if (p.parryT > 0) p.parryT -= dt;
   if (p.parryFx > 0) p.parryFx -= dt;
   if (p.lastHitT > 0) p.lastHitT -= dt;
+  if ((p.castT ?? 0) > 0) p.castT = Math.max(0, (p.castT ?? 0) - dt); // R18
   for (let i = 0; i < p.cds.length; i++) if (p.cds[i] > 0) p.cds[i] -= dt;
 
   // knockback suave del jugador (ondas del jefe, slams) — contrato fxcore
@@ -365,13 +404,27 @@ export function updateGame(g: Game, dt: number) {
       // control normal (tiles no helados): la memoria de hielo se resetea
       im.vx = 0;
       im.vy = 0;
-      if (mx !== 0 || my !== 0) {
-        g.moveEntity(p, (mx / mlen) * spd * dt, (my / mlen) * spd * dt);
-        p.moving = true;
-        p.anim += dt;
-        if (!p.charging || p.chargeT < 0.2) {
+      // R18: velocidad objetivo (sprint ×1,45) perseguida con inercia corta
+      const top = spd * (sprinting ? SPRINT_MULT : 1);
+      const tvx = mx !== 0 || my !== 0 ? (mx / mlen) * top : 0;
+      const tvy = mx !== 0 || my !== 0 ? (my / mlen) * top : 0;
+      const kA = 1 - Math.exp(-dt * (mx !== 0 || my !== 0 ? 30 : 38));
+      plVel.x += (tvx - plVel.x) * kA;
+      plVel.y += (tvy - plVel.y) * kA;
+      if (mx === 0 && my === 0 && plVel.x * plVel.x + plVel.y * plVel.y < 36) { plVel.x = 0; plVel.y = 0; }
+      if (plVel.x !== 0 || plVel.y !== 0) {
+        g.moveEntity(p, plVel.x * dt, plVel.y * dt);
+        p.moving = mx !== 0 || my !== 0;
+        p.anim += dt * (sprinting ? 1.25 : 1);
+        if ((mx !== 0 || my !== 0) && (!p.charging || p.chargeT < 0.2)) {
           if (Math.abs(mx) > Math.abs(my)) p.dir = mx > 0 ? 'right' : 'left';
           else p.dir = my > 0 ? 'down' : 'up';
+        }
+        // polvo en cada pisada (2 pisadas por ciclo de andar de 8 fases)
+        const step = Math.floor(p.anim * (sprinting ? 12 : 9) / 4);
+        if (p.moving && step !== lastStep) {
+          lastStep = step;
+          if (perfQuality() < 2) stepDust(g, p, sprinting);
         }
       } else {
         p.moving = false;
@@ -474,9 +527,11 @@ export function updateGame(g: Game, dt: number) {
     // (parada −12, golpe cargado −8/−18) gastaba Aguante entre la pulsación y
     // el frame, la voltereta no salía pero la cola sobrevivía y el roll
     // saltaba SOLO, segundos después, al reponer 20 de Aguante.
-    const puedeRodar = p.rollT <= 0 && p.attackT <= 0 && p.sta >= 20;
+    // R18: la voltereta CANCELA la recuperación del golpe (tras el impacto)
+    const puedeRodar = p.rollT <= 0 && p.attackT <= 0.14 && p.sta >= 20;
     g.rollQueued = false;
     if (puedeRodar) {
+      p.attackT = 0; p.charging = false;
       p.rollT = 0.3;
       p.iframes = 0.34;
       p.sta -= 20;
@@ -511,6 +566,9 @@ export function updateGame(g: Game, dt: number) {
       if (ex.needPast && g.epoch !== 'pasado') continue;
       if (ex.needFlag && !g.flags[ex.needFlag]) continue; // R13: escalera de la Cuna (gated)
       if (ptx >= ex.x && ptx < ex.x + ex.w && pty >= ex.y && pty < ex.y + ex.h) {
+        // R18: sello de la Niebla — la historia aún no abre este camino
+        const gate = exitGate(g, ex);
+        if (gate) { bumpGate(g, ex, gate); break; }
         g.fadeTo(ex.to, ex.tx, ex.ty);
         audio.sfx('echo');
         break;
@@ -1054,7 +1112,17 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
         audio.sfx('banner');
       }
     }
-    else audio.sfx('blip');
+    else {
+      audio.sfx('blip');
+      // R18 · ALARMA DE MANADA: quien te ve avisa a los suyos (≤ 6 tiles,
+      // no jefes): las peleas dejan de ser de uno en uno
+      if (!BOSS_DEFEAT_FLAG[e.etype]) {
+        for (const o of g.enemies) {
+          if (o === e || o.dead || o.aggro || BOSS_DEFEAT_FLAG[o.etype]) continue;
+          if (dist2(o.x, o.y, e.x, e.y) < (6 * TILE) * (6 * TILE)) { o.aggro = true; o.atkCd = Math.max(o.atkCd, 0.35); }
+        }
+      }
+    }
   }
   e.atkCd -= dt;
   e.anim += dt * (e.ai === 'persigue' ? 1.4 : 0.6);

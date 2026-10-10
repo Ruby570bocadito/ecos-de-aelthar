@@ -110,15 +110,15 @@ interface PortraitDef {
 const PORTRAITS: Record<string, PortraitDef> = {
   hero_alba: {
     kind: 'human', bg: '#1a1218',
-    skin: '#f2c99c', skinS: '#d8a878', hair: '#c8384a', hairS: '#9a2438',
-    eye: '#2a2a3a', cloth: '#5a6070', clothS: '#474c5a', accent: '#c8384a',
+    skin: '#f2c99c', skinS: '#d8a878', hair: '#6e3222', hairS: '#4e2216', // R18: pelo castaño bajo la capucha roja (modelo v4)
+    eye: '#2a2a3a', cloth: '#d6dbe6', clothS: '#9aa3b4', accent: '#c8384a',
     hood: true, hoodCol: '#a83044',
   },
   hero_tejedor: {
     kind: 'human', bg: '#181228',
-    skin: '#f2c99c', skinS: '#d8a878', hair: '#8a5ac0', hairS: '#6a3f9a',
+    skin: '#f2c99c', skinS: '#d8a878', hair: '#c4b0ee', hairS: '#9a86cc', // R18: melena lila plateada (modelo v4)
     eye: '#3ae0c8', cloth: '#7e58b8', clothS: '#5e3f92', accent: '#f0c84a',
-    hood: true, hoodCol: '#6a44a0',
+    hood: false, hoodCol: '#6a44a0',
   },
   brisa: {
     kind: 'human', bg: '#141a14',

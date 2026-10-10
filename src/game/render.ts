@@ -5,7 +5,7 @@
 // ============================================================
 
 import type { Game } from './engine';
-import type { Entity, Enemy } from './types';
+import type { Entity, Enemy, Player, Dir } from './types';
 import { VIEW_W, VIEW_H, ZOOM, TILE, getSpr, SKILLS, QUESTS } from './engine';
 import { tileAt } from './maps';
 import { ENEMY_DEFS } from './data';
@@ -15,7 +15,7 @@ import { drawSlashArc, entityFrame, drawPortrait } from './sprites';
 import { hash2 } from './world/palette'; // hash determinista (sprites lo re-exporta)
 import * as SPRITES from './sprites'; // poses de combate (contrato 9-b, llamada opcional)
 import { drawExpansionProp, drawExpansionProjectile } from './sprites_expansion';
-import { drawSkillTree } from './skilltree';
+import { drawSkillTree, grimoirePage, grimoireHasSecondPage, grimoireOtherIcons } from './skilltree';
 import { drawWorldLife } from './worldlife';
 import { drawFloatV2, drawSparks, SPARK_MIN_SIZE } from './fx';
 import { takeShakeDir } from './fxcore';
@@ -49,6 +49,10 @@ import { drawCompanionFx, drawMarkFx } from './actors/companfx';
 import { drawToastsV2, drawMapBannerV2 } from './actors/toasts';
 import { drawHudFx } from './actors/hudfx';
 import { drawVfxWorld, drawVfxGlow, drawWarcryAura } from './actors/vfx'; // R16: VFX de combate y magia
+import { heroFrame, HERO_W, HERO_H, type HeroAct, type HeroDir, type HeroFrame } from './actors/hero'; // R18: Portador v4
+import { armorActive } from './armor';
+import { exitGate, drawGates } from './gates'; // R18: sellos de la Niebla
+import { cutsceneActive, cutsceneBars, drawCutsceneOverlay, drawCutsceneActors } from './cutscene'; // R18
 import { raizFrame, madreFrame, centinelaFrame, ahogadoFrame, drawR16Fx } from './enemies_r16'; // R16
 import { drawCausal, drawEchoLens, drawEpochWipe, drawEpochAtmosphere, progresoSemillas, lensDisponible, todasLasParcelas } from './ecocausal'; // R17: semillas del Eco + lente + transición + atmósfera
 
@@ -130,7 +134,9 @@ export function drawGame(g: Game) {
   }
 
   drawWorld(g);
-  drawHud(g);
+  // R18: durante una escena el HUD se retira y mandan las barras de cine
+  if (!cutsceneActive() && cutsceneBars() <= 0.05) drawHud(g);
+  if (g.state === 'play' || g.state === 'dialogue') drawCutsceneOverlay(ctx, g);
   drawOverlays(g); // destello, memoria, banner de jefe (sobre el HUD)
   drawScreens(g); // intro, pause, dialogue, dead, end (overlays)
 }
@@ -228,6 +234,8 @@ function drawWorld(g: Game) {
     drawProps(g, sx, sy);
     // R17: parcelas de las Semillas del Eco (tierra fértil / brote / Árbol del Eco)
     drawCausal(octx, g, sx, sy, ZOOM);
+    drawGates(octx, g, sx, sy, ZOOM); // R18: cortinas de los sellos de la Niebla
+    drawCutsceneActors(octx, g, sx, sy); // R18: actores de las escenas
 
     // aura de suelo, esquirlas orbitando y grietas del Guardián (Ronda 2):
     // bajo las entidades, fundidos con el mundo en el pase agrupado
@@ -382,22 +390,25 @@ function drawRollTrail(g: Game, sx: (n: number) => number, sy: (n: number) => nu
   if (!p) return;
   const trail = getRollTrail();
   if (trail.length === 0) return;
-  const spr = getSpr(p.sprite);
+  // R18: la estela repite el ovillo del Portador v4 (con su equipo)
+  const look = { disc: p.discipline, armor: armorActive(g)?.tier ?? 0, weapon: Math.max(0, Math.min(5, p.weaponPlus | 0)) };
+  let k = 0;
   for (const tp of trail) {
     const a = Math.max(0, tp.life / TRAIL_LIFE) * 0.35;
     if (a <= 0.02) continue;
-    const fr = Math.min(entityFrame(spr, tp.dir, true, tp.anim), spr.length - 1);
-    const dx = sx(tp.x) - (spr[0].width * ZOOM) / 2;
-    const dy = sy(tp.y + 4) - spr[0].height * ZOOM;
+    const hd = tp.dir === 'up' ? 'up' : tp.dir === 'down' ? 'down' : 'side';
+    const cv = heroFrame(look, hd, 'roll', k++).cv;
+    const dx = sx(tp.x) - (HERO_W * ZOOM) / 2;
+    const dy = sy(tp.y + 4) - HERO_H * ZOOM;
     ctx.save();
     // sin filtro aquí: el volcado agrupado de drawWorld ya aplica el de época
     ctx.globalAlpha = a;
     if (tp.dir === 'left') {
-      ctx.translate(dx + spr[0].width * ZOOM, 0);
+      ctx.translate(dx + HERO_W * ZOOM, 0);
       ctx.scale(-1, 1);
-      ctx.drawImage(spr[fr], 0, dy, spr[0].width * ZOOM, spr[0].height * ZOOM);
+      ctx.drawImage(cv, 0, dy, HERO_W * ZOOM, HERO_H * ZOOM);
     } else {
-      ctx.drawImage(spr[fr], dx, dy, spr[0].width * ZOOM, spr[0].height * ZOOM);
+      ctx.drawImage(cv, dx, dy, HERO_W * ZOOM, HERO_H * ZOOM);
     }
     ctx.restore();
   }
@@ -441,10 +452,47 @@ function drawProps(g: Game, sx: (n: number) => number, sy: (n: number) => number
 
 // ---------------- Entidades ----------------
 
+/** '#rrggbb' + alfa → rgba() (brillos aditivos). */
+function hexA(h: string, a: number): string {
+  const n = parseInt(h.slice(1, 7), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${Math.max(0, Math.min(1, a)).toFixed(3)})`;
+}
+
+// ---- R18: el Portador v4 (actors/hero.ts) — pose según el estado del jugador ----
+function heroFrameFor(g: Game, p: Player, dirOverride?: Dir): HeroFrame {
+  const look = { disc: p.discipline, armor: armorActive(g)?.tier ?? 0, weapon: Math.max(0, Math.min(5, p.weaponPlus | 0)) };
+  const d = dirOverride ?? p.dir;
+  const dir: HeroDir = d === 'up' ? 'up' : d === 'down' ? 'down' : 'side';
+  let act: HeroAct = 'idle', f = 0;
+  if (p.rollT > 0) { act = 'roll'; f = Math.min(3, Math.floor((1 - p.rollT / 0.3) * 4)); }
+  else if (p.attackT > 0) {
+    const dur = p.chargedHit ? 0.4 : 0.26;
+    const k = 1 - p.attackT / dur;
+    act = p.discipline === 'tejedor' ? 'cast' : 'atk';
+    f = k < 0.42 ? 0 : k < 0.74 ? 1 : 2;
+  } else if ((p.castT ?? 0) > 0) {
+    const k = 1 - (p.castT ?? 0) / 0.32;
+    act = p.discipline === 'tejedor' ? 'cast' : 'atk';
+    f = k < 0.35 ? 0 : k < 0.7 ? 1 : 2;
+  } else if (p.lastHitT > 0.16) {
+    act = 'hurt';
+  } else if (p.charging && p.chargeT > 0.2) {
+    act = p.discipline === 'tejedor' ? 'cast' : 'atk'; f = 0; // carga: arma alzada
+  } else if (p.moving) {
+    if ((p.sprintT ?? 0) > 0) { act = 'run'; f = Math.floor(p.anim * 12); }
+    else { act = 'walk'; f = Math.floor(p.anim * 9); }
+  } else {
+    const t = g.globalT;
+    f = (t % 4.1) < 0.14 ? 2 : (Math.floor(t / 1.15) % 2); // respira ~2,3 s y parpadea cada ~4 s
+  }
+  return heroFrame(look, dir, act, f);
+}
+
 function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: number) => number) {
   const ctx = g.ctx;
+  const heroFr = e.kind === 'player' && g.player ? heroFrameFor(g, g.player) : null; // R18
   const spr = getSpr(e.sprite);
-  const zoomW = spr[0].width, zoomH = spr[0].height;
+  const zoomW = heroFr ? HERO_W : spr[0].width, zoomH = heroFr ? HERO_H : spr[0].height;
 
   // parpadeo suave del jugador durante i-frames (esquiva/daño reciente)
   let spriteAlpha = 1;
@@ -518,7 +566,7 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
   const dx = sx(e.x) - (zoomW * ZOOM) / 2;
   const dy = sy(e.y + 4) - zoomH * ZOOM;
 
-  const frCv = poseCv ?? spr[idx];
+  const frCv = heroFr ? heroFr.cv : (poseCv ?? spr[idx]);
   ctx.globalAlpha = spriteAlpha;
   if (flip) {
     ctx.save();
@@ -530,6 +578,21 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
     ctx.drawImage(frCv, dx, dy, zoomW * ZOOM, zoomH * ZOOM);
   }
   ctx.globalAlpha = 1;
+  // R18: brillo del arma mejorada (+3 espada / +2 báculo) en la punta, aditivo
+  if (heroFr && heroFr.glow) {
+    const gx = flip ? dx + (zoomW - heroFr.tipX - 0.5) * ZOOM : dx + (heroFr.tipX + 0.5) * ZOOM;
+    const gy = dy + (heroFr.tipY + 0.5) * ZOOM;
+    const pul = 0.55 + 0.25 * Math.sin(g.globalT * 5);
+    const rr = (5 + (g.player?.weaponPlus ?? 0)) * ZOOM * 0.9;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const gr = ctx.createRadialGradient(gx, gy, 0, gx, gy, rr);
+    gr.addColorStop(0, hexA(heroFr.glow, 0.55 * pul));
+    gr.addColorStop(1, hexA(heroFr.glow, 0));
+    ctx.fillStyle = gr;
+    ctx.fillRect(gx - rr, gy - rr, rr * 2, rr * 2);
+    ctx.restore();
+  }
 
   // flash de daño
   const en = e as Enemy;
@@ -986,7 +1049,7 @@ function drawHud(g: Game) {
   if (mini) {
     const [stx, sty] = g.sanctuaryPos(g.mapId);
     const targets: MinimapTarget[] = [{ x: stx, y: sty, kind: 'altar' }];
-    for (const ex of g.map.exits) targets.push({ x: ex.x, y: ex.y, kind: 'salida' });
+    for (const ex of g.map.exits) if (!exitGate(g, ex)) targets.push({ x: ex.x, y: ex.y, kind: 'salida' }); // R18: las selladas no se marcan
     setMinimapTargets(targets);
     drawMinimapOverlay(ctx, mini, g);
     // R17 (UI): distintivo de época anclado bajo el minimapa
@@ -1008,6 +1071,27 @@ function drawHud(g: Game) {
     } else if (p.res < sk.cost) {
       text(g, `${sk.cost}`, x + sw / 2, y + 12, 12, COL.danger, 'center');
     }
+  }
+
+  // ---- R18: grimorio de dos páginas (TAB / rueda) ----
+  const pg = grimoirePage(p);
+  if (pg === 1 || grimoireHasSecondPage(p)) {
+    const tw = 40, tx = sx0 - tw - 10, ty = sy0 + 2;
+    const accent = pg === 1 ? '#a88af0' : COL.panelBorder;
+    panel(g, tx, ty, tw, sh - 4, accent, pg === 1 ? 'rgba(26,18,44,0.92)' : 'rgba(12,14,24,0.88)');
+    text(g, pg === 1 ? 'II' : 'I', tx + tw / 2, ty + 6, 12, pg === 1 ? '#d8c8ff' : COL.goldSoft, 'center', true);
+    text(g, 'TAB', tx + tw / 2, ty + 24, 12, COL.dim, 'center');
+    // mini-iconos de la otra página (lo que traerá TAB)
+    const oth = grimoireOtherIcons(p);
+    for (let i = 0; i < oth.length; i++) text(g, oth[i], sx0 + total + 14 + (i % 2) * 14, sy0 + 6 + Math.floor(i / 2) * 16, 11, 'rgba(200,190,230,0.55)', 'center');
+  }
+  if (g.grimoireFlashT > 0) {
+    const a = g.grimoireFlashT / 0.5;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = pg === 1 ? `rgba(168,138,240,${(0.35 * a).toFixed(3)})` : `rgba(255,220,140,${(0.3 * a).toFixed(3)})`;
+    ctx.fillRect(sx0 - 6, sy0 - 6 - (1 - a) * 6, total + 12, sh + 12);
+    ctx.restore();
   }
 
   // ---- misión (abajo-derecha) — oculta en el modo desafío: es contenido de campaña ----

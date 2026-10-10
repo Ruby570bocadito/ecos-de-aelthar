@@ -6,7 +6,8 @@ import { audio } from '@/game/audio';
 // R8-5 (EPIC 3.6) — retratos del creador: SOLO LECTURA del módulo actors.
 // buildHumanoid genera los 24 frames procedurales (16×18 por héroe) y PALS
 // trae las paletas hero_alba / hero_tejedor. Ningún archivo ajeno se modifica.
-import { buildHumanoid, type HumanPal } from '@/game/actors/humanoid';
+import { type HumanPal } from '@/game/actors/humanoid';
+import { heroFrame, HERO_W, HERO_H } from '@/game/actors/hero'; // R18: retrato con el Portador v4
 import { PALS } from '@/game/actors/palettes';
 import {
   Flame, Heart, Megaphone, MoveHorizontal, Music, Shield, Snowflake, Sunrise,
@@ -121,10 +122,9 @@ let HERO_FRAMES: Record<DiscId, HTMLCanvasElement[]> | null = null;
 function heroFrames(): Record<DiscId, HTMLCanvasElement[]> | null {
   if (HERO_FRAMES) return HERO_FRAMES;
   if (typeof document === 'undefined') return null;
-  HERO_FRAMES = {
-    alba: buildHumanoid(PALS.hero_alba),
-    tejedor: buildHumanoid(PALS.hero_tejedor),
-  };
+  // R18: [0] reposo · [1] respiración · [2] parpadeo (Portador v4, de frente)
+  const mk = (disc: DiscId) => [0, 1, 2].map(f => heroFrame({ disc, armor: 0, weapon: 0 }, 'down', 'idle', f).cv);
+  HERO_FRAMES = { alba: mk('alba'), tejedor: mk('tejedor') };
   return HERO_FRAMES;
 }
 
@@ -145,7 +145,7 @@ const CREATOR_CSS = `
 `;
 
 // Escala del retrato: sprite 16×18 → 96×108 px nítidos (rango pedido ×4-6).
-const PORTRAIT_SCALE = 6;
+const PORTRAIT_SCALE = 4; // R18: Portador v4 26×30 → 104×120 px
 
 /**
  * Retrato pixelado del héroe: canvas pequeño que estampa los frames de
@@ -168,14 +168,16 @@ const PortraitCanvas = memo(function PortraitCanvas({ disc, tint }: { disc: Disc
       ctx.clearRect(0, 0, cvs.width, cvs.height);
       ctx.drawImage(fr[i], 0, 0, cvs.width, cvs.height);
     };
-    paint(6); // idle de frente, ojos abiertos
-    let unblink = 0;
+    paint(0); // reposo de frente, ojos abiertos
+    let unblink = 0, breath = 0;
+    // respiración suave (R18) + parpadeo cada ~3,4 s
+    const ib = window.setInterval(() => { breath ^= 1; paint(breath); }, 1150);
     const iv = window.setInterval(() => {
-      paint(7); // parpadeo + bob de respiración (frames idle de humanoid.ts)
+      paint(2);
       window.clearTimeout(unblink);
-      unblink = window.setTimeout(() => paint(6), 170);
+      unblink = window.setTimeout(() => paint(breath), 170);
     }, 3400);
-    return () => { window.clearInterval(iv); window.clearTimeout(unblink); };
+    return () => { window.clearInterval(iv); window.clearInterval(ib); window.clearTimeout(unblink); };
   }, [disc]);
   return (
     <div
@@ -186,8 +188,8 @@ const PortraitCanvas = memo(function PortraitCanvas({ disc, tint }: { disc: Disc
       <div aria-hidden className="absolute bottom-3 h-2 w-16 rounded-full bg-black/70 blur-[2px]" />
       <canvas
         ref={ref}
-        width={16 * PORTRAIT_SCALE}
-        height={18 * PORTRAIT_SCALE}
+        width={HERO_W * PORTRAIT_SCALE}
+        height={HERO_H * PORTRAIT_SCALE}
         className="relative mb-1"
         style={{ imageRendering: 'pixelated' }}
         aria-hidden

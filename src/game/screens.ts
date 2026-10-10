@@ -280,6 +280,8 @@ function hoverCorners(g: Game, x: number, y: number, w: number, h: number, col =
 
 const CONTROLS: [string, string][] = [
   ['Moverse', 'W A S D'],
+  ['Correr (gasta Aguante)', 'Mantén Shift'],
+  ['Cambiar página del grimorio', 'TAB / rueda del ratón'],
   ['Ataque ligero (combo ×3)', 'Clic izquierdo (mantén: ataque cargado)'],
   ['Ataque cargado', 'Mantén clic izquierdo y suelta'],
   ['Esquivar (i-frames)', 'Espacio'],
@@ -287,6 +289,7 @@ const CONTROLS: [string, string][] = [
   ['Habilidades ×4', 'Teclas 1 – 4'],
   ['Interactuar / hablar', 'E'],
   ['Cambiar de época (con Eco)', 'Q'],
+  ['Lente del Eco: ver la otra época', 'Mantén R'],
   ['Beber poción', 'F'],
   ['Menú y mapa', 'Esc / M'],
   ['Esperar al alba (accesibilidad)', 'Shift + T'],
@@ -296,21 +299,21 @@ function drawControls(g: Game) {
   const ctx = g.ctx;
   ctx.fillStyle = '#0a0c1e';
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  const pw = 620, ph = 430;
+  const pw = 640, ph = 446; // R18: 14 controles (Shift · TAB · R)
   const px = (VIEW_W - pw) / 2, py = (VIEW_H - ph) / 2 - 10;
   panel(g, px, py, pw, ph);
-  textShadow(g, 'CONTROLES', VIEW_W / 2, py + 18, 16, COL.gold, '#000', 'center', true);
-  let y = py + 60;
+  textShadow(g, 'CONTROLES', VIEW_W / 2, py + 16, 16, COL.gold, '#000', 'center', true);
+  let y = py + 50;
   for (const [action, key] of CONTROLS) {
-    text(g, action, px + 28, y, 16, COL.text);
-    text(g, key, px + pw - 28, y, 16, COL.goldSoft, 'right');
-    y += 30;
+    text(g, action, px + 28, y, 15, COL.text);
+    text(g, key, px + pw - 28, y, 15, COL.goldSoft, 'right');
+    y += 23;
   }
   ctx.strokeStyle = COL.panelBorder;
-  ctx.strokeRect(px + 20, y + 6, pw - 40, 64);
-  text(g, 'Consejo del GDD: «la posición y el ritmo importan más que los números».', px + 28, y + 14, 15, COL.dim);
-  text(g, 'Esquiva con los i-frames de la voltereta y clava la parada perfecta (0,2 s)', px + 28, y + 32, 15, COL.dim);
-  text(g, 'para aturdir. Los enemigos grandes tienen barra de QUIEBRE.', px + 28, y + 50, 15, COL.dim);
+  ctx.strokeRect(px + 20, y + 4, pw - 40, 58);
+  text(g, 'Consejo del GDD: «la posición y el ritmo importan más que los números».', px + 28, y + 10, 14, COL.dim);
+  text(g, 'Esquiva con los i-frames de la voltereta y clava la parada perfecta (0,2 s)', px + 28, y + 26, 14, COL.dim);
+  text(g, 'para aturdir. Los enemigos grandes tienen barra de QUIEBRE.', px + 28, y + 42, 14, COL.dim);
   button(g, 'VOLVER (ESC)', VIEW_W / 2 - 90, py + ph + 12, 180, 36, () => g.setState('title'), 11);
   hoverCorners(g, VIEW_W / 2 - 90, py + ph + 12, 180, 36);
   if (g.keys.has('escape')) g.setState('title');

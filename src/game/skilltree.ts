@@ -74,7 +74,18 @@ const STORE_KEY = 'ecos-arbol';
 
 interface TreeSave {
   learned: string[];          // ids de SKILL_TREE aprendidos
-  equip: (string | null)[];   // por hueco 0..3: id de NEW_SKILLS equipado (null = base)
+  equip: (string | null)[];   // por hueco 0..3: id de NEW_SKILLS equipado (null = base) — página I
+  equipB?: (string | null)[]; // R18: página II del grimorio (TAB alterna)
+  page?: 0 | 1;               // R18: página activa
+}
+
+/** R18: equipaje de la página ACTIVA del grimorio. */
+function activeEquip(t: TreeSave): (string | null)[] {
+  if (t.page === 1) {
+    if (!t.equipB) t.equipB = [null, null, null, null];
+    return t.equipB;
+  }
+  return t.equip;
 }
 
 /** Cache por identidad `nombre|disciplina` (vive mientras la página viva). */
@@ -94,7 +105,7 @@ function getTree(p: Player): TreeSave {
   if (cached) {
     // R16: si otra identidad de la misma disciplina tocó la barra global
     // (otra partida en la misma página), se re-aplica el equipaje propio
-    if (appliedKey[p.discipline] !== k) { applyLoadout(p.discipline, cached.equip); appliedKey[p.discipline] = k; }
+    if (appliedKey[p.discipline] !== k) { applyLoadout(p.discipline, activeEquip(cached)); appliedKey[p.discipline] = k; }
     return cached;
   }
   const t: TreeSave = { learned: [], equip: [null, null, null, null] };
@@ -107,10 +118,16 @@ function getTree(p: Player): TreeSave {
       if (Array.isArray(raw.equip)) {
         for (let i = 0; i < 4; i++) t.equip[i] = typeof raw.equip[i] === 'string' ? (raw.equip[i] as string) : null;
       }
+      // R18: página II del grimorio + página activa (saves viejos: página I, II vacía)
+      t.equipB = [null, null, null, null];
+      if (Array.isArray(raw.equipB)) {
+        for (let i = 0; i < 4; i++) t.equipB[i] = typeof raw.equipB[i] === 'string' ? (raw.equipB[i] as string) : null;
+      }
+      t.page = raw.page === 1 ? 1 : 0;
     }
   } catch { /* sin localStorage (stub de smoke): árbol volátil en memoria */ }
   treeCache.set(k, t);
-  applyLoadout(p.discipline, t.equip);
+  applyLoadout(p.discipline, activeEquip(t));
   appliedKey[p.discipline] = k;
   return t;
 }
@@ -269,12 +286,13 @@ export function equipNewSkill(p: Player, skillId: string, slot: number): boolean
   const t = getTree(p);
   if (!t.learned.includes(node.id)) return false;
   if (node.disc && node.disc !== p.discipline) return false;
-  // una magia nueva solo ocupa un hueco a la vez
-  for (let j = 0; j < 4; j++) if (t.equip[j] === skillId) t.equip[j] = null;
-  t.equip[slot] = skillId;
+  // una magia nueva solo ocupa un hueco a la vez (en la página donde se equipa)
+  const eq = activeEquip(t);
+  for (let j = 0; j < 4; j++) if (eq[j] === skillId) eq[j] = null;
+  eq[slot] = skillId;
   // R16 (#14 QA): re-aplica TODA la barra — el hueco del que salió la magia
   // vuelve a su base también en memoria viva (antes seguía lanzándola).
-  applyLoadout(p.discipline, t.equip);
+  applyLoadout(p.discipline, eq);
   saveTree(p);
   audio.sfx('confirm');
   return true;
@@ -284,9 +302,55 @@ export function equipNewSkill(p: Player, skillId: string, slot: number): boolean
 export function unequipSlot(p: Player, slot: number): void {
   if (slot < 0 || slot > 3) return;
   const t = getTree(p);
-  t.equip[slot] = null;
+  activeEquip(t)[slot] = null;
   SKILLS[p.discipline][slot] = BASE_SKILLS[p.discipline][slot];
   saveTree(p);
+}
+
+// ============================================================
+// R18 · GRIMORIO DE DOS PÁGINAS — TAB alterna la barra 1-4 entre la
+// página I (por defecto, las habilidades base) y la página II (donde se
+// guardan las magias que aprendes en el árbol). Cada página tiene sus
+// propias recargas: cambiar de página NO reinicia ninguna (las de la
+// página oculta siguen corriendo en segundo plano).
+// ============================================================
+
+const hiddenCds = new WeakMap<Player, number[]>();
+
+export function grimoirePage(p: Player): 0 | 1 {
+  return getTree(p).page === 1 ? 1 : 0;
+}
+
+/** ¿La página II tiene alguna magia aprendida? */
+export function grimoireHasSecondPage(p: Player): boolean {
+  const t = getTree(p);
+  return !!t.equipB && t.equipB.some(id => !!id);
+}
+
+/** Nombres de la barra de la página oculta (para el HUD). */
+export function grimoireOtherIcons(p: Player): string[] {
+  const t = getTree(p);
+  const other = t.page === 1 ? t.equip : (t.equipB ?? [null, null, null, null]);
+  return other.map((id, s) => (id ? findNewDef(id, p.discipline) : null)?.icon ?? BASE_SKILLS[p.discipline][s].icon);
+}
+
+/** Cambia de página: devuelve la nueva página. Las recargas se intercambian. */
+export function switchGrimoirePage(p: Player): 0 | 1 {
+  const t = getTree(p);
+  t.page = t.page === 1 ? 0 : 1;
+  applyLoadout(p.discipline, activeEquip(t));
+  const other = hiddenCds.get(p) ?? [0, 0, 0, 0];
+  hiddenCds.set(p, p.cds.slice());
+  for (let i = 0; i < p.cds.length; i++) p.cds[i] = other[i] ?? 0;
+  saveTree(p);
+  return t.page;
+}
+
+/** Las recargas de la página oculta también corren (1×/frame desde update). */
+export function tickGrimoire(p: Player, dt: number): void {
+  const h = hiddenCds.get(p);
+  if (!h) return;
+  for (let i = 0; i < h.length; i++) if (h[i] > 0) h[i] = Math.max(0, h[i] - dt);
 }
 
 // ============================================================
@@ -1142,7 +1206,7 @@ export function drawSkillTree(g: Game): void {
     const discLocked = selNode.disc !== undefined && selNode.disc !== p.discipline;
     const parentOk = !selNode.parent || learned.has(selNode.parent);
     if (isLearned && selNode.kind === 'activa' && selNode.grants) {
-      text(g, 'Equipar en hueco:', btnX, fy + 10, 13, COL.dim);
+      text(g, `Equipar en hueco (página ${tree.page === 1 ? 'II' : 'I'} · TAB cambia):`, btnX, fy + 10, 13, COL.dim);
       for (let s = 0; s < 4; s++) {
         const occ = SKILLS[p.discipline][s];
         const isMine = occ ? NEW_SKILL_IDS.has(occ.id) : false;
@@ -1155,9 +1219,10 @@ export function drawSkillTree(g: Game): void {
         text(g, `${s + 1}`, bx2 + 3, fy + 29, 9, COL.gold, 'left', true);
         if (occ) text(g, occ.icon, bx2 + w2 / 2 + 2, fy + 31, 12, isMine ? COL.goldSoft : '#8a8a9a', 'center');
       }
-      const equippedHere = tree.equip.some(id => id === selNode.grants);
+      const eqNow = activeEquip(tree);
+      const equippedHere = eqNow.some(id => id === selNode.grants);
       if (equippedHere) {
-        const slot = tree.equip.findIndex(id => id === selNode.grants);
+        const slot = eqNow.findIndex(id => id === selNode.grants);
         const hov = addHit(g, btnX, fy + 60, 150, 22, () => { unequipSlot(p, slot); });
         panel(g, btnX, fy + 60, 150, 22, hov ? COL.danger : COL.panelBorder);
         text(g, `Quitar del hueco ${slot + 1}`, btnX + 75, fy + 64, 12, hov ? COL.danger : COL.dim, 'center');
@@ -1181,7 +1246,7 @@ export function drawSkillTree(g: Game): void {
       const grants = selNode.grants;
       button(g, `Aprender (−${selNode.cost} ◆)`, btnX, fy + 12, 170, 28, () => { learnNode(g, p, selNode); }, 10);
       if (selNode.kind === 'activa' && grants) {
-        text(g, 'Se equipará en el hueco 3 (puedes moverla después)', btnX, fy + 46, 12, COL.dim);
+        text(g, 'Irá a la página II del grimorio (TAB en juego para usarla)', btnX, fy + 46, 12, COL.dim);
       }
     }
   }
@@ -1204,9 +1269,16 @@ function learnNode(g: Game, p: Player, node: TreeNodeDef): void {
   audio.sfx('levelup');
   g.burst(p.x, p.y - 6, '#ffe86a', 18, 80);
   if (node.kind === 'activa' && node.grants) {
-    // auto-equipaje: hueco 3 (índice 2); movible desde el árbol
-    equipNewSkill(p, node.grants, 2);
-    g.toast(`${node.name}: desbloqueada y equipada en el hueco 3`, '#ffe86a');
+    // R18: auto-equipaje en la PÁGINA II del grimorio (primer hueco libre):
+    // la página I conserva tu kit base y TAB alterna entre ambas
+    if (!t.equipB) t.equipB = [null, null, null, null];
+    let slot = t.equipB.findIndex(id => !id);
+    if (slot < 0) slot = 2;
+    for (let j = 0; j < 4; j++) if (t.equipB[j] === node.grants) t.equipB[j] = null;
+    t.equipB[slot] = node.grants;
+    if (t.page === 1) applyLoadout(p.discipline, t.equipB);
+    saveTree(p);
+    g.toast(`${node.name}: en la página II del grimorio, hueco ${slot + 1} (TAB para cambiar de página)`, '#ffe86a');
   } else {
     g.toast(`${node.name} aprendida`, '#ffe86a');
   }

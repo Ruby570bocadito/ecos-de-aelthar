@@ -34,7 +34,7 @@ import { drawGame } from './render';
 import { buildMinimapV2 } from './world/minimap';
 import { handleCustomAction, recordDialogueTone } from './hooks';
 import { challengeTick, onChallengeDeath, type ChallengeRun } from './challenge';
-import { skillTick, skillCdMult, setSkillCdDecay, skillDamageMult, resetTreeForNewGame } from './skilltree';
+import { skillTick, skillCdMult, setSkillCdDecay, skillDamageMult, resetTreeForNewGame, switchGrimoirePage, grimoireHasSecondPage, grimoirePage } from './skilltree';
 import { balanceTick, enemyStatMult, critChance, CRIT_MULT } from './balance';
 import { worldTick, worldInteract } from './worldlife';
 import { timeTick, beginEpochShift } from './timeskip';
@@ -53,6 +53,7 @@ import { lorePropsForMap, loreTextFor, noteBellRing } from './world/props'; // R
 import { resetCinematic } from './cinematic'; // R15: prólogo animado saltable
 import { sanitizeSaveData } from './savefix'; // R16: lectura tolerante del guardado
 import { spawnVfx, vfxTick, resetVfx } from './actors/vfx'; // R16: VFX de combate y magia
+import { cutsceneActive, advanceCutscene, skipCutscene, resetCutscenes } from './cutscene'; // R18: cinemáticas en el motor
 import { initR16Sprites } from './actors/enemies_r16';       // R16: sprites de centinela/raíz/ahogado/Madre
 import { placeR16Spawns } from './enemies_r16';               // R16: spawns de los enemigos nuevos
 import { causalInteract, causalTick } from './ecocausal';     // R17: semillas del Eco (pasado → presente)
@@ -275,6 +276,8 @@ export class Game {
   private raf = 0;
   private lastTs = 0;
   private running = false;
+  /** R18: ¿bucle real en marcha? (los hitos de historia solo se disparan jugando de verdad, no en los smokes) */
+  isRunning(): boolean { return this.running; }
   loopError: string | null = null;
 
   // R6-V10: histéresis propia del tope de vista (perf.ts NO exporta cuánto
@@ -506,6 +509,7 @@ export class Game {
     resetBossFx();
     resetKillFx(); // Ronda 3: FX de muerte en curso, fuera
     resetVfx();    // R16
+    resetCutscenes(); // R18
     this.openedChests = new Set();
     this.takenEchoes = new Set();
     this.deadGolds = [];
@@ -2058,6 +2062,7 @@ export class Game {
     this.canvas.addEventListener('mousemove', this.onMouseMove);
     this.canvas.addEventListener('mousedown', this.onMouseDown);
     this.canvas.addEventListener('mouseup', this.onMouseUp);
+    this.canvas.addEventListener('wheel', this.onWheel, { passive: true }); // R18: rueda = página del grimorio
     this.canvas.addEventListener('contextmenu', e => e.preventDefault());
     // teclas pegadas tras alt-tab / cambio de ventana: soltar todo
     window.addEventListener('blur', this.onLoseFocus);
@@ -2134,6 +2139,7 @@ export class Game {
     this.canvas.removeEventListener('mousemove', this.onMouseMove);
     this.canvas.removeEventListener('mousedown', this.onMouseDown);
     this.canvas.removeEventListener('mouseup', this.onMouseUp);
+    this.canvas.removeEventListener('wheel', this.onWheel);
     this.stop();
   }
 
@@ -2142,7 +2148,7 @@ export class Game {
     // no interceptar teclas cuando se escribe en un input DOM (nombre del Portador)
     const t = e.target as HTMLElement | null;
     const isDomInput = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
-    if (!isDomInput && [' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
+    if (!isDomInput && [' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'tab'].includes(k)) e.preventDefault(); // R18: TAB = grimorio
     if (e.repeat) return;
     this.keys.add(k);
     audio.resume();
@@ -2168,8 +2174,12 @@ export class Game {
       }
       else if (k === 'arrowup' || k === 'w') { if (this.dlgNode?.options) { this.dlgSel = (this.dlgSel + this.dlgNode.options.length - 1) % this.dlgNode.options.length; audio.sfx('blip'); } }
       else if (k === 'arrowdown' || k === 's') { if (this.dlgNode?.options) { this.dlgSel = (this.dlgSel + 1) % this.dlgNode.options.length; audio.sfx('blip'); } }
+    } else if (this.state === 'play' && cutsceneActive()) {
+      // R18: escena en curso — E/Espacio/Enter avanzan, ESC la salta
+      if (k === 'escape') skipCutscene(this);
+      else if (k === 'e' || k === ' ' || k === 'enter') advanceCutscene();
     } else if (this.state === 'play') {
-      if (k === ' ' && this.player && this.player.rollT <= 0 && this.player.attackT <= 0 && this.player.sta >= 20) {
+      if (k === ' ' && this.player && this.player.rollT <= 0 && this.player.attackT <= 0.14 && this.player.sta >= 20) { // R18: cancela la recuperación
         this.rollQueued = true; // 1 pulsación = 1 voltereta (no en cadena)
       }
       if (k === 'e') this.tryInteract();
@@ -2197,16 +2207,26 @@ export class Game {
         }
       }
       else if (['1', '2', '3', '4'].includes(k)) this.useSkill(parseInt(k, 10) - 1);
+      else if (k === 'tab') this.switchGrimoire(); // R18: página del grimorio
       else if (k === 'k') { this.setState('skills'); audio.sfx('uiOpen'); }
     } else if (this.state === 'pause') {
       if (k === 'escape' || k === 'm') this.setState('play');
     } else if (this.state === 'skills') {
       if (k === 'escape' || k === 'k' || k === 'm') { this.setState('play'); audio.sfx('uiOpen'); }
+      else if (k === 'tab' && this.player) { switchGrimoirePage(this.player); audio.sfx('blip'); } // R18: editar la otra página
     } else if (this.state === 'dead') {
       if (k === 'e' || k === 'enter') this.respawn();
     } else if (this.state === 'end') {
       if (k === 'enter' || k === 'e') this.setState('title');
     }
+  };
+
+  private onWheel = (e: WheelEvent) => {
+    if (!this.running || this.state !== 'play' || Math.abs(e.deltaY) < 4) return;
+    const now = performance.now();
+    if (now < this.wheelCd) return;      // una página por gesto de rueda
+    this.wheelCd = now + 260;
+    this.switchGrimoire();
   };
 
   private onKeyUp = (e: KeyboardEvent) => {
@@ -2252,6 +2272,7 @@ export class Game {
     if (this.state === 'dialogue') this.advanceDialogue();
     else if (this.state === 'intro') this.advanceIntro(); // R15: el botón SALTAR vive en uiHit (arriba) y ya cortó con return
     else if (this.state === 'end') this.setState('title');
+    else if (this.state === 'play' && cutsceneActive()) advanceCutscene(); // R18
     else if (this.state === 'play') this.startAttack();
   };
 
@@ -2378,6 +2399,24 @@ export class Game {
     else p.dir = dy > 0 ? 'down' : 'up';
   }
 
+  /** R18: alterna la página del grimorio (TAB / rueda del ratón). */
+  grimoireFlashT = 0;
+  private wheelCd = 0;
+  switchGrimoire() {
+    const p = this.player;
+    if (!p) return;
+    if (grimoirePage(p) === 0 && !grimoireHasSecondPage(p)) {
+      this.toast('Grimorio: la página II está en blanco — aprende magias en el árbol (K)', '#9aa0b8');
+      audio.sfx('error');
+      return;
+    }
+    const pg = switchGrimoirePage(p);
+    this.grimoireFlashT = 0.5;
+    spawnVfx('rune', p.x, p.y, { size: 0.7, life: 0.45, el: pg === 1 ? 'rayo' : 'sagrado' });
+    this.floatAt(p.x, p.y - 34, pg === 1 ? 'Grimorio · página II' : 'Grimorio · página I', pg === 1 ? '#c8b0ff' : '#ffe9a0', 8);
+    audio.sfx('blip');
+  }
+
   useSkill(i: number) {
     if (!this.player) return;
     const p = this.player;
@@ -2394,6 +2433,7 @@ export class Game {
     // aplica AL FIJAR (skillCdMult); el decaimiento extra por tick está OFF
     // (setSkillCdDecay(false)) para que NUNCA se descuente dos veces.
     p.cds[i] = sk.cd * skillCdMult(p);
+    p.castT = 0.32; // R18: pose de lanzar del Portador v4
     this.castSkill(sk.id, sk.element);
   }
 

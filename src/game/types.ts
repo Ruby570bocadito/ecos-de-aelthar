@@ -198,6 +198,8 @@ export interface Player extends Entity {
   buffT?: number;               // Grito de Guerra activo
   rollT: number;
   lastHitT: number;
+  castT?: number;               // R18: >0 mientras lanza una habilidad (pose de lanzar)
+  sprintT?: number;             // R18: >0 mientras esprinta (pose de carrera)
   hasEcho: boolean;             // cambio de época desbloqueado
   kills: number;
   deaths: number;
