@@ -72,7 +72,8 @@ const KEY_ITEM_FLAGS: [string, string][] = [
 const NUM_ES = ['cero', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete'];
 
 // R8-4 — pie del título: una sola línea discreta con la versión
-const TITLE_FOOTER = 'v0.7.0 · Ecos de Aelthar'; // R16: el filo y la nota · mareas y raíces
+const GAME_VERSION = 'v0.8.0'; // R17: una sola fuente para título y pausa
+const TITLE_FOOTER = `${GAME_VERSION} · Ecos de Aelthar`; // R17: semillas del Eco · lente · equilibrio por zona
 
 export function drawScreens(g: Game) {
   installLayerGuard(g); // R8-4: capas de pausa — Esc cierra SOLO la capa activa
@@ -195,7 +196,7 @@ function drawTitle(g: Game) {
   ctx.fillStyle = COL.goldSoft;
   ctx.fillRect(VIEW_W / 2 - 150, 176, 300, 1);
   ctx.globalAlpha = 1;
-  text(g, 'RPG 2D de acción y exploración · Demo jugable · Acto II incluido', VIEW_W / 2, 186, 17, COL.dim, 'center');
+  text(g, 'RPG 2D de acción y exploración · Actos I–V · Pasado y presente', VIEW_W / 2, 186, 17, COL.dim, 'center');
 
   // botones (con brillo de hover). 16-c: menú ampliado — Estadísticas y
   // Logros en una rejilla secundaria de 2 columnas (mismo lenguaje visual).
@@ -496,7 +497,7 @@ function drawPauseHub(g: Game, px: number, py: number, pw: number, ph: number) {
     if (i === 1 && p.points > 0) badge(g, rx + rw - 28, y + 11, p.points); // 3.5
   }
   text(g, '↑↓ elegir · E / clic confirmar · Esc reanudar', px + 24, py + ph - 24, 13, COL.dim);
-  text(g, 'v0.5.9', px + pw - 24, py + ph - 24, 13, 'rgba(122,128,148,0.8)', 'right');
+  text(g, GAME_VERSION, px + pw - 24, py + ph - 24, 13, 'rgba(122,128,148,0.8)', 'right');
 }
 
 // ---------------- Pausa · capa de sección ----------------
@@ -593,14 +594,15 @@ function drawSecEstado(g: Game, px: number, py: number, pw: number, cx: number, 
   const rep = p.repFacciones ?? {};
   FACS.forEach(([id, label], i) => {
     const fx = cx + (i % 2) * 336;
-    const fy = vy0 + 50 + Math.floor(i / 2) * 24;
+    const fy = vy0 + 46 + Math.floor(i / 2) * 20; // R17 (UI): filas más juntas → sitio para la armadura
     const v = rep[id] ?? 0;
     text(g, label, fx, fy, 15, COL.text);
     const vc = v > 0 ? '#8ef0b0' : v < 0 ? '#ff7060' : COL.dim;
     text(g, `${v > 0 ? '+' : ''}${v}`, fx + 300, fy, 15, vc, 'right');
   });
-  // 14-b: armadura activa (fila compacta, contrato armor.ts)
-  drawArmorRow(g, cx, py + 438, pw - 56);
+  // 14-b: armadura activa (fila compacta, contrato armor.ts). R17 (UI): se ancla
+  // bajo la última fila de facciones (antes iba fija en py+438 y la pisaba)
+  drawArmorRow(g, cx, vy0 + 46 + Math.ceil(FACS.length / 2) * 20 + 4, pw - 56);
 }
 
 // ---------------- Sección EQUIPO (3.3 · equipado intuitivo) ----------------
@@ -643,7 +645,7 @@ function drawSecEquipo(g: Game, px: number, py: number, pw: number, cx: number, 
   text(g, p.weaponPlus >= 5
     ? 'Mejora máxima: +5 (Toln: «es lo que da de sí esta forja»)'
     : `Siguiente: +${p.weaponPlus + 1} → +2,5 daño melé · ${30 + p.weaponPlus * 25} coronas · forja de Toln`,
-    cx + 130, cy + 128, 14, p.weaponPlus >= 5 ? COL.dim : '#ffe9a0');
+    cx + 176, cy + 128, 14, p.weaponPlus >= 5 ? COL.dim : '#ffe9a0'); // R17 (UI): tras el título (14 glifos × 11 px)
 
   // corazas del inventario con stats COMPARADAS (verde/rojo) — 3.3
   text(g, 'CORAZAS', cx, cy + 152, 11, COL.gold, 'left', true);

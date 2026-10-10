@@ -55,6 +55,7 @@ import { sanitizeSaveData } from './savefix'; // R16: lectura tolerante del guar
 import { spawnVfx, vfxTick, resetVfx } from './actors/vfx'; // R16: VFX de combate y magia
 import { initR16Sprites } from './actors/enemies_r16';       // R16: sprites de centinela/raíz/ahogado/Madre
 import { placeR16Spawns } from './enemies_r16';               // R16: spawns de los enemigos nuevos
+import { causalInteract, causalTick } from './ecocausal';     // R17: semillas del Eco (pasado → presente)
 
 // R10-6 · siembra de props de lore (placas/restos/altares/carteles/mojones):
 // determinista, nunca sobre sólidos. FUNCIÓN con guard — NO a nivel de módulo:
@@ -339,6 +340,13 @@ export class Game {
     if (!Number.isFinite(dt) || dt < 0) dt = 0;
     updateGame(this, dt);
     if (this.state === 'play') vfxTick(dt); // R16: edad de los VFX (congelados en pausa/diálogo)
+    if (this.state === 'play' && !this.challengeRun) causalTick(this); // R17: el mundo recuerda lo sembrado
+    // R17 (UI): la pista de controles del inicio se retira sola tras unos segundos
+    // caminando (antes el flag hintMove no se activaba nunca y tapaba la barra de habilidades)
+    if (this.state === 'play' && this.player?.moving && !this.flags.hintMove) {
+      const t = (typeof this.flags.hintMoveT === 'number' ? this.flags.hintMoveT : 0) + dt;
+      if (t > 4) { this.flags.hintMove = true; delete this.flags.hintMoveT; } else this.flags.hintMoveT = t;
+    }
     // Watchers del Acto II que viven en el motor (O(1) por frame; update.ts es
     // de otro agente). q7 paso 0→1: la Sirena entra en combate. Elección
     // documentada: watcher por ACTIVACIÓN DEL JEFE (bossActive al acercarte al
@@ -759,6 +767,11 @@ export class Game {
     this.spellCastFx = []; this.spellImpactFx = []; // R9-4: pools de hechizo
     resetVfx(); // R16
     this.bossRef = null; this.bossActive = false;
+    // R17: la intro del jefe es POR MAPA/encuentro — antes `seen` no se limpiaba
+    // nunca (solo el primer jefe de la sesión tenía cinemática) y una intro en
+    // curso seguía pintándose sobre el mapa nuevo tras cruzar una salida
+    resetBossIntro();
+    this.bossBannerT = 0;
     audio.setCombat(false);
     // ==== 17-d (qa-mundo): la arena (modo desafío, 12-a) NO participa de la
     // campaña. Antes loadMap la marcaba en visitedMaps y el menú del Santuario
@@ -1029,8 +1042,10 @@ export class Game {
 
   makeEnemy(type: Enemy['etype'], x: number, y: number, patrol: number, zone?: string): Enemy {
     const d = ENEMY_DEFS[type];
-    // balanceador de dificultad (12-c): multiplica hp del spawn (neutro en desafío)
-    const bm = enemyStatMult(this);
+    // balanceador de dificultad (12-c): multiplica hp del spawn (neutro en desafío).
+    // R17: se pasa el TIPO — sin él los jefes recibían también la escala de zona
+    // (Heraldo en la Ciudadela ×3,4 de vida) en vez de su vida de diseño
+    const bm = enemyStatMult(this, type);
     const hp = Math.max(1, Math.round(d.hp * bm.hp));
     return {
       kind: 'enemy', etype: type, x, y,
@@ -1330,6 +1345,7 @@ export class Game {
         return;
       }
       if (!beginEpochShift(this)) return; // mismos vetos de momento hostil (13-c)
+      this.flags.usedEpoch = true; // R17 (UI): retira la pista «Pulsa Q»
       const toPresente = this.epoch === 'aun';
       this.epoch = toPresente ? 'presente' : 'aun';
       this.epochFx = 0.8;
@@ -1351,6 +1367,7 @@ export class Game {
     }
     // inmersión temporal (13-c): transición y posible veto (momento hostil)
     if (!beginEpochShift(this)) return;
+    this.flags.usedEpoch = true; // R17 (UI): retira la pista «Pulsa Q»
     this.epoch = this.epoch === 'presente' ? 'pasado' : 'presente';
     this.epochFx = 0.8;
     // ==== 16-c (logros-stats): solo cuenta el viaje REAL (tras el veto de 13-c) ====
@@ -1417,6 +1434,8 @@ export class Game {
       if (this.takenEchoes.has(ec.id)) continue;
       consider(ec.x * TILE + 8, ec.y * TILE + 8, 'echo', 'Escuchar eco menor', () => this.takeEchoMinor(ec.id, ec.title, ec.text), 26);
     }
+    // R17: parcelas de las Semillas del Eco (plantar en el pasado / cosechar en el presente)
+    if (!this.challengeRun) causalInteract(this, consider);
     return best;
   }
 

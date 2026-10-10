@@ -259,6 +259,7 @@ export function agresionPorNivel(nivel: number): number {
  *  fases y HP de diseño; patrones intactos). heraldo incluido por 16-a. */
 const TIPOS_JEFE: ReadonlySet<string> = new Set([
   'guardian', 'sirena', 'golem', 'vult', 'coro', 'heraldo', 'madre', // R16
+  'sepulcro', // R17: mini-jefe con vida de diseño (la zona 5 lo dejaba casi como el Guardián)
 ]);
 
 // ---------------- estado persistido ----------------
@@ -534,13 +535,39 @@ export function balanceTick(g: Game, dt: number): void {
  *  El funnel de daño (damagePlayer) no conoce al atacante: ahí la curva se
  *  aplica a todo, igual que YA hacía el multiplicador de mundo 12-c. La XP
  *  NO sube con la curva (más riesgo no regala más progresión). */
+// ---------------- R17 · ESCALADO POR ZONA ----------------
+// Diagnóstico (scripts de R17): el daño del Portador crece ×3,6 del Nv 1 al
+// Nv 9 y los enemigos normales solo +15 % (agresión por nivel) → desde el
+// Acto II todo moría de 1-2 golpes y los enemigos del Acto II (neumo 30,
+// arpía 32) eran MÁS débiles que los del Acto I (esqueleto 46). Cada mapa
+// tiene ahora un NIVEL DE ZONA (el recomendado para llegar) y los enemigos
+// normales escalan con él. Lunaris (tutorial) queda exactamente igual.
+//   vida ×(1 + 0.22·(z−1)) · daño ×(1 + 0.07·(z−1)) · XP ×(1 + 0.10·(z−1))
+// Jefes: vida de DISEÑO (tabla R17 en data.ts); su daño sí recibe la zona.
+export const ZONA_NIVEL: Readonly<Record<string, number>> = {
+  lunaris: 1, bosque: 3, cripta: 5, costa: 6, aldea: 7, cumbres: 8,
+  cuna: 11, ciudadela: 12, biblioteca: 12, nombres: 12, archivo: 12, antecamara: 12,
+};
+
+/** Nivel de zona del mapa (1 si no está en la tabla: interiores, arena…). */
+export function zonaNivel(mapId: string): number {
+  return ZONA_NIVEL[mapId] ?? 1;
+}
+
+/** Multiplicadores de zona (los usa enemyStatMult; exportado para smokes/HUD). */
+export function zonaMult(mapId: string): { hp: number; dmg: number; xp: number } {
+  const z = zonaNivel(mapId) - 1;
+  return { hp: 1 + 0.22 * z, dmg: 1 + 0.07 * z, xp: 1 + 0.10 * z };
+}
+
 export function enemyStatMult(g: Game, etype?: string): { hp: number; dmg: number; xp: number } {
   if (!g.player) return { hp: 1, dmg: 1, xp: 1 };     // sin partida activa
   if (g.challengeRun) return { hp: 1, dmg: 1, xp: 1 };// desafío: escala 12-a
   const base = multFor(ensureLoaded().level);
+  const zona = zonaMult(g.mapId);                      // R17
   if (etype && TIPOS_JEFE.has(etype)) return { ...base }; // jefe: HP de diseño
   const agresion = agresionPorNivel(g.player.level);      // enemigos normales
-  return { hp: base.hp * agresion, dmg: base.dmg * agresion, xp: base.xp };
+  return { hp: base.hp * agresion * zona.hp, dmg: base.dmg * agresion * zona.dmg, xp: base.xp * zona.xp };
 }
 
 /** R8 4.2 — multiplicador del RANGO DE AGGRO para el enganche de update.ts

@@ -569,6 +569,9 @@ function getMarkerSprites(): MarkerSprites {
  * por la misma vía de setMinimapTargets) y objetivos de misión registrados.
  * Presupuesto por frame: ~1 fillRect (fondo del mapa) y cero canvas nuevos.
  */
+/** R17 (UI): marco del último minimapa dibujado (el HUD ancla debajo el distintivo de época). */
+export const minimapRect = { x: 0, y: 0, w: 0, h: 0 };
+
 export function drawMinimapOverlay(
   ctx: CanvasRenderingContext2D, mini: HTMLCanvasElement, g: Game,
 ): void {
@@ -590,6 +593,7 @@ export function drawMinimapOverlay(
   const fw = dw + 4, fh = plateH + dh + 4;
   const fx = VIEW_W - fw - 12, fy = 12;
   const mapX = fx + 2, mapY = fy + 2 + plateH;
+  minimapRect.x = fx; minimapRect.y = fy; minimapRect.w = fw; minimapRect.h = fh;
 
   // ---- marco pergamino/bronce v4: pre-renderizado y cacheado por
   //      (tamaño+época+mapa) → por frame es UN drawImage; la placa v3

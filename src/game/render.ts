@@ -33,7 +33,7 @@ import { cryptDoorOpen } from './update'; // R10-3: estado de la puerta del puzz
 import { drawPropV2 } from './world/props';
 import { drawTreeCanopy } from './world/trees';
 import { setVillageNight, drawVillageWindowsNight } from './world/village';
-import { drawMinimapOverlay, setMinimapTargets } from './world/minimap';
+import { drawMinimapOverlay, setMinimapTargets, minimapRect } from './world/minimap';
 import type { MinimapTarget } from './world/minimap';
 // Ronda 2 · Terror: overlay de pavor, presentación del jefe, FX de fases y frames nuevos
 import { drawHorrorOverlay, getHorrorShake } from './actors/horror';
@@ -50,6 +50,7 @@ import { drawToastsV2, drawMapBannerV2 } from './actors/toasts';
 import { drawHudFx } from './actors/hudfx';
 import { drawVfxWorld, drawVfxGlow, drawWarcryAura } from './actors/vfx'; // R16: VFX de combate y magia
 import { raizFrame, madreFrame, centinelaFrame, ahogadoFrame, drawR16Fx } from './enemies_r16'; // R16
+import { drawCausal, drawEchoLens, drawEpochWipe, drawEpochAtmosphere, progresoSemillas, lensDisponible, todasLasParcelas } from './ecocausal'; // R17: semillas del Eco + lente + transición + atmósfera
 
 const WORLD_FILTER: Record<string, string> = {
   presente: 'saturate(0.74) contrast(0.98)',
@@ -198,6 +199,14 @@ function drawWorld(g: Game) {
     // agua viva: brillos especulares sobre los tiles '~' visibles (R3-c)
     drawWaterGlints(g, sx, sy);
 
+    // R17 · LENTE DEL ECO (mantener R): el suelo de la otra época en un
+    // círculo alrededor del Portador, bajo objetos y entidades
+    drawEchoLens(octx, g, sx, sy, ZOOM, ground,
+      ground === g.groundCanvas ? g.groundPastCanvas : g.groundCanvas, camX, camY);
+    // R17: barrido de época — el tiempo nuevo se expande desde el Portador
+    drawEpochWipe(octx, g, sx, sy, ZOOM, ground,
+      ground === g.groundCanvas ? g.groundPastCanvas : g.groundCanvas, camX, camY);
+
     // oro perdido
     for (const dgl of g.deadGolds) {
       if (dgl.map !== g.mapId) continue;
@@ -217,6 +226,8 @@ function drawWorld(g: Game) {
 
     // props (v2: obeliscos, forja, fragmentos, altares, carteles, portones)
     drawProps(g, sx, sy);
+    // R17: parcelas de las Semillas del Eco (tierra fértil / brote / Árbol del Eco)
+    drawCausal(octx, g, sx, sy, ZOOM);
 
     // aura de suelo, esquirlas orbitando y grietas del Guardián (Ronda 2):
     // bajo las entidades, fundidos con el mundo en el pase agrupado
@@ -312,6 +323,9 @@ function drawWorld(g: Game) {
     drawVillageWindowsNight(ctx, camX, camY, g.mapId, g.globalT,
       (tx, ty) => tileAt(g.map, g.rows, tx, ty, g.epoch));
   }
+
+  // R17: aire de cada época (pasado cálido y dorado / presente frío)
+  if (g.state === 'play' || g.state === 'dialogue') drawEpochAtmosphere(ctx, g);
 
   // capa de cielo: estrellas, luna, antorchas (sobre la iluminación)
   drawAmbient(g, 'sky');
@@ -962,11 +976,9 @@ function drawHud(g: Game) {
   // xp
   bar(g, 14, 64, 210, 5, p.xp / g.xpNext(p.level), COL.xp, '#241a30');
   text(g, `XP`, 224, 62, 12, COL.dim, 'right');
-  // pociones y oro
-  text(g, `${p.gold}`, 242, 10, 15, COL.gold);
-  text(g, 'coronas', 242, 26, 12, COL.dim);
-  text(g, `${p.potions}× poción (F)`, 242, 42, 13, p.potions > 0 ? '#f0a0b8' : COL.dim);
-  if (p.weaponPlus > 0) text(g, `arma +${p.weaponPlus}`, 242, 58, 13, '#d8e0f0');
+  // R17 (UI): fila de recursos con iconos bajo el panel (antes: texto suelto
+  // flotando sobre el mundo a la derecha del panel, ilegible sobre la nieve)
+  drawResourceRow(g, 8, 86, 224);
 
   // ---- minimapa v3 (Ronda 4): santuario + salidas como objetivos fijos ----
   // R13: canvas alternativo = época no base del mapa
@@ -977,6 +989,8 @@ function drawHud(g: Game) {
     for (const ex of g.map.exits) targets.push({ x: ex.x, y: ex.y, kind: 'salida' });
     setMinimapTargets(targets);
     drawMinimapOverlay(ctx, mini, g);
+    // R17 (UI): distintivo de época anclado bajo el minimapa
+    if (!g.challengeRun) drawEpochBadge(g, minimapRect.x, minimapRect.y + minimapRect.h + 6, minimapRect.w);
   }
 
   // ---- habilidades v2 (Ronda 3): icono con barrido de cooldown y marco recortado ----
@@ -1023,16 +1037,116 @@ function drawHud(g: Game) {
     if (p.hasEcho && !g.flags.usedEpoch && g.map.epochDiffs.length > 0) hint = g.map.baseEpoch === 'aun' ? 'Pulsa Q para alternar entre el aún y el presente' : 'Pulsa Q para alternar entre el presente y el pasado';
     else if (g.questIdx === 0 && !g.flags.hintMove) hint = 'WASD para moverte · clic izq: atacar · Espacio: esquivar · clic der: parar · E: interactuar';
     if (hint) {
-      const lines = wrapText(hint, 60);
-      ctx.fillStyle = 'rgba(8,10,18,0.7)';
-      ctx.fillRect(0, VIEW_H - 24 - lines.length * 14, VIEW_W, lines.length * 14 + 10);
-      lines.forEach((l, i) => text(g, l, VIEW_W / 2, VIEW_H - 20 - (lines.length - 1 - i) * 14, 14, '#c8d0e0', 'center'));
+      // R17 (UI): cápsula centrada ENCIMA de la barra de habilidades (antes era
+      // una franja a todo lo ancho sobre el borde inferior que tapaba los iconos)
+      const lines = wrapText(hint, 44);
+      let maxLen = 0;
+      for (const l of lines) if (l.length > maxLen) maxLen = l.length;
+      const hw = Math.min(VIEW_W - 40, maxLen * 7 + 28);
+      const hh = lines.length * 14 + 10;
+      let hx = Math.round((VIEW_W - hw) / 2);
+      // con avisos apilados a la izquierda (toasts: x 12..372) se aparta a su
+      // derecha, sin invadir el panel de misión (VIEW_W − 226)
+      if (g.toasts.length > 0) hx = Math.max(hx, Math.min(384, VIEW_W - 236 - hw));
+      const hy = sy0 - hh - 10;
+      const pulse = 0.55 + 0.25 * Math.sin(g.globalT * 3);
+      panel(g, hx, hy, hw, hh, `rgba(142,200,240,${pulse.toFixed(2)})`, 'rgba(8,10,18,0.82)');
+      lines.forEach((l, i) => text(g, l, hx + hw / 2, hy + 5 + i * 14, 14, '#d8e0f0', 'center'));
     }
   }
 
   // ---- HUD vivo (Ronda 3): latido de vida baja, subida de nivel, puntos ----
   drawHudFx(ctx, g);
 }
+
+// ---- R17 (UI): fila de recursos (coronas · pociones · mejora de arma) ----
+function drawResourceRow(g: Game, x: number, y: number, w: number) {
+  const ctx = g.ctx;
+  const p = g.player!;
+  panel(g, x, y, w, 24);
+  const cy = y + 12;
+  // moneda: disco dorado con brillo y canto
+  let cx = x + 10;
+  ctx.fillStyle = '#8a6420'; ctx.fillRect(cx, cy - 5, 10, 10);
+  ctx.fillStyle = COL.gold; ctx.fillRect(cx + 1, cy - 5, 8, 9); ctx.fillRect(cx, cy - 4, 10, 7);
+  ctx.fillStyle = '#fff4c0'; ctx.fillRect(cx + 2, cy - 3, 2, 2);
+  ctx.fillStyle = '#b08020'; ctx.fillRect(cx + 4, cy - 2, 2, 4);
+  text(g, `${p.gold}`, cx + 15, y + 4, 15, COL.gold);
+  // poción: matraz rojo con corcho
+  cx = x + 86;
+  const hasPot = p.potions > 0;
+  ctx.fillStyle = '#8a6a48'; ctx.fillRect(cx + 3, cy - 7, 4, 2);
+  ctx.fillStyle = '#c8d0e0'; ctx.fillRect(cx + 3, cy - 5, 4, 3);
+  ctx.fillStyle = hasPot ? '#e05568' : '#4a3a44'; ctx.fillRect(cx + 1, cy - 2, 8, 7); ctx.fillRect(cx, cy - 1, 10, 5);
+  if (hasPot) { ctx.fillStyle = '#ffb0c0'; ctx.fillRect(cx + 2, cy - 1, 2, 2); }
+  text(g, `×${p.potions}`, cx + 14, y + 4, 15, hasPot ? '#f0a0b8' : COL.dim);
+  // tecla
+  const kx = cx + 40;
+  ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(kx, y + 5, 14, 14);
+  ctx.strokeStyle = '#6a6070'; ctx.lineWidth = 1; ctx.strokeRect(kx + 0.5, y + 5.5, 13, 13);
+  text(g, 'F', kx + 7, y + 5, 13, COL.dim, 'center');
+  // mejora de arma: espada pequeña + nivel
+  if (p.weaponPlus > 0) {
+    cx = x + w - 52;
+    ctx.fillStyle = '#d8e0f0'; ctx.fillRect(cx + 4, cy - 7, 2, 9);
+    ctx.fillStyle = '#c8a050'; ctx.fillRect(cx + 1, cy + 2, 8, 2);
+    ctx.fillStyle = '#7a5a30'; ctx.fillRect(cx + 4, cy + 4, 2, 3);
+    text(g, `+${p.weaponPlus}`, cx + 13, y + 4, 15, '#d8e0f0');
+  }
+}
+
+// ---- R17 (UI): distintivo de época (dónde estás en el tiempo + teclas) ----
+function drawEpochBadge(g: Game, x: number, y: number, w: number) {
+  const ctx = g.ctx;
+  const p = g.player!;
+  const ep = g.epoch;
+  const isPast = ep === 'pasado';
+  const isAun = ep === 'aun';
+  const label = isPast ? 'PASADO' : isAun ? 'EL AÚN' : 'PRESENTE';
+  const tint = isPast ? COL.epochPast : isAun ? '#d8d8ec' : COL.epochNow;
+  const canShift = p.hasEcho && g.map.epochDiffs.length > 0;
+  const lens = lensDisponible(g);
+  const h = canShift ? 38 : 22;
+  panel(g, x, y, w, h, isPast ? '#8a6a30' : '#4a5470', isPast ? 'rgba(30,22,10,0.88)' : 'rgba(12,14,24,0.88)');
+  // reloj de arena: arena arriba en el pasado (tiempo por vivir), abajo en el presente
+  const hx = x + 10, hy = y + 4;
+  ctx.fillStyle = '#7a6040'; ctx.fillRect(hx, hy, 9, 2); ctx.fillRect(hx, hy + 12, 9, 2);
+  ctx.fillStyle = 'rgba(220,230,255,0.35)';
+  ctx.fillRect(hx + 1, hy + 2, 7, 3); ctx.fillRect(hx + 3, hy + 5, 3, 4); ctx.fillRect(hx + 1, hy + 9, 7, 3);
+  ctx.fillStyle = tint;
+  const flow = (Math.sin(g.globalT * 2) + 1) / 2;
+  if (isPast) { ctx.fillRect(hx + 1, hy + 2, 7, 3); ctx.fillRect(hx + 4, hy + 5, 1, 4 + Math.round(flow)); }
+  else { ctx.fillRect(hx + 1, hy + 9, 7, 3); if (isAun) ctx.fillRect(hx + 4, hy + 5, 1, 4); }
+  textShadow(g, label, hx + 16, y + 4, 15, tint, '#000');
+  // semillas del Eco: brote + frutos recogidos / parcelas (aparece al plantar la primera)
+  const prog = progresoSemillas(g);
+  if (prog.sembradas > 0) {
+    if (totalParcelas < 0) totalParcelas = todasLasParcelas().length;
+    const str = `${prog.frutos}/${totalParcelas}`;
+    const tx = x + w - 8;
+    text(g, str, tx, y + 4, 14, '#a8e0a0', 'right');
+    const ix = tx - str.length * 7 - 12, iy = y + 6;
+    ctx.fillStyle = '#5a9a48'; ctx.fillRect(ix + 4, iy + 4, 2, 7);
+    ctx.fillStyle = '#8ad070'; ctx.fillRect(ix, iy + 2, 4, 3); ctx.fillRect(ix + 6, iy, 4, 3);
+  }
+  if (canShift) {
+    const ky = y + 21;
+    const key = (k: string, kx: number) => {
+      ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(kx, ky, 13, 13);
+      ctx.strokeStyle = '#6a6070'; ctx.lineWidth = 1; ctx.strokeRect(kx + 0.5, ky + 0.5, 12, 12);
+      text(g, k, kx + 6.5, ky, 12, COL.text, 'center');
+    };
+    key('Q', x + 8);
+    text(g, isAun ? 'estrenar' : isPast ? 'al presente' : 'al pasado', x + 25, ky, 13, COL.dim);
+    if (lens) {
+      const lx = x + Math.round(w / 2) + 4;
+      key('R', lx);
+      text(g, 'lente', lx + 17, ky, 13, COL.dim);
+    }
+  }
+}
+
+let totalParcelas = -1; // perezoso: las parcelas se eligen al primer uso
 
 // ---------------- Overlays a pantalla completa ----------------
 

@@ -776,6 +776,58 @@ function adoquinado(
   }
 }
 
+
+// ============================================================
+// R17 · TEXTURA CONTINUA para los suelos lisos de la expansión.
+// La nieve de las Cumbres y la hierba de la Costa eran un relleno plano
+// por tile (2 tonos alternos → cuadrícula visible y superficies sin
+// vida). Ruido de valor bilineal en coordenadas GLOBALES de píxel (sin
+// costuras entre tiles) + bandas de ventisquero que siguen el viento.
+// Pintado por tramos horizontales del mismo tono (pocas llamadas).
+// ============================================================
+function vnE(vx: number, vy: number, L: number, seed: number): number {
+  const gx = Math.floor(vx / L), gy = Math.floor(vy / L);
+  const fx = vx / L - gx, fy = vy / L - gy;
+  const a = hash2(gx + seed, gy + seed * 2) * 2, b = hash2(gx + 1 + seed, gy + seed * 2) * 2;
+  const c = hash2(gx + seed, gy + 1 + seed * 2) * 2, d = hash2(gx + 1 + seed, gy + 1 + seed * 2) * 2;
+  const u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function pintaRuns(x: CanvasRenderingContext2D, X0: number, Y0: number, tono: (vx: number, vy: number) => string): void {
+  for (let j = 0; j < 16; j++) {
+    let ini = 0, cur = '';
+    for (let i = 0; i <= 16; i++) {
+      const t = i < 16 ? tono(X0 + i, Y0 + j) : '';
+      if (t !== cur) { if (i > ini) { x.fillStyle = cur; x.fillRect(X0 + ini, Y0 + j, i - ini, 1); } ini = i; cur = t; }
+    }
+  }
+}
+const NIEVE_TONOS = ['#cfdbe8', '#d9e3ee', '#e2e9f2', '#eaeff6', '#f1f4f9', '#f7f9fc'];
+function tonoNieve(vx: number, vy: number): string {
+  // ventisquero: bandas onduladas a lo largo del viento (NO-SE) + ruido
+  const drift = Math.sin((vx * 0.85 + vy * 0.45) / 9 + vnE(vx, vy, 28, 5) * 5) * 0.5 + 0.5;
+  const n = 0.45 * vnE(vx, vy, 14, 11) + 0.2 * vnE(vx, vy, 5, 23) + 0.35 * drift;
+  let k = (n - 0.25) / 0.6;
+  if (k < 0) k = 0; else if (k > 0.999) k = 0.999;
+  return NIEVE_TONOS[(k * NIEVE_TONOS.length) | 0];
+}
+const ARENA_TONOS = ['#cbb17c', '#d2b984', '#d9c08c', '#dfc794', '#e5ce9c'];
+function tonoArena(vx: number, vy: number): string {
+  // ondas de arena que el viento deja (rizaduras) + ruido suave
+  const rip = Math.sin((vx * 0.3 + vy) / 3.2 + vnE(vx, vy, 20, 61) * 3) * 0.5 + 0.5;
+  const n = 0.55 * vnE(vx, vy, 11, 53) + 0.2 * vnE(vx, vy, 4, 71) + 0.25 * rip;
+  let k = (n - 0.25) / 0.55;
+  if (k < 0) k = 0; else if (k > 0.999) k = 0.999;
+  return ARENA_TONOS[(k * ARENA_TONOS.length) | 0];
+}
+const PRADO_SAL = ['#6a874a', '#728f4e', '#7b9854', '#84a159', '#8daa5f', '#97b366'];
+function tonoPradoSal(vx: number, vy: number): string {
+  const n = 0.6 * vnE(vx, vy, 9, 31) + 0.4 * vnE(vx, vy, 4, 43);
+  let k = (n - 0.2) / 0.6;
+  if (k < 0) k = 0; else if (k > 0.999) k = 0.999;
+  return PRADO_SAL[(k * PRADO_SAL.length) | 0];
+}
+
 export function drawExpansionTile(
   x: CanvasRenderingContext2D, ch: string, tx: number, ty: number, mapId: string,
 ): boolean {
@@ -788,7 +840,7 @@ export function drawExpansionTile(
       const a1 = nbBits(CX_COSTA_AGUA, tx, ty, 0);
       const a2 = nbBits(CX_COSTA_AGUA, tx, ty, 4);
       // base seca + moteado
-      rc(x, px0, py0, 16, 16, r < 0.5 ? '#dcc590' : '#d4bd86');
+      pintaRuns(x, px0, py0, tonoArena); // R17: arena continua con rizaduras
       for (let i = 0; i < 6; i++) {
         const hx = hash2(tx * 5 + i * 3, ty * 7 + i);
         const hy = hash2(tx * 11 + i, ty * 5 + i * 7);
@@ -823,7 +875,23 @@ export function drawExpansionTile(
     }
     case 'S': { // —— CUMBRES · nieve v4: ventisqueros + destellos fríos + orilla del lago
       const hielo = mapId === 'cumbres' ? nbBits(CX_CUMBRES_HIELO, tx, ty, 0) : 0;
-      rc(x, px0, py0, 16, 16, r < 0.5 ? '#e9eef5' : '#e2e9f1');
+      // R17: nieve continua (ruido global + ventisqueros) en vez de relleno plano
+      pintaRuns(x, px0, py0, tonoNieve);
+      // huellas de liebre/zorro que cruzan varios tiles (fila determinista)
+      if (hash2(Math.floor(tx / 3) * 13, ty * 7) < 0.12) {
+        for (let k = 0; k < 4; k++) {
+          const fx = px0 + k * 4 + (k % 2), fy = py0 + 7 + ((k % 2) ? 2 : 0) + Math.floor(hash2(tx, ty) * 3);
+          rc(x, fx, fy, 1, 1, '#b8c6d6'); rc(x, fx + 1, fy + 1, 1, 1, '#c6d2e0');
+        }
+      }
+      // piedra o mata de hierba seca asomando entre la nieve (rara)
+      if (r3 > 0.93) {
+        const ox = px0 + 3 + Math.floor(r * 9), oy = py0 + 4 + Math.floor(r2 * 8);
+        rc(x, ox, oy, 3, 2, '#7d8594'); rc(x, ox, oy, 2, 1, '#9aa2b0'); rc(x, ox - 1, oy + 2, 5, 1, '#c3cfdc');
+      } else if (r3 > 0.86) {
+        const ox = px0 + 4 + Math.floor(r * 8), oy = py0 + 5 + Math.floor(r2 * 7);
+        rc(x, ox, oy, 1, 3, '#a89a6e'); rc(x, ox + 2, oy + 1, 1, 2, '#9a8c62'); rc(x, ox + 1, oy - 1, 1, 3, '#b8aa7e');
+      }
       // ventisqueros: bandas de sombra suave (deterministas)
       const nB = r2 > 0.55 ? 2 : 1;
       for (let i = 0; i < nB; i++) {
@@ -967,7 +1035,16 @@ export function drawExpansionTile(
       if (mapId === 'costa') { // hierba salada + arena/agua cercanas (R9-1)
         const a1 = nbBits(CX_COSTA_AGUA, tx, ty, 0);
         const s1 = nbBits(CX_COSTA_ARENA, tx, ty, 0);
-        rc(x, px0, py0, 16, 16, r < 0.5 ? '#8aa860' : '#7e9c56');
+        // R17: prado salino continuo (ruido global) en vez de verde liso
+        pintaRuns(x, px0, py0, tonoPradoSal);
+        // matas de juncia que el viento del mar peina hacia tierra
+        for (let i = 0; i < 3; i++) {
+          const hx = hash2(tx * 9 + i * 5, ty * 3 + i);
+          if (hx < 0.55) {
+            const mx = px0 + 1 + Math.floor(hx * 26) % 13, my = py0 + 3 + Math.floor(hash2(tx + i * 3, ty * 11 + i) * 11);
+            rc(x, mx, my, 1, 3, '#5e7a40'); rc(x, mx + 1, my - 1, 1, 3, '#a2bc6c'); rc(x, mx + 2, my, 1, 2, '#6e8a48');
+          }
+        }
         for (let i = 0; i < 5; i++) {
           const hx = hash2(tx * 4 + i, ty * 9 + i);
           if (hx < 0.45) {
@@ -1017,7 +1094,7 @@ export function drawExpansionTile(
     }
     case ',': {
       if (mapId === 'costa') { // flores de sal (v2)
-        rc(x, px0, py0, 16, 16, r < 0.5 ? '#8aa860' : '#7e9c56');
+        pintaRuns(x, px0, py0, tonoPradoSal); // R17: mismo prado continuo
         // matas de sal cristalizada
         const bx = px0 + 3 + Math.floor(r * 7), by = py0 + 3 + Math.floor(r2 * 7);
         rc(x, bx, by, 2, 2, '#f0f4f0');
@@ -1049,7 +1126,7 @@ export function drawExpansionTile(
         return true;
       }
       if (mapId === 'cumbres') { // —— CUMBRES pasado · flores abrigadas junto a la hoguera (R9-1)
-        rc(x, px0, py0, 16, 16, r < 0.5 ? '#e9eef5' : '#e2e9f1');
+        pintaRuns(x, px0, py0, tonoNieve); // R17: misma nieve continua
         if (r2 > 0.3) rc(x, px0 + 3 + Math.floor(r * 8), py0 + 10, 5, 1, '#d2dce8'); // ventisquero
         // matas de flores que aguantan el frío (2-3)
         for (let i = 0; i < 3; i++) {

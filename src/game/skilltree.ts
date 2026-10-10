@@ -1033,7 +1033,8 @@ export function drawSkillTree(g: Game): void {
         const cx2 = c.parent ? (pos.get(c.parent)?.x ?? colX + colW / 2) : colX + colW / 2;
         return ax - cx2;
       });
-      const spacing = Math.min(58, (colW - 20) / Math.max(1, row.length));
+      // R17 (UI): hermanos más separados (antes 58 px: los nombres se pisaban)
+      const spacing = Math.min(118, (colW - 20) / Math.max(1, row.length));
       const mid = colX + colW / 2;
       row.forEach((n, idx) => {
         pos.set(n.id, { x: mid + (idx - (row.length - 1) / 2) * spacing, y: top + 40 + t * pitch + nodeR });
@@ -1096,15 +1097,24 @@ export function drawSkillTree(g: Game): void {
       ctx.lineWidth = 2;
       ctx.stroke();
       text(g, n.icon, pp.x, pp.y - 8, 13, glyph, 'center');
-      // nombre bajo el nodo
-      const name = n.name.length > 15 ? n.name.slice(0, 14) + '…' : n.name;
+      // nombre bajo el nodo — R17 (UI): recorte según el hueco real entre hermanos
+      // (~5,5 px por glifo a 11 px) y la marca de disciplina en la línea del coste
+      // (antes flotaba sobre el nodo y pisaba el coste de la fila de arriba)
+      const rowLen = tiers[tierOf.get(n.id) ?? 0]?.length ?? 1;
+      const room = rowLen > 1 ? Math.min(118, (colW - 20) / rowLen) : colW - 20;
+      const maxCh = Math.max(8, Math.floor((room - 8) / 5.5));
+      const name = n.name.length > maxCh ? n.name.slice(0, maxCh - 1) + '…' : n.name;
+      // placa oscura bajo la etiqueta: los conectores diagonales pasan por detrás
+      const lw = Math.ceil(name.length * 5.5) + 8;
+      ctx.fillStyle = 'rgba(8,10,20,0.92)';
+      ctx.fillRect(Math.round(pp.x - lw / 2), pp.y + nodeR + 1, lw, 25);
       text(g, name, pp.x, pp.y + nodeR + 2, 11, isLearned ? COL.text : '#7a7a90', 'center');
-      if (!isLearned) text(g, `◆${n.cost}`, pp.x, pp.y + nodeR + 14, 11, canLearn ? COL.gold : '#6a6a80', 'center');
+      if (discLocked) text(g, n.disc === 'alba' ? 'solo Alba' : 'solo Tejedora', pp.x, pp.y + nodeR + 14, 10, '#6a6a80', 'center');
+      else if (!isLearned) text(g, `◆${n.cost}`, pp.x, pp.y + nodeR + 14, 11, canLearn ? COL.gold : '#6a6a80', 'center');
       if (isLearned) {
         ctx.fillStyle = COL.gold;
         ctx.fillRect(pp.x + nodeR - 3, pp.y - nodeR + 1, 3, 3);
       }
-      if (discLocked) text(g, n.disc === 'alba' ? 'alba' : 'tej.', pp.x, pp.y - nodeR - 12, 10, '#6a6a80', 'center');
     }
   }
 

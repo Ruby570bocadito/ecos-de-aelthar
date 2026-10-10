@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync } from 'fs';
 import type { Game } from '../src/game/engine';
 import type { Player } from '../src/game/types';
 import {
-  balanceTick, enemyStatMult, loadBalance, saveBalance, resetBalance,
+  balanceTick, enemyStatMult, loadBalance, saveBalance, resetBalance, zonaMult,
   nudgeBalanceLevel, setBalanceAuto, drawBalancePanel, balanceLevelName,
 } from '../src/game/balance';
 
@@ -167,8 +167,11 @@ for (const [lvl, hp, dmg, xp] of secuencia) {
   const cur = loadBalance().level;
   if (lvl !== cur) nudgeBalanceLevel(Math.sign(lvl - cur));
   const m = enemyStatMult(g3);
+  // R17: la Costa es zona 6 → tabla × agresión × zona
+  const zc = zonaMult('costa');
+  const cl = (a: number, b: number) => Math.abs(a - b) < 1e-9;
   check(`mult nivel ${lvl} (${balanceLevelName(lvl)})`,
-    m.hp === hp && m.dmg === dmg && m.xp === xp, `${m.hp}/${m.dmg}/${m.xp}`);
+    cl(m.hp, hp * zc.hp) && cl(m.dmg, dmg * zc.dmg) && cl(m.xp, xp * zc.xp), `${m.hp}/${m.dmg}/${m.xp}`);
 }
 nudgeBalanceLevel(0); // |delta|≠1 → absoluto: nivel 0
 const gSinPlayer = fakeGame(null);
@@ -179,7 +182,15 @@ const m1 = enemyStatMult(g3);
 check('modo desafío → neutro', m1.hp === 1 && m1.dmg === 1 && m1.xp === 1);
 (g3 as unknown as { challengeRun: unknown }).challengeRun = null;
 const m2 = enemyStatMult(g3);
-check('campaña con nivel 0 → tabla × agresión (Nv7 → ×1.08)', m2.hp === 1.08 && m2.dmg === 1.08 && m2.xp === 1); // R8-7: la curva aplica en campaña, no en desafío
+check('campaña con nivel 0 → tabla × agresión × zona (Nv7 → ×1.08; Costa zona 6)', Math.abs(m2.hp - 1.08 * zonaMult('costa').hp) < 1e-9 && Math.abs(m2.dmg - 1.08 * zonaMult('costa').dmg) < 1e-9 && Math.abs(m2.xp - zonaMult('costa').xp) < 1e-9); // R8-7 + R17
+// R17 · escalado por zona: Cumbres (zona 8) → vida ×2.54, daño ×1.49, XP ×1.7
+(g3 as unknown as { mapId: string }).mapId = 'cumbres';
+const mz = enemyStatMult(g3);
+const close = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+check('zona 8 (Cumbres) × agresión: vida ×2.54·1.08, daño ×1.49·1.08, XP ×1.7', close(mz.hp, 1.08 * 2.54) && close(mz.dmg, 1.08 * 1.49) && close(mz.xp, 1.7), `${mz.hp}/${mz.dmg}/${mz.xp}`);
+const mzb = enemyStatMult(g3, 'golem');
+check('jefe en zona 8: vida de DISEÑO (sin zona ni agresión)', mzb.hp === 1 && mzb.dmg === 1);
+(g3 as unknown as { mapId: string }).mapId = 'costa';
 // el balanceador tampoco actúa en desafío (muertes no mueven el nivel)
 resetBalance();
 const p4 = fakePlayer();

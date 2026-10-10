@@ -115,7 +115,7 @@ export const LOGROS: LogroDef[] = [
   { id: 'corazon_alba', name: 'Corazón de Alba', desc: 'Completa el Acto I' },
   { id: 'notas_perdidas', name: 'Notas Perdidas', desc: 'Completa el Acto II' },
   { id: 'canto_al_reves', name: 'Canto al Revés', desc: 'Completa el Acto III' },
-  { id: 'ultima_nota', name: 'El Último Canto (próximamente)', desc: 'Completa el Acto IV (aún no ha sonado)' },
+  { id: 'ultima_nota', name: 'El Último Canto', desc: 'Completa el Acto IV' }, // R17: el Acto IV ya existe (hooks.ts → acto4Done)
   { id: 'invicto', name: 'Invicto', desc: 'Alcanza el nivel 5 sin morir' },
   { id: 'rico', name: 'Rico', desc: 'Reúne 500 coronas en mano' },
   { id: 'alquimista', name: 'Alquimista', desc: 'Bebe 10 pociones' },

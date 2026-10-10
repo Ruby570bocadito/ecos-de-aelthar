@@ -195,3 +195,29 @@ commit → merge a main → push. QA de solo lectura en cada ronda.
 >   tripulación, llanto en espiral y teletransporte; +1 punto y 2 pociones.
 > - Smoke nuevo `scripts/smoke_r16.mts`; batería 15/15 + tsc 0 + build verde
 >   + E2E en navegador con consola limpia.
+
+> **Ronda R17 «Semillas del Eco»** (v0.8.0) — equilibrio, mapas, peso de las
+> épocas y UI:
+> - **Equilibrio por zona (balance.ts)**: `ZONA_NIVEL` por mapa (lunaris 1,
+>   bosque 3, cripta 5, costa 6, aldea 7, cumbres 8, cuna 11, ciudadela 12);
+>   enemigos normales ×(1+0,22·(z−1)) vida, ×(1+0,07·(z−1)) daño,
+>   ×(1+0,10·(z−1)) XP. Jefes con vida de diseño `BOSS_R17` (data.ts) y sin
+>   escala de zona — `makeEnemy` ahora pasa el tipo a `enemyStatMult` (sin él,
+>   el Heraldo habría salido con ×3,4). La arena de desafío conserva la vida
+>   previa (`BOSS_HP_PRE_R17`). El Sepulcro entra en `TIPOS_JEFE` (300 PV).
+> - **Pasado → presente (ecocausal.ts)**: 12 parcelas deterministas
+>   alcanzables en ambas épocas; plantar en el pasado, Árbol del Eco en el
+>   presente, fruto con recompensa (flags `semilla_`/`fruto_`/`arbol_visto_`).
+>   Lente del Eco (`R`), barrido circular al cambiar de época y atmósfera por
+>   época.
+> - **Mapas (sprites_expansion.ts)**: ruido de valor + tonos por bandas para
+>   nieve (ventisqueros, huellas de liebre), arena (ondas) y prado salino.
+> - **UI**: fila de recursos, distintivo de época anclado al minimapa
+>   (`minimapRect`), pista contextual en cápsula sobre la barra de
+>   habilidades; `hintMove`/`usedEpoch` nunca se activaban (la pista no se
+>   iba nunca) — ahora sí. Estado/Equipo/árbol sin solapes; `GAME_VERSION`
+>   única para título y pausa; logro del Acto IV con su nombre definitivo.
+> - **Jefes**: `resetBossIntro()` en `loadMap` (la intro solo salía con el
+>   primer jefe de la sesión y podía quedarse sobre el mapa siguiente).
+> - Smoke nuevo `scripts/smoke_r17.mts`; batería 16/16 + tsc 0 + build verde
+>   + E2E en navegador con consola limpia.

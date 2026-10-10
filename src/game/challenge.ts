@@ -44,7 +44,7 @@
 import type { Game } from './engine';
 import { VIEW_W, VIEW_H, TILE } from './engine';
 import type { Enemy, EnemyType, Player } from './types';
-import { ENEMY_DEFS } from './data';
+import { ENEMY_DEFS, BOSS_HP_PRE_R17 } from './data';
 import { ARENA_MAP_ID } from './maps_expansion';
 import { audio } from './audio';
 import { COL, text, textShadow, panel, button, wrapText } from './ui';
@@ -319,7 +319,9 @@ function spawnArenaEnemy(g: Game, run: ChallengeRun, type: EnemyType, mult: numb
   const push = (x: number, y: number) => {
     const e = g.makeEnemy(type, x, y, 2, 'arena');
     // mini-jefe (guardián) un 25% más blando: es un escollo de oleada, no la pelea de campaña
-    const scaled = Math.max(1, Math.round(def.hp * (type === 'guardian' ? mult * 0.75 : mult)));
+    // R17: el desafío conserva la vida de jefe previa al rebalanceo de campaña
+    const baseHp = BOSS_HP_PRE_R17[type] ?? def.hp;
+    const scaled = Math.max(1, Math.round(baseHp * (type === 'guardian' ? mult * 0.75 : mult)));
     e.hp = scaled; e.maxHp = scaled;
     g.enemies.push(e);
     run.spawnedTotal = (run.spawnedTotal ?? 0) + 1;
@@ -362,6 +364,10 @@ function spawnDuelBoss(g: Game, run: ChallengeRun, id: string): void {
   const bx = (CENTER_TX + 0.5) * TILE;
   const by = (CENTER_TY - 8) * TILE; // 8 tiles al norte: entra en aggro con el primer paso
   const e = g.makeEnemy(type, bx, by, 0, 'boss'); // spawnGuard 0,5 s de cortesía
+  // R17: duelo con la vida de jefe previa al rebalanceo de campaña (el
+  // Portador del Eco de Nv 8 y sin pociones se afinó contra ella)
+  const preHp = BOSS_HP_PRE_R17[type];
+  if (preHp) { e.hp = preHp; e.maxHp = preHp; }
   run.spawnedTotal = (run.spawnedTotal ?? 0) + 1;
   run.bossEnemy = e;
   g.enemies.push(e);

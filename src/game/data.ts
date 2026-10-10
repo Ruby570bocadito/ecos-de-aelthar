@@ -2619,3 +2619,35 @@ export const ENEMY_DEFS_R16: Record<string, EnemyDef> = {
   },
 };
 Object.assign(ENEMY_DEFS, ENEMY_DEFS_R16);
+
+
+// ═══════ R17 · Balance de JEFES (vida de diseño al nivel previsto) ═══════
+// Con el nivel esperado al llegar (simulación de la ruta: Guardián Nv 4-5,
+// Sirena Nv 6-7, Gólem Nv 8-9, Coro/Vult Nv 9-10, Madre Nv 10, Vesh Nv 11+)
+// los jefes caían en 8-12 golpes (≈4-5 s de daño puro; el jefe FINAL en 10).
+// Objetivo: 14-18 golpes base + ventanas de quiebre. La barra de quiebre
+// sube en proporción para que el aturdimiento siga siendo una recompensa y
+// no un estado permanente. (antes → después, auditable)
+//   guardian 345/80 → 470/100 · sirena 440/105 → 650/140 · golem 535/126 → 800/170
+//   coro 520/110 → 780/150 · vult 420/95 → 680/130 · madre 560/120 → 860/160
+//   heraldo 640/— → 1180/180 (jefe final del Acto IV)
+/** Vida de los jefes ANTES de R17: el modo Desafío (duelos con Portador
+ *  fijo de Nv 8 y sin pociones) estaba afinado con ella y la conserva. */
+export const BOSS_HP_PRE_R17: Record<string, number> = {
+  guardian: 345, sirena: 440, golem: 535, coro: 520, vult: 420, madre: 560, heraldo: 640, sepulcro: 210,
+};
+export const BOSS_R17: Record<string, { hp: number; breakBar: number }> = {
+  guardian: { hp: 470, breakBar: 100 },
+  sirena: { hp: 650, breakBar: 140 },
+  golem: { hp: 800, breakBar: 170 },
+  coro: { hp: 780, breakBar: 150 },
+  vult: { hp: 680, breakBar: 130 },
+  madre: { hp: 860, breakBar: 160 },
+  heraldo: { hp: 1180, breakBar: 180 },
+  sepulcro: { hp: 300, breakBar: 70 }, // mini-jefe de la antesala: vida de diseño (sin escala de zona)
+};
+for (const [k, b] of Object.entries(BOSS_R17)) {
+  if (!ENEMY_DEFS[k]) continue;
+  ENEMY_DEFS[k].hp = b.hp;
+  ENEMY_DEFS[k].breakBar = b.breakBar;
+}

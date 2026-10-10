@@ -131,7 +131,7 @@ if (modo === 'load') {
   check('readLastSave: cifras del último guardado', !!s && s.name === 'Humo' && s.stats.enemigosDerrotados === 2 && s.stats.jefesDerrotados === 1, JSON.stringify(s?.stats));
   const mir = readStatsMirror();
   check("espejo 'ecos-stats' persiste", mir.enemigosDerrotados === 2 && mir.muertes === 1 && mir.pocionesUsadas === 1, JSON.stringify(mir));
-  check("logro del Acto IV con nombre 'próximamente' (no existe flag)", logroName('ultima_nota') === 'El Último Canto (próximamente)', logroName('ultima_nota'));
+  check("logro del Acto IV con su nombre definitivo (R17: el acto existe)", logroName('ultima_nota') === 'El Último Canto', logroName('ultima_nota'));
   console.log(fails === 0 ? 'SMOKE LOGROS LOAD: TODO OK' : `SMOKE LOGROS LOAD: ${fails} FALLOS`);
   process.exit(fails === 0 ? 0 : 1);
 }
@@ -344,11 +344,11 @@ console.log('--- 5) Paneles ESTADÍSTICAS / LOGROS (con y sin save) ---');
   drawTitlePanels(g);
   check('panel LOGROS dibuja sin lanzar y registra botones', g.uiHit.length >= 1, `hits=${g.uiHit.length}`);
   check('los 12 logros definidos', LOGROS.length === 12, String(LOGROS.length));
-  check("logro del Acto IV visible como 'próximamente'", logroName('ultima_nota', g) === 'El Último Canto (próximamente)');
+  check("logro del Acto IV visible con su nombre", logroName('ultima_nota', g) === 'El Último Canto');
 
   // flag del Acto IV FUTURO: si existiera, cambia nombre y puede desbloquearse
   g.flags.acto4Done = true;
-  check('con flag futuro → nombre sin (próximamente)', logroName('ultima_nota', g) === 'El Último Canto');
+  check('con flag del Acto IV → mismo nombre', logroName('ultima_nota', g) === 'El Último Canto');
   achievementTick(g);
   check('con flag futuro → logro se desbloquea', isLogroDone('ultima_nota'));
   delete g.flags.acto4Done;

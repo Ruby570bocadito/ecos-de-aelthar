@@ -133,7 +133,7 @@ const {
   skillPointsEarned, skillDamageMult, skillCdMult, applySkillStats, drawSkillTree,
   __stReloadTrees, __stResetSel,
 } = await import('../src/game/skilltree');
-const { SKILL_TREE, SKILLS, ENEMY_DEFS } = await import('../src/game/data');
+const { SKILL_TREE, SKILLS, ENEMY_DEFS, BOSS_HP_PRE_R17 } = await import('../src/game/data');
 const {
   ARMORS, armorActive, armorActiveId, armorReduction, armorTick, drawArmorRow,
 } = await import('../src/game/armor');
@@ -635,7 +635,8 @@ console.log('\n--- 5) Desafío (arena) ---');
   for (let i = 0; i < 30 && run.spawnQueue!.length > 0; i++) { run.spawnT = 0.001; g.update(1 / 60); }
   check('oleada 3 trae CENTINELA (guardián)', run.waveHadBoss === true && g.bossActive === true, J(run.bannerText));
   const centinela = g.enemies.find(e => e.etype === 'guardian')!;
-  check('mini-jefe un 25% más blando (×0.75·mult oleada 3)', centinela.maxHp === Math.round(ENEMY_DEFS.guardian.hp * 1.24 * 0.75), `${centinela.maxHp} vs ${Math.round(ENEMY_DEFS.guardian.hp * 1.24 * 0.75)}`);
+  // R17: el desafío conserva la vida de jefe previa al rebalanceo (BOSS_HP_PRE_R17)
+  check('mini-jefe un 25% más blando (×0.75·mult oleada 3)', centinela.maxHp === Math.round(BOSS_HP_PRE_R17.guardian * 1.24 * 0.75), `${centinela.maxHp} vs ${Math.round(BOSS_HP_PRE_R17.guardian * 1.24 * 0.75)}`);
   // muerte del Portador → derrota + restauración
   const scoreAtDeath = run.score;
   p.hp = 1; p.iframes = 0; g.damagePlayer(99999, p.x + 10, p.y);
