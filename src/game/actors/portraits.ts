@@ -22,6 +22,8 @@
 //    Si se omite (t=0) el retrato sale estático. 100 % determinista.
 // ============================================================
 
+import { portraitFor, portraitHero } from './portrait2'; // R19: retratos v2
+import { NPC_LOOKS } from './npc2'; // R19
 import { mkCanvas } from './util';
 
 // ---------------- Arco de ataque (slash) ----------------
@@ -970,9 +972,16 @@ const cache = new Map<string, CacheEntry>();
 
 /** Devuelve el canvas 44×62 del retrato, re-renderizando solo si cambia blink/paso de t. */
 /** R18: ¿existe retrato propio para esta clave? (screens lo usa para no caer en el fuego fatuo) */
-export function hasPortrait(key: string): boolean { return key in PORTRAITS; }
+export function hasPortrait(key: string): boolean { return key in PORTRAITS || key in NPC_LOOKS; }
 
 function getPortrait(key: string, blink: boolean, t: number): HTMLCanvasElement {
+  // R19: retratos v2 (mismo aspecto que el sprite de la marioneta)
+  if (key === 'hero_alba' || key === 'hero_tejedor') {
+    const hc = portraitHero(key === 'hero_alba' ? 'alba' : 'tejedor', blink);
+    if (hc) return hc;
+  }
+  const v2 = key !== 'sombra' ? NPC_LOOKS[key] : undefined;
+  if (v2) return portraitFor(key, v2, blink);
   const def = PORTRAITS[key] ?? PORTRAITS['wisp'];
   const ck = PORTRAITS[key] !== undefined ? key : 'wisp';
   const f = Math.floor(t / T_STEP);              // paso de animación determinista

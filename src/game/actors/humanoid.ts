@@ -785,7 +785,7 @@ function idlePose(anim: number): number {
  *    la derecha y render.ts lo voltea para 'left').
  */
 export function frameIndex(dir: string, moving: boolean, anim: number): number {
-  const base = dir === 'down' ? 0 : dir === 'up' ? 8 : 16;
+  const base = dir === 'down' ? 0 : dir === 'up' ? 9 : 18; // R19: bloques de 9
   if (!moving) return base + 6 + idlePose(anim);
   return base + (Math.floor(anim * 6) % 6);
 }
@@ -807,7 +807,9 @@ export function entityFrame(spr: Frames, dir: string, moving: boolean, anim: num
   const n = spr.length;
   const clamp = (i: number) => Math.max(0, Math.min(n - 1, i));
   if (n === 27) {
-    const base = dir === 'up' ? 8 : dir === 'down' ? 0 : 16;
+    // R19: bloques de 9 (6 andar + 3 reposo): abajo 0-8 · arriba 9-17 · perfil 18-26
+    // (antes 0/8/16: al andar hacia arriba o de lado se mezclaban fotogramas)
+    const base = dir === 'up' ? 9 : dir === 'down' ? 0 : 18;
     if (!moving) return clamp(base + 6 + idlePose(anim));
     return clamp(base + (Math.floor(anim * 6) % 6));
   }

@@ -80,7 +80,7 @@ const { SOLID_CHARS } = await import('../src/game/sprites');
 const { ENEMY_DEFS } = await import('../src/game/data');
 const { exitGate } = await import('../src/game/gates');
 const SQ = await import('../src/game/sidequests');
-const { heroFrame, HERO_FRAMES } = await import('../src/game/actors/hero');
+const { heroFrame, HERO_FRAMES, HERO_W, HERO_H } = await import('../src/game/actors/hero');
 const { switchGrimoirePage, grimoirePage, grimoireHasSecondPage } = await import('../src/game/skilltree');
 const { cutsceneActive, skipCutscene, resetCutscenes } = await import('../src/game/cutscene');
 const { forceStoryBeats } = await import('../src/game/storybeats');
@@ -273,9 +273,10 @@ console.log('\n=== 5) Portador v4 · grimorio · sprint ===');
   try {
     for (const disc of ['alba', 'tejedor'] as const) for (let a = 0; a <= 5; a++) for (let w = 0; w <= 5; w += 5)
       for (const dir of ['down', 'up', 'side'] as const) for (const act of Object.keys(HERO_FRAMES) as (keyof typeof HERO_FRAMES)[])
-        for (let f = 0; f < HERO_FRAMES[act]; f++) { const fr = heroFrame({ disc, armor: a, weapon: w }, dir, act, f); if (fr.cv.width === 26 && fr.cv.height === 30) n++; }
+        for (let f = 0; f < HERO_FRAMES[act]; f++) { const fr = heroFrame({ disc, armor: a, weapon: w }, dir, act, f); if (fr.cv.width === HERO_W && fr.cv.height === HERO_H) n++; }
   } catch (e) { threw = String(e); }
-  check(`Portador v4: ${n} fotogramas (2 disciplinas × 6 armaduras × 2 armas × 3 dir.) sin errores`, !threw && n === 2 * 6 * 2 * 3 * 28, threw || String(n));
+  const perLook = (Object.values(HERO_FRAMES) as number[]).reduce((a, b) => a + b, 0); // R19: Portador v5 (marioneta 32×38)
+  check(`Portador v5: ${n} fotogramas (2 disciplinas × 6 armaduras × 2 armas × 3 dir.) sin errores`, !threw && n === 2 * 6 * 2 * 3 * perLook, threw || String(n));
   const g = boot();
   const p = g.player!;
   check('grimorio: la página II empieza en blanco', grimoirePage(p) === 0 && !grimoireHasSecondPage(p));

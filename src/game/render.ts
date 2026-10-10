@@ -49,7 +49,8 @@ import { drawCompanionFx, drawMarkFx } from './actors/companfx';
 import { drawToastsV2, drawMapBannerV2 } from './actors/toasts';
 import { drawHudFx } from './actors/hudfx';
 import { drawVfxWorld, drawVfxGlow, drawWarcryAura } from './actors/vfx'; // R16: VFX de combate y magia
-import { heroFrame, HERO_W, HERO_H, type HeroAct, type HeroDir, type HeroFrame } from './actors/hero'; // R18: Portador v4
+import { heroFrame, heroFigLook, HERO_W, HERO_H, type HeroAct, type HeroDir, type HeroFrame } from './actors/hero'; // R18: Portador v4 · R19: v5
+import { setPortraitHeroLook } from './actors/portrait2'; // R19: retrato con equipo
 import { armorActive } from './armor';
 import { exitGate, drawGates } from './gates'; // R18: sellos de la Niebla
 import { cutsceneActive, cutsceneBars, drawCutsceneOverlay, drawCutsceneActors } from './cutscene'; // R18
@@ -475,27 +476,27 @@ function heroFrameFor(g: Game, p: Player, dirOverride?: Dir): HeroFrame {
   const look = { disc: p.discipline, armor: armorActive(g)?.tier ?? 0, weapon: Math.max(0, Math.min(5, p.weaponPlus | 0)) };
   const d = dirOverride ?? p.dir;
   const dir: HeroDir = d === 'up' ? 'up' : d === 'down' ? 'down' : 'side';
+  // R19: 5 fases de ataque/lanzar (preparación · arranque · golpe · remate · recuperación)
+  const phase5 = (k: number) => k < 0.16 ? 0 : k < 0.34 ? 1 : k < 0.6 ? 2 : k < 0.82 ? 3 : 4;
   let act: HeroAct = 'idle', f = 0;
-  if (p.rollT > 0) { act = 'roll'; f = Math.min(3, Math.floor((1 - p.rollT / 0.3) * 4)); }
+  if (p.rollT > 0) { act = 'roll'; f = Math.min(5, Math.floor((1 - p.rollT / 0.3) * 6)); }
   else if (p.attackT > 0) {
     const dur = p.chargedHit ? 0.4 : 0.26;
-    const k = 1 - p.attackT / dur;
     act = p.discipline === 'tejedor' ? 'cast' : 'atk';
-    f = k < 0.42 ? 0 : k < 0.74 ? 1 : 2;
+    f = phase5(1 - p.attackT / dur);
   } else if ((p.castT ?? 0) > 0) {
-    const k = 1 - (p.castT ?? 0) / 0.32;
     act = p.discipline === 'tejedor' ? 'cast' : 'atk';
-    f = k < 0.35 ? 0 : k < 0.7 ? 1 : 2;
+    f = phase5(1 - (p.castT ?? 0) / 0.32);
   } else if (p.lastHitT > 0.16) {
-    act = 'hurt';
+    act = 'hurt'; f = p.lastHitT > 0.24 ? 0 : 1;
   } else if (p.charging && p.chargeT > 0.2) {
-    act = p.discipline === 'tejedor' ? 'cast' : 'atk'; f = 0; // carga: arma alzada
+    act = 'charge'; f = p.chargeT > 0.8 ? Math.floor(g.globalT * 14) % 2 : 0; // carga llena: tiembla
   } else if (p.moving) {
-    if ((p.sprintT ?? 0) > 0) { act = 'run'; f = Math.floor(p.anim * 12); }
-    else { act = 'walk'; f = Math.floor(p.anim * 9); }
+    if ((p.sprintT ?? 0) > 0) { act = 'run'; f = Math.floor(p.anim * 13); }
+    else { act = 'walk'; f = Math.floor(p.anim * 10); }
   } else {
     const t = g.globalT;
-    f = (t % 4.1) < 0.14 ? 2 : (Math.floor(t / 1.15) % 2); // respira ~2,3 s y parpadea cada ~4 s
+    f = (t % 4.1) < 0.14 ? 4 : (Math.floor(t / 0.58) % 4); // respira ~2,3 s y parpadea cada ~4 s
   }
   return heroFrame(look, dir, act, f);
 }
@@ -1040,6 +1041,11 @@ function drawHud(g: Game) {
   ctx.clip();
   ctx.fillStyle = '#141020';
   ctx.fillRect(14, 14, 44, 44);
+  {
+    // R19: el retrato del HUD lleva el equipo actual del Portador
+    const lk = { disc: p.discipline, armor: armorActive(g)?.tier ?? 0, weapon: Math.max(0, Math.min(5, p.weaponPlus | 0)) };
+    setPortraitHeroLook(`${lk.disc}|${lk.armor}|${lk.weapon}`, heroFigLook(lk));
+  }
   drawPortrait(ctx, p.discipline === 'alba' ? 'hero_alba' : 'hero_tejedor', 14 + (44 - 28 * 1.06) / 2, 14 + (44 - 40 * 1.06) / 2 + hudBob, 1.06, blinkHud, performance.now());
   ctx.restore();
   ctx.strokeStyle = '#5a4a30';

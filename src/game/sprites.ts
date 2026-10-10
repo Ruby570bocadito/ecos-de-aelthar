@@ -18,6 +18,7 @@ import { paintTall } from './world/trees';
 import { px as tpx, hash2 } from './world/palette';
 
 import { volumizeAll } from './actors/volume'; // R18: profundidad para NPCs y humanoides
+import { NPC_LOOKS, buildNpcFrames } from './actors/npc2'; // R19: NPCs con la marioneta del Portador
 export { hash2 } from './world/palette';
 export type { Frames } from './actors/util';
 export { frameIndex, entityFrame, type HumanPal } from './actors/humanoid';
@@ -60,6 +61,11 @@ export function initSprites(): void {
     ATK[name] = volumizeAll(buildAttackPoses(pal), 1.3); // R9-6
     ROLL[name] = volumizeAll(buildRollPoses(pal), 1.3);  // R9-6
   }
+  // R19: los personajes con aspecto v2 sustituyen al humanoide de 16 px
+  for (const [name, look] of Object.entries(NPC_LOOKS)) {
+    delete SPR[name];
+    LAZY[name] = () => buildNpcFrames(look);
+  }
   SPR['lobo'] = buildWolf();
   SPR['guardian'] = buildGuardian();
   const chest = buildChest();
@@ -71,8 +77,17 @@ export function initSprites(): void {
   buildPickups();
 }
 
+// R19: NPCs v2 (marioneta 32×38) — se esculpen la PRIMERA vez que se dibujan
+const LAZY: Record<string, () => Frames> = {};
+
 export function getSpr(name: string): Frames {
-  return SPR[name] ?? SPR['hero_alba'];
+  let f = SPR[name];
+  if (!f) {
+    const mk = LAZY[name];
+    if (mk) { delete LAZY[name]; f = SPR[name] = mk(); }
+    else if (name !== 'hero_alba') return getSpr('hero_alba');
+  }
+  return f;
 }
 
 // R9-6 · poses de combate consumidas por render.ts (drawEntity, contrato R3-c).

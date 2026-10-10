@@ -311,7 +311,7 @@ function drawScene1(ctx: CanvasRenderingContext2D, t: number): void {
     // ×3, de espaldas, trepando con el ciclo de andar) con borde de luna
     const spr = getSpr('sombra');
     const fr = spr[Math.min(spr.length - 1, 9 + (Math.floor(t * 7 + k * 2) % 6))] ?? spr[0]; // bloque de espaldas (andar)
-    const sc = k === 1 ? 3.4 : 3; // el del centro, el que lleva la Lanza, algo mayor
+    const sc = k === 1 ? 1.75 : 1.55; // R19: sprite v2 (32×38) · el del centro, el de la Lanza, algo mayor
     const fw = fr.width * sc, fh = fr.height * sc;
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(fr, gx - fw / 2 + sway, gy - fh, fw, fh);

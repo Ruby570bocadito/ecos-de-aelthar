@@ -14,7 +14,7 @@
 
 import { mkCanvas } from './util';
 
-export interface Ramp { hi: string; base: string; sh: string; out: string; hard?: boolean; flat?: boolean }
+export interface Ramp { hi: string; base: string; sh: string; out: string; hard?: boolean; flat?: boolean; soft?: boolean }
 
 function rgb(h: string): [number, number, number] {
   let s = h.replace('#', '');
@@ -44,6 +44,77 @@ export function ramp(base: string, opts?: { hard?: boolean; flat?: boolean; hiK?
     out: mixC(mulC(base, 0.34), '#120a1c', 0.45),
     hard: opts?.hard, flat: opts?.flat,
   };
+}
+
+// ---------------------------------------------------------------- R19 · luz v2
+/** Opciones del sombreado v2 (normales desde la silueta). */
+export interface Light2 {
+  /** Color de luz de borde (contraluz) en los bordes abajo-derecha; null = sin rim. */
+  rim?: string | null;
+  /** Intensidad del rim (0..1). */
+  rimK?: number;
+  /** Radio del abombado global (px). Más grande = formas más redondas. */
+  bulge?: number;
+  /** Sombra de contacto bajo los cambios de material (oclusión). */
+  ao?: boolean;
+  /** Contorno exterior (sel-out). */
+  outline?: boolean;
+}
+
+interface Tones5 { hi2: string; hi: string; base: string; sh: string; sh2: string; out: string; outL: string }
+const T5 = new WeakMap<Ramp, Tones5>();
+function tones5(T: Ramp): Tones5 {
+  let t = T5.get(T);
+  if (!t) {
+    t = {
+      hi2: mixC(T.hi, '#fffbe8', T.hard ? 0.55 : 0.32),
+      hi: T.hi, base: T.base, sh: T.sh,
+      sh2: mixC(mulC(T.sh, 0.76), '#1a1438', 0.22),
+      out: T.out,
+      outL: mixC(T.out, T.sh, 0.45),
+    };
+    T5.set(T, t);
+  }
+  return t;
+}
+
+const LX = -0.476, LY = -0.667, LZ = 0.571; // luz arriba-izquierda, hacia el espectador
+
+/** Distancia (chaflán 8-vecinos) de cada píxel lleno a la condición `edge` (cap). */
+function distField(W: number, H: number, inside: (i: number) => boolean, same: (i: number, j: number) => boolean, cap: number): Float32Array {
+  const d = new Float32Array(W * H);
+  const INF = cap;
+  for (let i = 0; i < W * H; i++) d[i] = inside(i) ? INF : 0;
+  const D1 = 1, D2 = 1.414;
+  // pasada hacia delante
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (d[i] === 0) continue;
+    let v = d[i];
+    const nb = (xx: number, yy: number, w: number) => {
+      if (xx < 0 || yy < 0 || xx >= W || yy >= H) { v = Math.min(v, w * 0.5); return; }
+      const j = yy * W + xx;
+      if (!same(i, j)) { v = Math.min(v, w * 0.5); return; }
+      v = Math.min(v, d[j] + w);
+    };
+    nb(x - 1, y, D1); nb(x, y - 1, D1); nb(x - 1, y - 1, D2); nb(x + 1, y - 1, D2);
+    d[i] = v;
+  }
+  // pasada hacia atrás
+  for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) {
+    const i = y * W + x;
+    if (d[i] === 0) continue;
+    let v = d[i];
+    const nb = (xx: number, yy: number, w: number) => {
+      if (xx < 0 || yy < 0 || xx >= W || yy >= H) { v = Math.min(v, w * 0.5); return; }
+      const j = yy * W + xx;
+      if (!same(i, j)) { v = Math.min(v, w * 0.5); return; }
+      v = Math.min(v, d[j] + w);
+    };
+    nb(x + 1, y, D1); nb(x, y + 1, D1); nb(x + 1, y + 1, D2); nb(x - 1, y + 1, D2);
+    d[i] = v;
+  }
+  return d;
 }
 
 export class Sculpt {
@@ -110,6 +181,110 @@ export class Sculpt {
     this.det[y * this.w + x] = c;
   }
 
+  /**
+   * R19 · sombreado v2: cada píxel recibe una NORMAL calculada desde la
+   * silueta global y la de su material (campo de distancias → altura →
+   * gradiente). Con luz arriba-izquierda da 5 tonos por material (brillo,
+   * luz, base, sombra, sombra profunda), sombra de contacto bajo los cambios
+   * de material, brillo especular en materiales duros, contraluz opcional y
+   * contorno selectivo más suave del lado de la luz.
+   */
+  render2(pal: Ramp[], opt: Light2 = {}): HTMLCanvasElement {
+    return paintColors(this.w, this.h, this.shade2(pal, opt));
+  }
+
+  /** Colores del sombreado v2 (sin volcar a canvas): útil para componer. */
+  shade2(pal: Ramp[], opt: Light2 = {}): (string | null)[] {
+    const W = this.w, H = this.h, m = this.m;
+    const bulge = opt.bulge ?? Math.max(3, Math.min(8, Math.round(Math.min(W, H) / 6)));
+    const filled = (i: number) => m[i] !== 0;
+    const dS = distField(W, H, filled, (_i, j) => m[j] !== 0, bulge);
+    const dM = distField(W, H, filled, (i, j) => m[j] === m[i] || m[j] === 255 || m[i] === 255, 3);
+    const hgt = new Float32Array(W * H);
+    for (let i = 0; i < W * H; i++) {
+      if (!m[i]) continue;
+      const a = Math.min(dS[i], bulge) / bulge, b = Math.min(dM[i], 3) / 3;
+      hgt[i] = Math.sqrt(1 - (1 - a) * (1 - a)) * bulge * 0.9 + Math.sqrt(1 - (1 - b) * (1 - b)) * 1.6;
+    }
+    // suavizado 3×3 dentro de la silueta: quita el moteado de los tonos
+    {
+      const tmp = new Float32Array(hgt);
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (!m[i]) continue;
+        let s = 0, n = 0;
+        for (let j = -1; j <= 1; j++) for (let k = -1; k <= 1; k++) {
+          const xx = x + k, yy = y + j;
+          if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+          const q = yy * W + xx;
+          if (!m[q]) continue;
+          const wgt = j === 0 && k === 0 ? 2 : 1;
+          s += tmp[q] * wgt; n += wgt;
+        }
+        hgt[i] = s / n;
+      }
+    }
+    const hAt = (x: number, y: number, fb: number) => (x < 0 || y < 0 || x >= W || y >= H || !m[y * W + x]) ? fb : hgt[y * W + x];
+    const out: (string | null)[] = new Array(W * H).fill(null);
+    const rimC = opt.rim ?? null, rimK = opt.rimK ?? 0.3;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = y * W + x, mat = m[i];
+      if (!mat) continue;
+      const d = this.det[i];
+      if (d) { out[i] = d; continue; }
+      const T = pal[mat];
+      if (!T) continue;
+      if (T.flat) { out[i] = T.base; continue; }
+      const t = tones5(T);
+      const h0 = hgt[i];
+      const gx = (hAt(x + 1, y, h0 - 1.2) - hAt(x - 1, y, h0 - 1.2)) * 0.5;
+      const gy = (hAt(x, y + 1, h0 - 1.2) - hAt(x, y - 1, h0 - 1.2)) * 0.5;
+      let nx = -gx, ny = -gy, nz = 1.15;
+      const nl = Math.hypot(nx, ny, nz); nx /= nl; ny /= nl; nz /= nl;
+      let diff = nx * LX + ny * LY + nz * LZ;
+      // sombra de contacto: bajo otro material (cuello bajo la cabeza, falda bajo el cinturón…)
+      if (opt.ao !== false) {
+        const up = y > 0 ? m[i - W] : 0;
+        if (up && up !== mat && up !== 255) diff -= 0.2;
+      }
+      let c: string;
+      if (T.soft) {
+        // piel: 3 tonos amplios (nada de sombra profunda moteando la cara)
+        c = diff > 0.8 ? t.hi : diff > 0.2 ? t.base : t.sh;
+      } else if (diff > (T.hard ? 0.86 : 0.93)) c = t.hi2;
+      else if (diff > 0.74) c = t.hi;
+      else if (diff > 0.42) c = t.base;
+      else if (diff > 0.12) c = t.sh;
+      else c = t.sh2;
+      // contraluz: borde abajo-derecha que da a vacío
+      if (rimC) {
+        const er = x + 1 >= W || !m[i + 1], eb = y + 1 >= H || !m[i + W];
+        if ((er || eb) && diff < 0.5) c = mixC(c, rimC, rimK);
+      }
+      out[i] = c;
+    }
+    if (opt.outline !== false) {
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (m[i] !== 0) continue;
+        // vecino lleno: preferimos abajo/derecha (el contorno «de sombra»)
+        let nm = 0, lit = false;
+        const below = y + 1 < H ? m[i + W] : 0, right = x + 1 < W ? m[i + 1] : 0;
+        const left = x > 0 ? m[i - 1] : 0, above = y > 0 ? m[i - W] : 0;
+        if (below && below !== 255) { nm = below; lit = true; }
+        else if (right && right !== 255) { nm = right; lit = true; }
+        else if (left && left !== 255) nm = left;
+        else if (above && above !== 255) nm = above;
+        if (!nm) continue;
+        const T = pal[nm];
+        if (!T) { out[i] = '#100818'; continue; }
+        const t = tones5(T);
+        out[i] = lit ? t.outL : t.out;
+      }
+    }
+    return out;
+  }
+
   /** Sombrea, contornea y vuelca a un canvas. `pal[mat]` = rampa del material. */
   render(pal: Ramp[], outlineAll = true): HTMLCanvasElement {
     const W = this.w, H = this.h;
@@ -157,4 +332,19 @@ export class Sculpt {
     }
     return c;
   }
+}
+
+/** Vuelca una matriz de colores a canvas (por tramos horizontales). */
+export function paintColors(W: number, H: number, out: (string | null)[]): HTMLCanvasElement {
+  const { c, x } = mkCanvas(W, H);
+  for (let y = 0; y < H; y++) {
+    let run = 0, runC: string | null = null, runX = 0;
+    for (let i = 0; i <= W; i++) {
+      const col = i < W ? out[y * W + i] : null;
+      if (col === runC && col !== null) { run++; continue; }
+      if (runC !== null && run > 0) { x.fillStyle = runC; x.fillRect(runX, y, run, 1); }
+      runC = col; runX = i; run = col !== null ? 1 : 0;
+    }
+  }
+  return c;
 }

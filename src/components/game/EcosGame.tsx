@@ -122,8 +122,8 @@ let HERO_FRAMES: Record<DiscId, HTMLCanvasElement[]> | null = null;
 function heroFrames(): Record<DiscId, HTMLCanvasElement[]> | null {
   if (HERO_FRAMES) return HERO_FRAMES;
   if (typeof document === 'undefined') return null;
-  // R18: [0] reposo · [1] respiración · [2] parpadeo (Portador v4, de frente)
-  const mk = (disc: DiscId) => [0, 1, 2].map(f => heroFrame({ disc, armor: 0, weapon: 0 }, 'down', 'idle', f).cv);
+  // R19: [0] reposo · [1] respiración · [2] parpadeo (Portador v5, de frente: idle 4 = parpadeo)
+  const mk = (disc: DiscId) => [0, 1, 4].map(f => heroFrame({ disc, armor: 0, weapon: 0 }, 'down', 'idle', f).cv);
   HERO_FRAMES = { alba: mk('alba'), tejedor: mk('tejedor') };
   return HERO_FRAMES;
 }
@@ -145,7 +145,7 @@ const CREATOR_CSS = `
 `;
 
 // Escala del retrato: sprite 16×18 → 96×108 px nítidos (rango pedido ×4-6).
-const PORTRAIT_SCALE = 4; // R18: Portador v4 26×30 → 104×120 px
+const PORTRAIT_SCALE = 4; // R19: Portador v5 32×38 → 128×152 px
 
 /**
  * Retrato pixelado del héroe: canvas pequeño que estampa los frames de
@@ -181,7 +181,7 @@ const PortraitCanvas = memo(function PortraitCanvas({ disc, tint }: { disc: Disc
   }, [disc]);
   return (
     <div
-      className="relative flex h-[136px] items-end justify-center overflow-hidden border-b border-white/5"
+      className="relative flex h-[164px] items-end justify-center overflow-hidden border-b border-white/5"
       style={{ background: `radial-gradient(ellipse at 50% 100%, ${tint}2e 0%, ${tint}14 40%, transparent 72%)` }}
     >
       {/* sombra de suelo bajo el personaje */}
