@@ -18,6 +18,8 @@ import { combatSparks, dodgeRing, critGlint } from './fx';
 import { expansionTick, expansionDeathFx, expansionBossWatchers } from './enemies_expansion';
 import { tileAt } from './maps'; // solo lectura (mapas propiedad de otro agente)
 import { interaccionTick, companionOrdersMove, lureActive, sennoChase } from './interaccion'; // 16-b: órdenes tácticas + señuelo
+import { faroTick } from './faro_historia'; // 18-e: escucha nocturna del faro + pago único
+import { cumbresBiomaTick } from './biomas_cumbres'; // 18-b: fases del bioma de cumbres
 
 const DIRS: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
 
@@ -382,6 +384,8 @@ export function updateGame(g: Game, dt: number) {
   // ==== 16-b (interacción-compañeros): señuelo (vida/marcador/aggro timers),
   // restos (ttl/marcador) y cooldown de interposición. O(1)/frame, cero GC. ====
   interaccionTick(g, dt);
+  faroTick(g);            // 18-e: arco del faro (O(1), early-out fuera de costa)
+  cumbresBiomaTick(g, dt); // 18-b: huellas/aliento/chispas de cumbres (O(1))
 
   // ---------------- enemigos ----------------
   let anyAggro = false;

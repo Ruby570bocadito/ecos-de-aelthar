@@ -1,0 +1,88 @@
+=== flip/left/right en sprites ===
+85:  dir: 'down' | 'up' | 'side', f: number, bob: number, L: Layout,
+101:  if (dir === 'down' || dir === 'up') {
+107:    if (dir === 'down') {
+218:  const dirs: ('down' | 'up' | 'side')[] = ['down', 'up', 'side'];
+242:  const base = dir === 'down' ? 0 : dir === 'up' ? 2 : 4;
+255:    const base = dir === 'up' ? 3 : dir === 'side' ? 6 : 0;
+569://   · dir: 'down' | 'up' | 'left' | 'right'. Igual que los frames de andar,
+571://     las voltea para 'left' (flip = e.dir === 'left') — NUNCA se pre-espejan.
+639:  pal: HumanPal, dir3: 'down' | 'up' | 'side', bob: number,
+709: *  'down'|'up'|'right' (las poses laterales miran a la derecha). */
+710:function weaponPoses(pal: HumanPal, W: WeaponDef, dir3: 'down' | 'up' | 'side', dir: 'down' | 'up' | 'right'): Frames {
+746:    if (dir === 'down') {
+747:      const P = poseCanvas(pal, 'down', 0);
+755:    if (dir === 'up') {
+756:      const P = poseCanvas(pal, 'up', 1);    // cuerpo abajo 1px: hueco para el arma
+777:function bowPoses(pal: HumanPal, W: WeaponDef, dir3: 'down' | 'up' | 'side'): Frames {
+815:  if (dir3 === 'down') {
+817:      const P = poseCanvas(pal, 'down', 0);
+831:      const P = poseCanvas(pal, 'down', 0);
+844:  // dir3 === 'up'
+846:    const P = poseCanvas(pal, 'up', 1);        // cuerpo abajo 1px: hueco para el arco
+860:    const P = poseCanvas(pal, 'up', 0);
+877:function castPoses(pal: HumanPal, W: WeaponDef, dir3: 'down' | 'up' | 'side'): Frames {
+910:    if (dir3 === 'down') {
+932:    if (dir3 === 'down') {
+=== dir en types/engine/update ===
+src/game/update.ts:175:    const rd = (p as unknown as { rollDir?: Dir }).rollDir ?? p.dir;
+src/game/update.ts:217:          if (Math.abs(mx) > Math.abs(my)) p.dir = mx > 0 ? 'right' : 'left';
+src/game/update.ts:218:          else p.dir = my > 0 ? 'down' : 'up';
+src/game/update.ts:233:          if (Math.abs(mx) > Math.abs(my)) p.dir = mx > 0 ? 'right' : 'left';
+src/game/update.ts:234:          else p.dir = my > 0 ? 'down' : 'up';
+src/game/update.ts:282:      const [lgx, lgy] = DIRS[p.dir];
+src/game/update.ts:287:      const [fdx, fdy] = DIRS[p.dir];
+src/game/update.ts:302:        const [rdx, rdy] = DIRS[p.dir];
+src/game/update.ts:328:    let rd: Dir = p.dir;
+src/game/update.ts:565:      c.dir = dx > 0 ? 'right' : dx < 0 ? 'left' : dy > 0 ? 'down' : 'up';
+src/game/update.ts:748:      e.dir = Math.cos(ang) > 0 ? 'right' : 'left';
+src/game/update.ts:763:        e.dir = dx > 0 ? 'right' : 'left';
+src/game/update.ts:778:      e.dir = p.x > e.x ? 'right' : 'left';
+src/game/engine.ts:1574:      const [dx, dy] = dirs[p.dir];
+src/game/engine.ts:1601:    if (Math.abs(dx) > Math.abs(dy)) p.dir = dx > 0 ? 'right' : 'left';
+=== drawPortrait ===
+1167:export function drawPortrait(
+=== pickup altarEcho en engine ===
+886-      else if (pr.kind === 'forge') consider(px, py, 'forge', 'Forja de Toln', () => this.talkTo('toln'), 28);
+887-      else if (pr.kind === 'fragment') consider(px, py, 'frag', 'Fragmento de Eco', () => this.openDialogue('voz_fragment'), 30);
+888:      else if (pr.kind === 'altarEcho') consider(px, py, 'altar', 'Altar del Eco', () => this.tryTakeEco(), 30);
+889-      else if (pr.kind === 'sign') consider(px, py, 'sign', 'Leer cartel', () => this.readSign(pr.label ?? ''), 28);
+890-      else if (pr.kind === 'lamp' && !this.flags[pr.id]) consider(px, py, 'lamp', 'Encender el Farol del Recuerdo', () => this.lightLamp(pr.id), 28);
+891-    }
+892-    for (const ec of this.map.echoes) {
+893-      if (this.takenEchoes.has(ec.id)) continue;
+894-      consider(ec.x * TILE + 8, ec.y * TILE + 8, 'echo', 'Escuchar eco menor', () => this.takeEchoMinor(ec.id, ec.title, ec.text), 26);
+895-    }
+896-    return best;
+=== npcs de costa ===
+335:    npcs: [
+336-      { id: 'mara', x: 7, y: 19, sprite: 'maelis', name: 'Mara, la farera' },
+337-      { id: 'vult', x: 30, y: 32, sprite: 'corvin', name: 'Vult, cartógrafo de la Liga' },
+338-    ],
+339-    chests: [
+340-      // al final del muelle: solo alcanza quien camine sobre el ayer
+341-      { id: 'co1', x: 29, y: 37, gold: 60, potions: 1, needPast: true },
+--
+387:    npcs: [
+388-      { id: 'mera', x: 22, y: 16, sprite: 'nimue', name: 'Espectro de Merrow' },
+389-    ],
+390-    chests: [
+391-      // el botín del festival solo existe en el pueblo vivo
+392-      { id: 'a1', x: 10, y: 23, gold: 60, potions: 2, needPast: true },
+393-      { id: 'a2', x: 32, y: 9, gold: 30 },
+--
+431:    npcs: [
+432-      { id: 'ivo', x: 27, y: 37, sprite: 'brokk', name: 'Ivo, cazador de cumbres' },
+433-    ],
+434-    chests: [
+435-      { id: 'cu1', x: 5, y: 7, gold: 50 },
+436-      { id: 'cu2', x: 43, y: 30, gold: 40, potions: 1 },
+437-      { id: 'cu3', x: 27, y: 4, gold: 60 },
+--
+481:    npcs: [],
+482-    chests: [],
+483-    echoes: [],
+484-    spawns: [],                     // sin spawns de mapa: challenge.ts instancia oleadas y jefes
+485-    exits: [
+486-      // puerta de emergencia: aterriza en el Santuario de Lunaris (mismo punto
+487-      // que usa respawn en campaña); challenge.ts detecta la salida y restaura

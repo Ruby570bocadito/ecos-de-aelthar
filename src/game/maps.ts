@@ -180,6 +180,24 @@ function buildBosque(): string[] {
   rect(g, 53, 6, 3, 3, '=');
   // plataforma de aterrizaje para quien vuelve de las Cumbres (51,7)
   rect(g, 50, 7, 3, 2, '=');
+  // FIX R18 (bug «la cripta está bloqueada por árboles»): el scatter de pinos
+  // podía sellar la aproximación a la puerta NOROESTE de la cripta (x7..13,
+  // y2..4) y dejar al jugador encerrado tras cruzar el puente del ayer.
+  // Se garantiza un corredor peatonal: solo se despejan pinos ('p'), nunca
+  // muros '#', la puerta '=' ni el arco 'A'. Ramal oeste y conexión con el
+  // camino este (y8) — la Niebla Muda ('n', y6..7 × x23..28) NO se toca:
+  // el cruce por el ayer sigue siendo el puzzle narrado por Brisa.
+  for (let y = 5; y <= 9; y++) {
+    for (let x = 6; x <= 15; x++) {
+      if (g[y][x] === 'p') set(g, x, y, '.');
+    }
+  }
+  for (let x = 16; x <= 22; x++) {          // ramal este del corredor (y7 esquiva la Niebla)
+    if (g[7][x] === 'p') set(g, x, 7, '.');
+  }
+  for (let x = 16; x <= 26; x++) {          // conexión con el camino de las Cumbres (y8, bajo la Niebla)
+    if (g[8][x] === 'p') set(g, x, 8, '.');
+  }
   return toRows(g);
 }
 
@@ -340,6 +358,8 @@ const BASE_MAPS: Record<'lunaris' | 'bosque' | 'cripta', MapDef> = {
       // easter egg Nimue (biblia: hermana de Ilwen, atrapada en la Niebla) — solo en el pasado
       { id: 'sign_nimue', kind: 'sign', x: 25, y: 6, needPast: true, label: 'Las flores del pasado no crecen en círculo por casualidad. Entre las raíces, apenas un hilo de voz que ya no es voz: «...nimue... nimue...» Alguien duerme aquí debajo, y la Niebla la cuida como a una semilla. (Ilwen busca a su hermana... pero jura que no se llamaba así.)' },
       { id: 'sign_b2', kind: 'sign', x: 52, y: 9, label: '«Al este: el paso de las Cumbres. Lleva abrigo, Portador.»' },
+      // R18: cartel junto al vado sur del río — refuerza el puzzle del ayer
+      { id: 'sign_b3', kind: 'sign', x: 27, y: 13, label: '«El río se cruzó siempre cantando, y el puente solo es entero en el ayer. Pulsa Q junto a él: el Bosque del norte guarda la Cripta del Primer Canto.»' },
     ],
   },
 

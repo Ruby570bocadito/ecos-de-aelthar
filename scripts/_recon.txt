@@ -1,0 +1,58 @@
+=== zonas ===
+src/game/engine.ts
+src/game/skilltree.ts
+src/game/ui.ts
+src/game/audio.ts
+src/game/timeskip.ts
+src/game/balance.ts
+src/game/world/palette.ts
+src/game/world/props.ts
+src/game/world/village.ts
+src/game/world/minimap.ts
+=== altar ===
+src/game/types.ts:64:export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'altarEcho' | 'sign' | 'gate' | 'wreck' | 'faro' | 'lamp';
+src/game/render.ts:262:    } else if (pr.kind === 'altarEcho') {
+src/game/render.ts:263:      // altar con el Eco (si no recogido) — generalizado Acto II: cada altar
+src/game/render.ts:265:      const ecoFlag = pr.id === 'altar_mareas' ? 'ecoMareas' : pr.id === 'altar_cumbres' ? 'ecoCumbres' : 'ecoVoz';
+src/game/render.ts:266:      const bossFlag = pr.id === 'altar_mareas' ? 'sirenaDefeated' : pr.id === 'altar_cumbres' ? 'golemDefeated' : 'guardianDefeated';
+src/game/render.ts:267:      const ecoColor = pr.id === 'altar_mareas' ? '#8ef0ff' : pr.id === 'altar_cumbres' ? '#a8d8ff' : '#ffe9a0';
+src/game/maps.ts:192:  // sala del altar (norte)
+src/game/maps.ts:379:      // (10,3) era el altar sólido DENTRO de la zona → bucle de teletransporte.
+src/game/maps.ts:384:      { id: 'altar_c', kind: 'altarEcho', x: 19, y: 4 },
+src/game/hooks.ts:292:      const altar = g.map.props.find(pr => pr.id === 'altar_c');
+src/game/hooks.ts:293:      const ax = (altar ? altar.x : 19) * 16 + 8; // TILE=16, constante del proyecto
+src/game/hooks.ts:294:      const ay = (altar ? altar.y + 5 : 9) * 16 + 8;
+src/game/hooks.ts:421:      const altar = g.map.props.find(pr => pr.id === 'altar_c');
+src/game/hooks.ts:422:      const ax = (altar ? altar.x : 19) * 16 + 8;      // TILE=16, constante del proyecto
+src/game/hooks.ts:423:      const ay = (altar ? altar.y + 2 : 6) * 16 + 8;   // boca de la Sala del Primer Canto
+src/game/maps_expansion.ts:90:// naufragio al este, faro en ruinas al oeste, altar de las Mareas.
+src/game/maps_expansion.ts:227:// cordillera al norte ('R') con la meseta del altar. Entrada por el sur.
+src/game/maps_expansion.ts:235:  // meseta del altar del Eco de las Cumbres, abierta en la roca
+src/game/maps_expansion.ts:276:  // el camino al altar estaba empedrado: los pastores subían a cantar por turnos
+src/game/maps_expansion.ts:373:      { id: 'altar_mareas', kind: 'altarEcho', x: 36, y: 27 },
+=== miniboss ===
+=== facing/dir ===
+=== brisa portrait ===
+438:  brisa: {
+587:const ATTACK_POSES = new Set(['hero_alba', 'hero_tejedor', 'brisa', 'toln', 'ilwen', 'doran', 'kael']);
+591:// alba espada roja-plateada · tejedor bastón con punta dorada · brisa bastón
+598:  brisa: { kind: 'staff', metal: '#9a7a50', glint: '#f8f0d0', grip: '#6a4e30', trim: '#e8d8a8' },
+1065:  brisa: {
+1342:  if (key === 'brisa') {
+=== cripta bloqueo ===
+src/game/maps.ts:3:// Valle de Lunaris · Bosque Susurrante · Cripta del Primer Canto
+src/game/maps.ts:166:  // entrada de la cripta (noroeste)
+src/game/maps.ts:186:// ---------------- CRIPTA (40×34) ----------------
+src/game/maps.ts:188:function buildCripta(): string[] {
+src/game/maps.ts:244:const BASE_MAPS: Record<'lunaris' | 'bosque' | 'cripta', MapDef> = {
+src/game/maps.ts:331:      { x: 8, y: 2, w: 5, h: 2, to: 'cripta', tx: 19, ty: 30, label: 'Cripta del Primer Canto' },
+src/game/maps.ts:339:      { id: 'sign_c', kind: 'sign', x: 15, y: 5, label: '«Cripta del Primer Canto. Aquí durmió la voz del dios.»' },
+src/game/maps.ts:346:  cripta: {
+src/game/maps.ts:347:    id: 'cripta',
+src/game/maps.ts:348:    name: 'Cripta del Primer Canto',
+src/game/maps.ts:351:    rows: buildCripta(),
+src/game/maps.ts:357:      // atado a la piedra de la Cripta. Solo aparece cuando el tercer canto
+src/game/maps.ts:371:      { type: 'esqueleto', x: 10, y: 26, patrol: 3, zone: 'cripta' },
+src/game/maps.ts:372:      { type: 'esqueleto', x: 29, y: 27, patrol: 3, zone: 'cripta' },
+src/game/maps.ts:373:      { type: 'esqueleto', x: 13, y: 17, patrol: 2, zone: 'cripta' },
+=== token push ===

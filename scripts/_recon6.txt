@@ -1,0 +1,133 @@
+=== worldlife npc spawn/wander ===
+74-let liveCount = 0; // criaturas vivas (O(1) para el cap)
+75-
+76-/** Mapas con fauna (cripta = fuera del tiempo, arena = desafío). */
+77:const SPAWN_OK = new Set<string>(['lunaris', 'bosque', 'costa', 'aldea', 'cumbres']);
+78-
+79-// ---------------- Estado por Game (WeakMap) ----------------
+80-
+81-interface WLState {
+82-  clock: number;              // reloj propio (no depende de g.globalT)
+83-  spawnAcc: number;
+84-  evtIn: number;              // segundos hasta el próximo evento callejero
+85-  evtCount: number;
+86-  forced: 'eco' | 'rafaga' | 'viajero' | null; // clase fijada por dev/smoke
+87-  trav: { active: boolean; x: number; y: number; dir: number; t: number };
+88-  rumorNext: Map<string, number>; // cooldown por NPC (nid → reloj)
+89-  rot: number;                // rotación determinista de rumores
+--
+428-  lunaris: 'Una ráfaga barre las hojas del valle...',
+429-  bosque: 'El Bosque se mece: una ráfaga larga remueve las copas.',
+430-  costa: 'La bruma se rasga: sal en el viento.',
+431:  aldea: 'El polvo del festival gira en una ráfaga.',
+432-  cumbres: 'La ventisca silba entre los pinos.',
+433-  cripta: 'Un polvo antiguo cae del techo de la Cripta.',
+434-};
+435-
+436-const GUST_COLORS: Record<string, string[]> = {
+437-  lunaris: ['#5a8a44', '#7aa04a', '#a07840'],
+438-  bosque: ['#3e6a34', '#5a8a44', '#8a6a38'],
+439-  costa: ['#c8d8c8', '#a8c0b0', '#d8d0b0'],
+440:  aldea: ['#a89060', '#c0a870', '#907850'],
+441-  cumbres: ['#e8f0f8', '#d0e0f0', '#f0f8ff'],
+442-  cripta: ['#7a7a8a', '#5a5a6a', '#8a8a9a'],
+443-};
+444-
+445-/** Evento puntual. kind opcional para tests/dev. */
+446-function fireEvent(g: Game, st: WLState, kind?: 'eco' | 'rafaga' | 'viajero'): void {
+447-  const roll = kind ?? (() => {
+448-    const r = Math.random();
+449-    if (r < 0.4) return 'eco' as const;
+450-    if (r < 0.7 && !st.trav.active && g.mapId !== 'cripta') return 'viajero' as const;
+451-    return 'rafaga' as const;
+452-  })();
+--
+530-const WATER_LINES: Record<string, { now: string; past: string }> = {
+531-  lunaris: {
+532-    now: 'El estanque está quieto. Ni un reflejo contesta.',
+533:    past: 'Los aldeanos susurran sus nombres al agua: el estanque brilla.',
+534-  },
+535-  bosque: {
+536-    now: 'El río lleva musgo y silencio río abajo.',
+537-    past: 'El río canta bajo el puente entero.',
+538-  },
+539-  costa: {
+540-    now: 'El mar susurra. No le respondas con tu nombre.',
+541-    past: 'La marea lee nombres en voz baja; hoy lee el tuyo.',
+542-  },
+543:  aldea: {
+544-    now: 'La laguna no refleja nada. La Niebla bebió demasiado.',
+545-    past: 'La laguna brilla con las guirnaldas del festival.',
+546-  },
+=== worldlife tick npc move ===
+  st.rumorsShown++;
+  st.lastRumor = text;
+}
+
+function tickRumors(g: Game, st: WLState): void {
+  if (g.state !== 'play' || g.challengeRun || combatActive(g)) return; // ni en combate
+  const p = g.player!;
+  const r = TILE * 2.5; // 2.5 tiles
+  let best: Npc | null = null;
+  let bestD = r * r;
+  for (let i = 0; i < g.npcs.length; i++) {
+    const n = g.npcs[i];
+    const dx = n.x - p.x, dy = n.y - p.y;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = n; }
+  }
+  if (!best) return;
+  // cooldown por NPC: la primera vez, gracia corta para que se vea el sistema
+  if (!st.rumorNext.has(best.nid)) {
+    st.rumorNext.set(best.nid, st.clock + 2.5 + Math.random() * 3);
+    return;
+  }
+  if (st.clock >= (st.rumorNext.get(best.nid) ?? Infinity)) fireRumor(g, st, best);
+}
+
+// ---------------- Eventos callejeros ----------------
+
+const GUST_LINE: Record<string, string> = {
+  lunaris: 'Una ráfaga barre las hojas del valle...',
+  bosque: 'El Bosque se mece: una ráfaga larga remueve las copas.',
+  costa: 'La bruma se rasga: sal en el viento.',
+  aldea: 'El polvo del festival gira en una ráfaga.',
+  cumbres: 'La ventisca silba entre los pinos.',
+  cripta: 'Un polvo antiguo cae del techo de la Cripta.',
+};
+
+const GUST_COLORS: Record<string, string[]> = {
+  lunaris: ['#5a8a44', '#7aa04a', '#a07840'],
+  bosque: ['#3e6a34', '#5a8a44', '#8a6a38'],
+  costa: ['#c8d8c8', '#a8c0b0', '#d8d0b0'],
+  aldea: ['#a89060', '#c0a870', '#907850'],
+  cumbres: ['#e8f0f8', '#d0e0f0', '#f0f8ff'],
+  cripta: ['#7a7a8a', '#5a5a6a', '#8a8a9a'],
+};
+
+/** Evento puntual. kind opcional para tests/dev. */
+function fireEvent(g: Game, st: WLState, kind?: 'eco' | 'rafaga' | 'viajero'): void {
+  const roll = kind ?? (() => {
+    const r = Math.random();
+    if (r < 0.4) return 'eco' as const;
+    if (r < 0.7 && !st.trav.active && g.mapId !== 'cripta') return 'viajero' as const;
+    return 'rafaga' as const;
+  })();
+  const p = g.player!;
+  st.evtCount++;
+  if (roll === 'eco') {
+    // «oyes un eco lejano»: susurro existente + partícula direccional
+    audio.sfx(g.mapId === 'cripta' ? 'wraith' : 'echo');
+    g.floats.push({ x: p.x, y: p.y - 30, text: '...un eco lejano resuena...', t: 2.6, color: '#c8b0e8', vy: -8, size: 8 });
+    const a = Math.random() * Math.PI * 2;
+    const cx = Math.cos(a), sy = Math.sin(a);
+    for (let i = 0; i < 8; i++) {
+      const off = (i - 3.5) * 6;
+      g.particles.push({
+        x: p.x + cx * 80 - sy * off, y: p.y + sy * 80 + cx * off - 8,
+        vx: -cx * 52 + (Math.random() - 0.5) * 10, vy: -sy * 52 + (Math.random() - 0.5) * 10,
+        t: 1.4 + Math.random() * 0.4, maxT: 1.8, color: '#b8a8e8', size: 1.4, grav: 0,
+      });
+    }
+    return;
+  }

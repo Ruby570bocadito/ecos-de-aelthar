@@ -1,0 +1,36 @@
+=== 1) MISIONES (cadena principal) ===
+  ✓ QUESTS.length = 16 (q1..q16, Acto IV incluido)
+  ✓ sin huecos: q1,q2,q3,q4,q5,q6,q7,q8,q9,q10,q11,q12,q13,q14,q15,q16
+
+=== 2) ENEMY_DEFS (10 tipos) ===
+  ✓ 10 tipos revisados (10)
+
+=== 3) DIALOGUES: grafo íntegro (next/onEnd/action) ===
+  ✓ 195 nodos de diálogo sin enlaces rotos
+  ✓ nodos clave del Acto II presentes (mara/mera/ivo/vult/ecos/brisa_acto2/brisa_final2)
+
+=== 4) MEMORIES / KEY_ITEMS / SKILLS ===
+  ✓ MEMORIES = 7 (5 del Acto I-II + mem_cantoalreves del Acto III + mem_ultimacanto del Acto IV)
+  ✓ KEY_ITEMS con los 3 Ecos del Acto II
+  ✓ SKILLS: 4 habilidades por disciplina
+
+=== 5) MAPAS: filas w×h correctas ===
+  ✓ MAPS tiene 7 mapas: lunaris, bosque, cripta, costa, aldea, cumbres, arena
+  ✓ dimensiones normalizadas por mapRows (padded/truncated)
+
+=== 6) SALIDAS DEL MUNDO COMPLETO — auditoría anti-softlock ===
+  ✓ 11 salidas auditadas en 7 mapas
+
+=== 7) EXPANSION_MAPS: spawns/NPCs/cofres/props pisables ===
+  ✓ costa/aldea/cumbres: spawns, NPCs, cofres y props revisados
+
+=== 8) FAROLES DE MERROW (contrato lightLamp) ===
+  ✓ ids exactos: lamp1, lamp2, lamp3
+  ✓ los 3 faroles con needPast:true
+
+=== 9) CONSTANTES ===
+  ✓ TILE = 16
+  ✓ SOLID_CHARS = 16 chars (tp#HrFRwgPAV~dxn)
+
+================================
+RESULTADO: ✗ 0 fallos, ⚠ 0 avisos

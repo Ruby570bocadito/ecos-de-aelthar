@@ -1,0 +1,122 @@
+=== viajero sprite ===
+82-  clock: number;              // reloj propio (no depende de g.globalT)
+83-  spawnAcc: number;
+84-  evtIn: number;              // segundos hasta el próximo evento callejero
+85-  evtCount: number;
+86:  forced: 'eco' | 'rafaga' | 'viajero' | null; // clase fijada por dev/smoke
+87-  trav: { active: boolean; x: number; y: number; dir: number; t: number };
+88-  rumorNext: Map<string, number>; // cooldown por NPC (nid → reloj)
+89-  rot: number;                // rotación determinista de rumores
+90-  rumorsShown: number;
+91-  lastRumor: string;
+92-}
+93-
+94-const STATES = new WeakMap<Game, WLState>();
+95-
+96-function stateFor(g: Game): WLState {
+97-  let s = STATES.get(g);
+98-  if (!s) {
+99-    s = {
+100-      clock: 0, spawnAcc: 0, evtIn: 38 + Math.random() * 22, evtCount: 0,
+101-      forced: null,
+102-      trav: { active: false, x: 0, y: 0, dir: 1, t: 0 },
+103-      rumorNext: new Map(), rot: 0, rumorsShown: 0, lastRumor: '',
+104-    };
+105-    STATES.set(g, s);
+106-  }
+107-  return s;
+108-}
+109-
+110-// ---------------- Helpers de cámara (mundo px) ----------------
+111-
+112-function viewBounds(g: Game): [number, number, number, number] {
+113-  const x0 = g.camX / ZOOM, y0 = g.camY / ZOOM;
+114-  return [x0, y0, (g.camX + VIEW_W) / ZOOM, (g.camY + VIEW_H) / ZOOM];
+115-}
+116-
+--
+442-  cripta: ['#7a7a8a', '#5a5a6a', '#8a8a9a'],
+443-};
+444-
+445-/** Evento puntual. kind opcional para tests/dev. */
+446:function fireEvent(g: Game, st: WLState, kind?: 'eco' | 'rafaga' | 'viajero'): void {
+447-  const roll = kind ?? (() => {
+448-    const r = Math.random();
+449-    if (r < 0.4) return 'eco' as const;
+450:    if (r < 0.7 && !st.trav.active && g.mapId !== 'cripta') return 'viajero' as const;
+451-    return 'rafaga' as const;
+452-  })();
+453-  const p = g.player!;
+454-  st.evtCount++;
+455-  if (roll === 'eco') {
+456-    // «oyes un eco lejano»: susurro existente + partícula direccional
+457-    audio.sfx(g.mapId === 'cripta' ? 'wraith' : 'echo');
+458-    g.floats.push({ x: p.x, y: p.y - 30, text: '...un eco lejano resuena...', t: 2.6, color: '#c8b0e8', vy: -8, size: 8 });
+459-    const a = Math.random() * Math.PI * 2;
+460-    const cx = Math.cos(a), sy = Math.sin(a);
+461-    for (let i = 0; i < 8; i++) {
+462-      const off = (i - 3.5) * 6;
+463-      g.particles.push({
+464-        x: p.x + cx * 80 - sy * off, y: p.y + sy * 80 + cx * off - 8,
+465-        vx: -cx * 52 + (Math.random() - 0.5) * 10, vy: -sy * 52 + (Math.random() - 0.5) * 10,
+=== ENEMY_DEFS sprite sirena/golem ===
+826:    sprite: 'sirena', aggroR: 165, atkR: 44, windup: 0.75, atkCd: 2.0,
+827-    element: 'hielo', weakTo: 'rayo', breakBar: 90,
+828-    desc: 'Reina del naufragio. Cantaba a los barcos; ahora canta a la Niebla. Tres fases, salvas de marea y coro de neumos.',
+829-  },
+830-  golem: {
+831-    // 10-b (balance): 420/16→460/17 y quiebre 100→110 — paredón final del Acto II
+832-    name: 'Gólem de Escarcha', hp: 460, dmg: 17, speed: 30, xp: 280, gold: [150, 200],
+833-    sprite: 'golem', aggroR: 140, atkR: 38, windup: 0.9, atkCd: 2.4,
+834-    element: 'hielo', weakTo: 'fuego', breakBar: 110,
+835-    desc: 'Memoria de montaña tallada en hielo eterno. Guarda el paso al altar de las Cumbres. Lento, aplastante, incansable.',
+836-  },
+837-};
+838-
+--
+996:  6: [{ prop: 'wreck_co' }, { etype: 'sirena', map: 'costa' }, { prop: 'altar_mareas' }],
+997-  7: [{ map: 'aldea' }, { lamp: true }, { npc: 'mera' }],
+998-  8: [{ map: 'cumbres' }, { etype: 'golem', map: 'cumbres' }, { prop: 'altar_cumbres' }],
+999-  9: [{ npc: 'brisa' }],
+1000-};
+1001-
+1002-// ═══════ FIN DEL BLOQUE 12-b ═══════
+1003-
+1004-// ============================================================
+1005-// ═══════ 13-a (agente historia-acto3) — BLOQUE AÑADIDO ═══════
+1006-// ACTO III · "El Canto al Revés" (q11-q13). Todo lo anterior queda
+1007-// INTACTO. Este bloque SOLO AÑADE: (1) misiones q11-q13 al final del
+1008-// array QUESTS (push; sin tocar entradas previas), (2) la memoria
+833:    sprite: 'golem', aggroR: 140, atkR: 38, windup: 0.9, atkCd: 2.4,
+834-    element: 'hielo', weakTo: 'fuego', breakBar: 110,
+835-    desc: 'Memoria de montaña tallada en hielo eterno. Guarda el paso al altar de las Cumbres. Lento, aplastante, incansable.',
+836-  },
+837-};
+838-
+839-// ---------------- Habilidades ----------------
+840-
+841-export interface SkillDef {
+842-  id: string;
+843-  name: string;
+844-  desc: string;
+845-  cost: number;   // resonancia
+--
+998:  8: [{ map: 'cumbres' }, { etype: 'golem', map: 'cumbres' }, { prop: 'altar_cumbres' }],
+999-  9: [{ npc: 'brisa' }],
+1000-};
+1001-
+1002-// ═══════ FIN DEL BLOQUE 12-b ═══════
+1003-
+1004-// ============================================================
+1005-// ═══════ 13-a (agente historia-acto3) — BLOQUE AÑADIDO ═══════
+1006-// ACTO III · "El Canto al Revés" (q11-q13). Todo lo anterior queda
+1007-// INTACTO. Este bloque SOLO AÑADE: (1) misiones q11-q13 al final del
+1008-// array QUESTS (push; sin tocar entradas previas), (2) la memoria
+1009-// mem_cantoalreves, (3) 20 nodos de diálogo (Object.assign sobre
+1010-// DIALOGUES: los 108 nodos previos quedan byte a byte), (4) objetivos
+=== moveEntity ===
+739:   * 14-b (auditoría de movimiento): red anti-encallamiento. moveEntity solo
+810:  moveEntity(e: { x: number; y: number; w: number; h: number }, dx: number, dy: number) {
+812:    // Portador (−8%). moveEntity es la ÚNICA puerta por la que pasa TODO
+819:    // ==== 16-c (logros-stats): distancia andada del Portador. moveEntity es la
+1636:        this.moveEntity(p, nx * dash, ny * dash);

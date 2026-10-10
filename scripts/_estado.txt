@@ -1,0 +1,8 @@
+?? ../../scripts/_estado.txt
+---LOG---
+ef039e5 e01e63af-6522-46c1-9dcd-520386db583a
+67b1608 5bdd9798-f032-4fe1-b914-280f3746eafb
+b807610 5d49ddc7-5e48-48a2-8cbe-8f1cee9bafb3
+8f9c0bc 9d44b609-7191-43f3-8579-101334eb64c6
+19e040e fa310c8a-f291-4036-860e-c6a6d0092829
+---RSYNC-DIFF---

@@ -1,0 +1,81 @@
+=== registerSpr llamadas ===
+src/game/sprites.ts:557:export function registerSpr(name: string, frames: Frames): void {
+src/game/sprites_expansion.ts:5:// NO toca sprites.ts: usa registerSpr()/hash2() (contrato).
+src/game/sprites_expansion.ts:395:  registerSpr('neumo', buildNeumo());
+src/game/sprites_expansion.ts:396:  registerSpr('espectro', buildEspectro());
+src/game/sprites_expansion.ts:397:  registerSpr('arpi', buildArpi());
+src/game/sprites_expansion.ts:398:  registerSpr('sirena', buildSirena());
+src/game/sprites_expansion.ts:399:  registerSpr('golem', buildGolem());
+src/game/sprites_expansion.ts:400:  registerSpr('orb', buildOrb());
+src/game/sprites_expansion.ts:401:  registerSpr('shard', buildShard());
+src/game/sprites_expansion.ts:402:  registerSpr('nota', buildNota());
+src/game/sprites_expansion.ts:404:  registerSpr('vult', buildVult());
+src/game/sprites_expansion.ts:405:  registerSpr('coro1', buildCoro(1));
+src/game/sprites_expansion.ts:406:  registerSpr('coro2', buildCoro(2));
+src/game/sprites_expansion.ts:407:  registerSpr('coro3', buildCoro(3));
+src/game/sprites_expansion.ts:408:  registerSpr('ecodesg', buildEcodesg());
+src/game/sprites_expansion.ts:409:  registerSpr('satiro', buildSatiro());
+src/game/sprites_expansion.ts:5:// NO toca sprites.ts: usa registerSpr()/hash2() (contrato).
+src/game/sprites_expansion.ts:395:  registerSpr('neumo', buildNeumo());
+src/game/sprites_expansion.ts:396:  registerSpr('espectro', buildEspectro());
+src/game/sprites_expansion.ts:397:  registerSpr('arpi', buildArpi());
+src/game/sprites_expansion.ts:398:  registerSpr('sirena', buildSirena());
+src/game/sprites_expansion.ts:399:  registerSpr('golem', buildGolem());
+src/game/sprites_expansion.ts:400:  registerSpr('orb', buildOrb());
+src/game/sprites_expansion.ts:401:  registerSpr('shard', buildShard());
+src/game/sprites_expansion.ts:402:  registerSpr('nota', buildNota());
+src/game/sprites_expansion.ts:404:  registerSpr('vult', buildVult());
+src/game/sprites_expansion.ts:405:  registerSpr('coro1', buildCoro(1));
+src/game/sprites_expansion.ts:406:  registerSpr('coro2', buildCoro(2));
+src/game/sprites_expansion.ts:407:  registerSpr('coro3', buildCoro(3));
+src/game/sprites_expansion.ts:408:  registerSpr('ecodesg', buildEcodesg());
+=== entityFrame ===
+=== humanFrames layout ===
+
+function buildHumanoid(pal: HumanPal): Frames {
+  const frames: Frames = [];
+  const dirs: ('down' | 'up' | 'side')[] = ['down', 'up', 'side'];
+  const L = layoutFor(pal);
+  for (const dir of dirs) {
+    for (let f = 0; f < 3; f++) {
+      const bob = f === 1 ? -1 : 0; // el cuerpo se eleva en la fase de pase
+      const { c, x } = mkCanvas(16, L.H);
+      drawHumanFrame(x, pal, dir, f, bob, L);
+      frames.push(c);
+    }
+  }
+  if (pal.big) {
+    // El Gran Inquisidor se dibuja a escala ×2 (32×36): imponente como el Guardián
+    return frames.map(fr => {
+      const { c, x } = mkCanvas(32, L.H * 2);
+      x.imageSmoothingEnabled = false;
+      x.drawImage(fr, 0, 0, 32, L.H * 2);
+      return c;
+    });
+  }
+  return frames;
+}
+
+/** Índice de fotograma legacy (compatible con re-export de engine.ts). */
+export function frameIndex(dir: string, moving: boolean, anim: number): number {
+  const base = dir === 'down' ? 0 : dir === 'up' ? 2 : 4;
+  if (!moving) return base;
+  return base + (Math.floor(anim * 6) % 2);
+}
+
+/**
+ * Selección robusta de fotograma para cualquier sprite:
+ * humanoids nuevos tienen 9 frames (3 por dirección), los demás
+ * (lobo, guardián, wisp...) alternan su ciclo propio al moverse.
+ */
+export function entityFrame(spr: Frames, dir: string, moving: boolean, anim: number): number {
+  const n = spr.length;
+  if (n === 9) {
+    const base = dir === 'up' ? 3 : dir === 'side' ? 6 : 0;
+    if (!moving) return base + 1; // pose de pie = fase de pase sin bob
+    return base + (Math.floor(anim * 8) % 3);
+  }
+  if (n >= 2 && moving) return Math.floor(anim * 6) % Math.min(2, n);
+  return 0;
+}
+

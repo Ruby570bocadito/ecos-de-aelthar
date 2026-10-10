@@ -10,6 +10,7 @@ import type { DialogueNode, DialogueOption, Player, ToneKind } from './types';
 import { MEMORIES } from './data';
 import { ACTO3_ELITE } from './data';
 import { ACTO4_BOSS, ACTO4_FIN_BASE, ACTO4_FIN_JEFES } from './data';
+import { dispararInterludio18F } from './interludios'; // 18-f: interludios de acto (cine de transición)
 import { audio } from './audio';
 
 const TONES: ToneKind[] = ['empatico', 'pragmatico', 'sarcastico', 'amenazante'];
@@ -109,6 +110,13 @@ export function handleCustomAction(g: Game, action: string): boolean {
       g.flags.q6 = true;
       audio.sfx('quest');
       g.toast('Nueva misión: El Rumor del Mar', '#8ef0b0');
+      // 18-f: interludio de transición al Acto II (idempotente por flag
+      // interludio_acto2; lo encola y interludioTick18F lo abre al volver a
+      // 'play'). NOTA: el disparo EN VIVO de la transición Acto I→II es el
+      // watcher por estado de interludios.interludioTick18F, porque esta
+      // acción la consume engine.applyAction (case 'accept_q6', engine.ts:1087)
+      // antes de llegar al fallback de hooks.
+      dispararInterludio18F(g, 2);
     }
     return true;
   }
@@ -171,6 +179,9 @@ export function handleCustomAction(g: Game, action: string): boolean {
       g.flags.q11 = true;
       audio.sfx('quest');
       g.toast('Nueva misión: El Canto al Revés', '#8ef0b0');
+      // 18-f: interludio de transición al Acto III (idempotente por flag
+      // interludio_acto3; se encola y se abre al volver a 'play').
+      dispararInterludio18F(g, 3);
     }
     return true;
   }
@@ -354,6 +365,9 @@ export function handleCustomAction(g: Game, action: string): boolean {
       g.flags.q14 = true;
       audio.sfx('quest');
       g.toast('Nueva misión: Las Campanas de Antes', '#8ef0b0');
+      // 18-f: interludio de transición al Acto IV (idempotente por flag
+      // interludio_acto4; se encola y se abre al volver a 'play').
+      dispararInterludio18F(g, 4);
     }
     return true;
   }

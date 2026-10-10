@@ -1,0 +1,22 @@
+=== mapas registrados ===
+328:    id: 'costa',
+336:      { id: 'mara', x: 7, y: 19, sprite: 'maelis', name: 'Mara, la farera' },
+337:      { id: 'vult', x: 30, y: 32, sprite: 'corvin', name: 'Vult, cartógrafo de la Liga' },
+341:      { id: 'co1', x: 29, y: 37, gold: 60, potions: 1, needPast: true },
+342:      { id: 'co2', x: 4, y: 15, gold: 35 },
+343:      { id: 'co3', x: 42, y: 29, gold: 40, potions: 1 },
+346:      { id: 'co_e1', x: 24, y: 30, title: 'Eco menor · El farero que no se dormía', text: '«La abuela de Mara subía cada noche a encender la lámpara cantando, una nota por vuelta de engranaje. Cuando el canto del dios murió, la lámpara siguió girando... pero la luz aprendió a temblar. Los barcos ya no buscan fuego en la costa: buscan permiso para volver.»' },
+347:      { id: 'co_e2', x: 37, y: 19, title: 'Eco menor · Los barcos sin canción', text: '«Antes, las tripulaciones cantaban al doblar el cabo y el mar respondía liso como zinc. Ahora cruzan en silencio y la Niebla Muda las apunta una a una en su lista de nombres. El mar guarda las notas que faltan: por algo todavía susurra.»' },
+348:      { id: 'co_e3', x: 11, y: 25, title: 'Eco menor · La marea que borra nombres', text: '«El mar fue el primer archivo de Aelthar: cada ola leía un nombre en voz baja para que el dios-tejedor lo bordara en su canto. La noche del asesinato, la marea subió más que nunca y, desde entonces, borra en vez de leer. La que duerme en el naufragio sabe dónde fueron a parar los nombres.»' },
+370:      { id: 'sanc_co', kind: 'sanctuary', x: 22, y: 21 },
+371:      { id: 'faro_co', kind: 'faro', x: 6, y: 18 },
+372:      { id: 'wreck_co', kind: 'wreck', x: 41, y: 22 },
+=== seccion aldea ===
+211:const aldeaDiffs: EpochDiff[] = [
+326:export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { arena: MapDef } = {
+366:      // aterrizaje en aldea (3,18): camino '=', fuera de la zona de salida oeste
+367:      { x: 50, y: 17, w: 2, h: 4, to: 'aldea', tx: 3, ty: 18, label: 'Aldea de Merrow' },
+379:  aldea: {
+380:    id: 'aldea',
+385:    epochDiffs: aldeaDiffs,
+386:    music: 'aldea',

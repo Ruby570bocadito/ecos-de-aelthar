@@ -1,0 +1,653 @@
+     1→// ============================================================
+     2→// ECOS DE AELTHAR — hooks (PROPIEDAD DEL AGENTE 3-b · mecánicas)
+     3→// Punto de extensión de acciones de diálogo/mundo y sistema de
+     4→// tono del Portador (biblia: la personalidad moldea cómo te tratan).
+     5→// El motor llama aquí cuando applyAction no reconoce la acción.
+     6→// ============================================================
+     7→
+     8→import type { Game } from './engine';
+     9→import type { DialogueNode, DialogueOption, Player, ToneKind } from './types';
+    10→import { MEMORIES } from './data';
+    11→import { ACTO3_ELITE } from './data';
+    12→import { ACTO4_BOSS, ACTO4_FIN_BASE, ACTO4_FIN_JEFES } from './data';
+    13→import { audio } from './audio';
+    14→
+    15→const TONES: ToneKind[] = ['empatico', 'pragmatico', 'sarcastico', 'amenazante'];
+    16→
+    17→const FAC_LABEL: Record<string, string> = {
+    18→  guardianes: 'Guardianes del Canto',
+    19→  orden: 'Orden de Vesh',
+    20→  circulo: 'Círculo Verde',
+    21→  liga: 'Liga de Mercaderes',
+    22→};
+    23→
+    24→/** Lee el tono dominante guardado en flags (se guarda como string en runtime). */
+    25→export function toneFlagOf(flags: Record<string, number | boolean>): ToneKind | null {
+    26→  const v = flags.tonoDominante;
+    27→  return typeof v === 'string' ? (v as ToneKind) : null;
+    28→}
+    29→
+    30→/**
+    31→ * Acciones extendidas de diálogo/mundo. Devuelve true si la acción fue
+    32→ * gestionada (el motor ignora el resto).
+    33→ * CONVENCIONES DE ACCIÓN (documentadas para el equipo):
+    34→ *   memory_<id>        → otorga una memoria del Portador (data.ts: MEMORIES),
+    35→ *                        una sola vez, con overlay de revelación.
+    36→ *                        Ej.: 'memory_mem_nana', 'memory_mem_casa'
+    37→ *   rep_<faccion>_<±n> → reputación de facción (guardianes|orden|circulo|liga),
+    38→ *                        clamp ±100, con toast de color según signo.
+    39→ *                        Ej.: 'rep_circulo_5', 'rep_orden_-5'
+    40→ *   eco_taken_mem      → ejecuta la acción original 'eco_taken' del motor y
+    41→ *                        concede 'mem_nana' (la nana: primera memoria del Eco).
+    42→ *   flag_<clave>       → activa una bandera simple (true); utilidad de contenido
+    43→ *                        (usada por data.ts: flag_metVult / flag_metMera / flag_metIvo).
+    44→ *   accept_q6          → Brisa ofrece el sur (fin del Acto I): acepta q6
+    45→ *                        'El Rumor del Mar' (engine.talkTo ya avanza q5→q6 antes
+    46→ *                        de resolver el nodo). Idempotente (flag q6, sin regreso).
+    47→ *   mara_met           → la conversación con Mara completa el objetivo de q6
+    48→ *                        (índice 5, paso 1) y abre q7.
+    49→ *   mara_gift          → Mara enciende el faro tras la Sirena (una vez):
+    50→ *                        +2 pociones, +5 rep. Círculo Verde, flag maraGift.
+    51→ *   mera_eco           → la Espectro de Merrow devuelve el Eco de los Nombres
+    52→ *                        (Eco menor): flag ecoNombres, +1 punto, sfx 'echo',
+    53→ *                        ráfaga dorada; si q8 (índice 7) está en su último paso,
+    54→ *                        avanza la cadena (→ q9).
+    55→ *   acto2_report       → el regreso final a Brisa cierra q10 (una vez):
+    56→ *                        flag acto2Done y +5 rep. Guardianes del Canto.
+    57→ */
+    58→export function handleCustomAction(g: Game, action: string): boolean {
+    59→  const p = g.player;
+    60→  if (!p || !action) return false;
+    61→
+    62→  // memoria_<id>: memorias del séptimo Eco (biblia)
+    63→  if (action.startsWith('memory_')) {
+    64→    grantMemory(g, p, action.slice(7));
+    65→    return true;
+    66→  }
+    67→
+    68→  // rep_<faccion>_<±n>: reputación de facciones (biblia: 4 facciones)
+    69→  if (action.startsWith('rep_')) {
+    70→    const m = /^rep_(guardianes|orden|circulo|liga)_([+-]?\d+)$/.exec(action);
+    71→    if (!m) return false;
+    72→    const fac = m[1];
+    73→    const delta = parseInt(m[2], 10);
+    74→    const rep = p.repFacciones ?? { guardianes: 0, orden: 0, circulo: 0, liga: 0 };
+    75→    const before = rep[fac] ?? 0;
+    76→    const after = Math.max(-100, Math.min(100, before + delta));
+    77→    rep[fac] = after;
+    78→    p.repFacciones = rep;
+    79→    const applied = after - before;
+    80→    g.toast(`${FAC_LABEL[fac]}: ${applied >= 0 ? '+' : ''}${applied}`, applied >= 0 ? '#8ef0b0' : '#e88a8a');
+    81→    return true;
+    82→  }
+    83→
+    84→  // eco_taken_mem: el Eco de la Voz devuelve la primera memoria (la nana)
+    85→  if (action === 'eco_taken_mem') {
+    86→    g.applyAction('eco_taken'); // acción original del motor (flags.ecoVoz, +1 punto, +10 rep)
+    87→    grantMemory(g, p, 'mem_nana');
+    88→    return true;
+    89→  }
+    90→
+    91→  // flag_<clave>: utilidades de contenido (banderas simples)
+    92→  if (action.startsWith('flag_')) {
+    93→    g.flags[action.slice(5)] = true;
+    94→    return true;
+    95→  }
+    96→
+    97→  // ----- Acto II · Las Notas Perdidas (agente 8-a: historia y diálogos) -----
+    98→
+    99→  // accept_q6: Brisa ofrece el sur — acepta q6 'El Rumor del Mar'.
+   100→  // Nota de coordinación: engine.talkTo ya avanza q5→q6 ANTES de resolver el
+   101→  // nodo, así que aquí normalmente questIdx ya es 5; la rama questIdx<5
+   102→  // auto-repara aceptaciones anticipadas (brisa_final en q4) o saves antiguos.
+   103→  if (action === 'accept_q6') {
+   104→    if (g.questIdx < 5) {
+   105→      g.questIdx = 5;
+   106→      g.questStep = g.flags.visited_costa ? 1 : 0; // como accept_q3 del motor
+   107→    }
+   108→    if (!g.flags.q6) {
+   109→      g.flags.q6 = true;
+   110→      audio.sfx('quest');
+   111→      g.toast('Nueva misión: El Rumor del Mar', '#8ef0b0');
+   112→    }
+   113→    return true;
+   114→  }
+   115→
+   116→  // mara_met: hablar con Mara completa el objetivo de q6 (nodo mara_intro)
+   117→  // 11-a: el toast de 'Nueva misión' ya lo emite questAdvance (generalizado en
+   118→  // 8-b) — el explícito de aquí lo duplicaba en pantalla; se elimina.
+   119→  if (action === 'mara_met') {
+   120→    if (g.questIdx === 5 && g.questStep === 1) g.questAdvance();
+   121→    return true;
+   122→  }
+   123→
+   124→  // mara_gift: Mara enciende el faro tras la Sirena y paga en pociones (una vez)
+   125→  if (action === 'mara_gift') {
+   126→    p.potions += 2;
+   127→    g.flags.maraGift = true;
+   128→    audio.sfx('potion');
+   129→    g.applyAction('rep_circulo_5'); // el Círculo Verde celebra que la costa vuelva a tener luz
+   130→    g.toast('Mara enciende el faro tras 300 años: +2 pociones', '#ffe9a0');
+   131→    return true;
+   132→  }
+   133→
+   134→  // mera_eco: la Espectro devuelve el Eco de los Nombres (Eco menor de Merrow)
+   135→  // 11-a: el toast de 'Nueva misión' ya lo emite questAdvance (generalizado en
+   136→  // 8-b) — el explícito de aquí lo duplicaba en pantalla; se elimina.
+   137→  if (action === 'mera_eco') {
+   138→    g.flags.ecoNombres = true;
+   139→    p.points += 1;
+   140→    audio.sfx('echo');
+   141→    g.burst(p.x, p.y - 8, '#ffe9a0', 22, 70);
+   142→    if (g.questIdx === 7 && g.questStep === 2) g.questAdvance();
+   143→    g.toast('Eco de los Nombres recuperado: +1 punto de habilidad', '#ffe9a0');
+   144→    return true;
+   145→  }
+   146→
+   147→  // acto2_report: el regreso final a Brisa cierra q10 (informe del Acto II)
+   148→  if (action === 'acto2_report') {
+   149→    if (g.questIdx === 9 && !g.flags.acto2Done) {
+   150→      g.flags.acto2Done = true;
+   151→      audio.sfx('quest');
+   152→      g.applyAction('rep_guardianes_5');
+   153→      g.toast('Misión completada: Dos Voces más Fuertes', '#8ef0b0');
+   154→    }
+   155→    return true;
+   156→  }
+   157→
+   158→  // ----- Acto III · El Canto al Revés (agente 13-a: historia y diálogos) -----
+   159→  // Watcher idempotente (patrón catchUpActo2, pero viviendo en hooks): O(1)
+   160→  // fuera del rango q11-q13; completa por ESTADO los pasos que pudieron
+   161→  // cumplirse antes de aceptar la misión o cuyo evento del motor (killEnemy
+   162→  // del Guardián recordado) no dispara questAdvance para índices nuevos.
+   163→  acto3CatchUp(g);
+   164→
+   165→  // accept_q11: Brisa ofrece el Acto III («el Canto sonó al revés»); acepta q11.
+   166→  // Con questIdx<10 auto-repara aceptaciones anticipadas o saves antiguos
+   167→  // (mismo principio de accept_q6).
+   168→  if (action === 'accept_q11') {
+   169→    if (g.questIdx < 10) { g.questIdx = 10; g.questStep = 0; }
+   170→    if (!g.flags.q11) {
+   171→      g.flags.q11 = true;
+   172→      audio.sfx('quest');
+   173→      g.toast('Nueva misión: El Canto al Revés', '#8ef0b0');
+   174→    }
+   175→    return true;
+   176→  }
+   177→
+   178→  // acto3_toln: la conversación con Toln completa el objetivo de q11 (paso 0→1)
+   179→  if (action === 'acto3_toln') {
+   180→    if (g.questIdx === 10 && g.questStep === 0) {
+   181→      g.questAdvance();
+   182→      g.toast('Toln marca los tres lugares: el pozo de Teo, la Ruina Antigua, la orilla de Mara', '#8ef0b0');
+   183→    }
+   184→    return true;
+   185→  }
+   186→
+   187→  // acto3_eco1/2/3: los 3 Ecos Invertidos (patrón eco_*_taken del Acto II):
+   188→  // flag idempotente por eco, en cualquier orden; el 3º cierra el paso 1 de q11.
+   189→  if (action === 'acto3_eco1' || action === 'acto3_eco2' || action === 'acto3_eco3') {
+   190→    g.flags[action === 'acto3_eco1' ? 'ecoInvTeo' : action === 'acto3_eco2' ? 'ecoInvDoran' : 'ecoInvMara'] = true;
+   191→    audio.sfx('echo');
+   192→    if (g.player) g.burst(g.player.x, g.player.y - 8, '#ffe9a0', 18, 70);
+   193→    const n = (['ecoInvTeo', 'ecoInvDoran', 'ecoInvMara'] as const).filter(k => g.flags[k]).length;
+   194→    if (g.questIdx === 10 && g.questStep === 1 && n >= 3) {
+   195→      g.questAdvance();
+   196→      g.toast('Los tres ecos enderezados: vuelve con la Anciana Brisa', '#8ef0b0');
+   197→    } else {
+   198→      g.toast(`Eco invertido enderezado (${n}/3)`, '#ffe9a0');
+   199→    }
+   200→    return true;
+   201→  }
+   202→
+   203→  // accept_q12: el cierre de q11 abre q12. El toast de 'Nueva misión' ya lo
+   204→  // emite questAdvance al cerrar q11 (no se duplica, convención de 11-a);
+   205→  // aquí solo se activa la bandera de aceptación con auto-reparación.
+   206→  if (action === 'accept_q12') {
+   207→    if (g.questIdx < 11) { g.questIdx = 11; g.questStep = g.flags.visited_aldea ? 1 : 0; }
+   208→    g.flags.q12 = true;
+   209→    return true;
+   210→  }
+   211→
+   212→  // acto3_mera_ayer: el informe de Mera completa el paso 0 de q12 y cuenta como
+   213→  // recuerdo; con 3 recuerdos de 4 posibles (cualquier orden) cierra el paso 1.
+   214→  if (action === 'acto3_mera_ayer') {
+   215→    g.flags.recMera = true;
+   216→    audio.sfx('echo');
+   217→    if (g.questIdx === 11 && g.questStep === 0) g.questAdvance();
+   218→    const recs = (['recMera', 'recMara', 'recIvo', 'recVult'] as const).filter(k => g.flags[k]).length;
+   219→    if (g.questIdx === 11 && g.questStep === 1 && recs >= 3) {
+   220→      g.questAdvance();
+   221→      g.toast('Tres recuerdos devueltos: vuelve con la Anciana Brisa', '#8ef0b0');
+   222→    } else {
+   223→      g.toast(`Recuerdo devuelto (${Math.min(recs, 3)}/3)`, '#ffe9a0');
+   224→    }
+   225→    return true;
+   226→  }
+   227→
+   228→  // acto3_rec_mara/_ivo/_vult: recuerdos de los aldeanos (flags idempotentes,
+   229→  // cualquier orden); el 3º cierra el paso 1 de q12.
+   230→  if (action === 'acto3_rec_mara' || action === 'acto3_rec_ivo' || action === 'acto3_rec_vult') {
+   231→    g.flags[action === 'acto3_rec_mara' ? 'recMara' : action === 'acto3_rec_ivo' ? 'recIvo' : 'recVult'] = true;
+   232→    audio.sfx('echo');
+   233→    const recs = (['recMera', 'recMara', 'recIvo', 'recVult'] as const).filter(k => g.flags[k]).length;
+   234→    if (g.questIdx === 11 && g.questStep === 1 && recs >= 3) {
+   235→      g.questAdvance();
+   236→      g.toast('Tres recuerdos devueltos: vuelve con la Anciana Brisa', '#8ef0b0');
+   237→    } else {
+   238→      g.toast(`Recuerdo devuelto (${Math.min(recs, 3)}/3)`, '#ffe9a0');
+   239→    }
+   240→    return true;
+   241→  }
+   242→
+   243→  // accept_q13: aceptación formal de q13 (el avance real lo hace questAdvance
+   244→  // al cerrar q12; aquí solo bandera + auto-reparación, sin toast duplicado).
+   245→  if (action === 'accept_q13') {
+   246→    if (g.questIdx < 12) { g.questIdx = 12; g.questStep = 0; }
+   247→    g.flags.q13 = true;
+   248→    return true;
+   249→  }
+   250→
+   251→  // acto3_verdad / acto3_silencio: LA decisión de reputación del Acto III
+   252→  // (Guardianes vs Orden). Una sola vez por partida (anti-farm):
+   253→  //   verdad   → rep. Orden +10 (mató por misericordia) / Guardianes -5
+   254→  //   silencio → rep. Guardianes +10 (se conserva su causa) / Orden -5
+   255→  if (action === 'acto3_verdad' || action === 'acto3_silencio') {
+   256→    if (!g.flags.acto3RepDecision) {
+   257→      g.flags.acto3RepDecision = true;
+   258→      if (action === 'acto3_verdad') {
+   259→        g.applyAction('rep_orden_10');
+   260→        g.applyAction('rep_guardianes_-5');
+   261→        g.toast('Contaste la verdad: la Orden de Vesh pronuncia tu nombre con respeto', '#e8a0a0');
+   262→      } else {
+   263→        g.applyAction('rep_guardianes_10');
+   264→        g.applyAction('rep_orden_-5');
+   265→        g.toast('Callaste: los Guardianes del Canto conservan su verdad intacta', '#8ef0b0');
+   266→      }
+   267→    }
+   268→    return true;
+   269→  }
+   270→
+   271→  // acto3_velmora_fn: la revelación de Velmora completa el paso 0 de q13
+   272→  if (action === 'acto3_velmora_fn') {
+   273→    if (g.questIdx === 12 && g.questStep === 0) {
+   274→      g.questAdvance();
+   275→      g.toast('La Cripta te espera: fuera del tiempo, canta la nota al revés', '#c8b0e8');
+   276→    }
+   277→    return true;
+   278→  }
+   279→
+   280→  // acto3_subir: clímax de q13 — viaje instantáneo a la Cripta (el mismo método
+   281→  // público que usan respawn/travel_) + instancia del JEFE ÉLITE reutilizado
+   282→  // ('Guardián recordado', etype 'guardian' vía makeEnemy: el mecanismo que ya
+   283→  // usan challenge.ts y los spawns zone:'boss' del Acto II; killEnemy lo trata
+   284→  // por su rama de etype). La referencia vive en data.ACTO3_ELITE y acto3CatchUp
+   285→  // detecta su .dead para avanzar q13 paso 1→2 (el killEnemy del motor no avanza
+   286→  // índices nuevos). Idempotente: re-invocable desde velmora_puerta si el jugador
+   287→  // salió de la Cripta sin rematar (loadMap reconstruye enemigos desde cero).
+   288→  if (action === 'acto3_subir') {
+   289→    g.closeDialogue();
+   290→    g.loadMap('cripta', 19, 24); // aterrizaje del santuario (findSafeTile interno)
+   291→    if (!g.flags.guardianRecordadoDerrotado) {
+   292→      const altar = g.map.props.find(pr => pr.id === 'altar_c');
+   293→      const ax = (altar ? altar.x : 19) * 16 + 8; // TILE=16, constante del proyecto
+   294→      const ay = (altar ? altar.y + 5 : 9) * 16 + 8;
+   295→      const elite = g.makeEnemy('guardian', ax, ay, 0, 'boss');
+   296→      g.enemies.push(elite);
+   297→      ACTO3_ELITE.ref = elite;
+   298→      g.bossRef = elite;      // barra de jefe del HUD + limpieza de update (bossRef.dead → null)
+   299→      g.bossActive = true;
+   300→      audio.playTrack('boss');
+   301→      g.shake = 8;
+   302→      g.toast('El Guardián recordado despierta: ROMPE SU BARRA DE QUIEBRE', '#7ee8ff');
+   303→    }
+   304→    return true;
+   305→  }
+   306→
+   307→  // acto3_report: cierre del Acto III — paga UNA VEZ por misión (flags
+   308→  // acto3Paid11/12/13 anti-doble-pago, mismo patrón que q10Paid). q11 +60 y
+   309→  // 1 poción · q12 +80 y 1 poción · q13 +100 y 1 poción + memoria nueva +
+   310→  // flag acto3Done (sin questAdvance: el Acto III es el final de la demo,
+   311→  // igual que acto2_report no avanza desde q10).
+   312→  if (action === 'acto3_report') {
+   313→    if (g.questIdx === 10 && g.questStep === 2 && !g.flags.acto3Paid11) {
+   314→      g.flags.acto3Paid11 = true;
+   315→      p.gold += 60; p.potions += 1;
+   316→      audio.sfx('coin');
+   317→      g.floatAt(p.x, p.y - 26, 'Recompensa: +60 coronas y 1 poción', '#f0c84a', 7);
+   318→      g.toast('Misión completada: El Canto al Revés (+60 coronas, +1 poción)', '#8ef0b0');
+   319→      g.questAdvance(); // cierre genérico: q11 → q12 (el toast de misión lo emite questAdvance)
+   320→    }
+   321→    if (g.questIdx === 11 && g.questStep === 2 && !g.flags.acto3Paid12) {
+   322→      g.flags.acto3Paid12 = true;
+   323→      p.gold += 80; p.potions += 1;
+   324→      audio.sfx('coin');
+   325→      g.floatAt(p.x, p.y - 26, 'Recompensa: +80 coronas y 1 poción', '#f0c84a', 7);
+   326→      g.toast('Misión completada: La Aldea sin Ayer (+80 coronas, +1 poción)', '#8ef0b0');
+   327→      g.questAdvance(); // q12 → q13
+   328→    }
+   329→    if (g.questIdx === 12 && g.questStep === 2 && !g.flags.acto3Paid13) {
+   330→      g.flags.acto3Paid13 = true;
+   331→      p.gold += 100; p.potions += 1;
+   332→      audio.sfx('quest');
+   333→      g.floatAt(p.x, p.y - 26, 'Recompensa: +100 coronas y 1 poción', '#f0c84a', 7);
+   334→      g.toast('Misión completada: La Primera Portadora (+100 coronas, +1 poción)', '#8ef0b0');
+   335→      grantMemory(g, p, 'mem_cantoalreves');
+   336→      g.flags.acto3Done = true;
+   337→    }
+   338→    return true;
+   339→  }
+   340→
+   341→  // ----- Acto IV · El Último Canto (agente 16-a: historia y diálogos) -----
+   342→  // Watcher idempotente (patrón acto3CatchUp): O(1) fuera del rango q14-q16;
+   343→  // completa por ESTADO los pasos que pudieron cumplirse antes de aceptar la
+   344→  // misión o cuyo evento (killEnemy del motor no tiene rama para el jefe
+   345→  // final) debe detectarse por referencia (ACTO4_BOSS.ref.dead).
+   346→  acto4CatchUp(g);
+   347→
+   348→  // accept_q14: Brisa abre el Acto IV («las campanas de antes»); acepta q14.
+   349→  // Con questIdx<13 auto-repara aceptaciones anticipadas o saves antiguos
+   350→  // (mismo principio de accept_q11); el Acto III quedó en idx 12 paso 2.
+   351→  if (action === 'accept_q14') {
+   352→    if (g.questIdx < 13) { g.questIdx = 13; g.questStep = 0; }
+   353→    if (!g.flags.q14) {
+   354→      g.flags.q14 = true;
+   355→      audio.sfx('quest');
+   356→      g.toast('Nueva misión: Las Campanas de Antes', '#8ef0b0');
+   357→    }
+   358→    return true;
+   359→  }
+   360→
+   361→  // acto4_toln: la forja de Toln completa el paso 0 de q14 (flag idempotente
+   362→  // camToln); Toln cría la Campana del Ayer con el metal que recuerda.
+   363→  if (action === 'acto4_toln') {
+   364→    g.flags.camToln = true;
+   365→    if (g.questIdx === 13 && g.questStep === 0) {
+   366→      g.questAdvance();
+   367→      g.toast('Toln cría la Campana del Ayer: falta el coro que la llame', '#8ef0b0');
+   368→    }
+   369→    return true;
+   370→  }
+   371→
+   372→  // acto4_cam_mera / acto4_cam_ivo: las voces del coro (flags idempotentes
+   373→  // camMera/camCumbres, cualquier orden); ambas cierran el paso 1 de q14.
+   374→  // camMera devuelve la voz que la Sirena Abisal cantaba robada (requiere
+   375→  // sirenaDefeated, garantizado tras el Acto II — lo valida el ruteo);
+   376→  // camCumbres recoge la resonancia de los pastores (requiere golemDefeated).
+   377→  if (action === 'acto4_cam_mera' || action === 'acto4_cam_ivo') {
+   378→    g.flags[action === 'acto4_cam_mera' ? 'camMera' : 'camCumbres'] = true;
+   379→    audio.sfx('echo');
+   380→    if (g.player) g.burst(g.player.x, g.player.y - 8, '#ffe9a0', 18, 70);
+   381→    const n = (['camMera', 'camCumbres'] as const).filter(k => g.flags[k]).length;
+   382→    if (g.questIdx === 13 && g.questStep === 1 && n >= 2) {
+   383→      g.questAdvance();
+   384→      g.toast('El coro de antes acompaña a la campana: vuelve con la Anciana Brisa', '#8ef0b0');
+   385→    } else {
+   386→      g.toast(`Voz devuelta al coro (${Math.min(n, 2)}/2)`, '#ffe9a0');
+   387→    }
+   388→    return true;
+   389→  }
+   390→
+   391→  // accept_q15: aceptación formal de q15 (el avance real lo hace questAdvance
+   392→  // al cerrar q14; aquí solo bandera + auto-reparación, sin toast duplicado).
+   393→  if (action === 'accept_q15') {
+   394→    if (g.questIdx < 14) { g.questIdx = 14; g.questStep = 0; }
+   395→    g.flags.q15 = true;
+   396→    return true;
+   397→  }
+   398→
+   399→  // acto4_guarda: el encuentro con la Guarda del Primer Canto completa el
+   400→  // paso 0 de q15 (la Guarda es NPC de la Cripta añadida con showFlag
+   401→  // 'acto3Done': solo aparece cuando el tercer canto terminó).
+   402→  if (action === 'acto4_guarda') {
+   403→    if (g.questIdx === 14 && g.questStep === 0) {
+   404→      g.questAdvance();
+   405→      g.toast('La Guarda sostiene la puerta: la Sala del Primer Canto puede abrirse', '#c8b0e8');
+   406→    }
+   407→    return true;
+   408→  }
+   409→
+   410→  // acto4_subir: clímax de q15 — JEFE FINAL. Patrón acto3_subir: loadMap
+   411→  // cripta + instancia makeEnemy + bossRef/bossActive + banner + toast.
+   412→  // El jefe usa el tipo 'heraldo' (ENEMY_DEFS_16A: sprite existente
+   413→  // 'inquisidor', quiebre estilo Coro Roto vía breakBar). Idempotente: si el
+   414→  // jefe ya cayó NO vuelve a spawnear; re-invocable desde la Guarda si el
+   415→  // jugador salió sin rematar (loadMap reconstruye enemigos desde cero).
+   416→  if (action === 'acto4_subir') {
+   417→    g.closeDialogue();
+   418→    g.flags.acto4SalaAbierta = true;
+   419→    g.loadMap('cripta', 19, 24); // aterrizaje del santuario (findSafeTile interno)
+   420→    if (!g.flags.heraldoDerrotado) {
+   421→      const altar = g.map.props.find(pr => pr.id === 'altar_c');
+   422→      const ax = (altar ? altar.x : 19) * 16 + 8;      // TILE=16, constante del proyecto
+   423→      const ay = (altar ? altar.y + 2 : 6) * 16 + 8;   // boca de la Sala del Primer Canto
+   424→      const boss = g.makeEnemy('heraldo', ax, ay, 0, 'boss');
+   425→      g.enemies.push(boss);
+   426→      ACTO4_BOSS.ref = boss;
+   427→      g.bossRef = boss;       // barra de jefe del HUD + limpieza de update (bossRef.dead → null)
+   428→      g.bossActive = true;
+   429→      g.bossBannerT = 3.2;
+   430→      g.bossBannerText = 'EL HERALDO';
+   431→      g.bossBannerSub = 'Vesh, la Última Nota';
+   432→      audio.playTrack('boss');
+   433→      g.shake = 8;
+   434→      g.toast('La Sala del Primer Canto se abre: ROMPE SU BARRA DE QUIEBRE', '#c8b0e8');
+   435→    }
+   436→    return true;
+   437→  }
+   438→
+   439→  // acto4_report: cierre de q14/q15 — paga UNA VEZ por misión (flags
+   440→  // acto4Paid14/15 anti-doble-pago, mismo patrón que acto3Paid11/12/13):
+   441→  // q14 +80 y 1 poción · q15 +120 y 1 poción. q16 se paga en acto4_epilogo.
+   442→  if (action === 'acto4_report') {
+   443→    if (g.questIdx === 13 && g.questStep === 2 && !g.flags.acto4Paid14) {
+   444→      g.flags.acto4Paid14 = true;
+   445→      p.gold += 80; p.potions += 1;
+   446→      audio.sfx('coin');
+   447→      g.floatAt(p.x, p.y - 26, 'Recompensa: +80 coronas y 1 poción', '#f0c84a', 7);
+   448→      g.toast('Misión completada: Las Campanas de Antes (+80 coronas, +1 poción)', '#8ef0b0');
+   449→      g.questAdvance(); // cierre genérico: q14 → q15 (el toast de misión lo emite questAdvance)
+   450→    }
+   451→    if (g.questIdx === 14 && g.questStep === 2 && !g.flags.acto4Paid15) {
+   452→      g.flags.acto4Paid15 = true;
+   453→      p.gold += 120; p.potions += 1;
+   454→      audio.sfx('coin');
+   455→      g.floatAt(p.x, p.y - 26, 'Recompensa: +120 coronas y 1 poción', '#f0c84a', 7);
+   456→      g.toast('Misión completada: La Sala del Primer Canto (+120 coronas, +1 poción)', '#8ef0b0');
+   457→      g.questAdvance(); // q15 → q16
+   458→    }
+   459→    return true;
+   460→  }
+   461→
+   462→  // accept_q16: aceptación formal de q16 — el epílogo (el avance real lo hace
+   463→  // questAdvance al cerrar q15; aquí solo bandera + auto-reparación).
+   464→  if (action === 'accept_q16') {
+   465→    if (g.questIdx < 15) { g.questIdx = 15; g.questStep = 0; }
+   466→    g.flags.q16 = true;
+   467→    return true;
+   468→  }
+   469→
+   470→  // acto4_epilogo: EL ÚLTIMO CANTO — cierre de la historia. Pago final UNA
+   471→  // VEZ (flag acto4Paid16): +150 coronas, 1 poción, memoria VII
+   472→  // 'mem_ultimacanto' y flag acto4Done; avanza el paso 0→1 de q16 (la misión
+   473→  // epílogo no se cierra: es la letra con la que el mundo se queda).
+   474→  // Instala además en dynNodes el FINAL vivo del epílogo ('acto4_epilogo_canto')
+   475→  // compuesto con los jefes opcionales derrotados (Coro Roto / Vult).
+   476→  if (action === 'acto4_epilogo') {
+   477→    if (g.questIdx < 15) { g.questIdx = 15; g.questStep = 0; } // auto-reparación
+   478→    g.flags.q16 = true;
+   479→    if (!g.flags.acto4Paid16) {
+   480→      g.flags.acto4Paid16 = true;
+   481→      p.gold += 150; p.potions += 1;
+   482→      audio.sfx('quest');
+   483→      g.floatAt(p.x, p.y - 26, 'Recompensa: +150 coronas y 1 poción', '#f0c84a', 7);
+   484→      g.toast('Misión completada: El Eco que Elegiste (+150 coronas, +1 poción)', '#8ef0b0');
+   485→      grantMemory(g, p, 'mem_ultimacanto');
+   486→      g.flags.acto4Done = true;
+   487→      if (g.questIdx === 15 && g.questStep === 0) g.questAdvance(); // paso 0→1 (invitación final)
+   488→    }
+   489→    g.dynNodes['acto4_epilogo_canto'] = acto4FinNode(g);
+   490→    return true;
+   491→  }
+   492→
+   493→  return false;
+   494→}
+   495→
+   496→/**
+   497→ * 16-a — Nodo final del epílogo (acto4_epilogo_canto) compuesto según jefes
+   498→ * opcionales derrotados: base + párrafos del Coro Roto y de Vult. Se instala
+   499→ * en dynNodes (precedencia sobre DIALOGUES en openDialogue) y es idempotente:
+   500→ * se re-escribe en cada acto4_epilogo. Tras recargar partida (dynNodes
+   501→ * volátiles) el nodo estático de data.ts cubre como respaldo.
+   502→ */
+   503→function acto4FinNode(g: Game): DialogueNode {
+   504→  const f = g.flags;
+   505→  let text = ACTO4_FIN_BASE;
+   506→  if (f.coroDefeated) text += '\n\n' + ACTO4_FIN_JEFES.coro;
+   507→  if (f.vultDefeated) text += '\n\n' + ACTO4_FIN_JEFES.vult;
+   508→  return {
+   509→    name: 'Anciana Brisa', portrait: 'brisa', text,
+   510→    options: [
+   511→      { text: '(Subir el telón del Último Canto: terminar el viaje)', action: 'end_demo' },
+   512→      { text: '(Quedarse: el mundo aún tiene mañanas que nombrar)', tone: 'empatico' },
+   513→    ],
+   514→  };
+   515→}
+   516→
+   517→/** Concede una memoria una única vez y lanza el overlay de revelación. */
+   518→function grantMemory(g: Game, p: Player, id: string): void {
+   519→  const mem = MEMORIES[id];
+   520→  if (!mem) return;
+   521→  p.memories = p.memories ?? [];
+   522→  if (p.memories.includes(id)) return; // ya concedida
+   523→  p.memories.push(id);
+   524→  g.memoryReveal = { id: mem.id, title: mem.title, text: mem.text, t: 5.5 };
+   525→  g.toast('Una memoria aflora...', '#ffe9a0');
+   526→  // sfx 'memory' es nuevo del contrato (lo añade 3-a); el switch de audio.sfx
+   527→  // no tiene default, así que un nombre desconocido es un no-op seguro.
+   528→  audio.sfx('memory');
+   529→}
+   530→
+   531→/** Registra el tono de la opción de diálogo elegida (rasgo dominante). */
+   532→export function recordDialogueTone(g: Game, opt: DialogueOption): void {
+   533→  if (!opt.tone || !g.player) return;
+   534→  const p = g.player;
+   535→  p.tones = p.tones ?? { empatico: 0, pragmatico: 0, sarcastico: 0, amenazante: 0 };
+   536→  p.tones[opt.tone] = (p.tones[opt.tone] ?? 0) + 1;
+   537→  const dom = dominantTone(p);
+   538→  if (dom) {
+   539→    const prev = toneFlagOf(g.flags);
+   540→    if (prev !== dom) {
+   541→      // flags es Record<string, number | boolean> (types.ts congelado): el tono se
+   542→      // guarda como string en runtime mediante cast documentado.
+   543→      g.flags.tonoDominante = dom as unknown as number;
+   544→      if (prev) g.toast(`Tu forma de hablar empieza a definirte: ${TONE_LABEL[dom]}`, '#c8b0e8');
+   545→      // El rasgo deja huella: la primera vez que un tono se vuelve dominante,
+   546→      // la compañera lo nota (biblia: los compañeros reaccionan a tu personalidad).
+   547→      if (!g.flags[`toneSeen_${dom}`]) {
+   548→        g.flags[`toneSeen_${dom}`] = true;
+   549→        if (g.companion) {
+   550→          g.companion.affinity += 1;
+   551→          g.toast('Ilwen te mira de otra manera... te está entendiendo (+1 afinidad)', '#8ef0b0');
+   552→        }
+   553→      }
+   554→    }
+   555→  }
+   556→}
+   557→
+   558→export const TONE_LABEL: Record<ToneKind, string> = {
+   559→  empatico: 'Empático',
+   560→  pragmatico: 'Pragmático',
+   561→  sarcastico: 'Sarcástico',
+   562→  amenazante: 'Amenazante',
+   563→};
+   564→
+   565→/** Tono dominante actual (o null si aún no hay mínimo definido). */
+   566→export function dominantTone(p: Player): ToneKind | null {
+   567→  const t = p.tones;
+   568→  if (!t) return null;
+   569→  let best: ToneKind | null = null, bestN = 0, total = 0;
+   570→  for (const k of TONES) {
+   571→    total += t[k] ?? 0;
+   572→    if ((t[k] ?? 0) > bestN) { bestN = t[k] ?? 0; best = k; }
+   573→  }
+   574→  if (!best || total < 3) return null; // se necesita cierta consistencia
+   575→  return best;
+   576→}
+   577→
+   578→/**
+   579→ * 13-a — Watcher idempotente del Acto III (anti-bloqueo, referencia conceptual:
+   580→ * catchUpActo2 del motor, que vive en engine.ts y NO se toca). Aquí no hay tick
+   581→ * propio: el motor llama handleCustomAction en cada acción de diálogo, así que
+   582→ * este corre al inicio de MI sección de handleCustomAction (las acciones
+   583→ * previas del Acto I/II hacen return antes; es O(1) y no les afecta).
+   584→ * Completa por ESTADO (mismo principio de las visitas de 8-int):
+   585→ *  · guardián recordado derrotado → flag + avance q13 paso 1→2 (killEnemy del
+   586→ *    motor no tiene rama para los índices nuevos; se detecta por ACTO3_ELITE).
+   587→ *  · q11 paso 1: los 3 ecos enderezados en cualquier orden.
+   588→ *  · q12 paso 1: 3 recuerdos de 4 posibles, en cualquier orden.
+   589→ *  · reparación de saves a medio aceptar (flag q11 con questIdx aún 9).
+   590→ */
+   591→function acto3CatchUp(g: Game): void {
+   592→  const f = g.flags;
+   593→  if (!g.player) return;
+   594→  if (g.questIdx === 9 && f.acto2Done && f.q11) { g.questIdx = 10; g.questStep = 0; }
+   595→  if (g.questIdx < 10 || g.questIdx > 12) return;
+   596→  if (ACTO3_ELITE.ref?.dead && !f.guardianRecordadoDerrotado) {
+   597→    f.guardianRecordadoDerrotado = true;
+   598→    g.toast('El Guardián recordado se aquietó: vuelve con la Anciana Brisa', '#a8d8ff');
+   599→  }
+   600→  if (g.questIdx === 10 && g.questStep === 1 &&
+   601→      f.ecoInvTeo && f.ecoInvDoran && f.ecoInvMara) {
+   602→    g.questAdvance();
+   603→    g.toast('Los tres ecos enderezados: vuelve con la Anciana Brisa', '#8ef0b0');
+   604→  }
+   605→  if (g.questIdx === 11 && g.questStep === 1 &&
+   606→      (['recMera', 'recMara', 'recIvo', 'recVult'] as const).filter(k => f[k]).length >= 3) {
+   607→    g.questAdvance();
+   608→    g.toast('Tres recuerdos devueltos: vuelve con la Anciana Brisa', '#8ef0b0');
+   609→  }
+   610→  if (g.questIdx === 12 && g.questStep === 1 && f.guardianRecordadoDerrotado) {
+   611→    g.questAdvance();
+   612→  }
+   613→}
+   614→
+   615→/**
+   616→ * 16-a — Watcher idempotente del Acto IV (mismo principio que acto3CatchUp:
+   617→ * sin tick propio, corre al inicio de MI sección de handleCustomAction; O(1)
+   618→ * fuera del rango 13-15). Completa por ESTADO:
+   619→ *  · Vesh derrotado → flag + limpieza de barra/música + avance q15 paso 1→2
+   620→ *    (killEnemy del motor no tiene rama para un etype nuevo: se detecta por
+   621→ *    ACTO4_BOSS.ref; el envoltorio de getDialogue en data.ts también lee la
+   622→ *    referencia para rutar el informe aunque la flag aún no exista).
+   623→ *  · q14 paso 1: camMera + camCumbres en cualquier orden (incluso antes de
+   624→ *    aceptar la misión o antes de hablar con Toln).
+   625→ *  · reparación de saves a medio aceptar (flag q14 con questIdx aún 12).
+   626→ *  · espejo de reputación en flags (DialogueCtx no la lleva): el epílogo de
+   627→ *    q16 se ramifica leyendo flags.acto4RepOrden / flags.acto4RepGuard.
+   628→ */
+   629→function acto4CatchUp(g: Game): void {
+   630→  const f = g.flags;
+   631→  if (!g.player) return;
+   632→  const rep = g.player.repFacciones;
+   633→  if (rep) {
+   634→    f.acto4RepOrden = rep.orden ?? 0;
+   635→    f.acto4RepGuard = rep.guardianes ?? 0;
+   636→  }
+   637→  if (g.questIdx === 12 && f.acto3Done && f.q14) { g.questIdx = 13; g.questStep = 0; }
+   638→  if (g.questIdx < 13 || g.questIdx > 15) return;
+   639→  if (ACTO4_BOSS.ref?.dead && !f.heraldoDerrotado) {
+   640→    f.heraldoDerrotado = true;
+   641→    g.bossActive = false;
+   642→    audio.playTrack('crypt');
+   643→    g.toast('Vesh, la Última Nota, se aquietó: el coro entero respira', '#c8b0e8');
+   644→  }
+   645→  if (g.questIdx === 13 && g.questStep === 1 && f.camMera && f.camCumbres) {
+   646→    g.questAdvance();
+   647→    g.toast('El coro de antes acompaña a la campana: vuelve con la Anciana Brisa', '#8ef0b0');
+   648→  }
+   649→  if (g.questIdx === 14 && g.questStep === 1 && f.heraldoDerrotado) {
+   650→    g.questAdvance();
+   651→  }
+   652→}
+   653→

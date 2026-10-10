@@ -1,0 +1,29 @@
+=== data DIALOGUES export ===
+752:export const DIALOGUES = D;
+1758:function getDialogueActo4(nid: string, ctx: DialogueCtx): string {
+=== getDialogueActo4 cuerpo ===
+1758:function getDialogueActo4(nid: string, ctx: DialogueCtx): string {
+1759-  const q = ctx.questIdx, s = ctx.questStep, f = ctx.flags;
+1760-  const heraldoMuerto = !!f.heraldoDerrotado || ACTO4_BOSS.ref?.dead === true;
+1761-  // transición q12 → q13: Brisa arranca el Acto IV tras el cierre del Acto III
+1762-  // (la capa 13-a devuelve el idle del Acto I/II con acto3Done; sin esta ruta
+1763-  // el briefing de q14 sería inalcanzable — mismo patrón que la transición
+1764-  // q10→q11 de la capa anterior).
+1765-  if (nid === 'brisa' && q === 12 && f.acto3Done && !f.q14) return 'acto4_brisa_alba';
+1766-  // La Guarda existe desde acto3Done (showFlag de la NPC), incluso antes de
+=== sprites initSprites y PORTRAITS ===
+654:export function initSprites(): void {
+1226:const PORTRAITS: Record<string, PortraitDef> = {
+1345:  const P = PORTRAITS[key] ?? PORTRAITS['wisp'];
+=== drawPortrait inicio ===
+1341:export function drawPortrait(
+1342-  ctx: CanvasRenderingContext2D, key: string,
+1343-  dx: number, dy: number, scale: number, blink = false,
+1344-): void {
+1345-  const P = PORTRAITS[key] ?? PORTRAITS['wisp'];
+1346-  const q = (X: number, Y: number, W: number, H: number, C: string) => {
+1347-    ctx.fillStyle = C;
+1348-    ctx.fillRect(dx + X * scale, dy + Y * scale, W * scale, H * scale);
+1349-  };
+1350-  const O = PORTRAIT_OUTLINE;
+1351-

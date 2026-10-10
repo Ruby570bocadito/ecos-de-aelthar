@@ -1,0 +1,1398 @@
+     1→// ============================================================
+     2→// ECOS DE AELTHAR — Arte pixel procedural (AGENTE 3-a · visuales)
+     3→// Sprites generados en canvas: humanoides con ciclos de andar de
+     4→// 3 fases, paletas de la biblia (Sasha, Brokk, Maelis, Corvin,
+     5→// Kael, Gran Inquisidor, Teo, Doran, Nimue), lobo, Guardián
+     6→// Hueco, cofres, santuario, fragmento, wisps + tiles del mundo.
+     7→// Además: arcos de ataque (slash) y retratos de diálogo.
+     8→// (9-b) Poses de ataque/lanzamiento lazy-cacheadas (getAttackFrames/
+     9→// getCastFrames) + paletas merrow_* de Merrow (reservadas, futuro).
+    10→// ============================================================
+    11→
+    12→import { hash2 } from './world/palette';
+    13→import { paintGrass } from './world/grass';
+    14→import { paintWater } from './world/water';
+    15→import { paintStone } from './world/stone';
+    16→import { paintVillage } from './world/village';
+    17→import { paintTall } from './world/trees';
+    18→
+    19→export { hash2 } from './world/palette';
+    20→
+    21→export type Frames = HTMLCanvasElement[];
+    22→
+    23→const SPR: Record<string, Frames> = {};
+    24→
+    25→function mkCanvas(w: number, h: number): { c: HTMLCanvasElement; x: CanvasRenderingContext2D } {
+    26→  const c = document.createElement('canvas');
+    27→  c.width = w; c.height = h;
+    28→  const x = c.getContext('2d')!;
+    29→  x.imageSmoothingEnabled = false;
+    30→  return { c, x };
+    31→}
+    32→
+    33→// ---------------- Humanoides (16×18 · 3 fases de andar) ----------------
+    34→
+    35→export interface HumanPal {
+    36→  outline: string;
+    37→  hair: string; hairS?: string;
+    38→  skin: string;
+    39→  body: string; bodyS: string;
+    40→  accent: string;
+    41→  legs: string; legsS?: string;
+    42→  boots: string;
+    43→  eye: string;
+    44→  hood?: boolean;
+    45→  ribs?: boolean;
+    46→  beard?: string;
+    47→  // --- rasgos del agente 3-a (biblia de personajes) ---
+    48→  small?: boolean;          // niño (Teo): proporciones compactas
+    49→  big?: boolean;            // Gran Inquisidor: escala ×2 (32×36)
+    50→  ears?: 'cat' | 'elf';     // orejas felinas / élficas
+    51→  mask?: boolean;           // máscara lisa sin boca (Gran Inquisidor)
+    52→  maskC?: string;           // color de la máscara
+    53→  hammer?: boolean;         // martillo en la mano (Brokk)
+    54→  hairLong?: boolean;       // melena larga (Maelis, Nimue)
+    55→  pauldrons?: boolean;      // hombreras (Kael)
+    56→  leafy?: boolean;          // hojas en hombros (Doran)
+    57→  messy?: boolean;          // pelo revuelto (Teo)
+    58→}
+    59→
+    60→function px(x: CanvasRenderingContext2D, X: number, Y: number, W: number, H: number, C: string) {
+    61→  x.fillStyle = C; x.fillRect(X, Y, W, H);
+    62→}
+    63→
+    64→interface Layout {
+    65→  H: number;        // alto del canvas
+    66→  headTop: number;  // fila de la masa de pelo
+    67→  faceTop: number;  // fila de piel
+    68→  bodyTop: number;  // fila del torso
+    69→  bodyH: number;    // filas de torso (incluye fila de contorno)
+    70→  armLen: number;   // largo del brazo sin mano
+    71→}
+    72→
+    73→function layoutFor(pal: HumanPal): Layout {
+    74→  if (pal.small) return { H: 15, headTop: 0, faceTop: 3, bodyTop: 7, bodyH: 4, armLen: 3 };
+    75→  return { H: 18, headTop: 1, faceTop: 4, bodyTop: 8, bodyH: 6, armLen: 4 };
+    76→}
+    77→
+    78→/**
+    79→ * Dibuja un fotograma humanoide. f = fase de andar (0 zancada A,
+    80→ * 1 pase —cuerpo elevado 1px—, 2 zancada B). En reposo se usa f=1
+    81→ * sin bob para una pose neutra de pie.
+    82→ */
+    83→function drawHumanFrame(
+    84→  x: CanvasRenderingContext2D, pal: HumanPal,
+    85→  dir: 'down' | 'up' | 'side', f: number, bob: number, L: Layout,
+    86→): void {
+    87→  const hs = pal.hairS ?? pal.hair;
+    88→  const ls = pal.legsS ?? pal.legs;
+    89→  const hT = L.headTop + bob;
+    90→  const fT = L.faceTop + bob;
+    91→  const bT = L.bodyTop + bob;
+    92→  const bodyBot = bT + L.bodyH - 1;           // última fila del torso (contorno)
+    93→  const legY = bodyBot + 1;                    // piernas ancladas al suelo
+    94→  const bootY = L.H - 1;
+    95→  const legH = bootY - legY;                   // filas de pierna antes de la bota
+    96→
+    97→  // balanceo de brazos (contrario entre izquierda y derecha)
+    98→  const offL = [1, 0, -1][f];
+    99→  const offR = [-1, 0, 1][f];
+   100→
+   101→  if (dir === 'down' || dir === 'up') {
+   102→    // ---------- cabeza ----------
+   103→    px(x, 4, hT, 8, 1, pal.outline);
+   104→    px(x, 3, hT + 1, 10, 5, pal.hair);
+   105→    px(x, 3, hT + 1, 10, 1, hs);
+   106→    if (pal.hood) { px(x, 3, fT + 2, 10, 2, pal.hair); px(x, 4, fT + 3, 8, 1, hs); }
+   107→    if (dir === 'down') {
+   108→      px(x, 5, fT, 6, 4, pal.mask ? (pal.maskC ?? pal.skin) : pal.skin);
+   109→      if (!pal.mask) {
+   110→        px(x, 6, fT + 1, 1, 2, pal.eye); px(x, 9, fT + 1, 1, 2, pal.eye);
+   111→        if (pal.beard) px(x, 5, fT + 3, 6, 2, pal.beard);
+   112→      } else {
+   113→        // máscara lisa: solo un brillo horizontal, sin boca ni ojos
+   114→        px(x, 6, fT + 1, 4, 1, '#eae6dc');
+   115→      }
+   116→      px(x, 3, fT + 2, 1, 2, pal.hair); px(x, 12, fT + 2, 1, 2, pal.hair);
+   117→      if (pal.ears === 'elf') { px(x, 2, fT + 1, 1, 2, pal.skin); px(x, 13, fT + 1, 1, 2, pal.skin); }
+   118→      if (pal.hairLong) { px(x, 3, fT + 4, 2, Math.max(1, bT - fT - 3), pal.hair); px(x, 11, fT + 4, 2, Math.max(1, bT - fT - 3), pal.hair); }
+   119→    }
+   120→    if (pal.ears === 'cat') {
+   121→      // orejas felinas sobre la cabeza (filas fijas para que no "floten")
+   122→      px(x, 3, 0, 1, 1, hs); px(x, 12, 0, 1, 1, hs);
+   123→      px(x, 3, 1, 2, 1, pal.hair); px(x, 11, 1, 2, 1, pal.hair);
+   124→    }
+   125→    if (pal.messy) {
+   126→      // pelo revuelto (mechones sueltos)
+   127→      px(x, 2, hT + 1, 1, 1, pal.hair); px(x, 13, hT + 1, 1, 1, pal.hair);
+   128→      px(x, 5, Math.max(0, hT - 1), 2, 1, pal.hair); px(x, 9, Math.max(0, hT - 1), 3, 1, pal.hair);
+   129→    }
+   130→
+   131→    // ---------- torso ----------
+   132→    px(x, 4, bT, 8, L.bodyH, pal.body);
+   133→    px(x, 4, bT, 8, 1, pal.bodyS);
+   134→    px(x, 5, bT + L.bodyH - 2, 6, 1, pal.accent);
+   135→    px(x, 4, bodyBot, 8, 1, pal.outline);
+   136→    if (pal.ribs) { px(x, 6, bT + 1, 4, 1, pal.bodyS); px(x, 6, bT + 2, 4, 1, pal.bodyS); }
+   137→    if (pal.pauldrons) { px(x, 3, bT, 2, 2, pal.accent); px(x, 11, bT, 2, 2, pal.accent); }
+   138→    if (pal.leafy) { px(x, 3, bT, 2, 1, '#8ac05a'); px(x, 11, bT, 2, 1, '#8ac05a'); }
+   139→
+   140→    // ---------- brazos (oscilación) ----------
+   141→    px(x, 2, bT + offL, 2, L.armLen, pal.body); px(x, 2, bT + offL + L.armLen, 2, 1, pal.skin);
+   142→    px(x, 12, bT + offR, 2, L.armLen, pal.body); px(x, 12, bT + offR + L.armLen, 2, 1, pal.skin);
+   143→    if (pal.hammer) {
+   144→      // martillo en la mano derecha
+   145→      px(x, 13, bT + offR - 2, 1, L.armLen + 1, '#7a5c3a');
+   146→      px(x, 12, bT + offR - 4, 3, 2, '#9aa4b4');
+   147→    }
+   148→
+   149→    // ---------- piernas ----------
+   150→    if (f === 0) {
+   151→      // zancada A: izquierda adelante, derecha atrás
+   152→      px(x, 4, legY, 3, legH, pal.legs); px(x, 9, legY, 3, legH, ls);
+   153→      px(x, 4, bootY, 3, 1, pal.boots); px(x, 9, bootY, 3, 1, pal.boots);
+   154→    } else if (f === 1) {
+   155→      // pase: piernas juntas, cuerpo elevado
+   156→      px(x, 5, legY, 3, legH, pal.legs); px(x, 8, legY, 3, legH, pal.legs);
+   157→      px(x, 5, bootY, 3, 1, pal.boots); px(x, 8, bootY, 3, 1, pal.boots);
+   158→    } else {
+   159→      // zancada B: derecha adelante, izquierda atrás
+   160→      px(x, 4, legY + 1, 3, Math.max(1, legH - 1), ls); px(x, 9, legY, 3, legH, pal.legs);
+   161→      px(x, 4, bootY, 3, 1, pal.boots); px(x, 9, bootY, 3, 1, pal.boots);
+   162→    }
+   163→    return;
+   164→  }
+   165→
+   166→  // ---------- dir === 'side' (mirando a la derecha) ----------
+   167→  px(x, 5, hT, 8, 1, pal.outline);
+   168→  px(x, 4, hT + 1, 9, 5, pal.hair);
+   169→  px(x, 4, hT + 1, 9, 1, hs);
+   170→  if (pal.hood) { px(x, 4, fT + 2, 8, 2, pal.hair); }
+   171→  px(x, 7, fT, 5, 4, pal.mask ? (pal.maskC ?? pal.skin) : pal.skin);
+   172→  if (!pal.mask) {
+   173→    px(x, 10, fT + 1, 1, 2, pal.eye);
+   174→    if (pal.beard) px(x, 8, fT + 3, 4, 2, pal.beard);
+   175→  } else {
+   176→    px(x, 8, fT + 1, 3, 1, '#eae6dc');
+   177→  }
+   178→  px(x, 5, fT + 2, 1, 2, pal.hair);
+   179→  if (pal.ears === 'elf') px(x, 6, fT + 1, 1, 2, pal.skin);
+   180→  if (pal.ears === 'cat') { px(x, 3, 0, 1, 1, hs); px(x, 4, 1, 2, 1, pal.hair); }
+   181→  if (pal.hairLong) px(x, 4, fT + 3, 2, Math.max(1, bT - fT - 2), pal.hair);
+   182→  if (pal.messy) px(x, 5, Math.max(0, hT - 1), 3, 1, pal.hair);
+   183→
+   184→  // torso
+   185→  px(x, 5, bT, 6, L.bodyH, pal.body);
+   186→  px(x, 5, bT, 6, 1, pal.bodyS);
+   187→  px(x, 6, bT + L.bodyH - 2, 4, 1, pal.accent);
+   188→  px(x, 5, bodyBot, 6, 1, pal.outline);
+   189→  if (pal.ribs) { px(x, 6, bT + 1, 3, 1, pal.bodyS); px(x, 6, bT + 2, 3, 1, pal.bodyS); }
+   190→  if (pal.pauldrons) px(x, 4, bT, 2, 2, pal.accent);
+   191→  if (pal.leafy) px(x, 4, bT, 2, 1, '#8ac05a');
+   192→
+   193→  // brazo delantero con balanceo + brazo trasero al tono sombreado
+   194→  const offF = [1, 0, -1][f];
+   195→  px(x, 8, bT + offF, 3, 3, pal.body);
+   196→  px(x, 10, bT + offF + 3, 2, 1, pal.skin);
+   197→  px(x, 5, bT - offF, 2, 3, pal.bodyS);
+   198→  if (pal.hammer) {
+   199→    px(x, 11, bT + offF - 2, 1, 4, '#7a5c3a');
+   200→    px(x, 10, bT + offF - 4, 3, 2, '#9aa4b4');
+   201→  }
+   202→
+   203→  // piernas en zancada (3 fases)
+   204→  if (f === 0) {
+   205→    px(x, 5, legY, 2, legH, ls); px(x, 8, legY, 2, legH, pal.legs);
+   206→    px(x, 5, bootY, 2, 1, pal.boots); px(x, 8, bootY, 2, 1, pal.boots);
+   207→  } else if (f === 1) {
+   208→    px(x, 6, legY, 2, legH, pal.legs); px(x, 8, legY + 1, 2, Math.max(1, legH - 1), ls);
+   209→    px(x, 6, bootY, 2, 1, pal.boots); px(x, 8, bootY, 2, 1, pal.boots);
+   210→  } else {
+   211→    px(x, 4, legY, 2, legH, ls); px(x, 7, legY, 2, legH, pal.legs);
+   212→    px(x, 4, bootY, 2, 1, pal.boots); px(x, 7, bootY, 2, 1, pal.boots);
+   213→  }
+   214→}
+   215→
+   216→function buildHumanoid(pal: HumanPal): Frames {
+   217→  const frames: Frames = [];
+   218→  const dirs: ('down' | 'up' | 'side')[] = ['down', 'up', 'side'];
+   219→  const L = layoutFor(pal);
+   220→  for (const dir of dirs) {
+   221→    for (let f = 0; f < 3; f++) {
+   222→      const bob = f === 1 ? -1 : 0; // el cuerpo se eleva en la fase de pase
+   223→      const { c, x } = mkCanvas(16, L.H);
+   224→      drawHumanFrame(x, pal, dir, f, bob, L);
+   225→      frames.push(c);
+   226→    }
+   227→  }
+   228→  if (pal.big) {
+   229→    // El Gran Inquisidor se dibuja a escala ×2 (32×36): imponente como el Guardián
+   230→    return frames.map(fr => {
+   231→      const { c, x } = mkCanvas(32, L.H * 2);
+   232→      x.imageSmoothingEnabled = false;
+   233→      x.drawImage(fr, 0, 0, 32, L.H * 2);
+   234→      return c;
+   235→    });
+   236→  }
+   237→  return frames;
+   238→}
+   239→
+   240→/** 'side' canónico o 'left'/'right' del motor (flip lo decide render). */
+   241→function esLateral(dir: string): boolean {
+   242→  return dir === 'side' || dir === 'left' || dir === 'right';
+   243→}
+   244→
+   245→/** Índice de fotograma legacy (compatible con re-export de engine.ts). */
+   246→export function frameIndex(dir: string, moving: boolean, anim: number): number {
+   247→  // FIX R18 (bug «al andar a los lados mira al frente»): e.dir es
+   248→  // 'left'/'right' en el motor, nunca 'side' — ambas cuentan como laterales.
+   249→  const base = dir === 'down' ? 0 : dir === 'up' ? 2 : esLateral(dir) ? 4 : 0;
+   250→  if (!moving) return base;
+   251→  return base + (Math.floor(anim * 6) % 2);
+   252→}
+   253→
+   254→/**
+   255→ * Selección robusta de fotograma para cualquier sprite:
+   256→ * humanoids nuevos tienen 9 frames (3 por dirección), los demás
+   257→ * (lobo, guardián, wisp...) alternan su ciclo propio al moverse.
+   258→ */
+   259→export function entityFrame(spr: Frames, dir: string, moving: boolean, anim: number): number {
+   260→  const n = spr.length;
+   261→  if (n === 9) {
+   262→    // FIX R18 (bug «al andar a los lados mira al frente»): e.dir llega como
+   263→    // 'left'/'right' del motor — el flip de render distingue left/right, aquí
+   264→    // solo importa que sea fila lateral.
+   265→    const base = dir === 'up' ? 3 : esLateral(dir) ? 6 : 0;
+   266→    if (!moving) return base + 1; // pose de pie = fase de pase sin bob
+   267→    return base + (Math.floor(anim * 8) % 3);
+   268→  }
+   269→  if (n >= 2 && moving) return Math.floor(anim * 6) % Math.min(2, n);
+   270→  return 0;
+   271→}
+   272→
+   273→// ---------------- Lobo de niebla (18×12) ----------------
+   274→
+   275→function buildWolf(): Frames {
+   276→  const frames: Frames = [];
+   277→  for (let f = 0; f < 2; f++) {
+   278→    const { c, x } = mkCanvas(18, 12);
+   279→    const O = '#26243a', B = '#7d7d9f', BS = '#5c5c80', W = '#a7a7c4';
+   280→    px(x, 3, 3, 10, 5, B);            // cuerpo
+   281→    px(x, 3, 3, 10, 1, W);
+   282→    px(x, 2, 7, 12, 1, O);
+   283→    px(x, 11, 1, 4, 5, B);            // cabeza
+   284→    px(x, 13, 0, 1, 2, B);            // oreja
+   285→    px(x, 12, 0, 1, 2, BS);
+   286→    px(x, 14, 3, 3, 2, BS);           // hocico
+   287→    px(x, 12, 2, 1, 1, '#ff6a4d');    // ojo
+   288→    px(x, 16, 4, 1, 1, O);
+   289→    px(x, 0, 2, 3, 2, BS);            // cola
+   290→    px(x, 0, 1, 1, 2, BS);
+   291→    const ly = f === 0 ? 8 : 9;
+   292→    px(x, 4, ly, 2, 3, BS); px(x, 7, f === 0 ? 9 : 8, 2, 3, BS);
+   293→    px(x, 10, ly, 2, 3, BS); px(x, 12, f === 0 ? 9 : 8, 2, 3, BS);
+   294→    // niebla
+   295→    x.globalAlpha = 0.35;
+   296→    px(x, 1 + f, 9, 3, 2, W); px(x, 13 - f, 8, 4, 2, W);
+   297→    x.globalAlpha = 1;
+   298→    frames.push(c);
+   299→  }
+   300→  return frames;
+   301→}
+   302→
+   303→// ---------------- Guardián Hueco (32×34) ----------------
+   304→
+   305→function buildGuardian(): Frames {
+   306→  const frames: Frames = [];
+   307→  for (let f = 0; f < 2; f++) {
+   308→    const { c, x } = mkCanvas(32, 34);
+   309→    const O = '#141220', S = '#4a4660', S2 = '#5f5a7a', HL = '#8a84a8';
+   310→    const GLOW = f === 0 ? '#7ee8ff' : '#baf4ff';
+   311→    // capa
+   312→    px(x, 8, 14, 16, 12, '#2c2440');
+   313→    px(x, 7, 22 + f, 3, 6, '#221c33'); px(x, 22, 21 - f, 3, 6, '#221c33');
+   314→    // hombros
+   315→    px(x, 2, 12, 8, 6, S2); px(x, 22, 12, 8, 6, S2);
+   316→    px(x, 2, 12, 8, 1, HL); px(x, 22, 12, 8, 1, HL);
+   317→    // torso con hueco
+   318→    px(x, 9, 12, 14, 13, S);
+   319→    px(x, 9, 12, 14, 1, HL);
+   320→    px(x, 13, 16, 6, 6, O);            // hueco
+   321→    px(x, 14, 17, 4, 4, GLOW);         // brillo interior
+   322→    // astillas/cracks
+   323→    px(x, 10, 14, 1, 4, O); px(x, 21, 18, 1, 5, O); px(x, 16, 24, 3, 1, O);
+   324→    // cabeza/casco con cuernos
+   325→    px(x, 11, 4, 10, 8, S2);
+   326→    px(x, 11, 4, 10, 1, HL);
+   327→    px(x, 9, 2, 2, 6, HL); px(x, 21, 2, 2, 6, HL);   // cuernos
+   328→    px(x, 8, 1, 2, 3, HL); px(x, 22, 1, 2, 3, HL);
+   329→    px(x, 13, 7, 2, 2, GLOW); px(x, 17, 7, 2, 2, GLOW); // ojos
+   330→    // brazos y garras
+   331→    const ay = f === 0 ? 18 : 16;
+   332→    px(x, 0, ay, 3, 9, S2); px(x, 29, ay, 3, 9, S2);
+   333→    px(x, 0, ay + 9, 3, 2, O); px(x, 29, ay + 9, 3, 2, O);
+   334→    // fragmentos flotantes
+   335→    x.globalAlpha = 0.8;
+   336→    px(x, 5, 27 + f, 2, 2, S2); px(x, 25, 28 - f, 2, 2, S2); px(x, 15, 30, 2, 2, S2);
+   337→    x.globalAlpha = 1;
+   338→    frames.push(c);
+   339→  }
+   340→  return frames;
+   341→}
+   342→
+   343→// ---------------- Objetos ----------------
+   344→
+   345→function buildChest(): { closed: Frames; open: Frames } {
+   346→  const mk = (open: boolean) => {
+   347→    const { c, x } = mkCanvas(16, 14);
+   348→    const O = '#3a2414', W = '#8a5a2b', W2 = '#6d4520', G = '#f0c84a';
+   349→    px(x, 2, open ? 5 : 3, 12, open ? 8 : 9, W);
+   350→    px(x, 2, open ? 5 : 3, 12, 2, W2);
+   351→    px(x, 2, open ? 12 : 10, 12, 1, O);
+   352→    px(x, 1, 3, 14, 1, O); px(x, 1, 12, 14, 1, O);
+   353→    px(x, 7, open ? 8 : 6, 2, 3, G);
+   354→    if (open) {
+   355→      px(x, 2, 1, 12, 3, W2);           // tapa abierta
+   356→      px(x, 3, 4, 10, 2, '#fff3c0');    // brillo interior
+   357→      px(x, 4, 5, 8, 1, G);
+   358→    } else {
+   359→      px(x, 2, 3, 12, 2, W2);
+   360→    }
+   361→    return c;
+   362→  };
+   363→  return { closed: [mk(false)], open: [mk(true)] };
+   364→}
+   365→
+   366→function buildSanctuary(): Frames {
+   367→  const frames: Frames = [];
+   368→  for (let f = 0; f < 2; f++) {
+   369→    const { c, x } = mkCanvas(20, 30);
+   370→    const O = '#1c2438', S = '#5a6a8a', S2 = '#42506c';
+   371→    px(x, 7, 4, 6, 24, S);
+   372→    px(x, 7, 4, 2, 24, S2);
+   373→    px(x, 6, 2, 8, 3, S2);
+   374→    px(x, 5, 27, 10, 3, S2); px(x, 4, 28, 12, 2, O);
+   375→    const g = f === 0 ? '#8ef0ff' : '#d4fbff';
+   376→    x.globalAlpha = 0.9;
+   377→    px(x, 8, 6 + f, 4, 7, g);
+   378→    x.globalAlpha = 0.4;
+   379→    px(x, 7, 5 + f, 6, 9, g);
+   380→    x.globalAlpha = 1;
+   381→    px(x, 9, 14, 2, 10, '#7a8aac');
+   382→    frames.push(c);
+   383→  }
+   384→  return frames;
+   385→}
+   386→
+   387→function buildFragment(): Frames {
+   388→  const frames: Frames = [];
+   389→  for (let f = 0; f < 3; f++) {
+   390→    const { c, x } = mkCanvas(12, 12);
+   391→    const G = '#ffe9a0', G2 = '#f0c84a';
+   392→    if (f === 0) { px(x, 5, 1, 3, 10, G2); px(x, 5, 2, 3, 8, G); }
+   393→    if (f === 1) { px(x, 3, 2, 6, 8, G2); px(x, 4, 3, 4, 6, G); }
+   394→    if (f === 2) { px(x, 2, 3, 8, 6, G2); px(x, 3, 4, 6, 4, G); }
+   395→    px(x, 5, 4, 2, 2, '#fffbe0');
+   396→    frames.push(c);
+   397→  }
+   398→  return frames;
+   399→}
+   400→
+   401→function buildWisp(): Frames {
+   402→  const frames: Frames = [];
+   403→  for (let f = 0; f < 2; f++) {
+   404→    const { c, x } = mkCanvas(10, 10);
+   405→    x.globalAlpha = 0.9; px(x, 3, 3 + f, 4, 4, '#bff4e8');
+   406→    x.globalAlpha = 0.5; px(x, 2, 2 + f, 6, 6, '#7fe0cc');
+   407→    x.globalAlpha = 1; px(x, 4, 4 + f, 2, 2, '#ffffff');
+   408→    frames.push(c);
+   409→  }
+   410→  return frames;
+   411→}
+   412→
+   413→function buildPickups(): void {
+   414→  {
+   415→    const { c, x } = mkCanvas(8, 10);
+   416→    px(x, 2, 0, 4, 2, '#8a5a2b'); px(x, 1, 2, 6, 7, '#e05078');
+   417→    px(x, 2, 3, 2, 3, '#ff9ab0'); px(x, 1, 9, 6, 1, '#8a2a48');
+   418→    SPR['potion'] = [c];
+   419→  }
+   420→  {
+   421→    const { c, x } = mkCanvas(10, 8);
+   422→    px(x, 1, 2, 8, 5, '#e8b23a'); px(x, 1, 2, 8, 1, '#f8d878');
+   423→    px(x, 0, 3, 1, 3, '#b8842a'); px(x, 9, 3, 1, 3, '#b8842a');
+   424→    px(x, 3, 4, 2, 1, '#b8842a'); px(x, 6, 4, 1, 1, '#b8842a');
+   425→    SPR['goldbag'] = [c];
+   426→  }
+   427→  {
+   428→    const { c, x } = mkCanvas(10, 10);
+   429→    px(x, 2, 1, 6, 8, '#cfd6e2'); px(x, 3, 0, 4, 1, '#9aa4b4');
+   430→    px(x, 3, 3, 4, 1, '#7a8494'); px(x, 3, 6, 4, 1, '#7a8494');
+   431→    SPR['keyEcho'] = [c];
+   432→  }
+   433→}
+   434→
+   435→// ---------------- Registro de paletas ----------------
+   436→
+   437→const PALS: Record<string, HumanPal> = {
+   438→  hero_alba: {
+   439→    outline: '#2a1a20', hair: '#c8384a', hairS: '#9a2438', skin: '#f2c99c',
+   440→    body: '#cdd3de', bodyS: '#9aa3b4', accent: '#c8384a',
+   441→    legs: '#5a6070', legsS: '#474c5a', boots: '#6d4520', eye: '#2a2a3a', hood: true,
+   442→  },
+   443→  hero_tejedor: {
+   444→    outline: '#241a30', hair: '#8a5ac0', hairS: '#6a3f9a', skin: '#f2c99c',
+   445→    body: '#7e58b8', bodyS: '#5e3f92', accent: '#f0c84a',
+   446→    legs: '#4a3a6a', legsS: '#3c2f58', boots: '#3a2c50', eye: '#3ae0c8', hood: true,
+   447→  },
+   448→  brisa: {
+   449→    outline: '#2a2a30', hair: '#d8dade', hairS: '#b0b4bc', skin: '#eabf9a',
+   450→    body: '#7a9a6e', bodyS: '#5e7a54', accent: '#e8d8a8',
+   451→    legs: '#6a6a62', boots: '#4a3a2a', eye: '#3a3a3a',
+   452→  },
+   453→  toln: {
+   454→    outline: '#241a14', hair: '#6a4a2e', hairS: '#54381e', skin: '#e0a87a',
+   455→    body: '#8a5a33', bodyS: '#6d4520', accent: '#3a3a3e',
+   456→    legs: '#4a4440', boots: '#3a2c20', eye: '#2a2a2a', beard: '#6a4a2e',
+   457→  },
+   458→  ilwen: {
+   459→    outline: '#1c2a1e', hair: '#8ad058', hairS: '#64a83e', skin: '#f2d0a8',
+   460→    body: '#3e7d4c', bodyS: '#2e5f3a', accent: '#e8c860',
+   461→    legs: '#4a5a3a', boots: '#54381e', eye: '#2a4a2e', ears: 'elf',
+   462→  },
+   463→  esqueleto: {
+   464→    outline: '#20201e', hair: '#e6e0c8', hairS: '#c2bc9e', skin: '#e6e0c8',
+   465→    body: '#d8d2b4', bodyS: '#a8a284', accent: '#7a7460',
+   466→    legs: '#c8c2a4', legsS: '#a8a284', boots: '#8a8468', eye: '#e04838', ribs: true,
+   467→  },
+   468→  sombra: {
+   469→    outline: '#100c1c', hair: '#2c2440', hairS: '#201a30', skin: '#2c2440',
+   470→    body: '#241c38', bodyS: '#181226', accent: '#9f7ae0',
+   471→    legs: '#181226', boots: '#100c1c', eye: '#b48fff', hood: true,
+   472→  },
+   473→  // ----- Nuevos personajes de la biblia (agente 3-a) -----
+   474→  sasha: {
+   475→    // Kaari felina ladrona: capucha oscura, ojos dorados, ágil
+   476→    outline: '#16121e', hair: '#2e2838', hairS: '#221c2c', skin: '#e8c49a',
+   477→    body: '#3a3448', bodyS: '#2a2438', accent: '#c89a3a',
+   478→    legs: '#2e2a3a', legsS: '#242030', boots: '#1a1622', eye: '#f0c040',
+   479→    hood: true, ears: 'cat',
+   480→  },
+   481→  brokk: {
+   482→    // Enano Durn: ancho, barba rojiza trenzada, martillo
+   483→    outline: '#241408', hair: '#8a4a26', hairS: '#6d3a1e', skin: '#e8a878',
+   484→    body: '#5a4a3a', bodyS: '#443828', accent: '#b07030',
+   485→    legs: '#3e342a', boots: '#2e241a', eye: '#2a2a2a', beard: '#a44e28', hammer: true,
+   486→  },
+   487→  maelis: {
+   488→    // Nereida sacerdotisa: perla y turquesa, serena
+   489→    outline: '#12303a', hair: '#7ad8c8', hairS: '#54b0a4', skin: '#f0d8c0',
+   490→    body: '#4aa8b0', bodyS: '#368088', accent: '#e8f0ea',
+   491→    legs: '#3a8890', boots: '#2a6870', eye: '#2a8a8a', hairLong: true,
+   492→  },
+   493→  corvin: {
+   494→    // Erudito desertor: túnica gris oscura elegante, sarcástico
+   495→    outline: '#181820', hair: '#5a5a64', hairS: '#42424a', skin: '#eac8a0',
+   496→    body: '#3e3e48', bodyS: '#2e2e38', accent: '#8a8a96',
+   497→    legs: '#33333c', boots: '#22222a', eye: '#3a3a44',
+   498→  },
+   499→  kael: {
+   500→    // Inquisidora de la Orden: armadura blanca, fría
+   501→    outline: '#3a3a44', hair: '#e8e0c8', hairS: '#c8bc9c', skin: '#f2d4b0',
+   502→    body: '#e8e6de', bodyS: '#c2c0b6', accent: '#8a94a8',
+   503→    legs: '#b8b6ac', boots: '#8a887e', eye: '#7a8894', pauldrons: true,
+   504→  },
+   505→  inquisidor: {
+   506→    // GRAN Inquisidor: armadura blanca sin adornos, máscara lisa, alto
+   507→    outline: '#2a2a30', hair: '#e4e2da', hairS: '#c6c4ba', skin: '#d8d4ca',
+   508→    body: '#e4e2da', bodyS: '#bcbab0', accent: '#8a887e',
+   509→    legs: '#b4b2a8', boots: '#86847a', eye: '#d8d4ca', mask: true, maskC: '#d8d4ca', big: true,
+   510→  },
+   511→  teo: {
+   512→    // Niño de unos 8 años, pelo revuelto
+   513→    outline: '#2a1e14', hair: '#7a5432', hairS: '#5e4026', skin: '#f2cfa4',
+   514→    body: '#c09a54', bodyS: '#9a7a40', accent: '#7a5432',
+   515→    legs: '#6a5a40', boots: '#4a3a28', eye: '#3a2a1a', small: true, messy: true,
+   516→  },
+   517→  doran: {
+   518→    // Druida del Círculo Verde: verde musgo, capucha de hojas
+   519→    outline: '#16241a', hair: '#3e6a34', hairS: '#2e5226', skin: '#d8b088',
+   520→    body: '#4a7a3e', bodyS: '#375e2e', accent: '#8ac05a',
+   521→    legs: '#3a5232', boots: '#4a3a22', eye: '#2a3a24', hood: true, leafy: true,
+   522→  },
+   523→  nimue: {
+   524→    // Elfa pálida espectral (verde wisp)
+   525→    outline: '#1a2a26', hair: '#b8d8c8', hairS: '#94b8a8', skin: '#e4e8de',
+   526→    body: '#5a8a72', bodyS: '#446a58', accent: '#bff0dc',
+   527→    legs: '#4a6a5a', boots: '#38504a', eye: '#7ae8c0', ears: 'elf', hairLong: true,
+   528→  },
+   529→  // ----- Aldeanos de Merrow (agente 9-b · paletas reservadas, aún sin uso) -----
+   530→  merrow_h: {
+   531→    // Pescador de Merrow: jersey de trabajo descolorido, barba canosa
+   532→    outline: '#1c222a', hair: '#5a5a50', hairS: '#46463e', skin: '#d8a878',
+   533→    body: '#5a6a6a', bodyS: '#465454', accent: '#8a7a5a',
+   534→    legs: '#3e4a50', legsS: '#333e44', boots: '#3a2e20', eye: '#2a2a30', beard: '#6a6a5e',
+   535→  },
+   536→  merrow_m: {
+   537→    // Pescadora de Merrow: capucha de marinar y gabardina verde agua
+   538→    outline: '#241c22', hair: '#4a6a5e', hairS: '#3a544a', skin: '#e0b088',
+   539→    body: '#6a7a72', bodyS: '#525f58', accent: '#9a8a6a',
+   540→    legs: '#4a5450', legsS: '#3c443f', boots: '#3a2e20', eye: '#2a3a34', hood: true,
+   541→  },
+   542→};
+   543→
+   544→export function initSprites(): void {
+   545→  for (const [name, pal] of Object.entries(PALS)) SPR[name] = buildHumanoid(pal);
+   546→  SPR['lobo'] = buildWolf();
+   547→  SPR['guardian'] = buildGuardian();
+   548→  const chest = buildChest();
+   549→  SPR['chest'] = chest.closed;
+   550→  SPR['chest_open'] = chest.open;
+   551→  SPR['sanctuary'] = buildSanctuary();
+   552→  SPR['fragment'] = buildFragment();
+   553→  SPR['wisp'] = buildWisp();
+   554→  buildPickups();
+   555→}
+   556→
+   557→export function getSpr(name: string): Frames {
+   558→  return SPR[name] ?? SPR['hero_alba'];
+   559→}
+   560→
+   561→/**
+   562→ * Registro de sprites para módulos de expansión (ACTO II).
+   563→ * Contrato: los módulos nuevos (p. ej. sprites_expansion.ts) llaman aquí
+   564→ * desde su initExpansionSprites() en vez de tocar este archivo.
+   565→ * Frames: array de canvas (1 = estático, 2+ = ciclo de animación).
+   566→ */
+   567→export function registerSpr(name: string, frames: Frames): void {
+   568→  SPR[name] = frames;
+   569→}
+   570→
+   571→// ---------------- Poses de combate (AGENTE 9-b · ataque y lanzamiento) ----------------
+   572→//
+   573→// Frames lazy-cacheados generados a partir de la MISMA paleta y layout del
+   574→// humanoide (drawHumanFrame como base + brazos/arma repintados): mismo tamaño
+   575→// (16×L.H) y mismo estilo de pixel art. CONTRATO con render.ts (agente 9-c):
+   576→//   · getAttackFrames(base, dir) → [anticipación, golpe] | null. El render los
+   577→//     usa con attackT>0: prog<0.5 → frames[0], prog>=0.5 → frames[1].
+   578→//   · getCastFrames(base, dir)  → [concentrar, liberar] | null (misma regla).
+   579→//   · dir: 'down' | 'up' | 'left' | 'right'. Igual que los frames de andar,
+   580→//     las poses laterales se dibujan mirando a la DERECHA y es el render quien
+   581→//     las voltea para 'left' (flip = e.dir === 'left') — NUNCA se pre-espejan.
+   582→//   · Anticipación (frame 0): arma atrás sobre el hombro y cuerpo atrás 1px
+   583→//     (mismo truco de elevación del pase). Golpe (frame 1): brazo y arma
+   584→//     extendidos en la dirección. Ilwen (arco): [tensado apuntando, suelto
+   585→//     con el arco bajado].
+   586→//   · Si no hay pose para un nombre/dirección devuelve null y el render cae
+   587→//     al sprite de andar — NUNCA rompe.
+   588→
+   589→interface WeaponDef {
+   590→  kind: 'sword' | 'staff' | 'hammer' | 'bow';
+   591→  metal: string; // hoja / cabeza / madera del arco
+   592→  glint: string; // brillo del filo / núcleo / cuerda
+   593→  grip: string;  // empuñadura / mango
+   594→  trim: string;  // guarda / gema / punta brillante (accent del dueño)
+   595→}
+   596→
+   597→const ATTACK_POSES = new Set(['hero_alba', 'hero_tejedor', 'brisa', 'toln', 'ilwen', 'doran', 'kael']);
+   598→const CAST_POSES = new Set(['hero_tejedor']);
+   599→
+   600→// Arma por personaje — colores coherentes con su paleta/accent de la biblia:
+   601→// alba espada roja-plateada · tejedor bastón con punta dorada · brisa bastón
+   602→// de anciana · toln martillo de forja · doran bastón-druida · kael espada de
+   603→// la Orden · ilwen arco curvo marrón con cuerda clara.
+   604→const WEAPONS: Record<string, WeaponDef> = {
+   605→  hero_alba: { kind: 'sword', metal: '#d8dee8', glint: '#f6f9fc', grip: '#5a3a28', trim: '#c8384a' },
+   606→  kael: { kind: 'sword', metal: '#dfe3ea', glint: '#ffffff', grip: '#4a4a54', trim: '#8a94a8' },
+   607→  hero_tejedor: { kind: 'staff', metal: '#8a6a44', glint: '#fff8d8', grip: '#6a4e30', trim: '#f0c84a' },
+   608→  brisa: { kind: 'staff', metal: '#9a7a50', glint: '#f8f0d0', grip: '#6a4e30', trim: '#e8d8a8' },
+   609→  doran: { kind: 'staff', metal: '#6d4520', glint: '#e0f4c0', grip: '#54381e', trim: '#8ac05a' },
+   610→  toln: { kind: 'hammer', metal: '#9aa4b4', glint: '#c8d2dc', grip: '#7a5c3a', trim: '#3a3a3e' },
+   611→  ilwen: { kind: 'bow', metal: '#8a5a2b', glint: '#e8e0c8', grip: '#54381e', trim: '#e8c860' },
+   612→};
+   613→
+   614→const attackPoseCache = new Map<string, HTMLCanvasElement[] | null>();
+   615→const castPoseCache = new Map<string, HTMLCanvasElement[] | null>();
+   616→
+   617→/** Frames de ataque por dirección para un humanoide registrado.
+   618→ *  Devuelve [anticipación, golpe] (2 canvas) o null si no existen.
+   619→ *  El render los dibuja cuando attackT>0: prog = 1 - attackT/attackDur
+   620→ *  → prog<0.5 usa frames[0], prog>=0.5 usa frames[1]. */
+   621→export function getAttackFrames(baseName: string, dir: string): HTMLCanvasElement[] | null {
+   622→  const key = baseName + '|' + dir;
+   623→  if (attackPoseCache.has(key)) return attackPoseCache.get(key) ?? null;
+   624→  const frames = typeof document === 'undefined' ? null : buildCombatPose(baseName, dir, 'attack');
+   625→  attackPoseCache.set(key, frames);
+   626→  return frames;
+   627→}
+   628→
+   629→/** Frames de lanzamiento de hechizo (brazos al frente, brillo entre manos).
+   630→ *  Misma firma y regla de uso que getAttackFrames; solo hero_tejedor
+   631→ *  (disciplina tejedor) tiene poses — el resto devuelve null. */
+   632→export function getCastFrames(baseName: string, dir: string): HTMLCanvasElement[] | null {
+   633→  const key = baseName + '|' + dir;
+   634→  if (castPoseCache.has(key)) return castPoseCache.get(key) ?? null;
+   635→  const frames = typeof document === 'undefined' ? null : buildCombatPose(baseName, dir, 'cast');
+   636→  castPoseCache.set(key, frames);
+   637→  return frames;
+   638→}
+   639→
+   640→/** px con recorte defensivo (algunas poses rozan el borde del canvas). */
+   641→function pxc(x: CanvasRenderingContext2D, X: number, Y: number, W: number, H: number, C: string): void {
+   642→  if (W <= 0 || H <= 0) return;
+   643→  px(x, X, Y, W, H, C);
+   644→}
+   645→
+   646→/** Canvas base de una pose: cuerpo de pie (fase de pase, sin balanceo de
+   647→ *  brazos) — después se borran/redibujan solo los brazos que posan. */
+   648→function poseCanvas(
+   649→  pal: HumanPal, dir3: 'down' | 'up' | 'side', bob: number,
+   650→): { c: HTMLCanvasElement; x: CanvasRenderingContext2D; bT: number; L: Layout } {
+   651→  const L = layoutFor(pal);
+   652→  const { c, x } = mkCanvas(16, L.H);
+   653→  drawHumanFrame(x, pal, dir3, 1, bob, L);
+   654→  return { c, x, bT: L.bodyTop + bob, L };
+   655→}
+   656→
+   657→function clearArmR(x: CanvasRenderingContext2D, bT: number, armLen: number): void {
+   658→  x.clearRect(12, bT, 2, armLen + 1);
+   659→}
+   660→function clearArmL(x: CanvasRenderingContext2D, bT: number, armLen: number): void {
+   661→  x.clearRect(2, bT, 2, armLen + 1);
+   662→}
+   663→function clearArmFront(x: CanvasRenderingContext2D, bT: number): void {
+   664→  x.clearRect(8, bT, 4, 4); // brazo delantero + mano (pose lateral)
+   665→}
+   666→
+   667→/** Repinta el hombro derecho (hombrera/hojas) tras borrar el brazo. */
+   668→function restoreShoulderR(x: CanvasRenderingContext2D, pal: HumanPal, bT: number): void {
+   669→  if (pal.pauldrons) px(x, 11, bT, 2, 2, pal.accent);
+   670→  else if (pal.leafy) px(x, 11, bT, 2, 1, '#8ac05a');
+   671→}
+   672→
+   673→/** Arma vertical: empuñadura en (cx, gy), cuerpo hacia arriba (up) o abajo. */
+   674→function weaponVert(x: CanvasRenderingContext2D, W: WeaponDef, cx: number, gy: number, len: number, up: boolean): void {
+   675→  pxc(x, cx, gy, 2, 1, W.grip);                       // empuñadura
+   676→  pxc(x, cx - 1, up ? gy - 1 : gy + 1, 4, 1, W.trim); // guarda
+   677→  const s0 = up ? gy - 2 : gy + 2;                    // primera fila del arma
+   678→  if (W.kind === 'sword') {
+   679→    const top = up ? s0 - len + 1 : s0;
+   680→    pxc(x, cx, top, 2, len, W.metal);
+   681→    pxc(x, cx, top, 1, len, W.glint);                 // filo (columna de brillo)
+   682→    pxc(x, cx, up ? top : top + len - 1, 2, 1, '#ffffff'); // punta
+   683→  } else if (W.kind === 'staff') {
+   684→    const sl = Math.max(1, len - 1);
+   685→    const top = up ? s0 - sl + 1 : s0;
+   686→    pxc(x, cx, top, 1, sl, W.metal);                  // vara
+   687→    const gemY = up ? top - 1 : top + sl;
+   688→    pxc(x, cx, gemY, 2, 1, W.trim);                   // gema/punta
+   689→    pxc(x, cx, gemY, 1, 1, W.glint);
+   690→  } else { // hammer
+   691→    const sl = Math.max(1, len - 2);
+   692→    const top = up ? s0 - sl + 1 : s0;
+   693→    pxc(x, cx, top, 1, sl, W.grip);                   // mango
+   694→    const headY = up ? top - 2 : top + sl - 1;
+   695→    pxc(x, cx - 1, headY, 4, 2, W.metal);             // cabeza
+   696→    pxc(x, cx - 1, up ? headY : headY + 1, 4, 1, W.glint);
+   697→  }
+   698→}
+   699→
+   700→/** Arma horizontal hacia la derecha: guarda en (hx, ry). */
+   701→function weaponHoriz(x: CanvasRenderingContext2D, W: WeaponDef, hx: number, ry: number, len: number): void {
+   702→  if (W.kind === 'sword') {
+   703→    pxc(x, hx, ry - 1, 1, 4, W.trim);
+   704→    pxc(x, hx + 1, ry, len, 2, W.metal);
+   705→    pxc(x, hx + 1, ry, len, 1, W.glint);
+   706→    pxc(x, hx + len, ry, 1, 2, '#ffffff');
+   707→  } else if (W.kind === 'staff') {
+   708→    pxc(x, hx + 1, ry, len, 1, W.metal);
+   709→    pxc(x, hx + len, ry - 1, 1, 3, W.trim);
+   710→    pxc(x, hx + len, ry, 1, 1, W.glint);
+   711→  } else { // hammer
+   712→    pxc(x, hx + 1, ry, Math.max(1, len - 1), 1, W.grip);
+   713→    pxc(x, hx + len - 1, ry - 1, 2, 4, W.metal);
+   714→    pxc(x, hx + len - 1, ry - 1, 2, 1, W.glint);
+   715→  }
+   716→}
+   717→
+   718→/** Poses con arma en mano (espada/bastón/martillo). dir ya resuelto a
+   719→ *  'down'|'up'|'right' (las poses laterales miran a la derecha). */
+   720→function weaponPoses(pal: HumanPal, W: WeaponDef, dir3: 'down' | 'up' | 'side', dir: 'down' | 'up' | 'right'): Frames {
+   721→  const L = layoutFor(pal);
+   722→
+   723→  // frame 0 · anticipación: arma atrás sobre el hombro, cuerpo atrás 1px
+   724→  const f0 = (() => {
+   725→    const P = poseCanvas(pal, dir3, -1);
+   726→    if (dir3 === 'side') {
+   727→      clearArmFront(P.x, P.bT);
+   728→      px(P.x, 9, P.bT - 2, 2, 3, pal.body);  // brazo alzado
+   729→      px(P.x, 9, P.bT - 3, 2, 1, pal.skin);
+   730→      if (W.kind === 'hammer') {
+   731→        // martillo descansando tras la cabeza (la cabeza no toca el borde)
+   732→        pxc(P.x, 10, P.bT - 4, 1, 2, W.grip);
+   733→        pxc(P.x, 9, P.bT - 6, 4, 2, W.metal);
+   734→        pxc(P.x, 9, P.bT - 6, 4, 1, W.glint);
+   735→      } else {
+   736→        weaponVert(P.x, W, 10, P.bT - 4, Math.max(1, P.bT - 5), true);
+   737→      }
+   738→    } else {
+   739→      clearArmR(P.x, P.bT, L.armLen);
+   740→      restoreShoulderR(P.x, pal, P.bT);
+   741→      px(P.x, 12, P.bT - 2, 2, 3, pal.body); // brazo alzado sobre el hombro
+   742→      px(P.x, 12, P.bT - 3, 2, 1, pal.skin);
+   743→      if (W.kind === 'hammer') {
+   744→        pxc(P.x, 13, P.bT - 4, 1, 2, W.grip);
+   745→        pxc(P.x, 12, P.bT - 6, 4, 2, W.metal);
+   746→        pxc(P.x, 12, P.bT - 6, 4, 1, W.glint);
+   747→      } else {
+   748→        weaponVert(P.x, W, 13, P.bT - 4, Math.max(1, P.bT - 5), true);
+   749→      }
+   750→    }
+   751→    return P.c;
+   752→  })();
+   753→
+   754→  // frame 1 · golpe: brazo y arma extendidos en la dirección
+   755→  const f1 = (() => {
+   756→    if (dir === 'down') {
+   757→      const P = poseCanvas(pal, 'down', 0);
+   758→      clearArmR(P.x, P.bT, L.armLen);
+   759→      restoreShoulderR(P.x, pal, P.bT);
+   760→      px(P.x, 9, P.bT + 2, 2, 2, pal.body);  // brazo que clava al frente
+   761→      px(P.x, 9, P.bT + 4, 2, 1, pal.skin);
+   762→      weaponVert(P.x, W, 9, P.bT + 5, Math.max(1, L.H - P.bT - 7), false);
+   763→      return P.c;
+   764→    }
+   765→    if (dir === 'up') {
+   766→      const P = poseCanvas(pal, 'up', 1);    // cuerpo abajo 1px: hueco para el arma
+   767→      clearArmR(P.x, P.bT, L.armLen);
+   768→      restoreShoulderR(P.x, pal, P.bT);
+   769→      px(P.x, 12, P.bT - 3, 2, 3, pal.body); // brazo estirado hacia arriba
+   770→      px(P.x, 12, P.bT - 4, 2, 1, pal.skin);
+   771→      weaponVert(P.x, W, 13, P.bT - 5, Math.max(1, P.bT - 6), true);
+   772→      return P.c;
+   773→    }
+   774→    const P = poseCanvas(pal, 'side', 0);
+   775→    clearArmFront(P.x, P.bT);
+   776→    px(P.x, 9, P.bT + 1, 3, 2, pal.body);    // brazo extendido
+   777→    px(P.x, 11, P.bT + 1, 1, 2, pal.skin);
+   778→    weaponHoriz(P.x, W, 12, P.bT + 1, 3);
+   779→    return P.c;
+   780→  })();
+   781→
+   782→  return [f0, f1];
+   783→}
+   784→
+   785→/** Poses de arco de Ilwen: frame 0 = tensado apuntando en la dirección,
+   786→ *  frame 1 = brazo suelto con el arco bajado (disparo). */
+   787→function bowPoses(pal: HumanPal, W: WeaponDef, dir3: 'down' | 'up' | 'side'): Frames {
+   788→  const L = layoutFor(pal);
+   789→  if (dir3 === 'side') {
+   790→    const f0 = (() => {
+   791→      const P = poseCanvas(pal, 'side', 0);
+   792→      clearArmFront(P.x, P.bT);
+   793→      const bT = P.bT;
+   794→      px(P.x, 9, bT + 1, 3, 2, pal.body);      // brazo del arco extendido
+   795→      px(P.x, 12, bT + 1, 1, 2, pal.skin);     // mano en el puño
+   796→      px(P.x, 6, bT + 1, 2, 2, pal.bodyS);     // brazo trasero doblado
+   797→      px(P.x, 8, bT + 1, 1, 2, pal.skin);      // mano de la cuerda
+   798→      px(P.x, 9, bT + 1, 3, 1, '#c8a86a');     // flecha (madera clara)
+   799→      px(P.x, 12, bT + 1, 1, 1, W.trim);       // punta dorada
+   800→      px(P.x, 13, bT - 3, 1, 2, W.metal);      // rama superior
+   801→      px(P.x, 13, bT - 1, 1, 1, W.glint);      // cuerda (tramo alto)
+   802→      px(P.x, 14, bT, 1, 2, W.metal);          // panza alta
+   803→      px(P.x, 13, bT + 1, 1, 2, W.grip);       // puño envuelto
+   804→      px(P.x, 14, bT + 3, 1, 2, W.metal);      // panza baja
+   805→      px(P.x, 13, bT + 3, 1, 1, W.glint);      // cuerda (tramo bajo)
+   806→      px(P.x, 13, bT + 5, 1, 2, W.metal);      // rama inferior
+   807→      return P.c;
+   808→    })();
+   809→    const f1 = (() => {
+   810→      const P = poseCanvas(pal, 'side', 0);
+   811→      clearArmFront(P.x, P.bT);
+   812→      const bT = P.bT;
+   813→      px(P.x, 9, bT + 2, 2, 2, pal.body);      // brazo relajado
+   814→      px(P.x, 12, bT + 2, 1, 2, pal.skin);
+   815→      px(P.x, 13, bT - 1, 1, 7, W.glint);      // cuerda recta (en reposo)
+   816→      px(P.x, 13, bT - 2, 1, 2, W.metal);      // arco bajado 1px
+   817→      px(P.x, 14, bT, 1, 2, W.metal);
+   818→      px(P.x, 13, bT + 2, 1, 2, W.grip);
+   819→      px(P.x, 14, bT + 4, 1, 2, W.metal);
+   820→      px(P.x, 13, bT + 6, 1, 2, W.metal);
+   821→      return P.c;
+   822→    })();
+   823→    return [f0, f1];
+   824→  }
+   825→  if (dir3 === 'down') {
+   826→    const f0 = (() => {
+   827→      const P = poseCanvas(pal, 'down', 0);
+   828→      clearArmR(P.x, P.bT, L.armLen);
+   829→      const bT = P.bT;
+   830→      px(P.x, 9, bT + 2, 2, 2, pal.body);      // brazo que baja
+   831→      px(P.x, 9, bT + 4, 2, 1, pal.skin);      // mano en la cuerda
+   832→      px(P.x, 6, bT + 4, 6, 1, W.glint);       // cuerda tensa
+   833→      px(P.x, 6, bT + 5, 2, 1, W.metal);       // rama izquierda
+   834→      px(P.x, 10, bT + 5, 2, 1, W.metal);      // rama derecha
+   835→      px(P.x, 8, bT + 6, 2, 1, W.metal);       // panza
+   836→      px(P.x, 8, bT + 5, 1, 2, '#c8a86a');     // flecha hacia abajo
+   837→      px(P.x, 8, bT + 7, 1, 1, W.trim);        // punta
+   838→      return P.c;
+   839→    })();
+   840→    const f1 = (() => {
+   841→      const P = poseCanvas(pal, 'down', 0);
+   842→      clearArmR(P.x, P.bT, L.armLen);
+   843→      const bT = P.bT;
+   844→      px(P.x, 9, bT + 1, 2, 2, pal.body);      // brazo suelto
+   845→      px(P.x, 9, bT + 3, 2, 1, pal.skin);
+   846→      px(P.x, 6, bT + 5, 6, 1, W.glint);       // arco bajado 1px, sin flecha
+   847→      px(P.x, 6, bT + 6, 2, 1, W.metal);
+   848→      px(P.x, 10, bT + 6, 2, 1, W.metal);
+   849→      px(P.x, 8, bT + 7, 2, 1, W.metal);
+   850→      return P.c;
+   851→    })();
+   852→    return [f0, f1];
+   853→  }
+   854→  // dir3 === 'up'
+   855→  const f0 = (() => {
+   856→    const P = poseCanvas(pal, 'up', 1);        // cuerpo abajo 1px: hueco para el arco
+   857→    clearArmR(P.x, P.bT, L.armLen);
+   858→    const bT = P.bT;
+   859→    px(P.x, 9, bT - 3, 2, 3, pal.body);        // brazo alzado
+   860→    px(P.x, 9, bT - 4, 2, 2, pal.skin);        // mano hacia la cuerda
+   861→    pxc(P.x, 7, bT - 8, 2, 1, W.metal);        // panza
+   862→    pxc(P.x, 5, bT - 7, 2, 1, W.metal);        // rama izquierda
+   863→    pxc(P.x, 9, bT - 7, 2, 1, W.metal);        // rama derecha
+   864→    pxc(P.x, 5, bT - 6, 6, 1, W.glint);        // cuerda
+   865→    pxc(P.x, 7, bT - 7, 1, 2, '#c8a86a');      // flecha hacia arriba
+   866→    pxc(P.x, 7, bT - 8, 1, 1, W.trim);         // punta
+   867→    return P.c;
+   868→  })();
+   869→  const f1 = (() => {
+   870→    const P = poseCanvas(pal, 'up', 0);
+   871→    clearArmR(P.x, P.bT, L.armLen);
+   872→    const bT = P.bT;
+   873→    px(P.x, 9, bT + 1, 2, 2, pal.body);        // brazo suelto
+   874→    px(P.x, 12, bT + 1, 1, 2, pal.skin);
+   875→    px(P.x, 13, bT - 1, 1, 7, W.glint);        // arco bajado a un lado, vertical
+   876→    px(P.x, 13, bT - 2, 1, 2, W.metal);
+   877→    px(P.x, 14, bT, 1, 2, W.metal);
+   878→    px(P.x, 13, bT + 2, 1, 2, W.grip);
+   879→    px(P.x, 14, bT + 4, 1, 2, W.metal);
+   880→    px(P.x, 13, bT + 6, 1, 2, W.metal);
+   881→    return P.c;
+   882→  })();
+   883→  return [f0, f1];
+   884→}
+   885→
+   886→/** Poses de lanzamiento (brazos al frente, brillo entre manos) — hero_tejedor. */
+   887→function castPoses(pal: HumanPal, W: WeaponDef, dir3: 'down' | 'up' | 'side'): Frames {
+   888→  if (dir3 === 'side') {
+   889→    const f0 = (() => {
+   890→      const P = poseCanvas(pal, 'side', 0);
+   891→      clearArmFront(P.x, P.bT);
+   892→      const bT = P.bT;
+   893→      px(P.x, 9, bT + 1, 3, 2, pal.body);      // brazos al frente
+   894→      px(P.x, 12, bT + 1, 1, 2, pal.skin);
+   895→      px(P.x, 11, bT + 3, 1, 1, pal.skin);     // segunda mano
+   896→      pxc(P.x, 13, bT + 1, 2, 2, W.trim);      // chispa naciendo
+   897→      pxc(P.x, 13, bT + 1, 1, 1, W.glint);
+   898→      return P.c;
+   899→    })();
+   900→    const f1 = (() => {
+   901→      const P = poseCanvas(pal, 'side', 0);
+   902→      clearArmFront(P.x, P.bT);
+   903→      const bT = P.bT;
+   904→      px(P.x, 9, bT + 1, 4, 2, pal.body);      // empujón hacia delante
+   905→      px(P.x, 13, bT + 1, 1, 2, pal.skin);
+   906→      pxc(P.x, 14, bT, 2, 4, W.trim);          // estallido
+   907→      pxc(P.x, 14, bT + 1, 2, 2, W.glint);
+   908→      pxc(P.x, 14, bT + 1, 1, 2, '#ffffff');
+   909→      pxc(P.x, 13, bT - 1, 1, 1, W.trim);      // chispas
+   910→      pxc(P.x, 15, bT + 4, 1, 1, W.glint);
+   911→      return P.c;
+   912→    })();
+   913→    return [f0, f1];
+   914→  }
+   915→  const f0 = (() => {
+   916→    const P = poseCanvas(pal, dir3, 0);
+   917→    clearArmL(P.x, P.bT, P.L.armLen);
+   918→    clearArmR(P.x, P.bT, P.L.armLen);
+   919→    const bT = P.bT;
+   920→    if (dir3 === 'down') {
+   921→      px(P.x, 3, bT + 1, 2, 2, pal.body);      // manos hacia el centro
+   922→      px(P.x, 5, bT + 1, 1, 2, pal.skin);
+   923→      px(P.x, 11, bT + 1, 2, 2, pal.body);
+   924→      px(P.x, 10, bT + 1, 1, 2, pal.skin);
+   925→      pxc(P.x, 7, bT + 1, 2, 2, W.trim);       // brillo pequeño entre manos
+   926→      pxc(P.x, 7, bT + 1, 1, 1, W.glint);
+   927→    } else {
+   928→      px(P.x, 2, bT - 2, 2, 3, pal.body);      // manos en alto
+   929→      px(P.x, 2, bT - 3, 2, 1, pal.skin);
+   930→      px(P.x, 12, bT - 2, 2, 3, pal.body);
+   931→      px(P.x, 12, bT - 3, 2, 1, pal.skin);
+   932→      pxc(P.x, 7, bT - 4, 2, 2, W.trim);
+   933→      pxc(P.x, 7, bT - 4, 1, 1, W.glint);
+   934→    }
+   935→    return P.c;
+   936→  })();
+   937→  const f1 = (() => {
+   938→    const P = poseCanvas(pal, dir3, 0);
+   939→    clearArmL(P.x, P.bT, P.L.armLen);
+   940→    clearArmR(P.x, P.bT, P.L.armLen);
+   941→    const bT = P.bT;
+   942→    if (dir3 === 'down') {
+   943→      px(P.x, 4, bT + 2, 2, 2, pal.body);      // empuje al frente
+   944→      px(P.x, 4, bT + 4, 2, 1, pal.skin);
+   945→      px(P.x, 10, bT + 2, 2, 2, pal.body);
+   946→      px(P.x, 10, bT + 4, 2, 1, pal.skin);
+   947→      pxc(P.x, 6, bT + 2, 4, 3, W.trim);       // estallido al frente
+   948→      pxc(P.x, 7, bT + 3, 2, 1, W.glint);
+   949→      pxc(P.x, 7, bT + 3, 1, 1, '#ffffff');
+   950→      pxc(P.x, 5, bT + 1, 1, 1, W.trim);       // chispas
+   951→      pxc(P.x, 10, bT + 5, 1, 1, W.glint);
+   952→    } else {
+   953→      px(P.x, 2, bT - 3, 2, 3, pal.body);
+   954→      px(P.x, 2, bT - 4, 2, 1, pal.skin);
+   955→      px(P.x, 12, bT - 3, 2, 3, pal.body);
+   956→      px(P.x, 12, bT - 4, 2, 1, pal.skin);
+   957→      pxc(P.x, 6, bT - 7, 4, 3, W.trim);       // estallido sobre la cabeza
+   958→      pxc(P.x, 7, bT - 6, 2, 1, W.glint);
+   959→      pxc(P.x, 7, bT - 6, 1, 1, '#ffffff');
+   960→      pxc(P.x, 5, bT - 4, 1, 1, W.trim);
+   961→      pxc(P.x, 10, bT - 8, 1, 1, W.glint);
+   962→    }
+   963→    return P.c;
+   964→  })();
+   965→  return [f0, f1];
+   966→}
+   967→
+   968→/** Punto de entrada común: resuelve paleta/arma/dirección y delega.
+   969→ *  'left' reutiliza las frames de 'right' (el render ya las voltea). */
+   970→function buildCombatPose(baseName: string, dir: string, kind: 'attack' | 'cast'): HTMLCanvasElement[] | null {
+   971→  if (dir !== 'down' && dir !== 'up' && dir !== 'left' && dir !== 'right') return null;
+   972→  if (kind === 'attack' ? !ATTACK_POSES.has(baseName) : !CAST_POSES.has(baseName)) return null;
+   973→  const pal = PALS[baseName];
+   974→  const W = WEAPONS[baseName];
+   975→  if (!pal || !W) return null;
+   976→
+   977→  const dir3: 'down' | 'up' | 'side' = dir === 'down' || dir === 'up' ? dir : 'side';
+   978→  const sideDir: 'down' | 'up' | 'right' = dir === 'down' ? 'down' : dir === 'up' ? 'up' : 'right';
+   979→
+   980→  const frames = kind === 'cast'
+   981→    ? castPoses(pal, W, dir3)
+   982→    : baseName === 'ilwen'
+   983→      ? bowPoses(pal, W, dir3)
+   984→      : weaponPoses(pal, W, dir3, sideDir);
+   985→  return frames.length === 2 ? [frames[0], frames[1]] : null;
+   986→}
+   987→
+   988→// ---------------- Arco de ataque (slash) ----------------
+   989→
+   990→/**
+   991→ * Dibuja el arco de tajo del jugador. prog: 0→1 progreso del golpe,
+   992→ * combo: 0..2 (blanco → amarillo → dorado), charged: ataque cargado
+   993→ * (más grande, dorado y con estela). Todos los trazos son aditivos
+   994→ * suaves y restauran el estado del contexto.
+   995→ */
+   996→export function drawSlashArc(
+   997→  ctx: CanvasRenderingContext2D, cx: number, cy: number,
+   998→  dir: string, prog: number, combo: number, charged: boolean, zoom: number,
+   999→): void {
+  1000→  const base = dir === 'down' ? Math.PI / 2 : dir === 'up' ? -Math.PI / 2 : dir === 'left' ? Math.PI : 0;
+  1001→  const colors = charged ? '#ffd24a' : ['#f2f6fa', '#ffe86a', '#ffc040'][Math.max(0, Math.min(2, combo))];
+  1002→  const r = (charged ? 27 : 19) * zoom;
+  1003→  const span = 1.2;
+  1004→  const a0 = base - 1.1 + prog * 1.45;
+  1005→  ctx.save();
+  1006→  // relleno en cuña (ataque cargado: más presencia)
+  1007→  if (charged) {
+  1008→    ctx.globalAlpha = 0.14;
+  1009→    ctx.fillStyle = '#ffd24a';
+  1010→    ctx.beginPath();
+  1011→    ctx.moveTo(cx, cy);
+  1012→    ctx.arc(cx, cy, r, a0, a0 + span);
+  1013→    ctx.closePath();
+  1014→    ctx.fill();
+  1015→  }
+  1016→  // estela: dos arcos anteriores con alpha decreciente
+  1017→  for (let i = 2; i >= 1; i--) {
+  1018→    const p2 = prog - i * 0.17;
+  1019→    if (p2 <= 0) continue;
+  1020→    ctx.globalAlpha = charged ? 0.34 - i * 0.12 : 0.26 - i * 0.1;
+  1021→    ctx.strokeStyle = colors;
+  1022→    ctx.lineWidth = (charged ? 5 : 3) - i;
+  1023→    ctx.beginPath();
+  1024→    ctx.arc(cx, cy, r * (1 - i * 0.05), base - 1.1 + p2 * 1.45, base - 1.1 + p2 * 1.45 + span * 0.8);
+  1025→    ctx.stroke();
+  1026→  }
+  1027→  // arco principal
+  1028→  ctx.globalAlpha = 0.95;
+  1029→  ctx.strokeStyle = colors;
+  1030→  ctx.lineWidth = charged ? 5 : 3;
+  1031→  ctx.lineCap = 'round';
+  1032→  ctx.beginPath();
+  1033→  ctx.arc(cx, cy, r, a0, a0 + span);
+  1034→  ctx.stroke();
+  1035→  // filo brillante en el borde delantero
+  1036→  ctx.globalAlpha = 1;
+  1037→  ctx.strokeStyle = '#ffffff';
+  1038→  ctx.lineWidth = 1;
+  1039→  ctx.beginPath();
+  1040→  ctx.arc(cx, cy, r, a0 + span - 0.22, a0 + span);
+  1041→  ctx.stroke();
+  1042→  ctx.restore();
+  1043→}
+  1044→
+  1045→// ---------------- Retratos de diálogo (28×40 escalables) ----------------
+  1046→
+  1047→interface PortraitDef {
+  1048→  kind: 'human' | 'guardian' | 'sombra' | 'wisp' | 'crystal' | 'sanctuary' | 'mask';
+  1049→  bg: string;
+  1050→  skin: string; skinS: string;
+  1051→  hair: string; hairS?: string;
+  1052→  eye: string;
+  1053→  cloth: string; clothS: string;
+  1054→  accent?: string;
+  1055→  beard?: string;
+  1056→  hood?: boolean; hoodCol?: string;
+  1057→  ears?: 'cat' | 'elf';
+  1058→  hairLong?: boolean;
+  1059→  child?: boolean;
+  1060→}
+  1061→
+  1062→const PORTRAITS: Record<string, PortraitDef> = {
+  1063→  hero_alba: {
+  1064→    kind: 'human', bg: '#1a1218',
+  1065→    skin: '#f2c99c', skinS: '#d8a878', hair: '#c8384a', hairS: '#9a2438',
+  1066→    eye: '#2a2a3a', cloth: '#5a6070', clothS: '#474c5a', accent: '#c8384a',
+  1067→    hood: true, hoodCol: '#a83044',
+  1068→  },
+  1069→  hero_tejedor: {
+  1070→    kind: 'human', bg: '#181228',
+  1071→    skin: '#f2c99c', skinS: '#d8a878', hair: '#8a5ac0', hairS: '#6a3f9a',
+  1072→    eye: '#3ae0c8', cloth: '#7e58b8', clothS: '#5e3f92', accent: '#f0c84a',
+  1073→    hood: true, hoodCol: '#6a44a0',
+  1074→  },
+  1075→  brisa: {
+  1076→    kind: 'human', bg: '#141a14',
+  1077→    skin: '#eabf9a', skinS: '#c89a74', hair: '#d8dade', hairS: '#b0b4bc',
+  1078→    eye: '#3a3a3a', cloth: '#7a9a6e', clothS: '#5e7a54', accent: '#e8d8a8',
+  1079→    hairLong: true,
+  1080→  },
+  1081→  toln: {
+  1082→    kind: 'human', bg: '#1a140e',
+  1083→    skin: '#e0a87a', skinS: '#c08858', hair: '#6a4a2e', hairS: '#54381e',
+  1084→    eye: '#2a2a2a', cloth: '#8a5a33', clothS: '#6d4520', accent: '#3a3a3e',
+  1085→    beard: '#6a4a2e',
+  1086→  },
+  1087→  ilwen: {
+  1088→    kind: 'human', bg: '#101a10',
+  1089→    skin: '#f2d0a8', skinS: '#d0ac84', hair: '#8ad058', hairS: '#64a83e',
+  1090→    eye: '#2a4a2e', cloth: '#3e7d4c', clothS: '#2e5f3a', accent: '#e8c860',
+  1091→    ears: 'elf', hairLong: true,
+  1092→  },
+  1093→  sasha: {
+  1094→    kind: 'human', bg: '#120e18',
+  1095→    skin: '#e8c49a', skinS: '#c49a70', hair: '#2e2838', hairS: '#221c2c',
+  1096→    eye: '#f0c040', cloth: '#3a3448', clothS: '#2a2438', accent: '#c89a3a',
+  1097→    hood: true, hoodCol: '#262032', ears: 'cat',
+  1098→  },
+  1099→  brokk: {
+  1100→    kind: 'human', bg: '#1a120a',
+  1101→    skin: '#e8a878', skinS: '#c4885a', hair: '#8a4a26', hairS: '#6d3a1e',
+  1102→    eye: '#2a2a2a', cloth: '#5a4a3a', clothS: '#443828', accent: '#b07030',
+  1103→    beard: '#a44e28',
+  1104→  },
+  1105→  maelis: {
+  1106→    kind: 'human', bg: '#0e1c20',
+  1107→    skin: '#f0d8c0', skinS: '#ccb094', hair: '#7ad8c8', hairS: '#54b0a4',
+  1108→    eye: '#2a8a8a', cloth: '#4aa8b0', clothS: '#368088', accent: '#e8f0ea',
+  1109→    hairLong: true,
+  1110→  },
+  1111→  corvin: {
+  1112→    kind: 'human', bg: '#141418',
+  1113→    skin: '#eac8a0', skinS: '#c6a67e', hair: '#5a5a64', hairS: '#42424a',
+  1114→    eye: '#3a3a44', cloth: '#3e3e48', clothS: '#2e2e38', accent: '#8a8a96',
+  1115→  },
+  1116→  kael: {
+  1117→    kind: 'human', bg: '#16161c',
+  1118→    skin: '#f2d4b0', skinS: '#d0b088', hair: '#e8e0c8', hairS: '#c8bc9c',
+  1119→    eye: '#7a8894', cloth: '#e8e6de', clothS: '#c2c0b6', accent: '#8a94a8',
+  1120→  },
+  1121→  inquisidor: {
+  1122→    kind: 'mask', bg: '#141416',
+  1123→    skin: '#d8d4ca', skinS: '#b8b4aa', hair: '#e4e2da', hairS: '#c6c4ba',
+  1124→    eye: '#d8d4ca', cloth: '#e4e2da', clothS: '#bcbab0', accent: '#8a887e',
+  1125→  },
+  1126→  teo: {
+  1127→    kind: 'human', bg: '#181208',
+  1128→    skin: '#f2cfa4', skinS: '#d0aa78', hair: '#7a5432', hairS: '#5e4026',
+  1129→    eye: '#3a2a1a', cloth: '#c09a54', clothS: '#9a7a40', accent: '#7a5432',
+  1130→    child: true,
+  1131→  },
+  1132→  doran: {
+  1133→    kind: 'human', bg: '#101a10',
+  1134→    skin: '#d8b088', skinS: '#b4906a', hair: '#3e6a34', hairS: '#2e5226',
+  1135→    eye: '#2a3a24', cloth: '#4a7a3e', clothS: '#375e2e', accent: '#8ac05a',
+  1136→    hood: true, hoodCol: '#2e5226',
+  1137→  },
+  1138→  nimue: {
+  1139→    kind: 'human', bg: '#0e1614',
+  1140→    skin: '#e4e8de', skinS: '#c0c8ba', hair: '#b8d8c8', hairS: '#94b8a8',
+  1141→    eye: '#7ae8c0', cloth: '#5a8a72', clothS: '#446a58', accent: '#bff0dc',
+  1142→    ears: 'elf', hairLong: true,
+  1143→  },
+  1144→  guardian: {
+  1145→    kind: 'guardian', bg: '#0c0a16',
+  1146→    skin: '#4a4660', skinS: '#3a364c', hair: '#5f5a7a', hairS: '#4a4660',
+  1147→    eye: '#7ee8ff', cloth: '#2c2440', clothS: '#221c33',
+  1148→  },
+  1149→  sombra: {
+  1150→    kind: 'sombra', bg: '#0a0812',
+  1151→    skin: '#241c38', skinS: '#181226', hair: '#2c2440', hairS: '#201a30',
+  1152→    eye: '#b48fff', cloth: '#241c38', clothS: '#181226',
+  1153→  },
+  1154→  wisp: {
+  1155→    kind: 'wisp', bg: '#0a1414',
+  1156→    skin: '#bff4e8', skinS: '#7fe0cc', hair: '#bff4e8', hairS: '#7fe0cc',
+  1157→    eye: '#ffffff', cloth: '#7fe0cc', clothS: '#5ab8a8',
+  1158→  },
+  1159→  fragment: {
+  1160→    kind: 'crystal', bg: '#141020',
+  1161→    skin: '#ffe9a0', skinS: '#f0c84a', hair: '#ffe9a0', hairS: '#f0c84a',
+  1162→    eye: '#fffbe0', cloth: '#f0c84a', clothS: '#c89830',
+  1163→  },
+  1164→  sanctuary: {
+  1165→    kind: 'sanctuary', bg: '#0c1420',
+  1166→    skin: '#8ef0ff', skinS: '#5ac8dc', hair: '#8ef0ff', hairS: '#5ac8dc',
+  1167→    eye: '#e8fbff', cloth: '#5a6a8a', clothS: '#42506c',
+  1168→  },
+  1169→};
+  1170→
+  1171→const PORTRAIT_OUTLINE = '#1a1420';
+  1172→
+  1173→/**
+  1174→ * Dibuja el retrato pixel de diálogo por clave (28×40 unidades × scale).
+  1175→ * Fallback seguro a 'wisp' si la clave no existe.
+  1176→ */
+  1177→export function drawPortrait(
+  1178→  ctx: CanvasRenderingContext2D, key: string,
+  1179→  dx: number, dy: number, scale: number, blink = false,
+  1180→): void {
+  1181→  const P = PORTRAITS[key] ?? PORTRAITS['wisp'];
+  1182→  const q = (X: number, Y: number, W: number, H: number, C: string) => {
+  1183→    ctx.fillStyle = C;
+  1184→    ctx.fillRect(dx + X * scale, dy + Y * scale, W * scale, H * scale);
+  1185→  };
+  1186→  const O = PORTRAIT_OUTLINE;
+  1187→
+  1188→  // fondo con viñeta simple
+  1189→  q(0, 0, 28, 40, P.bg);
+  1190→  q(0, 0, 28, 1, 'rgba(255,255,255,0.05)');
+  1191→  ctx.globalAlpha = 0.25;
+  1192→  q(0, 34, 28, 6, '#000');
+  1193→  ctx.globalAlpha = 1;
+  1194→
+  1195→  if (P.kind === 'guardian') {
+  1196→    // Guardián Hueco: petreo, hueco y con cuernos
+  1197→    q(1, 30, 26, 10, P.cloth);                    // capa
+  1198→    q(5, 27, 18, 6, P.hairS ?? P.hair);                     // peto
+  1199→    q(11, 31, 6, 6, O);                           // hueco
+  1200→    q(12, 32, 4, 4, P.eye);                       // brillo interior
+  1201→    q(7, 7, 14, 13, P.hair);                      // casco
+  1202→    q(7, 7, 14, 2, '#8a84a8');
+  1203→    q(4, 2, 3, 9, '#8a84a8'); q(21, 2, 3, 9, '#8a84a8');  // cuernos
+  1204→    q(3, 0, 2, 3, '#8a84a8'); q(23, 0, 2, 3, '#8a84a8');
+  1205→    q(10, 13, 3, 3, O); q(15, 13, 3, 3, O);       // cuencas
+  1206→    q(10, 13, 2, 2, P.eye); q(16, 13, 2, 2, P.eye);
+  1207→    q(6, 10, 1, 6, O); q(21, 16, 1, 4, O);        // grietas
+  1208→    return;
+  1209→  }
+  1210→  if (P.kind === 'sombra') {
+  1211→    // Sombra sin rostro: capucha vacía y ojos violáceos
+  1212→    q(2, 30, 24, 10, P.clothS);
+  1213→    q(3, 2, 22, 11, P.hair);                      // capucha
+  1214→    q(3, 13, 5, 21, P.hair); q(20, 13, 5, 21, P.hair);
+  1215→    q(7, 10, 14, 18, '#0c0816');                  // vacío
+  1216→    q(10, 16, 3, 3, P.eye); q(15, 16, 3, 3, P.eye);
+  1217→    ctx.globalAlpha = 0.5;
+  1218→    q(9, 15, 5, 5, P.eye); q(14, 15, 5, 5, P.eye);
+  1219→    ctx.globalAlpha = 1;
+  1220→    return;
+  1221→  }
+  1222→  if (P.kind === 'wisp') {
+  1223→    // Wisp: rostro etéreo sin boca
+  1224→    ctx.globalAlpha = 0.3; q(7, 8, 14, 20, P.skinS);
+  1225→    ctx.globalAlpha = 0.55; q(9, 10, 10, 16, P.skin);
+  1226→    ctx.globalAlpha = 1; q(11, 13, 6, 10, '#eafff8');
+  1227→    q(12, 16, 1, 2, P.eye); q(15, 16, 1, 2, P.eye);
+  1228→    if (blink) { q(12, 17, 4, 1, P.skinS); }
+  1229→    ctx.globalAlpha = 0.3;
+  1230→    q(6, 6, 2, 2, P.skinS); q(20, 9, 2, 2, P.skinS); q(8, 28, 2, 2, P.skinS);
+  1231→    ctx.globalAlpha = 1;
+  1232→    return;
+  1233→  }
+  1234→  if (P.kind === 'crystal') {
+  1235→    // Fragmento de Eco: cristal facetado dorado
+  1236→    q(12, 6, 4, 28, P.skinS);
+  1237→    q(9, 10, 10, 20, P.skinS);
+  1238→    q(11, 12, 6, 16, P.skin);
+  1239→    q(13, 15, 2, 6, P.eye);
+  1240→    q(4, 30, 20, 8, '#3a3020');                   // peana
+  1241→    q(4, 30, 20, 1, '#5a4a2c');
+  1242→    ctx.globalAlpha = 0.6;
+  1243→    q(6, 12, 2, 2, P.skinS); q(20, 18, 2, 2, P.skinS); q(8, 24, 2, 2, P.skinS);
+  1244→    ctx.globalAlpha = 1;
+  1245→    return;
+  1246→  }
+  1247→  if (P.kind === 'sanctuary') {
+  1248→    // Santuario: cristal turquesa sobre piedra
+  1249→    q(10, 5, 8, 24, P.skinS);
+  1250→    q(12, 7, 4, 20, P.skin);
+  1251→    q(13, 12, 2, 5, P.eye);
+  1252→    q(4, 29, 20, 9, P.clothS);                    // piedra
+  1253→    q(4, 29, 20, 1, P.cloth);
+  1254→    q(6, 31, 2, 1, '#2c3448'); q(14, 33, 3, 1, '#2c3448'); q(19, 30, 2, 1, '#2c3448');
+  1255→    ctx.globalAlpha = 0.35;
+  1256→    q(8, 4, 12, 26, P.skinS);
+  1257→    ctx.globalAlpha = 1;
+  1258→    return;
+  1259→  }
+  1260→
+  1261→  // ----- humanos (y la máscara del Gran Inquisidor) -----
+  1262→  // hombros / ropa
+  1263→  q(1, 31, 26, 9, P.cloth);
+  1264→  q(1, 31, 26, 2, P.clothS);
+  1265→  if (P.accent) q(1, 31, 26, 1, P.accent);
+  1266→  // cuello
+  1267→  q(11, 27, 6, 6, P.skinS);
+  1268→  // melena trasera
+  1269→  if (P.hairLong) { q(4, 8, 20, 22, P.hair); }
+  1270→  // rostro
+  1271→  q(7, 9, 14, 17, P.skin);
+  1272→  q(9, 25, 10, 4, P.skin);                       // mentón
+  1273→  q(7, 23, 2, 5, P.skinS); q(19, 23, 2, 5, P.skinS); // mandíbula
+  1274→  // orejas
+  1275→  if (P.ears === 'elf') {
+  1276→    q(5, 15, 2, 4, P.skin); q(21, 15, 2, 4, P.skin);
+  1277→    q(4, 14, 1, 2, P.skin); q(23, 14, 1, 2, P.skin);
+  1278→  }
+  1279→  if (P.kind === 'mask') {
+  1280→    // máscara LISA: sin ojos, sin nariz, sin boca
+  1281→    q(7, 9, 14, 17, P.skin);
+  1282→    q(9, 25, 10, 4, P.skin);
+  1283→    q(9, 11, 4, 9, 'rgba(255,255,255,0.14)');    // brillo vertical
+  1284→    q(14, 10, 1, 15, 'rgba(0,0,0,0.12)');        // costura central
+  1285→    q(7, 9, 14, 1, P.hairS ?? P.hair);                     // borde del yelmo
+  1286→    q(5, 4, 18, 7, P.hair);                      // yelmo blanco
+  1287→    q(5, 4, 18, 2, P.hairS ?? P.hair);
+  1288→    q(3, 9, 3, 10, P.hair); q(22, 9, 3, 10, P.hair);
+  1289→    return;
+  1290→  }
+  1291→  // cejas
+  1292→  q(9, 14, 4, 1, P.hairS ?? P.hair); q(15, 14, 4, 1, P.hairS ?? P.hair);
+  1293→  // ojos grandes y legibles
+  1294→  if (P.child) {
+  1295→    q(8, 16, 5, 4, O); q(15, 16, 5, 4, O);
+  1296→    if (blink) {
+  1297→      q(8, 18, 5, 1, P.hairS ?? P.hair); q(15, 18, 5, 1, P.hairS ?? P.hair);
+  1298→    } else {
+  1299→      q(9, 17, 3, 2, P.eye); q(16, 17, 3, 2, P.eye);
+  1300→      q(9, 17, 1, 1, '#ffffff'); q(16, 17, 1, 1, '#ffffff');
+  1301→    }
+  1302→  } else {
+  1303→    q(9, 17, 4, 3, O); q(15, 17, 4, 3, O);
+  1304→    if (blink) {
+  1305→      q(9, 18, 4, 1, P.hairS ?? P.hair); q(15, 18, 4, 1, P.hairS ?? P.hair);
+  1306→    } else {
+  1307→      q(10, 17, 2, 2, P.eye); q(16, 17, 2, 2, P.eye);
+  1308→      q(10, 17, 1, 1, '#ffffff'); q(16, 17, 1, 1, '#ffffff');
+  1309→    }
+  1310→  }
+  1311→  // nariz
+  1312→  q(13, 21, 2, 2, P.skinS);
+  1313→  // boca (los sarcásticos sonríen ladeados)
+  1314→  if (!P.beard) {
+  1315→    if (key === 'corvin' || key === 'sasha') { q(11, 24, 5, 1, '#9a5a50'); q(16, 23, 1, 1, '#9a5a50'); }
+  1316→    else q(11, 24, 6, 1, '#9a5a50');
+  1317→  }
+  1318→  // barba (con trenza si es Brokk)
+  1319→  if (P.beard) {
+  1320→    q(8, 22, 12, 9, P.beard);
+  1321→    q(8, 22, 12, 1, P.hairS ?? P.beard);
+  1322→    if (key === 'brokk') {
+  1323→      q(12, 27, 4, 6, P.beard);
+  1324→      q(12, 27, 1, 6, P.hairS ?? P.beard);
+  1325→      q(12, 32, 4, 1, P.accent ?? '#b07030');    // anilla de la trenza
+  1326→      q(11, 24, 1, 3, P.hairS ?? P.beard); q(16, 24, 1, 3, P.hairS ?? P.beard);
+  1327→    }
+  1328→  }
+  1329→  // pelo frontal
+  1330→  q(6, 5, 16, 7, P.hair);
+  1331→  q(7, 11, 14, 2, P.hairS ?? P.hair);
+  1332→  q(5, 10, 3, 9, P.hair); q(20, 10, 3, 9, P.hair);
+  1333→  if (P.hairLong) { q(4, 8, 3, 22, P.hair); q(21, 8, 3, 22, P.hair); }
+  1334→  if (P.child) {
+  1335→    // mechones revueltos de Teo
+  1336→    q(5, 3, 3, 2, P.hair); q(12, 2, 4, 3, P.hair); q(19, 3, 3, 2, P.hair);
+  1337→  }
+  1338→  // capucha
+  1339→  if (P.hood) {
+  1340→    const hc = P.hoodCol ?? P.hair;
+  1341→    q(3, 2, 22, 9, hc);
+  1342→    q(3, 11, 4, 16, hc); q(21, 11, 4, 16, hc);
+  1343→    q(6, 9, 2, 15, 'rgba(0,0,0,0.3)'); q(20, 9, 2, 15, 'rgba(0,0,0,0.3)');
+  1344→    q(3, 2, 22, 1, 'rgba(255,255,255,0.12)');
+  1345→    if (P.ears === 'cat') {
+  1346→      // orejas felinas atravesando la capucha
+  1347→      q(5, 0, 3, 4, hc); q(20, 0, 3, 4, hc);
+  1348→      q(6, 1, 1, 2, '#d88a8a'); q(21, 1, 1, 2, '#d88a8a');
+  1349→    }
+  1350→  }
+  1351→  // arrugas de la anciana Brisa
+  1352→  if (key === 'brisa') {
+  1353→    q(9, 13, 10, 1, 'rgba(0,0,0,0.10)');
+  1354→    q(10, 22, 8, 1, 'rgba(0,0,0,0.08)');
+  1355→  }
+  1356→}
+  1357→export const TILE = 16;
+  1358→
+  1359→export type NeighborFn = (tx: number, ty: number) => string;
+  1360→
+  1361→/**
+  1362→ * Despachador de tiles: delega en los módulos de src/game/world/.
+  1363→ * `at` (opcional) devuelve el char del tile vecino (dx,dy) — habilita
+  1364→ * autotiling y transiciones entre terrenos en los módulos del mundo.
+  1365→ */
+  1366→export function drawTile(
+  1367→  x: CanvasRenderingContext2D, ch: string, tx: number, ty: number,
+  1368→  mapId: string, t: number, at?: NeighborFn,
+  1369→): void {
+  1370→  switch (ch) {
+  1371→    case '.': case ',': case 'c': case 'm':
+  1372→      paintGrass(x, ch, tx, ty, mapId, t, at); break;
+  1373→    case '~': case 'B': case 'x':
+  1374→      paintWater(x, ch, tx, ty, mapId, t, at); break;
+  1375→    case ':': case '_': case '#': case 'P': case 'A': case 'V':
+  1376→      paintStone(x, ch, tx, ty, mapId, t, at); break;
+  1377→    case 'H': case 'r': case 'd': case 'F': case 'w': case 'g': case 'R':
+  1378→      paintVillage(x, ch, tx, ty, mapId, t, at); break;
+  1379→    default:
+  1380→      px(x, tx * TILE, ty * TILE, TILE, TILE, '#4f8a46');
+  1381→  }
+  1382→}
+  1383→
+  1384→// Objetos altos (dibujados por encima del suelo, con orden por fila)
+  1385→export function isTallTile(ch: string): boolean {
+  1386→  return ch === 't' || ch === 'p';
+  1387→}
+  1388→
+  1389→export function drawTallTile(
+  1390→  x: CanvasRenderingContext2D, ch: string, tx: number, ty: number, mapId: string,
+  1391→  at?: NeighborFn,
+  1392→): void {
+  1393→  paintTall(x, ch, tx, ty, mapId, at);
+  1394→}
+  1395→
+  1396→// Árbol cortado en el pasado (diffs usan '.')
+  1397→export const SOLID_CHARS = new Set(['t', 'p', '#', 'H', 'r', 'F', 'R', 'w', 'g', 'P', 'A', 'V', '~', 'd', 'x', 'n']);
+  1398→

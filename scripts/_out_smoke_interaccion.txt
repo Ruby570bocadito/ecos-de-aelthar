@@ -1,0 +1,61 @@
+=== 1) Órdenes tácticas al compañero (tecla T) ===
+  ✓ sin orden previa la compañera usa el modo por defecto (seguir)
+  ✓ T: seguir → agresivo
+  ✓ T: agresivo → defensivo
+  ✓ T: defensivo → seguir
+  ✓ agresivo: la compañera abre fuego
+  ✓ agresivo: aborda al objetivo (55 → 29 px)
+  ✓ agresivo: con HP<30% vuelve al Portador (escolta original)
+  ✓ defensivo: se queda a 2 tiles del Portador
+  ✓ defensivo: NO dispara a un enemigo a >2 tiles del Portador
+  ✓ seguir: el comportamiento original se conserva (dispara)
+  ✓ interposición: Portador −5 / compañera −5 (50% de 10) [got 5/5]
+  ✓ cooldown 6 s: el 2º golpe entra completo [got 10/0]
+  ✓ tras 6 s la interposición vuelve a funcionar [got 5/5]
+  ✓ con orden SEGUIR no hay interposición
+  ✓ con la compañera a >1.5 tiles no hay interposición
+  ✓ recuperada la distancia (<1.5 tiles), interposición activa
+=== 2) Señuelo (tecla 8): aggro redirigido 5 s, jefe inmune ===
+  ✓ sin señuelos: useSenno devuelve false y avisa
+  ✓ con señuelos: vuela
+  ✓ el señuelo se consume (stack 3 → 2)
+  ✓ el señuelo aterriza 3 tiles adelante (abajo)
+  ✓ enemigo no-jefe cercano: aggro + e.lured fijados
+  ✓ el timer de atracción decae (4.50 s)
+  ✓ el enemigo camina hacia el señuelo (dist 79 px < 80)
+  ✓ a los 5 s el señuelo expira (e.lured a undefined)
+  ✓ el señuelo desaparece al expirar (pool de 1)
+  ✓ tras el señuelo el enemigo sigue en combate (aggro intacta)
+  ✓ señuelo lanzado junto a un jefe
+  ✓ el JEFE nunca queda señuelizado (inmune)
+  ✓ con aggro en jefe (bossActive) nadie muerde el señuelo
+=== 3) Examen de restos (E): 25% → 1-5 coronas, una vez por cadáver ===
+  ✓ examen con rng forzado 0.1: botín en [1,5] (got 1)
+  ✓ reexaminar el MISMO cadáver no da nada (flag en la entidad)
+  ✓ y la cadena cae en el mensaje por defecto
+  ✓ examen con rng forzado 0.9: nada útil (75%)
+  ✓ cadáver a >0.8 tile: fuera de alcance
+  ✓ FuerzaBruta (30 intentos, Math.random): todo botín en [1,5]
+  ✓ FuerzaBruta: 7/30 éxitos ≈ 25% (25% forzado, sin rng inyectado)
+=== 4) Cofres ya abiertos: reinteractuar cuenta, no lootea ===
+  ✓ reinteractuar un cofre abierto NO da loot
+  ✓ y suelta el texto «vacío… pero huele a antes»
+  ✓ y puede repetirse sin límite
+=== 5) Rumor al re-pulsar E tras un diálogo (cooldown 60 s por NPC) ===
+  ✓ E junto a Brisa abre el diálogo (pipeline original intacto)
+  ✓ E de nuevo tras el diálogo: NO reabre el diálogo
+  ✓ y suelta un rumor corto firmado por la NPC
+  ✓ inmediatamente después, E reabre el diálogo (cooldown 60 s)
+  ✓ dentro de los 60 s el rumor no se repite
+  ✓ pasada la ventana de 2.5 s, E abre el diálogo normal
+=== 6) save/load preserva companion.mode (+ tolerancia saves antiguos) ===
+  ✓ save() serializa companionMode
+  ✓ continueGame restaura la orden táctica (defensivo)
+  ✓ save antiguo sin companionMode: la compañera existe sin orden (seguir)
+  ✓ y el ciclo de órdenes funciona igual de cero
+=== 7) Estabilidad: 600 frames con todo activo (sin lanzar) ===
+  ✓ 600 frames con compañero agresivo + señuelo + cadáveres: sin excepciones
+  ✓ tras 10 s todo timer transitorio quedó limpio
+  ✓ el motor sigue dañando al Portador con normalidad
+
+SMOKE INTERACCIÓN: TODO OK

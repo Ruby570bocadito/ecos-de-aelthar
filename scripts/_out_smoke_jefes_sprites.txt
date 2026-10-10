@@ -1,0 +1,32 @@
+=== SMOKE 18-c · sprites-jefes (canvas grabador determinista) ===
+
+[1] registro · frames · tamaños
+  · neumo     3 frames  16×16  data:image/png;base64,175ee23379
+  · espectro  3 frames  16×16  data:image/png;base64,l69bd4052
+  · arpi      3 frames  16×16  data:image/png;base64,l887afe31
+  · sirena    5 frames  36×36  data:image/png;base64,26f99a0b46
+  · golem     5 frames  36×36  data:image/png;base64,1mef63c249
+  · orb       2 frames  12×12  data:image/png;base64,p48a60940
+  · shard     2 frames  12×12  data:image/png;base64,q4bf43a21
+  · nota      2 frames  12×12  data:image/png;base64,gb07d56e0
+  · vult      4 frames  32×32  data:image/png;base64,v07c1170b
+  · coro1     3 frames  30×30  data:image/png;base64,1869a98765
+  · coro2     3 frames  30×30  data:image/png;base64,1af013525d
+  · coro3     3 frames  30×30  data:image/png;base64,1f03c3f9d9
+  · ecodesg   3 frames  16×16  data:image/png;base64,fae9b94c0
+  · satiro    3 frames  16×16  data:image/png;base64,l961894d1
+
+[2] ciclo jugable con entityFrame (patrulla 0/1 · reposo 0)
+
+[3] determinismo: reconstrucción completa idéntica
+
+[4] resumen para el integrador (orden de frames 18-c)
+  sirena  5: 0/1 flotar · 2 telegraph (carga+windup) · 3 látigo (ataca) · 4 sumergida (invulT)
+  golem   5: 0/1 andar · 2 telegraph · 3 smash · 4 agrietado (phase 3, reposo)
+  vult    4: 0/1 carrera · 2 garra alzada (carga) · 3 embestida (ataca)
+  coro1-3 3: 0/1 bob · 2 canto con motivo (Pulso orbes / Vera rayos / Silencio notas)
+  neumo   3: 0/1 membrana · 2 hinchado (carga)   | espectro 3: 0/1 flotar · 2 fase (invulT)
+  arpi    3: 0 alas↑ · 1 alas↓ · 2 planeo (picado) | ecodesg 3: 0/1 parpadeo · 2 dash
+  satiro  3: 0/1 brinco · 2 lira (carga)          | orb/shard/nota 2: pulso (fallback)
+
+=== RESULTADO: TODO OK ===

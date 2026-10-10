@@ -1,0 +1,36 @@
+=== 1) QUESTS q11-q13: estructura y encadenado tras q10 ===
+  ✓ q11/q12/q13 presentes: El Canto al Revés · La Aldea sin Ayer · La Primera Portadora
+  ✓ q11 con 3 pasos
+  ✓ memoria VI mem_cantoalreves definida
+
+=== 2) Flujo q11: aceptar → Toln → 3 ecos (cualquier orden) → reporte ===
+  ✓ accept_q11: misión activa (idx 10, paso 0)
+  ✓ acto3_toln: paso 0→1
+  ✓ 3 ecos invertidos (desordenados) → paso 1→2
+  ✓ acto3_report paga q11 y avanza a q12
+  ✓ recompensa q11: +60 coronas y +1 poción
+
+=== 3) Flujo q12: 3 recuerdos de 4 en CUALQUIER orden (cualquiera cuenta) ===
+  ✓ informe de Mera: paso 0→1
+  ✓ 3 recuerdos (Mera+Vult+Ivo, sin Mara) → paso 1→2
+  ✓ acto3_report paga q12 → q13
+
+=== 4) q13: decisión de reputación (1 vez), Velmora, JEFE ÉLITE y memoria ===
+  ✓ acto3_verdad: Orden +10 / Guardianes -5
+  ✓ decisión anti-farm: la 2ª no cambia reputación
+  ✓ acto3_velmora_fn: paso 0→1
+  ✓ acto3_subir: Cripta + Guardián recordado con barra de jefe
+  ✓ jefe élite caído → catchUp avanza paso 1→2
+  ✓ acto3_report cierra el Acto III (acto3Done)
+  ✓ recompensa q13: +1 poción + memoria VI otorgada
+  ✓ anti-doble-pago: repetir report no paga ni repite memoria
+
+=== 5) Juego FUERA DE ORDEN: ecos/recuerdos/jefe ANTES de aceptar ===
+  ✓ q11 fuera de orden: ecos previos + catchUp cierran el paso
+  ✓ q12 fuera de orden: 4 recuerdos previos cierran el paso
+  ✓ q13 fuera de orden: flag del jefe muerto avanza el paso
+
+=== 6) Caso D (sin condiciones): catchUp NO avanza nada espúreo ===
+  ✓ sin condiciones: el reto sigue en paso 0
+
+SMOKE ACTO III: TODO OK

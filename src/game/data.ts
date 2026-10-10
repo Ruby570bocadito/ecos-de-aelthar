@@ -4,6 +4,8 @@
 // ============================================================
 
 import type { QuestDef, DialogueNode, DialogueOption, EnemyType, Element, ToneKind } from './types';
+import { INTERLUDIOS } from './interludios'; // 18-f: nodos de los interludios de acto (se registran en D al final del archivo)
+import { FARO_DIALOGUES, faroRouteDialogue } from './faro_historia'; // 18-e: los tres del faro
 
 // ---------------- Misiones (cadena principal de la demo) ----------------
 
@@ -14,9 +16,11 @@ export const QUESTS: QuestDef[] = [
   { id: 'q4', name: 'La Cripta del Primer Canto', steps: ['Cruza el puente roto cambiando al pasado (Q)', 'Derrota al Guardián Hueco', 'Recupera el Eco de la Voz en el altar'] },
   { id: 'q5', name: 'Ecos de Esperanza', steps: ['Regresa con la Anciana Brisa a Lunaris'] },
   // ------- ACTO II · Las Notas Perdidas (expansión) -------
-  { id: 'q6', name: 'El Rumor del Mar', steps: ['Viaja al sur de Lunaris: la Costa de Bruma', 'Habla con Mara, la farera'] },
-  { id: 'q7', name: 'La Sirena sin Canto', steps: ['Encuentra la nave naufragada al este de la costa', 'Derrota a la Sirena Abisal', 'Recupera el Eco de las Mareas en su altar'] },
-  { id: 'q8', name: 'La Aldea que Olvidó su Nombre', steps: ['Viaja a la Aldea de Merrow, al este de la costa', 'Enciende los 3 Faroles del Recuerdo (cambia al pasado con Q)', 'Habla con la Espectro de Merrow'] },
+  // 18-f: descripciones de objetivos reescritas para que «dónde voy ahora»
+  // quede claro (mismas posiciones reales, mismos pasos; estructura intacta).
+  { id: 'q6', name: 'El Rumor del Mar', steps: ['Sigue el camino del sur de Lunaris hasta la Costa de Bruma', 'Busca a Mara, la farera, junto a su faro apagado en el oeste de la costa'] },
+  { id: 'q7', name: 'La Sirena sin Canto', steps: ['Acércate a la nave naufragada del este de la costa: la Sirena Abisal despertará al oír tu Eco', 'Derrota a la Sirena Abisal: quiebra su barra de quiebre y calla su canto', 'Recupera el Eco de las Mareas en el altar del sur del naufragio (si su custodia sigue viva, se interpondrá)'] },
+  { id: 'q8', name: 'La Aldea que Olvidó su Nombre', steps: ['Viaja a la Aldea de Merrow, al este de la Costa de Bruma', 'Enciende los 3 Faroles del Recuerdo: viaja al pasado con Q junto a cada farol de la aldea', 'Habla con la Espectro de Merrow en la plaza'] },
   { id: 'q9', name: 'La Cumbre del Segundo Canto', steps: ['Cruza el paso del noreste del Bosque: Cumbres Heladas', 'Derrota al Gólem de Escarcha', 'Recupera el Eco de las Cumbres en su altar'] },
   { id: 'q10', name: 'Dos Voces más Fuertes', steps: ['Regresa con la Anciana Brisa a Lunaris'] },
 ];
@@ -748,6 +752,10 @@ function toneOf(flags: Record<string, number | boolean>): ToneKind | null {
 
 export const DIALOGUES = D;
 
+// ==== 18-e (faro-historia): nodos de Mara/Uso/Tina del faro (fusión única;
+// faro_historia solo importa types + sprites → sin ciclos) ====
+Object.assign(D, FARO_DIALOGUES);
+
 // ---------------- Enemigos ----------------
 
 export interface EnemyDef {
@@ -1023,9 +1031,10 @@ QUESTS.push(
   {
     id: 'q11', name: 'El Canto al Revés',
     steps: [
+      // 18-f: «dónde voy ahora» con los tres lugares exactos
       'Habla con Toln en su forja de Lunaris: el metal cantó al revés',
-      'Endereza los 3 Ecos Invertidos: el pozo de Teo, la Ruina Antigua y la orilla de Mara (0/3)',
-      'Vuelve con la Anciana Brisa',
+      'Endereza los 3 Ecos Invertidos: el pozo de Teo en Lunaris, la Ruina Antigua de Doran en el Bosque y la orilla de Mara en la Costa (0/3)',
+      'Vuelve con la Anciana Brisa a Lunaris',
     ],
   },
   {
@@ -1441,8 +1450,9 @@ QUESTS.push(
   {
     id: 'q14', name: 'Las Campanas de Antes',
     steps: [
+      // 18-f: se nombra a los dos portadores reales del coro (Mera/Ivo)
       'Escucha a Toln en la forja de Lunaris: el metal que recuerda quiere ser campana',
-      'Reúne el coro de antes: la voz de Merrow y la resonancia de las Cumbres (0/2)',
+      'Reúne el coro de antes: la voz robada que guarda la Espectro de Merrow y la resonancia de los pastores con Ivo en las Cumbres (0/2)',
       'Vuelve con la Anciana Brisa: la Campana del Ayer puede sonar',
     ],
   },
@@ -1751,6 +1761,9 @@ Object.assign(ENEMY_DEFS, ENEMY_DEFS_16A);
 const GET_DIALOGUE_ACTO3 = getDialogue;
 
 function getDialogueActo4(nid: string, ctx: DialogueCtx): string {
+  // ==== 18-e (faro-historia): ruteo de mara/uso_faro/tina_faro (devuelve null
+  // para cualquier otro nid; respeta estados de q6, mara_react y Acto III) ====
+  { const fr = faroRouteDialogue(nid, ctx); if (fr) return fr; }
   const q = ctx.questIdx, s = ctx.questStep, f = ctx.flags;
   const heraldoMuerto = !!f.heraldoDerrotado || ACTO4_BOSS.ref?.dead === true;
   // transición q12 → q13: Brisa arranca el Acto IV tras el cierre del Acto III
@@ -1828,4 +1841,70 @@ export const SENNUEL = {
   price: 60, // coronas en la forja de Toln
   desc: 'Atrae a los enemigos no-jefe cercanos durante 5 s (tecla 8). Los jefes lo ignoran.',
 } as const;
+
+// ============================================================
+// ==== 18-f ==== (historia-transiciones) — REGISTRO DE INTERLUDIOS
+// + NODOS DE REACCIÓN (Brisa/Toln tras cada cinemática de acto)
+// 1) Object.assign(D, INTERLUDIOS): los 9 nodos de las 3 cinemáticas de
+//    transición (3 por acto, retrato 'fragment') viven en
+//    src/game/interludios.ts (módulo nuevo del agente 18-f) y se registran
+//    AQUÍ para que engine.openDialogue los resuelva por
+//    dynNodes ?? DIALOGUES (engine.ts:1019). Encadenado del motor sin
+//    cambios: opción con next abre el siguiente nodo; la opción final sin
+//    next cierra y devuelve al juego (engine.advanceDialogue).
+//    Cadena completa por acto: interludio_actoN_a → _b → _c (el Eco) →
+//    r18_reacc_actoN_brisa → r18_reacc_actoN_toln (cierre).
+//    Disparo EXACTO: hooks.accept_q11 / hooks.accept_q14 (handlers vivos) +
+//    watcher por estado en interludios.interludioTick18F (que cubre el caso
+//    Acto I→II: 'accept_q6' la consume engine.applyAction, engine.ts:1087).
+//    Flags: interludio_acto2/3/4 (+ _vista marcada por el 1er nodo) — se
+//    serializan solas en save() (spread de flags).
+// 2) D_REACC_18F: 6 nodos de reacción nuevos (2 por acto: Brisa + Toln
+//    comentan lo ocurrido), patrón de los nodos reactivos existentes
+//    (brisa_reac_*, mara_react). No los sirve el ruteo de getDialogue: solo
+//    son alcanzables como coda del interludio → garantizado una sola vez.
+// ============================================================
+
+Object.assign(D, INTERLUDIOS);
+
+const D_REACC_18F: Record<string, DialogueNode> = {
+  // ----- coda del interludio del Acto II (la marcha al sur) -----
+  r18_reacc_acto2_brisa: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: '(El Eco te trae la voz de la anciana, clara como si caminara a tu lado.) «El valle entero respiró cuando sonaste el primer canto, Portador. Yo ya no puedo doblar la esquina del sur: mis piernas se quedaron en Lunaris hace treinta inviernos. Pero mi taza seguirá llena en el umbral y mi puerta abierta. Trae el segundo Eco... y tráete también las manos intactas: los muertos no beben.»',
+    options: [{ text: '…', next: 'r18_reacc_acto2_toln' }],
+  },
+  r18_reacc_acto2_toln: {
+    name: 'Maestro Toln', portrait: 'toln',
+    text: '(La forja te alcanza en el recuerdo, tibia entre la bruma.) «¡Ja! ¿El mar? Mi bisablero decía que el agua salada deshace los filos y las promesas. Llévate el acero bien templado y no respondas NADA a lo que cante en la niebla: mi abuela juraba que la Niebla aprende lo que le contestas. Yo solo sé de yunque... pero hasta el yunque sabe que esta vez el hierro eres tú.»',
+    options: [{ text: '(Seguir camino)' }],
+  },
+  // ----- coda del interludio del Acto III (el canto al revés) -----
+  r18_reacc_acto3_brisa: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: '(El Eco te trae la voz de la anciana, pausada como un invierno.) «Trescientos años velando el Canto y nunca lo había oído toser, Portador. Lo que se canta al revés no es canción: es una puerta abierta del otro lado. Yo ya no puedo enderezar ecos: enderezo tazas y palabras. Pero algo aprendí haciéndome vieja: lo torcido se compone donde se rompió. Ve despacio y vuelve entero.»',
+    options: [{ text: '…', next: 'r18_reacc_acto3_toln' }],
+  },
+  r18_reacc_acto3_toln: {
+    name: 'Maestro Toln', portrait: 'toln',
+    text: '(El martillo suena en tu memoria, seguro y derecho.) «El yunque templó ROMO anoche, Portador. ¿Sabes lo que me dolió? Cuarenta años haciendo filos y de pronto el metal me sale cantando al revés. Pues escucha: lo que a mí me pasó con el acero te va a pasar a ti con la melodía. No la pelees con prisa: busca el punto donde se torció y enderézalo desde ahí... o tráeme al desatinado a la forja y lo aplanamos entre los dos.»',
+    options: [{ text: '(Seguir)' }],
+  },
+  // ----- coda del interludio del Acto IV (el Último Canto) -----
+  r18_reacc_acto4_brisa: {
+    name: 'Anciana Brisa', portrait: 'brisa',
+    text: '(El Eco te trae la voz de la anciana, y algo tiembla en ella.) «Una campana, Portador. Una campana de verdad, que reparta las horas y llame a los míos por su nombre... Ya ni recuerdo la última vez que oí una. Dile a Toln que la cría despacio: el metal que recuerda no se funde dos veces. Y cuando el coro esté completo, canta tú. Yo canté mi estrofa hace trescientos años, y todavía me duele lo bien que sonaba.»',
+    options: [{ text: '…', next: 'r18_reacc_acto4_toln' }],
+  },
+  r18_reacc_acto4_toln: {
+    name: 'Maestro Toln', portrait: 'toln',
+    text: '(La forja arde en tu memoria, más viva que nunca.) «¡Por las barbas de mi bisablero! ¡Una CAMPANA, Portador! El metal que recuerda... mi bisabla lo llamaba el hierro nostálgico: se cría, no se funde; hay que darle ritmo de martillo y no soltarlo hasta que suene solo. Será la pieza de mi vida. Vuelve con el coro completo: si esta campana llama a los que la Niebla se llevó, hasta la Niebla tendrá que quitarse el sombrero.»',
+    options: [{ text: '(Seguir)' }],
+  },
+};
+
+Object.assign(D, D_REACC_18F);
+void D_REACC_18F; // (la referencia viva es D/DIALOGUES; la const documenta el bloque)
+
+// ═══════ FIN DEL BLOQUE 18-f ═══════
 

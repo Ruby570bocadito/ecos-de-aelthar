@@ -1,0 +1,63 @@
+//    'tina_faro'. Mientras no se fusione, drawPortrait cae a 'wisp' (fallback
+//    existente, seguro). Opcional (estética): retocar portrait: 'maelis' →
+//    'mara_farera' en los nodos mara_* antiguos de data.ts.
+//
+// 4) engine.ts — registro de sprites (constructor, tras initExpansionSprites(),
+//    línea ~203): `initFaroSprites(); // ==== 18-e: faro-historia ====`
+//    (import arriba). Idempotente. Sin esto, getSpr cae a 'hero_alba'.
+//
+// 5) update.ts — tick del faro (junto a `interaccionTick(g, dt);`, línea ~384):
+//      faroTick(g, dt); // ==== 18-e: escucha nocturna + pago de la recompensa ====
+//    (import arriba). O(1), early-out fuera de la costa. Sin este cableado el
+//    arco sigue siendo completable hablando con Mara (ruta de diálogo
+//    alternativa), pero la flag nocturna y el PAGO de las 15 coronas no
+//    se entregan (no existe ninguna acción de diálogo que dé oro).
+//
+// 6) maps_expansion.ts — YA HECHO por este agente: sprite 'mara_farera' en
+//    mara + NPCs uso_faro/tina_faro en npcs de 'costa' + cartel sign_co3.
+//
+// FLAGS NUEVAS (se serializan solas: save() hace spread de flags):
+//   · faro_uso_hablado          — nodo faro_uso_2 (onEnd 'flag_faro_uso_hablado')
+//   · faro_tina_hablado         — nodo faro_tina_2 (onEnd 'flag_faro_tina_hablado')
+//   · faro_escucha              — faroTick (noche junto al faro) o ruta de
+//                                 diálogo alternativa (faro_mara_c1)
+//   internas de bookkeeping del arco (mismo mecanismo 'flag_<clave>' de hooks):
+//   · faro_escuchaPendiente     — Mara ya pidió la escucha (faro_mara_o2)
+//   · faro_recompensa           — nodo final cerrado → faroTick PAGA +15 coronas
+//   · faro_pagada               — pago único hecho (anti-doble, sobrevive reload)
+//
+// RECOMPENSA FINAL (modesta): +8 reputación Guardianes vía acción
+//   'rep_guardianes_8' (patrón genérico rep_<faccion>_<±n> ya existente en
+//   hooks.handleCustomAction — VERIFICADO, no hace nada nuevo) + 15 coronas
+=== npcs costa completo ===
+    npcs: [
+      // ==== 18-e (faro-historia) ====
+      // mara: sprite PROPIO 'mara_farera' (antes usaba 'maelis'); su retrato
+      // vive en faro_historia.ts (FARO_PORTRAITS) y sus nodos nuevos en
+      // FARO_DIALOGUES (ver cabecera de faro_historia.ts para el cableado).
+      { id: 'mara', x: 7, y: 19, sprite: 'mara_farera', name: 'Mara, la farera' },
+      // uso_faro (5,21) y tina_faro (9,20): tiles libres verificados con BFS
+      // sobre mapRows + SOLID_CHARS (adyacencia peatonal OK en ambas épocas).
+      // NpcDef NO soporta needPresent (types.ts congelado) → siempre visibles.
+      // Sus sprites/diálogos/retratos viven en faro_historia.ts.
+      { id: 'uso_faro', x: 5, y: 21, sprite: 'uso_faro', name: 'Uso, el farero tuerto' },
+      { id: 'tina_faro', x: 9, y: 20, sprite: 'tina_faro', name: 'Tina, la niña del faro' },
+      { id: 'vult', x: 30, y: 32, sprite: 'corvin', name: 'Vult, cartógrafo de la Liga' },
+    ],
+    chests: [
+      // al final del muelle: solo alcanza quien camine sobre el ayer
+=== smoke faro ===
+  ✓ 2º tick idempotente (no repite ráfaga ni toast)
+  ✓ guard día (dayT 0.5): faro_escucha NO se activa
+  ✓ guard mapa (lunaris): NO se activa
+  ✓ guard época (pasado): NO se activa
+  ✓ guard distancia (>2.6 tiles): NO se activa
+  ✓ guard desafío: NO se activa
+  ✓ guard sin jugador: no lanza
+  ✓ pago: oro 10→25, faro_pagada=true, stats.coronasGanadas=15
+  ✓ 2º tick: SIN doble pago (anti-doble con faro_pagada)
+  ✓ recarga con faro_pagada ya en save → NO vuelve a pagar
+
+RESULTADO: 71 ok, 0 fallos
+=== diag portraits ===
+SIN_DIAG

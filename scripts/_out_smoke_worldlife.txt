@@ -1,0 +1,45 @@
+=== 1) worldTick: 600 frames × 3 mapas × 2 épocas × con/sin enemigos (sin lanzar) ===
+  ✓ 12 configuraciones × 600 frames sin excepciones (con drawWorldLife)
+
+=== 2) fauna: cap por época y spawn solo en cámara ===
+  ✓ cap respetado en pasado: 6/12 vivas
+  ✓ la fauna vive: 6 criaturas (aves 0, mariposas 6, luciérnagas 0, peces 0)
+  ✓ spawn solo en cámara: 6 dentro de la vista (±64)
+  ✓ cap respetado en presente: 4/8 (menos vida que en el pasado)
+  ✓ de día: mariposas sí, luciérnagas no
+  ✓ de noche: luciérnagas sí, mariposas no
+  ✓ Costa: peces salpicando (3)
+  ✓ cripta: sin fauna (existe fuera del tiempo)
+
+=== 3) rumores: cooldown por NPC y texto según progreso REAL ===
+  ✓ Brisa presente en lunaris
+  ✓ rumor disparado junto al NPC (4.2 s): «Brisa: «Los lobos rondan al caer el sol. Ve co...»
+  ✓ cooldown respetado: nada en los 5 s posteriores (mínimo 8 s)
+  ✓ segunda burbuja a los 8.4 s del reinicio (ventana 8-14 s)
+  ✓ pool de Brisa cambia con questIdx 0 → 9 (progreso real)
+  ✓ texto de rumor cambia con la misión: «Brisa: «Los lobos rondan al ca...» → «Brisa: «El silencio pesa menos...»
+  ✓ tono dominante sarcástico presente en el pool de Teo
+  ✓ frases genéricas por contexto: 3
+  ✓ 10 NPCs con rumores (brisa, toln, teo, heraldo, ilwen, doran, mara, vult, mera, ivo)
+  ✓ sin rumores durante combate con aggro
+
+=== 4) worldInteract: features que nearestInteract ignora ===
+  ✓ pozo de Lunaris: worldInteract true + frase en float
+  ✓ el texto del pozo varía presente/pasado
+  ✓ agua: splash + frase (10 partículas nuevas)
+  ✓ zona libre (22,14): worldInteract false y sin efectos
+  ✓ faro de la Costa: worldInteract true (prop no atendido por el motor)
+  ✓ farol SIN encender no lo roba worldInteract (lo gestiona el motor)
+  ✓ farol encendido: chispazo (burst) + frase
+
+=== 5) eventos callejeros: cadencia, aplazamiento y viajante ===
+  ✓ evento pospuesto con enemigo en aggro
+  ✓ evento pospuesto con diálogo abierto
+  ✓ evento disparado al volver a play (el aplazamiento no lo pierde)
+  ✓ eco lejano: float + 20 partículas vivas
+  ✓ viajante errante activo (entidad decorativa propia)
+  ✓ el viajante se marcha solo al salir de cámara
+  ✓ sin eventos en modo desafío
+  ✓ cadencia restablecida tras abortar el desafío
+
+=== SMOKE WORLDLIFE: TODO OK ===

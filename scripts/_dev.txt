@@ -1,0 +1,6 @@
+=== dev server ===
+200
+dev.log
+✓ Compiled in 133ms
+✓ Compiled in 112ms
+ GET / 200 in 129ms (compile: 73ms, render: 56ms)

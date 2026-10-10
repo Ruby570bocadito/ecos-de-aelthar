@@ -1,0 +1,98 @@
+=== world/ ===
+total 228
+drwxr-xr-x 2 z z  4096 Oct 10 08:52 .
+drwxr-xr-x 3 z z  4096 Oct 10 08:52 ..
+-rwxr-xr-x 1 z z 15205 Oct  8 19:00 grass.ts
+-rwxr-xr-x 1 z z 14971 Oct  8 19:00 lighting.ts
+-rwxr-xr-x 1 z z 17347 Oct  8 19:00 minimap.ts
+-rwxr-xr-x 1 z z  7758 Oct  8 19:00 palette.ts
+-rwxr-xr-x 1 z z 21614 Oct  8 19:00 props.ts
+-rwxr-xr-x 1 z z 17651 Oct  8 19:00 sky.ts
+-rwxr-xr-x 1 z z 22714 Oct  8 19:00 stone.ts
+-rwxr-xr-x 1 z z 17634 Oct  8 19:00 trees.ts
+-rwxr-xr-x 1 z z 21360 Oct  8 19:00 village.ts
+-rwxr-xr-x 1 z z 22917 Oct  8 19:00 water.ts
+-rwxr-xr-x 1 z z 23247 Oct  8 19:00 weather.ts
+=== tryTakeEco ===
+888:      else if (pr.kind === 'altarEcho') consider(px, py, 'altar', 'Altar del Eco', () => this.tryTakeEco(), 30);
+889-      else if (pr.kind === 'sign') consider(px, py, 'sign', 'Leer cartel', () => this.readSign(pr.label ?? ''), 28);
+890-      else if (pr.kind === 'lamp' && !this.flags[pr.id]) consider(px, py, 'lamp', 'Encender el Farol del Recuerdo', () => this.lightLamp(pr.id), 28);
+891-    }
+892-    for (const ec of this.map.echoes) {
+893-      if (this.takenEchoes.has(ec.id)) continue;
+894-      consider(ec.x * TILE + 8, ec.y * TILE + 8, 'echo', 'Escuchar eco menor', () => this.takeEchoMinor(ec.id, ec.title, ec.text), 26);
+895-    }
+896-    return best;
+897-  }
+898-
+899-  openChest(id: string) {
+900-    const ch = this.map.chests.find(c => c.id === id);
+901-    if (!ch || this.openedChests.has(id)) return;
+902-    this.openedChests.add(id);
+903-    audio.sfx('chest');
+904-    const parts: string[] = [];
+905-    if (ch.gold) {
+906-      this.player!.gold += ch.gold; parts.push(`${ch.gold} coronas`); this.floatAt(ch.x * TILE + 8, ch.y * TILE, `+${ch.gold}`, '#f0c84a');
+907-      if (!this.challengeRun) this.stats.coronasGanadas += ch.gold; // ==== 16-c ====
+908-    }
+909-    if (ch.potions) { this.player!.potions += ch.potions; parts.push(`${ch.potions} poción(es)`); }
+910-    if (ch.item) parts.push(ch.item);
+--
+950:  tryTakeEco() {
+951-    // Acto II: cada mapa con altar tiene su Eco y su custodio
+952-    if (this.mapId === 'costa') {
+953-      if (this.flags.ecoMareas) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
+954-      if (!this.flags.sirenaDefeated) { this.toast('La Sirena custodia el Eco. Calma su canto primero.', '#e88'); return; }
+955-      if (DIALOGUES['eco_mareas']) { this.openDialogue('eco_mareas'); return; }
+956-      this.dynNodes['eco_mareas'] = {
+957-        name: 'Eco de las Mareas', portrait: 'fragment',
+958-        text: 'El segundo canto asciende del naufragio, salado y vivo. «El mar guardó mi nota bajo la quilla de un barco que soñaba con estrellas. Cántala, Portador: hay mareás que solo se curan cantando.» (Eco de las Mareas recuperado: +1 punto de habilidad, +10 reputación con los Guardianes del Canto)',
+959-        onEnd: 'eco_mareas_taken',
+960-      };
+961-      this.openDialogue('eco_mareas');
+962-      return;
+963-    }
+964-    if (this.mapId === 'cumbres') {
+965-      if (this.flags.ecoCumbres) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
+=== sprites sirena/golem/maelis/corvin/brokk/nimue ===
+471:  brokk: {
+477:  maelis: {
+483:  corvin: {
+513:  nimue: {
+1089:  brokk: {
+1095:  maelis: {
+1101:  corvin: {
+1128:  nimue: {
+1305:    if (key === 'corvin' || key === 'sasha') { q(11, 24, 5, 1, '#9a5a50'); q(16, 23, 1, 1, '#9a5a50'); }
+1312:    if (key === 'brokk') {
+=== todos los npcs de todos los mapas (sprite) ===
+src/game/maps.ts:254:      { id: 'brisa', x: 23, y: 13, sprite: 'brisa', name: 'Anciana Brisa' },
+src/game/maps.ts:255:      { id: 'toln', x: 35, y: 11, sprite: 'toln', name: 'Maestro Toln' },
+src/game/maps.ts:258:      { id: 'teo', x: 23, y: 20, sprite: 'teo', name: 'Teo', showFlag: 'wolfKills' },
+src/game/maps.ts:260:      { id: 'heraldo', x: 28, y: 17, sprite: 'sombra', name: 'Heraldo de Vesh', showFlag: 'ecoVoz' },
+src/game/maps.ts:301:      { id: 'ilwen', x: 16, y: 32, sprite: 'ilwen', name: 'Ilwen', showFlag: 'q2_done' },
+src/game/maps.ts:303:      { id: 'doran', x: 36, y: 24, sprite: 'doran', name: 'Doran' },
+src/game/maps.ts:359:      { id: 'guarda', x: 21, y: 24, sprite: 'kael', name: 'La Guarda del Primer Canto', showFlag: 'acto3Done' },
+src/game/maps_expansion.ts:336:      { id: 'mara', x: 7, y: 19, sprite: 'maelis', name: 'Mara, la farera' },
+src/game/maps_expansion.ts:337:      { id: 'vult', x: 30, y: 32, sprite: 'corvin', name: 'Vult, cartógrafo de la Liga' },
+src/game/maps_expansion.ts:388:      { id: 'mera', x: 22, y: 16, sprite: 'nimue', name: 'Espectro de Merrow' },
+src/game/maps_expansion.ts:432:      { id: 'ivo', x: 27, y: 37, sprite: 'brokk', name: 'Ivo, cazador de cumbres' },
+=== walk frame en render ===
+90:    const bob = Math.sin(g.globalT * 3) * 2;
+91:    ctx.drawImage(getSpr('goldbag')[0], sx(dgl.x - 5), sy(dgl.y - 8 + bob), 10 * ZOOM, 8 * ZOOM);
+97:    const bob = Math.sin(g.globalT * 2 + ec.x) * 2;
+100:    ctx.drawImage(getSpr('wisp')[fr], sx(ec.x * TILE + 8 - 5), sy(ec.y * TILE + 2 + bob), 10 * ZOOM, 10 * ZOOM);
+254:      const bob = Math.sin(g.globalT * 2.4) * 3;
+258:      ctx.arc(sx(px), sy(py - 6 + bob), 18, 0, Math.PI * 2);
+261:      ctx.drawImage(getSpr('fragment')[fr], sx(px - 6), sy(py - 12 + bob), 12 * ZOOM, 12 * ZOOM);
+273:        const bob = Math.sin(g.globalT * 2.6) * 3;
+278:        ctx.arc(sx(px), sy(py - 12 + bob), 12, 0, Math.PI * 2);
+281:        ctx.drawImage(getSpr('fragment')[Math.floor(g.globalT * 3) % 3], sx(px - 5), sy(py - 18 + bob), 10 * ZOOM, 10 * ZOOM);
+305:  // parpadeo suave del jugador durante i-frames (esquiva/daño reciente)
+309:    if (pp.iframes > 0 && pp.rollT <= 0) spriteAlpha = 0.55 + Math.abs(Math.sin(g.globalT * 24)) * 0.35;
+327:  // getCastFrames devuelven [frameAnticipación, frameGolpe] (mismo tamaño que
+328:  // los frames de andar) o null. Llamada opcional vía namespace: mientras 9-b
+329:  // no exista el fallback es el frame de andar — nunca rompe la compilación.
+339:    const frames = pl.discipline === 'tejedor' && SP.getCastFrames
+342:    if (frames && frames.length > 1) poseCv = frames[anticip ? 0 : 1] ?? null;
+652:// viewport, sin asignaciones por frame (barato y determinista).

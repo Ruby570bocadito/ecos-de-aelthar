@@ -1,0 +1,82 @@
+SMOKE FARO-HISTORIA · 18-e «La lámpara que aprendió a temblar»
+
+[a] sprites del faro (build ×2 → mismo dataURL)
+  ✓ mara_farera: 9 frames (down/up/side ×3) — 9
+  ✓ mara_farera: canvas 16×18 en los 9 frames
+  ✓ mara_farera: determinismo (build ×2 → mismo dataURL)
+  ✓ uso_faro: 9 frames (down/up/side ×3) — 9
+  ✓ uso_faro: canvas 16×18 en los 9 frames
+  ✓ uso_faro: determinismo (build ×2 → mismo dataURL)
+  ✓ tina_faro: 9 frames (down/up/side ×3) — 9
+  ✓ tina_faro: canvas 16×15 en los 9 frames
+  ✓ tina_faro: determinismo (build ×2 → mismo dataURL)
+  ✓ initFaroSprites() idempotente (mismas refs tras 2 llamadas) y los 3 nombres resueltos por getSpr
+  ✓ registerSpr intacto (contrato con sprites.ts)
+
+[b] NPCs del faro en MAPS['costa'] + BFS (patrón smoke_rutas)
+  ✓ costa.npcs = 4 (mara + uso_faro + tina_faro + vult)
+  ✓ vult (30,32) intacto
+  ✓ [presente] mara en (7,19) con sprite 'mara_farera'
+  ✓ [presente] tile de mara (7,19) NO sólido
+  ✓ [presente] mara (7,19) con tile vecino caminable (BFS)
+  ✓ [presente] uso_faro en (5,21) con sprite 'uso_faro'
+  ✓ [presente] tile de uso_faro (5,21) NO sólido
+  ✓ [presente] uso_faro (5,21) con tile vecino caminable (BFS)
+  ✓ [presente] tina_faro en (9,20) con sprite 'tina_faro'
+  ✓ [presente] tile de tina_faro (9,20) NO sólido
+  ✓ [presente] tina_faro (9,20) con tile vecino caminable (BFS)
+  ✓ [presente] cartel sign_co3 (8,17) legible (BFS)
+  ✓ [pasado] mara en (7,19) con sprite 'mara_farera'
+  ✓ [pasado] tile de mara (7,19) NO sólido
+  ✓ [pasado] mara (7,19) con tile vecino caminable (BFS)
+  ✓ [pasado] uso_faro en (5,21) con sprite 'uso_faro'
+  ✓ [pasado] tile de uso_faro (5,21) NO sólido
+  ✓ [pasado] uso_faro (5,21) con tile vecino caminable (BFS)
+  ✓ [pasado] tina_faro en (9,20) con sprite 'tina_faro'
+  ✓ [pasado] tile de tina_faro (9,20) NO sólido
+  ✓ [pasado] tina_faro (9,20) con tile vecino caminable (BFS)
+  ✓ [pasado] cartel sign_co3 (8,17) legible (BFS)
+
+[c] FARO_DIALOGUES (27 nodos) + faroRouteDialogue
+  ✓ FARO_DIALOGUES = 27 nodos (27 esperados)
+  ✓ sin colisiones de clave con DIALOGUES de data.ts (ninguna)
+  ✓ 27 nodos completos (name/portrait/text) y sin enlaces rotos ni acciones sin handler
+  ✓ FARO_PORTRAITS['mara_farera'] compatible con PortraitDef/drawPortrait (28×40, kind 'human')
+  ✓ FARO_PORTRAITS['uso_faro'] compatible con PortraitDef/drawPortrait (28×40, kind 'human')
+  ✓ FARO_PORTRAITS['tina_faro'] compatible con PortraitDef/drawPortrait (28×40, kind 'human')
+  ✓ vult → null (delega en data.ts, regresión 0)
+  ✓ mara en q6 → null (mara_intro intocable)
+  ✓ mara post-Sirena sin faro encendido → null (mara_react)
+  ✓ mara q11 s1 → null (acto3_eco_mara)
+  ✓ mara q12 → null (acto3_mara_ayer)
+  ✓ hablar con Uso fija faro_uso_hablado (uso_faro:faro_uso_4)
+  ✓ hablar con Tina fija faro_tina_hablado
+  ✓ la petición de Mara fija faro_escuchaPendiente
+  ✓ arco completo por diálogo: escucha=true recompensa=true
+  ✓ arco cerrado: Mara vuelve a sus rutas originales (pasos mara: mara:faro_mara_o1 · mara:faro_mara_o2 · mara:faro_mara_c1 · mara:faro_mara_fin)
+  ✓ el cierre pasa por el nodo de recompensa faro_mara_fin
+  ✓ orden libre (Tina→Uso): Mara pasa directo a la petición (o1)
+  ✓ tras la petición (pendiente) → faro_mara_c1 (cuenta lo oído)
+  ✓ escucha vía faroTick → faro_mara_fin directamente (faro_mara_fin)
+  ✓ con ecoMareas → variante faro_mara_fin_eco (faro_mara_fin_eco)
+  ✓ uso_faro sin hablar → faro_uso_1
+  ✓ uso_faro tras arco → faro_uso_id
+  ✓ uso_faro tono empático dominante → faro_uso_id_emp
+  ✓ tina_faro sin hablar → faro_tina_1
+  ✓ tina_faro tras arco → faro_tina_id
+  ✓ tina_faro tras escuchar → faro_tina_feliz
+
+[d] faroTick: recompensa +15 y escucha nocturna idempotentes
+  ✓ noche junto al faro → faro_escucha + ráfaga (toasts: 1)
+  ✓ 2º tick idempotente (no repite ráfaga ni toast)
+  ✓ guard día (dayT 0.5): faro_escucha NO se activa
+  ✓ guard mapa (lunaris): NO se activa
+  ✓ guard época (pasado): NO se activa
+  ✓ guard distancia (>2.6 tiles): NO se activa
+  ✓ guard desafío: NO se activa
+  ✓ guard sin jugador: no lanza
+  ✓ pago: oro 10→25, faro_pagada=true, stats.coronasGanadas=15
+  ✓ 2º tick: SIN doble pago (anti-doble con faro_pagada)
+  ✓ recarga con faro_pagada ya en save → NO vuelve a pagar
+
+RESULTADO: 71 ok, 0 fallos

@@ -1,0 +1,83 @@
+=== render 75-90 ===
+    ctx.restore();
+  }
+
+  const sx = (wx: number) => wx * ZOOM - camX;
+  const sy = (wy: number) => wy * ZOOM - camY;
+
+  // agua viva: brillos especulares sobre los tiles '~' visibles (R3-c)
+  drawWaterGlints(g, sx, sy);
+
+  ctx.save();
+  ctx.filter = WORLD_FILTER[g.epoch] ?? 'none';
+
+  // oro perdido
+  for (const dgl of g.deadGolds) {
+    if (dgl.map !== g.mapId) continue;
+    const bob = Math.sin(g.globalT * 3) * 2;
+=== render 150-162 ===
+  // y ANTES de la iluminación — la técnica offscreen de Task 4 queda intacta.
+  drawBiomeTint(g);
+
+  drawLighting(g);
+
+  // capa de cielo: estrellas, luna, antorchas (sobre la iluminación)
+  drawAmbient(g, 'sky');
+
+  // textos flotantes (después de la luz: siempre legibles)
+  drawFloats(g, sx, sy);
+
+  // prompt de interacción
+  drawInteractPrompt(g, sx, sy);
+=== render imports 1-20 ===
+// ============================================================
+// ECOS DE AELTHAR — Render de mundo y HUD (AGENTE 3-a · visuales)
+// Capas: suelo → props → estelas → entidades → FX → ambiente →
+// iluminación → cielo → números flotantes → HUD → overlays.
+// ============================================================
+
+import type { Game } from './engine';
+import type { Entity, Enemy } from './types';
+import { VIEW_W, VIEW_H, ZOOM, TILE, getSpr, SKILLS, QUESTS } from './engine';
+import { ENEMY_DEFS } from './data';
+import { COL, text, textShadow, panel, bar, clearHits, wrapText, fBody } from './ui';
+import { drawScreens } from './screens';
+import { drawSlashArc, entityFrame, drawPortrait, hash2 } from './sprites';
+import * as SPRITES from './sprites'; // poses de combate (contrato 9-b, llamada opcional)
+import { drawExpansionProp, drawExpansionProjectile } from './sprites_expansion';
+import { drawSkillTree } from './skilltree';
+import { drawWorldLife } from './worldlife';
+import { tileAt } from './maps';
+import {
+  fxFrame, updateAmbient, drawAmbient, getRollTrail,
+=== render fi entityFrame ===
+323:  const fi = entityFrame(spr, e.dir, e.moving, e.anim);
+=== engine imports ===
+import type {
+import { MAPS, mapRows, tileAt } from './maps';
+import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
+import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
+import { audio } from './audio';
+import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue, SENNUEL } from './data';
+import { updateGame } from './update';
+import { drawGame } from './render';
+import { handleCustomAction, recordDialogueTone } from './hooks';
+import { challengeTick, onChallengeDeath, type ChallengeRun } from './challenge';
+import { skillTick, skillCdMult, setSkillCdDecay } from './skilltree';
+import { balanceTick, enemyStatMult } from './balance';
+import { worldTick, worldInteract } from './worldlife';
+import { timeTick, beginEpochShift } from './timeskip';
+import { defaultStats, sanitizeStats, statsTick, achievementTick } from './achievements'; // 16-c: estadísticas + logros
+import {
+import {
+=== update imports ===
+import type { Game } from './engine';
+import { TILE, playerMeleeDmg, BOSS_DEFEAT_FLAG } from './engine';
+import type { Enemy, Dir, Element, Player, Companion } from './types';
+import { ENEMY_DEFS } from './data';
+import { audio } from './audio';
+import { addShake, addFlash, requestSlowmo, applyKnockback, stepKnockback } from './fxcore';
+import { combatSparks, dodgeRing, critGlint } from './fx';
+import { expansionTick, expansionDeathFx, expansionBossWatchers } from './enemies_expansion';
+import { tileAt } from './maps'; // solo lectura (mapas propiedad de otro agente)
+import { interaccionTick, companionOrdersMove, lureActive, sennoChase } from './interaccion'; // 16-b: órdenes tácticas + señuelo

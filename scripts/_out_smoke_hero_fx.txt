@@ -1,0 +1,84 @@
+SMOKE HERO FX · héroe detallado + retratos + fx
+
+[a] contrato de humanoides (9 frames)
+  ✓ hero_alba → 9 frames (9 esperados; fallback roto si no)
+  ✓ hero_alba → tamaños uniformes 16×18
+  ✓ hero_alba → left/right/side dan el MISMO frame lateral (7)
+  ✓ hero_alba → up (4) y down (1) en sus filas
+  ✓ hero_alba → pose de pie = frame 1 (fase sin bob)
+  ✓ hero_tejedor → 9 frames (9 esperados; fallback roto si no)
+  ✓ hero_tejedor → tamaños uniformes 16×18
+  ✓ hero_tejedor → left/right/side dan el MISMO frame lateral (7)
+  ✓ hero_tejedor → up (4) y down (1) en sus filas
+  ✓ hero_tejedor → pose de pie = frame 1 (fase sin bob)
+  ✓ brisa → 9 frames (9 esperados; fallback roto si no)
+  ✓ brisa → tamaños uniformes 16×18
+  ✓ brisa → left/right/side dan el MISMO frame lateral (7)
+  ✓ brisa → up (4) y down (1) en sus filas
+  ✓ brisa → pose de pie = frame 1 (fase sin bob)
+  ✓ toln → 9 frames (9 esperados; fallback roto si no)
+  ✓ toln → tamaños uniformes 16×18
+  ✓ toln → left/right/side dan el MISMO frame lateral (7)
+  ✓ toln → up (4) y down (1) en sus filas
+  ✓ toln → pose de pie = frame 1 (fase sin bob)
+  ✓ ilwen → 9 frames (9 esperados; fallback roto si no)
+  ✓ ilwen → tamaños uniformes 16×18
+  ✓ ilwen → left/right/side dan el MISMO frame lateral (7)
+  ✓ ilwen → up (4) y down (1) en sus filas
+  ✓ ilwen → pose de pie = frame 1 (fase sin bob)
+  ✓ doran → 9 frames (9 esperados; fallback roto si no)
+  ✓ doran → tamaños uniformes 16×18
+  ✓ doran → left/right/side dan el MISMO frame lateral (7)
+  ✓ doran → up (4) y down (1) en sus filas
+  ✓ doran → pose de pie = frame 1 (fase sin bob)
+  ✓ kael → 9 frames (9 esperados; fallback roto si no)
+  ✓ kael → tamaños uniformes 16×18
+  ✓ kael → left/right/side dan el MISMO frame lateral (7)
+  ✓ kael → up (4) y down (1) en sus filas
+  ✓ kael → pose de pie = frame 1 (fase sin bob)
+  ✓ sasha → 9 frames (9 esperados; fallback roto si no)
+  ✓ sasha → tamaños uniformes 16×18
+  ✓ sasha → left/right/side dan el MISMO frame lateral (7)
+  ✓ sasha → up (4) y down (1) en sus filas
+  ✓ sasha → pose de pie = frame 1 (fase sin bob)
+  ✓ brokk → 9 frames (9 esperados; fallback roto si no)
+  ✓ brokk → tamaños uniformes 16×18
+  ✓ brokk → left/right/side dan el MISMO frame lateral (7)
+  ✓ brokk → up (4) y down (1) en sus filas
+  ✓ brokk → pose de pie = frame 1 (fase sin bob)
+  ✓ maelis → 9 frames (9 esperados; fallback roto si no)
+  ✓ maelis → tamaños uniformes 16×18
+  ✓ maelis → left/right/side dan el MISMO frame lateral (7)
+  ✓ maelis → up (4) y down (1) en sus filas
+  ✓ maelis → pose de pie = frame 1 (fase sin bob)
+  ✓ corvin → 9 frames (9 esperados; fallback roto si no)
+  ✓ corvin → tamaños uniformes 16×18
+  ✓ corvin → left/right/side dan el MISMO frame lateral (7)
+  ✓ corvin → up (4) y down (1) en sus filas
+  ✓ corvin → pose de pie = frame 1 (fase sin bob)
+  ✓ inquisidor → 9 frames (9 esperados; fallback roto si no)
+  ✓ inquisidor → tamaños uniformes 32×36
+  ✓ inquisidor → left/right/side dan el MISMO frame lateral (7)
+  ✓ inquisidor → up (4) y down (1) en sus filas
+  ✓ inquisidor → pose de pie = frame 1 (fase sin bob)
+  ✓ teo → 9 frames (9 esperados; fallback roto si no)
+  ✓ teo → tamaños uniformes 16×15
+  ✓ teo → left/right/side dan el MISMO frame lateral (7)
+  ✓ teo → up (4) y down (1) en sus filas
+  ✓ teo → pose de pie = frame 1 (fase sin bob)
+  ✓ nimue → 9 frames (9 esperados; fallback roto si no)
+  ✓ nimue → tamaños uniformes 16×18
+  ✓ nimue → left/right/side dan el MISMO frame lateral (7)
+  ✓ nimue → up (4) y down (1) en sus filas
+  ✓ nimue → pose de pie = frame 1 (fase sin bob)
+
+[b] determinismo (rebuild del módulo)
+  ✓ rebuild ×2 → mismos dataURLs (determinismo de buildHumanoid)
+
+[c] retratos sin excepción
+  ✓ drawPortrait ×23 claves sin excepciones (incl. fallback 'wisp' y las 3 del faro)
+
+[d] fx acotado (600 frames)
+  ✓ updateAmbient/combatSparks/dodgeRing/critGlint/drawAmbient ×600 frames sin excepción
+
+RESULTADO: 73 ok, 0 fallos

@@ -1,0 +1,62 @@
+=== SMOKE LOGROS · sesión principal ===
+--- 1) Desbloqueo único (dos ticks no duplican) ---
+  ✓ partida recién empezada: 0/12 logros — {"done":0,"total":12}
+  ✓ estado inicial de stats a cero
+  ✓ tick sin condiciones: nada desbloqueado
+  ✓ Nv 5 sin morir → Invicto
+  ✓ toast dorado único — ¡Logro: Invicto!
+  ✓ dos ticks más: NO duplican ni toast ni registro
+  ✓ 'ecos-logros' persiste Invicto una sola vez — {"v":1,"done":["invicto"]}
+--- 2) Stats acumuladas (kill/muerte/poción/época/forja/movimiento) ---
+  ✓ killEnemy → enemigosDerrotados 1
+  ✓ killEnemy → coronasGanadas > 0 — 5
+  ✓ killEnemy dispara chequeo puntual → Primer Canto
+  ✓ killEnemy jefe → jefesDerrotados 1
+  ✓ flag de jefe de campaña fijada
+  ✓ drinkPotion → pocionesUsadas 1
+  ✓ playerDied → muertes 1
+  ✓ respawn vuelve a play
+  ✓ moveEntity del jugador suma distancia — 0 → 5
+  ✓ moveEntity de un ENEMIGO no suma
+  ✓ epochSwitch → vecesCambioEpoca 1 — 1
+  ✓ forja pagada → coronasGastadas 30 — 30
+  ✓ poción comprada → coronasGastadas 45
+  ✓ grantQuestLoot → coronasGanadas suma el botín
+  ✓ statsTick: tiempoJugado + memoriasHalladas
+  ✓ save() serializa stats (2 kills: lobo + jefe) — {"enemigosDerrotados":2,"jefesDerrotados":1,"muertes":1,"coronasGanadas":171,"coronasGastadas":45,"pocionesUsadas":1,"vecesCambioEpoca":1,"distanciaAndada":5,"tiempoJugado":1.5,"memoriasHalladas":2}
+  ✓ espejo 'ecos-stats' escrito — {"enemigosDerrotados":2,"jefesDerrotados":1,"muertes":1,"coronasGanadas":171,"coronasGastadas":45,"pocionesUsadas":1,"vecesCambioEpoca":1,"distanciaAndada":5,"tiempoJugado":1.5,"memoriasHalladas":2}
+  ✓ continueGame restaura stats del guardado — {"enemigosDerrotados":2,"jefesDerrotados":1,"muertes":1,"coronasGanadas":171,"coronasGastadas":45,"pocionesUsadas":1,"vecesCambioEpoca":1,"distanciaAndada":5,"tiempoJugado":1.5,"memoriasHalladas":2}
+  ✓ sanitizeStats(undefined) → defaults
+  ✓ sanitizeStats mezcla válidos/inválidos — {"enemigosDerrotados":3,"jefesDerrotados":0,"muertes":0,"coronasGanadas":0,"coronasGastadas":0,"pocionesUsadas":0,"vecesCambioEpoca":0,"distanciaAndada":0,"tiempoJugado":0,"memoriasHalladas":0}
+--- 3) Tolerancia a JSON corrupto (sin crash, defaults) ---
+  ✓ 'ecos-logros' corrupto → 0 logros sin lanzar
+  ✓ tick tras corrupto re-desbloquea y persiste JSON válido — {"v":1,"done":["invicto"]}
+  ✓ forma inválida de ecos-logros → 0 sin lanzar
+  ✓ 'ecos-desafio-récords' corrupto → lista vacía
+  ✓ 'ecos-stats' corrupto → defaults
+  ✓ save corrupto → readLastSave null
+  ✓ continueGame con save corrupto no lanza
+  ✓ carga filtra ids desconocidos y tipos raros
+--- 4) recordChallengeResult: top 3 tiempos + Rondador ---
+  ✓ victoria con 80% de vida → Rondador
+  ✓ toast de Rondador emitido
+  ✓ marca de duelo guardada — [{"key":"duelo:guardian","times":[95]}]
+  ✓ top 3 duelos ordenado (60/80/95) y recortado — [60,80,95]
+  ✓ victoria con 50% de vida → sin Rondador extra
+  ✓ marca de la Sirena guardada
+  ✓ oleadas: tiempos ordenados mayor-mejor — [150,100]
+  ✓ achievementTick tras la arena re-desbloquea campaña
+  ✓ killEnemy de arena NO duplica el toast de Primer Canto — ["¡Logro: Primer Canto!","¡Logro: Rondador!"]
+--- 5) Paneles ESTADÍSTICAS / LOGROS (con y sin save) ---
+  ✓ panel ESTADÍSTICAS dibuja sin lanzar y registra botones — hits=1
+  ✓ panel LOGROS dibuja sin lanzar y registra botones — hits=1
+  ✓ los 12 logros definidos — 12
+  ✓ logro del Acto IV visible como 'próximamente'
+  ✓ con flag futuro → nombre sin (próximamente)
+  ✓ con flag futuro → logro se desbloquea
+  ✓ cerrado: no registra hits
+  ✓ panel ESTADÍSTICAS sin save no lanza (mensaje vacío)
+--- limpieza: save válido + logros para la fase LOAD ---
+  ✓ estado final persistido
+
+SMOKE LOGROS: TODO OK

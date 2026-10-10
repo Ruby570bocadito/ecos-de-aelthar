@@ -1,0 +1,41 @@
+=== hunks sprites.ts ===
+@@ -7,6 +7,12 @@
+@@ -36,6 +42,7 @@ export interface HumanPal {
+@@ -55,6 +62,20 @@ export interface HumanPal {
+@@ -79,6 +100,18 @@ function layoutFor(pal: HumanPal): Layout {
+@@ -86,6 +119,7 @@ function drawHumanFrame(
+@@ -93,20 +127,41 @@ function drawHumanFrame(
+@@ -131,15 +186,31 @@ function drawHumanFrame(
+@@ -147,29 +218,38 @@ function drawHumanFrame(
+@@ -184,7 +264,11 @@ function drawHumanFrame(
+@@ -193,7 +277,7 @@ function drawHumanFrame(
+@@ -201,15 +285,20 @@ function drawHumanFrame(
+@@ -237,9 +326,16 @@ function buildHumanoid(pal: HumanPal): Frames {
+@@ -252,7 +348,10 @@ export function frameIndex(dir: string, moving: boolean, anim: number): number {
+@@ -426,29 +525,46 @@ function buildPickups(): void {
+@@ -487,10 +603,12 @@ const PALS: Record<string, HumanPal> = {
+@@ -505,10 +623,12 @@ const PALS: Record<string, HumanPal> = {
+@@ -982,6 +1102,15 @@ function buildCombatPose(baseName: string, dir: string, kind: 'attack' | 'cast')
+@@ -989,46 +1118,91 @@ export function drawSlashArc(
+@@ -1194,7 +1368,10 @@ export function drawPortrait(
+@@ -1260,7 +1437,13 @@ export function drawPortrait(
+=== hunks fx.ts ===
+@@ -13,6 +13,13 @@
+@@ -41,6 +48,12 @@ const FAROBEAM = 11;   // Costa (10-c): motas alargadas del haz del faro encendi
+@@ -287,6 +300,9 @@ export function updateAmbient(g: Game, dt: number): void {
+@@ -609,6 +625,102 @@ function drawSky(g: Game, ctx: CanvasRenderingContext2D): void {
+@@ -628,6 +740,16 @@ export function combatSparks(g: Game, x: number, y: number, dirX: number, dirY:
+@@ -646,6 +768,11 @@ export function dodgeRing(g: Game, x: number, y: number): void {
+@@ -663,6 +790,10 @@ export function critGlint(g: Game, x: number, y: number): void {
+@@ -672,6 +803,13 @@ export function getRollTrail(): TrailPt[] {
+=== brisa portrait tocado? ===
+10:+// Brisa = sombra de mandíbula 2 filas demasiado larga; grietas del
+39:+  skirt?: string;           // falda larga (sustituye a las piernas: Brisa)
+295:   brisa: {
+492:+  // Brisa): la sombra de mandíbula medía 5 filas (y23..27) y se salía 2
+505:-  // arrugas de la anciana Brisa
+506:+  // arrugas de la anciana Brisa — pulido 18-d: la franja horizontal sobre
+509:   if (key === 'brisa') {
+=== diag sprites salida ===
+scripts/_diag_sprites.ts
+SIN_SALIDA_DIAG

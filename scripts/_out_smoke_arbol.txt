@@ -1,0 +1,54 @@
+=== 1) skillPointsEarned (política 1/nivel + hitos Nv5/Nv10) ===
+  ✓ curva 0/1/5/11/13 correcta
+
+=== 2) Carga persistente + pasivas + equipaje (Alba Nv9) ===
+  ✓ equipaje cargado: hueco 4 = Onda Sísmica (SKILLS mutado en runtime)
+  ✓ applySkillStats absoluto: maxHp 186 (base 110 + 8 niveles + 20 del árbol)
+  ✓ skillDamageMult melee = 1.10 (Filo Templado)
+  ✓ skillCdMult = 0.8 (Refrán Veloz)
+
+=== 3) Onda Sísmica por useSkill (puente castSkill → castNewSkill) ===
+  ✓ onda daña vía useSkill (hp 535 → 501)
+  ✓ empuje de la onda (kbVx/kbVy) presente
+  ✓ coste/cd por useSkill con la SkillDef equipada (30 res; +7.2 de resonancia por conectar)
+  ✓ cd reducido por árbol (fijado con skillCdMult, camino B): 6.383
+
+=== 4) Eco del Filo: golpe nuevo → eco retardado en área ===
+  ✓ el eco no pega instantáneo (retardo ~0.16 s)
+  ✓ eco del filo conecta (hp 30 → 12)
+
+=== 5) Ojo del Mercader: +20% de oro por delta ===
+  ✓ +100 coronas → +20 de bonus (total 120)
+
+=== 6) Herramientas: campana (tecla 5 por flanco), brújula, cd ===
+  ✓ tecla 5 → Campana del Retorno: fadeTo al santuario en marcha
+  ✓ aterrizaje tras la campana en el mismo mapa (santuario de Lunaris)
+  ✓ campana en recarga (120 s) → activateTool devuelve false
+  ✓ brújula activada (questIdx 0 → objetivo Brisa en Lunaris)
+  ✓ rastro de ecos de la brújula generando partículas
+  ✓ amuleto sin aprender → false + aviso
+
+=== 7) Tejedora: Nova de Escarcha + gating de disciplina ===
+  ✓ equipaje tejedor: hueco 1 = Nova de Escarcha
+  ✓ el equipaje de Alba no se contaminó entre partidas
+  ✓ gating: onda (nodo solo-alba) rechazada para la tejedora
+  ✓ nova: daño + estado congelado aplicado
+  ✓ lastNote actualizado a hielo (sinergia Canto Mayor)
+  ✓ tormenta encadenada conecta (chainLightning ×5)
+
+=== 8) Absorción reactiva: Bendición (escudo) + Amuleto ===
+  ✓ escudo absorbió el golpe (hp intacta 110, escudo inicial 42)
+  ✓ amuleto cargado por oleada de combate y absorbió el golpe
+
+=== 9) Guardado/carga del MOTOR conserva árbol + equipaje + maxHp ===
+  ✓ maxHp tras continueGame = 186 (sin doble suma ni pérdida)
+  ✓ equipaje re-aplicado tras cargar partida (hueco 4 = onda)
+  ✓ cds del árbol vivos tras carga
+
+=== 10) Pantalla del árbol (drawSkillTree) sin excepciones ===
+  ✓ drawSkillTree ejecuta sin lanzar (Nv5 con 5 nodos aprendidos)
+
+=== 9) Nodos del árbol: integridad de referencias ===
+  ✓ 20 nodos: padres y grants consistentes
+
+SMOKE ÁRBOL COMPLETO EN VERDE

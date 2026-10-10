@@ -1,0 +1,30 @@
+=== remote ===
+=== r17 files ===
+=== quien añadio jefes_r17 ===
+=== battery ===
+=== tamanyos ===
+849409 total
+125228 src/game/data.ts
+ 89309 src/game/engine.ts
+ 73364 src/game/enemies_expansion.ts
+ 54876 src/game/sprites.ts
+ 46123 src/game/render.ts
+ 45602 src/game/skilltree.ts
+ 42896 src/game/sprites_expansion.ts
+ 36759 src/game/update.ts
+ 35178 src/game/worldlife.ts
+ 31804 src/game/screens.ts
+ 31551 src/game/challenge.ts
+ 29445 src/game/hooks.ts
+ 28102 src/game/fx.ts
+ 25552 src/game/interaccion.ts
+ 25320 src/game/audio.ts
+ 24811 src/game/maps_expansion.ts
+ 22812 src/game/balance.ts
+ 21620 src/game/achievements.ts
+ 18692 src/game/timeskip.ts
+ 18621 src/game/maps.ts
+  9246 src/game/types.ts
+  6081 src/game/armor.ts
+  4660 src/game/ui.ts
+  1757 src/game/fxcore.ts

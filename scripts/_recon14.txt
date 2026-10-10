@@ -1,0 +1,22 @@
+22:function grid(w: number, h: number, fill: string): Grid {
+32:function set(g: Grid, x: number, y: number, ch: string) {
+36:function rect(g: Grid, x: number, y: number, w: number, h: number, ch: string) {
+45:function pathH(g: Grid, x0: number, x1: number, y: number, ch = '=') {
+50:function pathV(g: Grid, y0: number, y1: number, x: number, ch = '=') {
+61:function scatter(g: Grid, x0: number, y0: number, x1: number, y1: number, ch: string, density: number, seed: number, skip: (x: number, y: number) => boolean) {
+71:function borderForest(g: Grid, thickness: number, base: string) {
+61:function scatter(g: Grid, x0: number, y0: number, x1: number, y1: number, ch: string, density: number, seed: number, skip: (x: number, y: number) => boolean) {
+62-  const rng = mulberry32(seed);
+63-  for (let y = y0; y <= y1; y++) {
+64-    for (let x = x0; x <= x1; x++) {
+65-      if (skip(x, y)) continue;
+66-      if (rng() < density) set(g, x, y, ch);
+67-    }
+68-  }
+69-}
+70-
+71-function borderForest(g: Grid, thickness: number, base: string) {
+72-  const w = g[0].length, h = g.length;
+73-  for (let y = 0; y < h; y++) {
+74-    for (let x = 0; x < w; x++) {
+75-      const edge = Math.min(x, y, w - 1 - x, h - 1 - y);

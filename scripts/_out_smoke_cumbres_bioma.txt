@@ -1,0 +1,30 @@
+=== 1) INIT idempotente ===
+  ✓ initCumbresBioma ×2: installed=true en ambas
+  ✓ pools limpios tras install
+=== 2) Mapa cumbres cargado + primer tick/draw sin excepción ===
+  ✓ mapId = 'cumbres'
+  ✓ dimensiones 50×42 correctas
+  ✓ tick + draw iniciales sin excepción
+  ✓ raster pre-rasterizado con key cumbres:*
+=== 3) 600 frames acotados (día↔noche, caminando sobre nieve) ===
+  ✓ 600 frames (tick+draw) sin lanzar
+  ✓ huellas vivas acotadas (máx 18 ≤ 20) y aparecen al andar
+  ✓ aliento acotado (máx 1 ≤ 10, se emitió: sí)
+  ✓ chispas de la hoguera acotadas (máx 2 ≤ 8, se emitió: sí)
+  ✓ 60 frames de Game.update real sobre cumbres sin lanzar
+=== 4) Huellas: TTL corto (desaparecen al parar) ===
+  ✓ huellas 11→0 tras 3.5 s parado (TTL corto)
+=== 5) Draw determinista + aurora solo de noche ===
+  ✓ dos draws con el mismo estado → misma secuencia de ops (determinismo)
+  ✓ de noche se dibujan las cintas de la aurora (verde + violeta)
+  ✓ aurora en modo aditivo (lighter)
+  ✓ composite restaurado a source-over al terminar
+  ✓ de día NO hay aurora (factorNoche=0)
+=== 6) Raster ×2 determinista (rebuild cumbres→lunaris→cumbres) ===
+  ✓ raster ×2 → mismo dataURL (data:image/png;base64,152ac004…) de 30 chars
+  ✓ el raster tiene contenido real (hash ≠ canvas vacío)
+=== 7) Fuera de cumbres: no-op limpio ===
+  ✓ tick/draw fuera de cumbres sin excepción
+  ✓ pools vacíos fuera del bioma
+
+SMOKE CUMBRES BIOMA: TODO OK

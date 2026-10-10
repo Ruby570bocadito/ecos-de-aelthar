@@ -1,0 +1,96 @@
+=== uso merrow_h/merrow_m ===
+src/game/sprites.ts:520:  merrow_h: {
+src/game/sprites.ts:526:  merrow_m: {
+=== traveler render ===
+447-  const roll = kind ?? (() => {
+448-    const r = Math.random();
+449-    if (r < 0.4) return 'eco' as const;
+450:    if (r < 0.7 && !st.trav.active && g.mapId !== 'cripta') return 'viajero' as const;
+451-    return 'rafaga' as const;
+452-  })();
+453-  const p = g.player!;
+454-  st.evtCount++;
+455-  if (roll === 'eco') {
+456-    // «oyes un eco lejano»: susurro existente + partícula direccional
+457-    audio.sfx(g.mapId === 'cripta' ? 'wraith' : 'echo');
+458-    g.floats.push({ x: p.x, y: p.y - 30, text: '...un eco lejano resuena...', t: 2.6, color: '#c8b0e8', vy: -8, size: 8 });
+459-    const a = Math.random() * Math.PI * 2;
+460-    const cx = Math.cos(a), sy = Math.sin(a);
+461-    for (let i = 0; i < 8; i++) {
+462-      const off = (i - 3.5) * 6;
+463-      g.particles.push({
+464-        x: p.x + cx * 80 - sy * off, y: p.y + sy * 80 + cx * off - 8,
+465-        vx: -cx * 52 + (Math.random() - 0.5) * 10, vy: -sy * 52 + (Math.random() - 0.5) * 10,
+466-        t: 1.4 + Math.random() * 0.4, maxT: 1.8, color: '#b8a8e8', size: 1.4, grav: 0,
+467-      });
+468-    }
+469-    return;
+470-  }
+471-  if (roll === 'viajero') {
+472-    // viajante errante: entidad decorativa propia que cruza la pantalla
+473-    const dir = Math.random() < 0.5 ? 1 : -1;
+474-    const b = viewBounds(g);
+475:    st.trav.active = true;
+476-    st.trav.dir = dir;
+477-    st.trav.x = dir > 0 ? b[0] - 24 : b[2] + 24;
+478-    st.trav.y = p.y - 4; // camina por el terreno del Portador (siempre pisable)
+479-    st.trav.t = 0;
+480-    g.toast('Un viajante errante cruza el camino, sin levantar la vista...', '#c8b0e8');
+481-    return;
+482-  }
+483-  // ráfaga de viento con hojas/polvo/nieve por bioma
+484-  audio.sfx(g.mapId === 'cripta' ? 'wraith' : 'gust');
+485-  g.floats.push({ x: p.x, y: p.y - 30, text: GUST_LINE[g.mapId] ?? 'Una ráfaga de viento cruza el mundo.', t: 2.6, color: '#9ac0a8', vy: -8, size: 8 });
+486-  const dir = Math.random() < 0.5 ? 1 : -1;
+487-  const b = viewBounds(g);
+488-  const cols = GUST_COLORS[g.mapId] ?? GUST_COLORS.lunaris;
+489-  const n = 12;
+490-  for (let i = 0; i < n; i++) {
+491-    g.particles.push({
+492-      x: dir > 0 ? b[0] - 10 + Math.random() * 20 : b[2] + 10 - Math.random() * 20,
+493-      y: b[1] + Math.random() * (b[3] - b[1]) * 0.7,
+494-      vx: dir * (95 + Math.random() * 65), vy: -12 + Math.random() * 26,
+495-      t: 1.6 + Math.random() * 0.8, maxT: 2.4,
+496-      color: cols[i % cols.length], size: 1.5 + Math.random(), grav: g.mapId === 'cumbres' ? 12 : 26,
+497-    });
+498-  }
+499-}
+500-
+--
+832-  }
+833-  return {
+834-    count: critters.length, aves: k[AVE], mariposas: k[MARIPOSA],
+835:    luciernagas: k[LUCIERNAGA], peces: k[PEZ], viajero: st.trav.active,
+836-    rumorsShown: st.rumorsShown, lastRumor: st.lastRumor,
+837-    eventCount: st.evtCount, critters,
+838-  };
+839-}
+840-
+841-/** Arma el timer de eventos y (opcional) fija la clase del próximo evento. */
+842-export function __wlArmEvent(g: Game, inSec: number, kind?: 'eco' | 'rafaga' | 'viajero'): void {
+843-  const st = stateFor(g);
+844-  st.evtIn = inSec;
+845-  st.forced = kind ?? null;
+846-}
+=== anim/moving de entidades ===
+src/game/update.ts:179:    p.moving = true;
+src/game/update.ts:180:    p.anim += dt * 1.4;
+src/game/update.ts:184:    p.moving = false;
+src/game/update.ts:185:    p.anim += dt;
+src/game/update.ts:214:        p.moving = true;
+src/game/update.ts:215:        p.anim += dt * ((mx !== 0 || my !== 0) ? 1 : 0.7); // derrapa sin input
+src/game/update.ts:221:        p.moving = false;
+src/game/update.ts:222:        p.anim += dt * 0.4;
+src/game/update.ts:230:        p.moving = true;
+src/game/update.ts:231:        p.anim += dt;
+src/game/update.ts:237:        p.moving = false;
+src/game/update.ts:238:        p.anim += dt * 0.4;
+src/game/update.ts:564:      c.moving = true; c.anim += dt;
+src/game/update.ts:566:    } else { c.moving = false; c.anim += dt * 0.4; }
+src/game/update.ts:722:  e.anim += dt * (e.ai === 'persigue' ? 1.4 : 0.6);
+src/game/update.ts:726:    e.moving = false;
+src/game/update.ts:747:      e.moving = true;
+src/game/update.ts:762:        e.moving = true;
+src/game/update.ts:764:      } else e.moving = false;
+src/game/update.ts:776:      e.moving = false;
+src/game/update.ts:825:      e.moving = false;

@@ -7,6 +7,12 @@
 // Además: arcos de ataque (slash) y retratos de diálogo.
 // (9-b) Poses de ataque/lanzamiento lazy-cacheadas (getAttackFrames/
 // getCastFrames) + paletas merrow_* de Merrow (reservadas, futuro).
+// (18-d) héroe-detalle: retratos sin píxeles huérfanos (bug «brazo» de
+// Brisa = sombra de mandíbula 2 filas demasiado larga; grietas del
+// Guardián fuera del casco), humanoides con sombreado de 2 tonos, rim
+// light, capa/broche/tabardo/cinturón/falda (campos opcionales de
+// HumanPal — firmas y 9 frames intactos) y drawSlashArc con degradado,
+// estela de 3 arcos, chispas deterministas y aura cargada legible.
 // ============================================================
 
 import { hash2 } from './world/palette';
@@ -36,6 +42,7 @@ export interface HumanPal {
   outline: string;
   hair: string; hairS?: string;
   skin: string;
+  skinS?: string;           // (18-d) sombra de piel (mandíbula/mejilla)
   body: string; bodyS: string;
   accent: string;
   legs: string; legsS?: string;
@@ -55,6 +62,20 @@ export interface HumanPal {
   pauldrons?: boolean;      // hombreras (Kael)
   leafy?: boolean;          // hojas en hombros (Doran)
   messy?: boolean;          // pelo revuelto (Teo)
+  // --- (18-d) detalle de héroe: 2 tonos por masa, rim light y ropa ---
+  rim?: string;             // luz de borde 1px (fila superior del pelo)
+  cape?: string;            // capa trasera (visible en contorno y espalda)
+  capeS?: string;           // tono sombreado de la capa/hem
+  brooch?: string;          // broche de la capa (torso frontal centro)
+  tabard?: string;          // tabardo central (frente, con bordado accent)
+  tabardS?: string;         // sombra lateral del tabardo
+  belt?: string;            // cinturón (fila inferior del torso)
+  buckle?: string;          // hebilla (2px centro)
+  skirt?: string;           // falda larga (sustituye a las piernas: Brisa)
+  skirtS?: string;          // pliegue/hem de la falda
+  apron?: string;           // delantal de forja (Toln)
+  emblem?: string;          // emblema pectoral (Kael)
+  quiver?: string;          // correa del carcaj (Ilwen)
 }
 
 function px(x: CanvasRenderingContext2D, X: number, Y: number, W: number, H: number, C: string) {
@@ -79,6 +100,18 @@ function layoutFor(pal: HumanPal): Layout {
  * Dibuja un fotograma humanoide. f = fase de andar (0 zancada A,
  * 1 pase —cuerpo elevado 1px—, 2 zancada B). En reposo se usa f=1
  * sin bob para una pose neutra de pie.
+ *
+ * (18-d) PASO DE DETALLE — sin cambiar el contrato (16×L.H, 9 frames,
+ * layoutFor y firmas intactos; poses de combate operativas porque limpian
+ * y repintan solo brazos):
+ *  · sombreado de 2 tonos por masa: piel (skinS), lateral de pelo (hairS),
+ *    costado del torso y brazo derecho en sombra, pierna trasera del pase.
+ *  · rim light selectivo: 3px de luz en el borde superior del pelo.
+ *  · ropa: capa (contorno + espalda + hem con vaivén), broche, tabardo con
+ *    bordado, cinturón con hebilla, delantal, emblema, correa de carcaj,
+ *    falda larga con hem oscilante.
+ *  · anticipación de zancada: la bota que arranca se alarga 1px en la
+ *    dirección del paso (f0/f2), el pase mantiene el bob.
  */
 function drawHumanFrame(
   x: CanvasRenderingContext2D, pal: HumanPal,
@@ -86,6 +119,7 @@ function drawHumanFrame(
 ): void {
   const hs = pal.hairS ?? pal.hair;
   const ls = pal.legsS ?? pal.legs;
+  const ss = pal.skinS;
   const hT = L.headTop + bob;
   const fT = L.faceTop + bob;
   const bT = L.bodyTop + bob;
@@ -93,20 +127,41 @@ function drawHumanFrame(
   const legY = bodyBot + 1;                    // piernas ancladas al suelo
   const bootY = L.H - 1;
   const legH = bootY - legY;                   // filas de pierna antes de la bota
+  const beltY = bT + L.bodyH - 2;              // fila del cinturón/acento
 
   // balanceo de brazos (contrario entre izquierda y derecha)
   const offL = [1, 0, -1][f];
   const offR = [-1, 0, 1][f];
 
+  // ---------- capa trasera (antes del cuerpo: el torso la tapa) ----------
+  if (pal.cape && dir === 'side') {
+    const sway = f === 0 ? 1 : f === 2 ? -1 : 0; // ondea opuesta a la zancada
+    px(x, 3, bT + 1, 2, L.bodyH, pal.cape);
+    px(x, 3 + sway, legY, 2, 1, pal.capeS ?? pal.cape);
+  }
+  if (pal.cape && dir === 'down') {
+    // paneles a los lados de las piernas + tab central entre ellas
+    const hem = Math.max(1, legH - 1);
+    px(x, 2, legY, 2, hem, pal.cape);
+    px(x, 12, legY, 2, hem, pal.cape);
+    px(x, 7, legY, 2, 1, pal.capeS ?? pal.cape);
+  }
+
   if (dir === 'down' || dir === 'up') {
     // ---------- cabeza ----------
     px(x, 4, hT, 8, 1, pal.outline);
+    if (pal.rim) px(x, 4, hT, 3, 1, pal.rim);       // rim light (borde iluminado)
     px(x, 3, hT + 1, 10, 5, pal.hair);
     px(x, 3, hT + 1, 10, 1, hs);
+    if (dir === 'up') {
+      px(x, 12, hT + 2, 1, 2, hs);                  // sombra lateral de la nuca
+      px(x, 3, hT + 4, 10, 1, hs);                  // matiz bajo la melena
+    }
     if (pal.hood) { px(x, 3, fT + 2, 10, 2, pal.hair); px(x, 4, fT + 3, 8, 1, hs); }
     if (dir === 'down') {
       px(x, 5, fT, 6, 4, pal.mask ? (pal.maskC ?? pal.skin) : pal.skin);
       if (!pal.mask) {
+        if (ss) { px(x, 5, fT + 3, 6, 1, ss); px(x, 10, fT + 1, 1, 2, ss); }
         px(x, 6, fT + 1, 1, 2, pal.eye); px(x, 9, fT + 1, 1, 2, pal.eye);
         if (pal.beard) px(x, 5, fT + 3, 6, 2, pal.beard);
       } else {
@@ -131,15 +186,31 @@ function drawHumanFrame(
     // ---------- torso ----------
     px(x, 4, bT, 8, L.bodyH, pal.body);
     px(x, 4, bT, 8, 1, pal.bodyS);
-    px(x, 5, bT + L.bodyH - 2, 6, 1, pal.accent);
-    px(x, 4, bodyBot, 8, 1, pal.outline);
+    px(x, 11, bT + 1, 1, L.bodyH - 2, pal.bodyS);   // costado en sombra
+    if (pal.tabard) {
+      px(x, 6, bT + 1, 4, L.bodyH - 2, pal.tabard);
+      px(x, 6, bT + 1, 1, L.bodyH - 2, pal.tabardS ?? pal.tabard);
+      px(x, 7, beltY - 1, 2, 1, pal.accent);         // bordado sobre el borde
+    }
+    if (pal.apron) px(x, 5, bT + 1, 6, L.bodyH - 3, pal.apron);
+    if (pal.quiver) { px(x, 5, bT + 1, 1, 1, pal.quiver); px(x, 6, bT + 2, 1, 1, pal.quiver); px(x, 7, bT + 3, 1, 1, pal.quiver); }
+    if (pal.emblem) px(x, 7, bT + 1, 2, 1, pal.emblem);
+    else if (pal.brooch) px(x, 7, bT + 1, 2, 1, pal.brooch);
+    if (pal.cape && dir === 'up') {
+      // capa cubriendo la espalda (el cinturón se dibuja después, por encima)
+      px(x, 4, bT, 8, L.bodyH - 1, pal.cape);
+      px(x, 4, bT, 8, 1, pal.capeS ?? pal.cape);
+    }
     if (pal.ribs) { px(x, 6, bT + 1, 4, 1, pal.bodyS); px(x, 6, bT + 2, 4, 1, pal.bodyS); }
+    px(x, 5, beltY, 6, 1, pal.accent);
+    if (pal.belt) { px(x, 4, beltY, 8, 1, pal.belt); px(x, 7, beltY, 2, 1, pal.buckle ?? pal.accent); }
+    px(x, 4, bodyBot, 8, 1, pal.outline);
     if (pal.pauldrons) { px(x, 3, bT, 2, 2, pal.accent); px(x, 11, bT, 2, 2, pal.accent); }
     if (pal.leafy) { px(x, 3, bT, 2, 1, '#8ac05a'); px(x, 11, bT, 2, 1, '#8ac05a'); }
 
-    // ---------- brazos (oscilación) ----------
+    // ---------- brazos (oscilación; derecho en sombra: luz desde la izquierda) ----------
     px(x, 2, bT + offL, 2, L.armLen, pal.body); px(x, 2, bT + offL + L.armLen, 2, 1, pal.skin);
-    px(x, 12, bT + offR, 2, L.armLen, pal.body); px(x, 12, bT + offR + L.armLen, 2, 1, pal.skin);
+    px(x, 12, bT + offR, 2, L.armLen, pal.bodyS); px(x, 12, bT + offR + L.armLen, 2, 1, ss ?? pal.skin);
     if (pal.hammer) {
       // martillo en la mano derecha
       px(x, 13, bT + offR - 2, 1, L.armLen + 1, '#7a5c3a');
@@ -147,29 +218,38 @@ function drawHumanFrame(
     }
 
     // ---------- piernas ----------
-    if (f === 0) {
+    if (pal.skirt) {
+      // falda larga: hem oscilante + pies que asoman (andar de la anciana)
+      px(x, 4, legY, 8, legH, pal.skirt);
+      const sway = f === 0 ? -1 : f === 2 ? 1 : 0;
+      px(x, 4 + sway, bootY - 1, 8, 1, pal.skirtS ?? pal.skirt);
+      px(x, 4, bootY, 3, 1, pal.boots); px(x, 9, bootY, 3, 1, pal.boots);
+    } else if (f === 0) {
       // zancada A: izquierda adelante, derecha atrás
       px(x, 4, legY, 3, legH, pal.legs); px(x, 9, legY, 3, legH, ls);
-      px(x, 4, bootY, 3, 1, pal.boots); px(x, 9, bootY, 3, 1, pal.boots);
+      px(x, 3, bootY, 4, 1, pal.boots); px(x, 9, bootY, 3, 1, pal.boots); // punta +1 (anticipación)
     } else if (f === 1) {
-      // pase: piernas juntas, cuerpo elevado
-      px(x, 5, legY, 3, legH, pal.legs); px(x, 8, legY, 3, legH, pal.legs);
+      // pase: piernas juntas, cuerpo elevado (la derecha, en sombra)
+      px(x, 5, legY, 3, legH, pal.legs); px(x, 8, legY, 3, legH, ls);
       px(x, 5, bootY, 3, 1, pal.boots); px(x, 8, bootY, 3, 1, pal.boots);
     } else {
       // zancada B: derecha adelante, izquierda atrás
       px(x, 4, legY + 1, 3, Math.max(1, legH - 1), ls); px(x, 9, legY, 3, legH, pal.legs);
-      px(x, 4, bootY, 3, 1, pal.boots); px(x, 9, bootY, 3, 1, pal.boots);
+      px(x, 4, bootY, 3, 1, pal.boots); px(x, 9, bootY, 4, 1, pal.boots); // punta +1 (anticipación)
     }
     return;
   }
 
   // ---------- dir === 'side' (mirando a la derecha) ----------
   px(x, 5, hT, 8, 1, pal.outline);
+  if (pal.rim) px(x, 9, hT, 3, 1, pal.rim);          // rim light frontal
   px(x, 4, hT + 1, 9, 5, pal.hair);
   px(x, 4, hT + 1, 9, 1, hs);
+  px(x, 4, hT + 2, 1, 3, hs);                        // sombra trasera del pelo
   if (pal.hood) { px(x, 4, fT + 2, 8, 2, pal.hair); }
   px(x, 7, fT, 5, 4, pal.mask ? (pal.maskC ?? pal.skin) : pal.skin);
   if (!pal.mask) {
+    if (ss) px(x, 7, fT + 3, 5, 1, ss);              // mandíbula en sombra
     px(x, 10, fT + 1, 1, 2, pal.eye);
     if (pal.beard) px(x, 8, fT + 3, 4, 2, pal.beard);
   } else {
@@ -184,7 +264,11 @@ function drawHumanFrame(
   // torso
   px(x, 5, bT, 6, L.bodyH, pal.body);
   px(x, 5, bT, 6, 1, pal.bodyS);
-  px(x, 6, bT + L.bodyH - 2, 4, 1, pal.accent);
+  px(x, 5, bT + 1, 1, L.bodyH - 2, pal.bodyS);       // espalda en sombra
+  if (pal.apron) px(x, 7, bT + 1, 1, L.bodyH - 3, pal.apron);
+  if (pal.emblem) px(x, 9, bT + 2, 1, 1, pal.emblem);
+  px(x, 6, beltY, 4, 1, pal.accent);
+  if (pal.belt) { px(x, 5, beltY, 6, 1, pal.belt); px(x, 8, beltY, 1, 1, pal.buckle ?? pal.accent); }
   px(x, 5, bodyBot, 6, 1, pal.outline);
   if (pal.ribs) { px(x, 6, bT + 1, 3, 1, pal.bodyS); px(x, 6, bT + 2, 3, 1, pal.bodyS); }
   if (pal.pauldrons) px(x, 4, bT, 2, 2, pal.accent);
@@ -193,7 +277,7 @@ function drawHumanFrame(
   // brazo delantero con balanceo + brazo trasero al tono sombreado
   const offF = [1, 0, -1][f];
   px(x, 8, bT + offF, 3, 3, pal.body);
-  px(x, 10, bT + offF + 3, 2, 1, pal.skin);
+  px(x, 10, bT + offF + 3, 2, 1, ss ?? pal.skin);
   px(x, 5, bT - offF, 2, 3, pal.bodyS);
   if (pal.hammer) {
     px(x, 11, bT + offF - 2, 1, 4, '#7a5c3a');
@@ -201,15 +285,20 @@ function drawHumanFrame(
   }
 
   // piernas en zancada (3 fases)
-  if (f === 0) {
+  if (pal.skirt) {
+    px(x, 5, legY, 6, legH, pal.skirt);
+    const sway = f === 0 ? 1 : f === 2 ? -1 : 0;
+    px(x, 5 + sway, bootY - 1, 6, 1, pal.skirtS ?? pal.skirt);
+    px(x, 5, bootY, 2, 1, pal.boots); px(x, 8, bootY, 3, 1, pal.boots);
+  } else if (f === 0) {
     px(x, 5, legY, 2, legH, ls); px(x, 8, legY, 2, legH, pal.legs);
-    px(x, 5, bootY, 2, 1, pal.boots); px(x, 8, bootY, 2, 1, pal.boots);
+    px(x, 5, bootY, 2, 1, pal.boots); px(x, 8, bootY, 3, 1, pal.boots); // punta +1
   } else if (f === 1) {
     px(x, 6, legY, 2, legH, pal.legs); px(x, 8, legY + 1, 2, Math.max(1, legH - 1), ls);
     px(x, 6, bootY, 2, 1, pal.boots); px(x, 8, bootY, 2, 1, pal.boots);
   } else {
     px(x, 4, legY, 2, legH, ls); px(x, 7, legY, 2, legH, pal.legs);
-    px(x, 4, bootY, 2, 1, pal.boots); px(x, 7, bootY, 2, 1, pal.boots);
+    px(x, 3, bootY, 2, 1, pal.boots); px(x, 7, bootY, 2, 1, pal.boots); // talón +1
   }
 }
 
@@ -237,9 +326,16 @@ function buildHumanoid(pal: HumanPal): Frames {
   return frames;
 }
 
+/** 'side' canónico o 'left'/'right' del motor (flip lo decide render). */
+function esLateral(dir: string): boolean {
+  return dir === 'side' || dir === 'left' || dir === 'right';
+}
+
 /** Índice de fotograma legacy (compatible con re-export de engine.ts). */
 export function frameIndex(dir: string, moving: boolean, anim: number): number {
-  const base = dir === 'down' ? 0 : dir === 'up' ? 2 : 4;
+  // FIX R18 (bug «al andar a los lados mira al frente»): e.dir es
+  // 'left'/'right' en el motor, nunca 'side' — ambas cuentan como laterales.
+  const base = dir === 'down' ? 0 : dir === 'up' ? 2 : esLateral(dir) ? 4 : 0;
   if (!moving) return base;
   return base + (Math.floor(anim * 6) % 2);
 }
@@ -252,7 +348,10 @@ export function frameIndex(dir: string, moving: boolean, anim: number): number {
 export function entityFrame(spr: Frames, dir: string, moving: boolean, anim: number): number {
   const n = spr.length;
   if (n === 9) {
-    const base = dir === 'up' ? 3 : dir === 'side' ? 6 : 0;
+    // FIX R18 (bug «al andar a los lados mira al frente»): e.dir llega como
+    // 'left'/'right' del motor — el flip de render distingue left/right, aquí
+    // solo importa que sea fila lateral.
+    const base = dir === 'up' ? 3 : esLateral(dir) ? 6 : 0;
     if (!moving) return base + 1; // pose de pie = fase de pase sin bob
     return base + (Math.floor(anim * 8) % 3);
   }
@@ -426,29 +525,46 @@ function buildPickups(): void {
 
 const PALS: Record<string, HumanPal> = {
   hero_alba: {
-    outline: '#2a1a20', hair: '#c8384a', hairS: '#9a2438', skin: '#f2c99c',
+    // (18-d) Portadora del Alba: cota de malla clara + capa carmesí con
+    // broche dorado, cinturón de cuero, rim light cálido y 2 tonos por masa.
+    outline: '#2a1a20', hair: '#c8384a', hairS: '#9a2438', skin: '#f2c99c', skinS: '#d8a878',
     body: '#cdd3de', bodyS: '#9aa3b4', accent: '#c8384a',
     legs: '#5a6070', legsS: '#474c5a', boots: '#6d4520', eye: '#2a2a3a', hood: true,
+    rim: '#f6e8cc', cape: '#7a2634', capeS: '#5a1c28', brooch: '#f0c84a',
+    belt: '#4a3226', buckle: '#f0c84a',
   },
   hero_tejedor: {
-    outline: '#241a30', hair: '#8a5ac0', hairS: '#6a3f9a', skin: '#f2c99c',
+    // (18-d) Tejedor: túnica violácea con tabardo central bordado en oro,
+    // capa azul-violeta, rim light frío, cinturón con hebilla.
+    outline: '#241a30', hair: '#8a5ac0', hairS: '#6a3f9a', skin: '#f2c99c', skinS: '#d8a878',
     body: '#7e58b8', bodyS: '#5e3f92', accent: '#f0c84a',
     legs: '#4a3a6a', legsS: '#3c2f58', boots: '#3a2c50', eye: '#3ae0c8', hood: true,
+    rim: '#d8c8f4', cape: '#4e3382', capeS: '#3a2464',
+    tabard: '#6a48a8', tabardS: '#583a92', belt: '#3a2c50', buckle: '#f0c84a',
   },
   brisa: {
-    outline: '#2a2a30', hair: '#d8dade', hairS: '#b0b4bc', skin: '#eabf9a',
+    // (18-d) PLUS anciana: falda larga verde con hem oscilante, broche de
+    // chal, rim light suave y sombra de piel arrugada.
+    outline: '#2a2a30', hair: '#d8dade', hairS: '#b0b4bc', skin: '#eabf9a', skinS: '#c89a74',
     body: '#7a9a6e', bodyS: '#5e7a54', accent: '#e8d8a8',
     legs: '#6a6a62', boots: '#4a3a2a', eye: '#3a3a3a',
+    rim: '#f4f0e0', skirt: '#5e7a54', skirtS: '#4c6644', brooch: '#e8d8a8',
   },
   toln: {
-    outline: '#241a14', hair: '#6a4a2e', hairS: '#54381e', skin: '#e0a87a',
+    // (18-d) PLUS herrero: delantal de forja, cinturón oscuro con hebilla,
+    // sombra de piel y rim light de brasa.
+    outline: '#241a14', hair: '#6a4a2e', hairS: '#54381e', skin: '#e0a87a', skinS: '#c08858',
     body: '#8a5a33', bodyS: '#6d4520', accent: '#3a3a3e',
     legs: '#4a4440', boots: '#3a2c20', eye: '#2a2a2a', beard: '#6a4a2e',
+    rim: '#e8c8a0', apron: '#5c3a1c', belt: '#3a3a3e', buckle: '#c8a050',
   },
   ilwen: {
-    outline: '#1c2a1e', hair: '#8ad058', hairS: '#64a83e', skin: '#f2d0a8',
+    // (18-d) PLUS guardabosques elfa: correa del carcaj en diagonal,
+    // cinturón, sombra de piel y rim light de hoja.
+    outline: '#1c2a1e', hair: '#8ad058', hairS: '#64a83e', skin: '#f2d0a8', skinS: '#d0ac84',
     body: '#3e7d4c', bodyS: '#2e5f3a', accent: '#e8c860',
     legs: '#4a5a3a', boots: '#54381e', eye: '#2a4a2e', ears: 'elf',
+    rim: '#d8f0b0', quiver: '#7a5c3a', belt: '#54381e', buckle: '#e8c860',
   },
   esqueleto: {
     outline: '#20201e', hair: '#e6e0c8', hairS: '#c2bc9e', skin: '#e6e0c8',
@@ -487,10 +603,12 @@ const PALS: Record<string, HumanPal> = {
     legs: '#33333c', boots: '#22222a', eye: '#3a3a44',
   },
   kael: {
-    // Inquisidora de la Orden: armadura blanca, fría
-    outline: '#3a3a44', hair: '#e8e0c8', hairS: '#c8bc9c', skin: '#f2d4b0',
+    // Inquisidora de la Orden: armadura blanca, fría — (18-d) PLUS: emblema
+    // pectoral, cinturón de acero, rim light blanco.
+    outline: '#3a3a44', hair: '#e8e0c8', hairS: '#c8bc9c', skin: '#f2d4b0', skinS: '#d0b088',
     body: '#e8e6de', bodyS: '#c2c0b6', accent: '#8a94a8',
     legs: '#b8b6ac', boots: '#8a887e', eye: '#7a8894', pauldrons: true,
+    rim: '#ffffff', emblem: '#8a94a8', belt: '#8a94a8', buckle: '#f0c84a',
   },
   inquisidor: {
     // GRAN Inquisidor: armadura blanca sin adornos, máscara lisa, alto
@@ -505,10 +623,12 @@ const PALS: Record<string, HumanPal> = {
     legs: '#6a5a40', boots: '#4a3a28', eye: '#3a2a1a', small: true, messy: true,
   },
   doran: {
-    // Druida del Círculo Verde: verde musgo, capucha de hojas
-    outline: '#16241a', hair: '#3e6a34', hairS: '#2e5226', skin: '#d8b088',
+    // Druida del Círculo Verde: verde musgo, capucha de hojas — (18-d) PLUS:
+    // cinturón con hebilla de hoja, sombra de piel, rim light de musgo.
+    outline: '#16241a', hair: '#3e6a34', hairS: '#2e5226', skin: '#d8b088', skinS: '#b4906a',
     body: '#4a7a3e', bodyS: '#375e2e', accent: '#8ac05a',
     legs: '#3a5232', boots: '#4a3a22', eye: '#2a3a24', hood: true, leafy: true,
+    rim: '#c8e8a0', belt: '#4a3a22', buckle: '#8ac05a',
   },
   nimue: {
     // Elfa pálida espectral (verde wisp)
@@ -530,6 +650,19 @@ const PALS: Record<string, HumanPal> = {
     legs: '#4a5450', legsS: '#3c443f', boots: '#3a2e20', eye: '#2a3a34', hood: true,
   },
 };
+
+let faroPortraitsMerged = false;
+/**
+ * 18-e (faro-historia): inyección de los retratos de Mara/Uso/Tina en el
+ * registro privado PORTRAITS. La llama initFaroSprites() (faro_historia.ts)
+ * tras registrar sus sprites — función a función, sin ciclo de módulo.
+ * Idempotente y tolerante: si faro_historia no está presente no se llama.
+ */
+export function mergeFaroPortraits(extra: Record<string, PortraitDef>): void {
+  if (faroPortraitsMerged) return;
+  faroPortraitsMerged = true;
+  Object.assign(PORTRAITS, extra);
+}
 
 export function initSprites(): void {
   for (const [name, pal] of Object.entries(PALS)) SPR[name] = buildHumanoid(pal);
@@ -982,6 +1115,15 @@ function buildCombatPose(baseName: string, dir: string, kind: 'attack' | 'cast')
  * combo: 0..2 (blanco → amarillo → dorado), charged: ataque cargado
  * (más grande, dorado y con estela). Todos los trazos son aditivos
  * suaves y restauran el estado del contexto.
+ *
+ * (18-d) Subida de nivel SIN cambiar la firma (render.ts la llama igual):
+ *  · tajo con degradado rápido: 3 pasadas concéntricas (halo tenue →
+ *    cuerpo → núcleo desplazado hacia el interior).
+ *  · estela: 3 arcos fantasma con alpha/anchura decrecientes.
+ *  · filo blanco en el borde delantero + abanico de 4 chispas DETERMINISTA
+ *    en el punto de impacto cuando prog>0.72 (cero random, cero allocs).
+ *  · cargado: cuña de energía en 2 capas + doble arco de aura exterior
+ *    pulsante — el golpe cargado se lee de lejos.
  */
 export function drawSlashArc(
   ctx: CanvasRenderingContext2D, cx: number, cy: number,
@@ -989,46 +1131,91 @@ export function drawSlashArc(
 ): void {
   const base = dir === 'down' ? Math.PI / 2 : dir === 'up' ? -Math.PI / 2 : dir === 'left' ? Math.PI : 0;
   const colors = charged ? '#ffd24a' : ['#f2f6fa', '#ffe86a', '#ffc040'][Math.max(0, Math.min(2, combo))];
+  const edgeC = charged ? '#fff3c0' : '#ffffff';
   const r = (charged ? 27 : 19) * zoom;
   const span = 1.2;
   const a0 = base - 1.1 + prog * 1.45;
   ctx.save();
-  // relleno en cuña (ataque cargado: más presencia)
+  // relleno en cuña (ataque cargado: más presencia, 2 capas)
   if (charged) {
-    ctx.globalAlpha = 0.14;
+    ctx.globalAlpha = 0.13;
     ctx.fillStyle = '#ffd24a';
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.arc(cx, cy, r, a0, a0 + span);
     ctx.closePath();
     ctx.fill();
-  }
-  // estela: dos arcos anteriores con alpha decreciente
-  for (let i = 2; i >= 1; i--) {
-    const p2 = prog - i * 0.17;
-    if (p2 <= 0) continue;
-    ctx.globalAlpha = charged ? 0.34 - i * 0.12 : 0.26 - i * 0.1;
-    ctx.strokeStyle = colors;
-    ctx.lineWidth = (charged ? 5 : 3) - i;
+    ctx.globalAlpha = 0.07;
     ctx.beginPath();
-    ctx.arc(cx, cy, r * (1 - i * 0.05), base - 1.1 + p2 * 1.45, base - 1.1 + p2 * 1.45 + span * 0.8);
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, r * 1.22, a0 + 0.08, a0 + span - 0.08);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // estela: tres arcos anteriores con alpha y anchura decrecientes
+  for (let i = 3; i >= 1; i--) {
+    const p2 = prog - i * 0.13;
+    if (p2 <= 0) continue;
+    ctx.globalAlpha = (charged ? 0.30 : 0.22) - i * 0.055;
+    ctx.strokeStyle = colors;
+    ctx.lineWidth = Math.max(1, (charged ? 5 : 3) - i);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * (1 - i * 0.045), base - 1.1 + p2 * 1.45, base - 1.1 + p2 * 1.45 + span * 0.75);
     ctx.stroke();
   }
-  // arco principal
-  ctx.globalAlpha = 0.95;
+  // degradado rápido del tajo: halo tenue → cuerpo → núcleo interior
+  ctx.globalAlpha = 0.28;
   ctx.strokeStyle = colors;
-  ctx.lineWidth = charged ? 5 : 3;
+  ctx.lineWidth = charged ? 7 : 5;
   ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.arc(cx, cy, r, a0, a0 + span);
   ctx.stroke();
+  ctx.globalAlpha = 0.55;
+  ctx.lineWidth = charged ? 5 : 3.5;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - zoom, a0 + span * 0.06, a0 + span * 0.98);
+  ctx.stroke();
+  ctx.globalAlpha = 0.95;
+  ctx.lineWidth = charged ? 3 : 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - 2 * zoom, a0 + span * 0.12, a0 + span * 0.92);
+  ctx.stroke();
   // filo brillante en el borde delantero
   ctx.globalAlpha = 1;
-  ctx.strokeStyle = '#ffffff';
+  ctx.strokeStyle = edgeC;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.arc(cx, cy, r, a0 + span - 0.22, a0 + span);
   ctx.stroke();
+  // chispas del impacto (deterministas, solo al final del tajo)
+  if (prog > 0.72) {
+    const k = (prog - 0.72) / 0.28;
+    const tipA = a0 + span;
+    const tx = cx + Math.cos(tipA) * r, ty = cy + Math.sin(tipA) * r;
+    ctx.globalAlpha = 1 - k * 0.7;
+    for (let i = 0; i < 4; i++) {
+      const sa = tipA - 0.9 + i * 0.6;
+      const len = (3 + (i % 2) * 3) * zoom * (0.6 + k * 0.9);
+      ctx.beginPath();
+      ctx.moveTo(tx + Math.cos(sa) * 2, ty + Math.sin(sa) * 2);
+      ctx.lineTo(tx + Math.cos(sa) * (2 + len), ty + Math.sin(sa) * (2 + len));
+      ctx.stroke();
+    }
+  }
+  // aura del golpe cargado: doble arco exterior pulsante
+  if (charged) {
+    ctx.globalAlpha = 0.5 + 0.2 * Math.sin(prog * Math.PI);
+    ctx.strokeStyle = '#ffe86a';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 4 * zoom, a0 + 0.15, a0 + span - 0.1);
+    ctx.stroke();
+    ctx.globalAlpha = 0.3;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 7 * zoom, a0 + 0.3, a0 + span - 0.25);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -1194,7 +1381,10 @@ export function drawPortrait(
     q(3, 0, 2, 3, '#8a84a8'); q(23, 0, 2, 3, '#8a84a8');
     q(10, 13, 3, 3, O); q(15, 13, 3, 3, O);       // cuencas
     q(10, 13, 2, 2, P.eye); q(16, 13, 2, 2, P.eye);
-    q(6, 10, 1, 6, O); q(21, 16, 1, 4, O);        // grietas
+    // grietas — FIX 18-d: estaban en x6 y x21, FUERA del casco (x7..20):
+    // dos columnas oscuras flotando junto a la cabeza. Ahora sobre el borde
+    // interno del yelmo (x7/x20).
+    q(7, 10, 1, 6, O); q(20, 16, 1, 4, O);
     return;
   }
   if (P.kind === 'sombra') {
@@ -1260,7 +1450,13 @@ export function drawPortrait(
   // rostro
   q(7, 9, 14, 17, P.skin);
   q(9, 25, 10, 4, P.skin);                       // mentón
-  q(7, 23, 2, 5, P.skinS); q(19, 23, 2, 5, P.skinS); // mandíbula
+  // mandíbula — FIX 18-d (bug «un brazo donde no debe» en el retrato de
+  // Brisa): la sombra de mandíbula medía 5 filas (y23..27) y se salía 2
+  // filas por debajo de la silueta del rostro (y9..25): quedaban dos
+  // columnas de piel sueltas junto al mentón, rodeadas de pelo/capucha,
+  // que se leían como un bracito flotante. Recortada a 3 filas (y23..25),
+  // flush con el borde inferior del rostro. Afecta a TODOS los humanos.
+  q(7, 23, 2, 3, P.skinS); q(19, 23, 2, 3, P.skinS);
   // orejas
   if (P.ears === 'elf') {
     q(5, 15, 2, 4, P.skin); q(21, 15, 2, 4, P.skin);
@@ -1338,10 +1534,13 @@ export function drawPortrait(
       q(6, 1, 1, 2, '#d88a8a'); q(21, 1, 1, 2, '#d88a8a');
     }
   }
-  // arrugas de la anciana Brisa
+  // arrugas de la anciana Brisa — pulido 18-d: la franja horizontal sobre
+  // el labio (y22, x10..17) se leía como bigote; sustituida por línea de
+  // frente + patillas de sonrisa junto a las mejillas.
   if (key === 'brisa') {
     q(9, 13, 10, 1, 'rgba(0,0,0,0.10)');
-    q(10, 22, 8, 1, 'rgba(0,0,0,0.08)');
+    q(8, 20, 1, 2, 'rgba(0,0,0,0.07)');
+    q(19, 20, 1, 2, 'rgba(0,0,0,0.07)');
   }
 }
 export const TILE = 16;

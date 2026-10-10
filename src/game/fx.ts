@@ -13,6 +13,13 @@
 // picadura de proyectil en agua requieren hooks en engine.ts/update.ts
 // (CONGELADOS esta ronda) — no hay punto de enganche limpio.
 // Todo determinista donde puede (hash2) y sincronizado con globalT.
+// (18-d) héroe-detalle: combate que se SIENTE sin cambiar ninguna firma —
+// combatSparks/critGlint/dodgeRing ganan fogonazo/brasas (con cap duro
+// PART_CAP=120 sobre g.particles) y updateAmbient detecta BORDES del estado
+// del Portador (parada perfecta p.parryFx 0→+, golpe cargado attackT 0→+ con
+// chargedHit, aura de carga p.charging) para soltar ráfagas propias: chispas
+// de impacto, onda dorada del cargado y destello de parada. Cero rewiring en
+// update.ts/render.ts (las mismas llamadas existentes disparan todo).
 // ============================================================
 
 import type { Game } from './engine';
@@ -40,6 +47,12 @@ const FAROBEAM = 11;   // Costa (10-c): motas alargadas del haz del faro encendi
 // 120 (antes 110): headroom para el haz del faro (~6-8 motas vivas); el
 // máximo autorizado por 7-c era 120 — se alcanza exactamente.
 const AMB_CAP = 120;
+
+// (18-d) cap duro del pool de partículas de combate (g.particles): las
+// ráfagas/fogonazos nuevos NO empujan por encima de 120 vivas. Las llamadas
+// que ya existían (núcleo de combatSparks/critGlint/dodgeRing) mantienen su
+// comportamiento — el cap protege solo los adornos añadidos en 18-d.
+const PART_CAP = 120;
 
 interface Amb {
   active: boolean;
@@ -286,6 +299,9 @@ export function updateAmbient(g: Game, dt: number): void {
       if (rollTrail.length > 6) rollTrail.shift();
     }
   }
+
+  // ---- (18-d) ráfagas de combate por detección de borde ----
+  combatEdgeFx(g, dt);
 
   // ---- partículas ambientales ----
   // costa: bruma moderada · aldea: escasa (nostalgia quieta) · cumbres: ventisca densa
@@ -609,6 +625,102 @@ function drawSky(g: Game, ctx: CanvasRenderingContext2D): void {
 // Impactos que se SIENTEN: solo partículas del pool g.particles (render
 // ya las dibuja cada frame), nada de draws nuevos ni allocations por frame
 // fuera del pool. Estilo consistente con el polvo de pasos de arriba.
+// (18-d): fogonazo central + brasa lenta en cada impacto, anillo determinista
+// de parada, onda del golpe cargado y motas en espiral de carga — todo dentro
+// del cap PART_CAP y sin tocar las firmas que usan update.ts/render.ts.
+
+/** Dirección cardinal del motor → vector unitario (local, sin importar update). */
+function dirVec(dir: string): [number, number] {
+  return dir === 'up' ? [0, -1] : dir === 'left' ? [-1, 0] : dir === 'right' ? [1, 0] : [0, 1];
+}
+
+// Estado de borde del Portador (identidad estable por partida; se resetea si
+// cambia el objeto player).
+let fxPlayer: unknown = null;
+let prevAtkT = 0;
+let prevParryFx = 0;
+let chargeAcc = 0;
+
+/**
+ * (18-d) Detecta transiciones 0→+ en el estado del Portador y suelta las
+ * ráfagas nuevas. Corre dentro de updateAmbient (render la llama cada frame
+ * en play/dialogue), así que NO requiere cablear update.ts ni render.ts:
+ *  · parada perfecta: el motor sube p.parryFx (0.32 s) y render ya dibuja su
+ *    anillo — aquí añadimos el destello estrellado blanco-doradas.
+ *  · golpe cargado liberado: attackT sube de 0 con chargedHit → onda dorada
+ *    de impacto en el punto frontal (el arco cargado de sprites.ts es el
+ *    halón; esto es el estallido del contacto).
+ *  · carga: motas en espiral DETERMINISTAS (ángulo = f(chargeT)) mientras se
+ *    carga — complementa las aleatorias que update.ts ya suelta.
+ */
+function combatEdgeFx(g: Game, dt: number): void {
+  const p = g.player;
+  if (!p) { fxPlayer = null; return; }
+  if (p !== fxPlayer) {
+    fxPlayer = p; prevAtkT = 0; prevParryFx = 0; chargeAcc = 0;
+  }
+  const room = g.particles.length < PART_CAP;
+
+  if (p.parryFx > 0 && prevParryFx <= 0 && room) parryFlash(g, p.x, p.y - 6);
+  if (p.attackT > 0 && prevAtkT <= 0 && p.chargedHit && room) chargedImpact(g, p);
+  prevAtkT = p.attackT > 0 ? p.attackT : 0;
+  prevParryFx = p.parryFx > 0 ? p.parryFx : 0;
+
+  if (p.charging && p.chargeT > 0.3) {
+    chargeAcc += dt;
+    while (chargeAcc >= 0.11) {
+      chargeAcc -= 0.11;
+      if (g.particles.length >= PART_CAP) break;
+      const a = (p.chargeT * 4.2) % (Math.PI * 2);
+      g.particles.push({
+        x: p.x + Math.cos(a) * 9, y: p.y - 8 + Math.sin(a) * 4,
+        vx: 0, vy: -14, t: 0.24, maxT: 0.24, color: '#ffe86a', size: 1.3, grav: 0,
+      });
+    }
+  } else {
+    chargeAcc = 0;
+  }
+}
+
+/** (18-d) Destello de PARADA PERFECTA: fogonazo + estrella de 8 chispas
+ *  deterministas (hash2, nada de random — la parada es un momento firmado). */
+function parryFlash(g: Game, x: number, y: number): void {
+  g.particles.push({ x, y, vx: 0, vy: 0, t: 0.1, maxT: 0.1, color: '#ffffff', size: 3.4, grav: 0 });
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + hash2(i + 1, 21) * 0.5;
+    const spd = 46 + hash2(i + 1, 33) * 30;
+    const t = 0.22 + hash2(i + 1, 7) * 0.1;
+    g.particles.push({
+      x: x + Math.cos(a) * 3, y: y + Math.sin(a) * 3,
+      vx: Math.cos(a) * spd, vy: Math.sin(a) * spd - 10,
+      t, maxT: t, color: i % 2 ? '#fff8c0' : '#ffe86a', size: 1.6, grav: 40,
+    });
+  }
+}
+
+/** (18-d) Estallido del GOLPE CARGADO: fogonazo + anillo radial dorado +
+ *  4 chispas frontales pesadas en la dirección del swing. */
+function chargedImpact(g: Game, p: { x: number; y: number; dir: string }): void {
+  const [dx, dy] = dirVec(p.dir);
+  const ix = p.x + dx * 14, iy = p.y - 6 + dy * 14;
+  g.particles.push({ x: ix, y: iy, vx: 0, vy: 0, t: 0.14, maxT: 0.14, color: '#fff3c0', size: 3.8, grav: 0 });
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    g.particles.push({
+      x: ix + Math.cos(a) * 4, y: iy + Math.sin(a) * 4,
+      vx: Math.cos(a) * 60, vy: Math.sin(a) * 60,
+      t: 0.3, maxT: 0.3, color: '#ffe86a', size: 1.8, grav: 0,
+    });
+  }
+  const base = Math.atan2(dy, dx);
+  for (let i = 0; i < 4; i++) {
+    const a = base + (i - 1.5) * 0.35;
+    g.particles.push({
+      x: ix, y: iy, vx: Math.cos(a) * 90, vy: Math.sin(a) * 90,
+      t: 0.26, maxT: 0.26, color: '#ffd24a', size: 1.5, grav: 80,
+    });
+  }
+}
 
 /**
  * Chispas direccionales de impacto: cono con spread angular alrededor de
@@ -626,6 +738,16 @@ export function combatSparks(g: Game, x: number, y: number, dirX: number, dirY: 
       x: x + (Math.random() - 0.5) * 5, y: y + (Math.random() - 0.5) * 5,
       vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
       t, maxT: t, color, size: 1 + Math.random() * 1.5, grav: 60,
+    });
+  }
+  // (18-d) fogonazo del impacto + brasa lenta que flota — solo con hueco
+  // en el pool (cap duro PART_CAP).
+  if (g.particles.length < PART_CAP) {
+    g.particles.push({ x, y, vx: 0, vy: 0, t: 0.07, maxT: 0.07, color: '#ffffff', size: 2.6, grav: 0 });
+    g.particles.push({
+      x: x + (Math.random() - 0.5) * 4, y: y + (Math.random() - 0.5) * 4,
+      vx: (Math.random() - 0.5) * 20, vy: -14 - Math.random() * 12,
+      t: 0.42, maxT: 0.42, color, size: 1.2, grav: 50,
     });
   }
 }
@@ -646,6 +768,11 @@ export function dodgeRing(g: Game, x: number, y: number): void {
       t: 0.3, maxT: 0.3, color: '#cfe0f2', size: 1.7, grav: 30,
     });
   }
+  // (18-d) soplo de aire que levanta al rodar (2 pompas ascendentes)
+  if (g.particles.length < PART_CAP) {
+    g.particles.push({ x: x - 3, y: y - 8, vx: -8, vy: -18, t: 0.26, maxT: 0.26, color: '#dce8f4', size: 1.6, grav: 24 });
+    g.particles.push({ x: x + 3, y: y - 8, vx: 8, vy: -18, t: 0.26, maxT: 0.26, color: '#dce8f4', size: 1.6, grav: 24 });
+  }
 }
 
 /**
@@ -663,6 +790,10 @@ export function critGlint(g: Game, x: number, y: number): void {
       t, maxT: t, color: i === 0 ? '#ffe86a' : '#ffd24a', size: 4.4 - i * 0.8, grav: 14,
     });
   }
+  // (18-d) núcleo blanco del crítico (legible incluso a ZOOM×2)
+  if (g.particles.length < PART_CAP) {
+    g.particles.push({ x, y, vx: 0, vy: 0, t: 0.09, maxT: 0.09, color: '#fffbe0', size: 3.2, grav: 0 });
+  }
 }
 
 // ---------------- Consultas para render.ts ----------------
@@ -670,6 +801,13 @@ export function critGlint(g: Game, x: number, y: number): void {
 /** Estelas de esquiva vivas (para dibujar afterimages). */
 export function getRollTrail(): TrailPt[] {
   return rollTrail;
+}
+
+/** (18-d) Tamaño del pool ambiental vivo y su cap — para smokes y HUD debug. */
+export function poolStats(): { active: number; cap: number; partCap: number } {
+  let active = 0;
+  for (const a of pool) if (a.active) active++;
+  return { active, cap: AMB_CAP, partCap: PART_CAP };
 }
 
 /** Progreso del banner de jefe: slide 0→1 (entrada), out 1→0 (salida). */

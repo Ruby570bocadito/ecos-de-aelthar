@@ -1,0 +1,20 @@
+=== scatter impl ===
+=== SOLID_CHARS ===
+1385-
+1386-// Árbol cortado en el pasado (diffs usan '.')
+1387:export const SOLID_CHARS = new Set(['t', 'p', '#', 'H', 'r', 'F', 'R', 'w', 'g', 'P', 'A', 'V', '~', 'd', 'x', 'n']);
+=== draw trav ===
+87:  trav: { active: boolean; x: number; y: number; dir: number; t: number };
+102:      trav: { active: false, x: 0, y: 0, dir: 1, t: 0 },
+282:  const tv = st.trav;
+450:    if (r < 0.7 && !st.trav.active && g.mapId !== 'cripta') return 'viajero' as const;
+475:    st.trav.active = true;
+476:    st.trav.dir = dir;
+477:    st.trav.x = dir > 0 ? b[0] - 24 : b[2] + 24;
+478:    st.trav.y = p.y - 4; // camina por el terreno del Portador (siempre pisable)
+479:    st.trav.t = 0;
+760:  const tv = st.trav;
+835:    luciernagas: k[LUCIERNAGA], peces: k[PEZ], viajero: st.trav.active,
+=== tile A ===
+src/game/sprites.ts:1365:    case ':': case '_': case '#': case 'P': case 'A': case 'V':
+src/game/sprites.ts:1387:export const SOLID_CHARS = new Set(['t', 'p', '#', 'H', 'r', 'F', 'R', 'w', 'g', 'P', 'A', 'V', '~', 'd', 'x', 'n']);

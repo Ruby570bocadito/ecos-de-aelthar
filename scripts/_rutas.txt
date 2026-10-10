@@ -1,0 +1,133 @@
+SMOKE RUTAS · BFS de accesibilidad peatonal (todas las épocas)
+
+[lunaris · presente]
+  ✓ salida «Bosque Susurrante» zona (23,0 6×2) alcanzable vía (23,0)
+  ✓ salida «Costa de Bruma» zona (25,36 3×2) alcanzable vía (25,36)
+  ✓ NPC brisa (23,13) con acceso peatonal
+  ✓ NPC toln (35,11) con acceso peatonal
+  ✓ NPC teo (23,20) con acceso peatonal
+  ✓ NPC heraldo (28,17) con acceso peatonal
+  ✓ cofre l1 (5,24) alcanzable en pasado
+  ✓ cofre l2 (48,21) alcanzable en presente
+  ✓ cofre l3 (30,33) alcanzable en presente
+  ✓ cofre l4 (6,7) alcanzable en presente
+
+[lunaris · pasado]
+  ✓ salida «Bosque Susurrante» zona (23,0 6×2) alcanzable vía (23,0)
+  ✓ salida «Costa de Bruma» zona (25,36 3×2) alcanzable vía (25,36)
+  ✓ NPC brisa (23,13) con acceso peatonal
+  ✓ NPC toln (35,11) con acceso peatonal
+  ✓ NPC teo (23,20) con acceso peatonal
+  ✓ NPC heraldo (28,17) con acceso peatonal
+  ✓ cofre l1 (5,24) alcanzable en pasado
+  ✓ cofre l2 (48,21) alcanzable en pasado
+  ✓ cofre l3 (30,33) alcanzable en pasado
+  ✓ cofre l4 (6,7) alcanzable en pasado
+
+[bosque · presente]
+  ✓ salida «Valle de Lunaris» zona (24,42 6×2) alcanzable vía (24,42)
+  ✓ salida «Cripta del Primer Canto» zona (8,2 5×2) alcanzable vía (8,2)
+  ✓ salida «Cumbres Heladas» zona (54,6 2×3) alcanzable vía (54,6)
+  ✓ NPC ilwen (16,32) con acceso peatonal
+  ✓ NPC doran (36,24) con acceso peatonal
+  ✓ cofre b1 (4,40) alcanzable en presente
+  ✓ cofre b2 (52,38) alcanzable en presente
+  ✓ cofre b3 (30,14) alcanzable en presente
+  ✓ cofre b4 (40,4) alcanzable en presente
+  ✓ cofre b5 (21,2) alcanzable en presente
+
+[bosque · pasado]
+  ✓ salida «Valle de Lunaris» zona (24,42 6×2) alcanzable vía (24,42)
+  ✓ salida «Cripta del Primer Canto» zona (8,2 5×2) alcanzable vía (8,2)
+  ✓ salida «Cumbres Heladas» zona (54,6 2×3) alcanzable vía (54,6)
+  ✓ NPC ilwen (16,32) con acceso peatonal
+  ✓ NPC doran (36,24) con acceso peatonal
+  ✓ cofre b1 (4,40) alcanzable en pasado
+  ✓ cofre b2 (52,38) alcanzable en pasado
+  ✓ cofre b3 (30,14) alcanzable en pasado
+  ✓ cofre b4 (40,4) alcanzable en pasado
+  ✓ cofre b5 (21,2) alcanzable en pasado
+
+[cripta · presente]
+  ✓ salida «Bosque Susurrante» zona (18,31 4×3) alcanzable vía (18,31)
+  ✓ NPC guarda (21,24) con acceso peatonal
+  ✓ cofre c1 (28,25) alcanzable en presente
+  ✓ cofre c2 (7,25) alcanzable en presente
+  ✓ ALTAR altar_c (19,4) alcanzable en presente
+
+[costa · presente]
+  ✓ salida «Valle de Lunaris» zona (25,0 3×2) alcanzable vía (25,0)
+  ✓ salida «Aldea de Merrow» zona (50,17 2×4) alcanzable vía (50,17)
+  ✓ NPC mara (7,19) con acceso peatonal
+  ✓ NPC vult (30,32) con acceso peatonal
+  ✓ cofre co1 (29,37) alcanzable en pasado
+  ✓ cofre co2 (4,15) alcanzable en presente
+  ✓ cofre co3 (42,29) alcanzable en presente
+  ✓ ALTAR altar_mareas (36,27) alcanzable en presente
+
+[costa · pasado]
+  ✓ salida «Valle de Lunaris» zona (25,0 3×2) alcanzable vía (25,0)
+  ✓ salida «Aldea de Merrow» zona (50,17 2×4) alcanzable vía (50,17)
+  ✓ NPC mara (7,19) con acceso peatonal
+  ✓ NPC vult (30,32) con acceso peatonal
+  ✓ cofre co1 (29,37) alcanzable en pasado
+  ✓ cofre co2 (4,15) alcanzable en pasado
+  ✓ cofre co3 (42,29) alcanzable en pasado
+  ✓ ALTAR altar_mareas (36,27) alcanzable en pasado
+
+[aldea · presente]
+  ✓ salida «Costa de Bruma» zona (0,16 2×4) alcanzable vía (0,16)
+  ✓ NPC mera (22,16) con acceso peatonal
+  ✓ cofre a1 (10,23) alcanzable en pasado
+  ✓ cofre a2 (32,9) alcanzable en presente
+
+[aldea · pasado]
+  ✓ salida «Costa de Bruma» zona (0,16 2×4) alcanzable vía (0,16)
+  ✓ NPC mera (22,16) con acceso peatonal
+  ✓ cofre a1 (10,23) alcanzable en pasado
+  ✓ cofre a2 (32,9) alcanzable en pasado
+
+[cumbres · presente]
+  ✓ salida «Bosque Susurrante» zona (24,40 3×2) alcanzable vía (24,40)
+  ✓ NPC ivo (27,37) con acceso peatonal
+  ✓ cofre cu1 (5,7) alcanzable en presente
+  ✓ cofre cu2 (43,30) alcanzable en presente
+  ✓ cofre cu3 (27,4) alcanzable en presente
+  ✓ ALTAR altar_cumbres (24,3) alcanzable en presente
+
+[cumbres · pasado]
+  ✓ salida «Bosque Susurrante» zona (24,40 3×2) alcanzable vía (24,40)
+  ✓ NPC ivo (27,37) con acceso peatonal
+  ✓ cofre cu1 (5,7) alcanzable en pasado
+  ✓ cofre cu2 (43,30) alcanzable en pasado
+  ✓ cofre cu3 (27,4) alcanzable en pasado
+  ✓ ALTAR altar_cumbres (24,3) alcanzable en pasado
+
+[arena · presente]
+  ✓ salida «Valle de Lunaris» zona (20,32 4×2) alcanzable vía (20,32)
+
+[cripta · diagnóstico fino bosque→cripta]
+  ✓ presente: norte del bosque bloqueado por el puzzle del ayer (diseño intacto)
+  ✓ corredor de la puerta de la cripta libre de pinos en presente (0 pinos)
+  ✓ cartel sign_b3 (27,13) legible en presente
+   mapa 6..15 × 1..6 (presente):
+     #########t
+     #:::::::#.
+     #:::A:::#.
+     ###===###.
+     ..........
+     ..........
+  ✓ puerta de la cripta (9-11,4) alcanzable desde el sur en pasado vía (9,4)
+  ✓ zona de salida a la cripta (8-12, 2-3) alcanzable en pasado vía (8,2)
+  ✓ corredor de la puerta de la cripta libre de pinos en pasado (0 pinos)
+  ✓ cartel sign_b3 (27,13) legible en pasado
+   mapa 6..15 × 1..6 (pasado):
+     #########t
+     #:::::::#.
+     #:::A:::#.
+     ###===###.
+     ..........
+     ..........
+
+RESULTADO: 89 ok, 0 fallos
+EXIT=0

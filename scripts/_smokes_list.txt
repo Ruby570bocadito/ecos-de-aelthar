@@ -1,0 +1,17 @@
+scripts/smoke_acto2.ts
+scripts/smoke_acto3.ts
+scripts/smoke_acto4.ts
+scripts/smoke_arbol.ts
+scripts/smoke_balance.ts
+scripts/smoke_costa_bioma.ts
+scripts/smoke_cumbres_bioma.ts
+scripts/smoke_desafio.ts
+scripts/smoke_faro.ts
+scripts/smoke_interaccion.ts
+scripts/smoke_interludios.ts
+scripts/smoke_jefes_sprites.ts
+scripts/smoke_logros.ts
+scripts/smoke_motor_acto2.ts
+scripts/smoke_rutas.ts
+scripts/smoke_timeskip.ts
+scripts/smoke_worldlife.ts

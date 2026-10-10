@@ -1,0 +1,67 @@
+=== prop dir ===
+src/game/sprites.ts:85:  dir: 'down' | 'up' | 'side', f: number, bob: number, L: Layout,
+src/game/sprites.ts:241:export function frameIndex(dir: string, moving: boolean, anim: number): number {
+src/game/sprites.ts:252:export function entityFrame(spr: Frames, dir: string, moving: boolean, anim: number): number {
+src/game/sprites.ts:569://   · dir: 'down' | 'up' | 'left' | 'right'. Igual que los frames de andar,
+src/game/sprites.ts:571://     las voltea para 'left' (flip = e.dir === 'left') — NUNCA se pre-espejan.
+src/game/sprites.ts:611:export function getAttackFrames(baseName: string, dir: string): HTMLCanvasElement[] | null {
+src/game/sprites.ts:622:export function getCastFrames(baseName: string, dir: string): HTMLCanvasElement[] | null {
+src/game/sprites.ts:710:function weaponPoses(pal: HumanPal, W: WeaponDef, dir3: 'down' | 'up' | 'side', dir: 'down' | 'up' | 'right'): Frames {
+src/game/sprites.ts:960:function buildCombatPose(baseName: string, dir: string, kind: 'attack' | 'cast'): HTMLCanvasElement[] | null {
+src/game/sprites.ts:988:  dir: string, prog: number, combo: number, charged: boolean, zoom: number,
+src/game/update.ts:175:    const rd = (p as unknown as { rollDir?: Dir }).rollDir ?? p.dir;
+src/game/update.ts:217:          if (Math.abs(mx) > Math.abs(my)) p.dir = mx > 0 ? 'right' : 'left';
+src/game/update.ts:218:          else p.dir = my > 0 ? 'down' : 'up';
+src/game/update.ts:233:          if (Math.abs(mx) > Math.abs(my)) p.dir = mx > 0 ? 'right' : 'left';
+src/game/update.ts:234:          else p.dir = my > 0 ? 'down' : 'up';
+=== walk/anim ===
+217:  const frames: Frames = [];
+225:      frames.push(c);
+230:    return frames.map(fr => {
+237:  return frames;
+241:export function frameIndex(dir: string, moving: boolean, anim: number): number {
+249: * humanoids nuevos tienen 9 frames (3 por dirección), los demás
+266:  const frames: Frames = [];
+288:    frames.push(c);
+290:  return frames;
+296:  const frames: Frames = [];
+328:    frames.push(c);
+330:  return frames;
+357:  const frames: Frames = [];
+372:    frames.push(c);
+374:  return frames;
+378:  const frames: Frames = [];
+386:    frames.push(c);
+388:  return frames;
+392:  const frames: Frames = [];
+398:    frames.push(c);
+=== faro npcs ===
+90:// naufragio al este, faro en ruinas al oeste, altar de las Mareas.
+113:  // caminos: principal, santuario, naufragio, faro
+125:  // promontorio del faro (oeste)
+371:      { id: 'faro_co', kind: 'faro', x: 6, y: 18 },
+397:      { id: 'al_e2', x: 6, y: 19, title: 'Eco menor · Los faroles del Recuerdo', text: '«Los faroles de Merrow no se encendían con fuego: se encendían con nombres dichos en voz alta, uno por farol, uno por familia. Tres siguen esperando en el ayer. Enciéndelos allí y acaso el presente aprenda otra vez a iluminarse.»' },
+414:      // Faroles del Recuerdo: se encienden en el pasado (interacción futura del motor)
+419:      { id: 'sign_al2', kind: 'sign', x: 26, y: 20, label: '«Los Faroles del Recuerdo no se encienden con fuego. Se encienden con nombres, y solo en el ayer.»' },
+=== npcs costa/cumbres ===
+335:    npcs: [
+387:    npcs: [
+431:    npcs: [
+481:    npcs: [],
+=== altar pickup ===
+282:      if (this.questIdx === 6 && this.questStep === 2 && this.flags.ecoMareas) this.questAdvance();
+293:      if (this.questIdx === 8 && this.questStep === 2 && this.flags.ecoCumbres) this.questAdvance();
+888:      else if (pr.kind === 'altarEcho') consider(px, py, 'altar', 'Altar del Eco', () => this.tryTakeEco(), 30);
+953:      if (this.flags.ecoMareas) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
+965:      if (this.flags.ecoCumbres) { this.toast('El altar ya está vacío.', '#9aa0b8'); return; }
+1123:        this.flags.ecoMareas = true;
+1131:        this.flags.ecoCumbres = true;
+=== sirena/golem defs ===
+15://   · sirena   — JEFA 3 fases: salvas de marea, coro de neumos,
+22://   · golem    — JEFE 2 fases: slam telegrafiado, lanza de cristales,
+33://   sirena, golem}. Lugar recomendado: justo antes del
+48://   invulT (espectro/sirena) lo decae este módulo; que damageEnemy
+70:// literales 'sirena'/'golem' por consistencia con el fuente original).
+126:  // sirena
+130:  // golem
+150:  // sirena — MAREA DOBLE (fase final, 14-a)

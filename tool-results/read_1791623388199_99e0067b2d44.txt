@@ -1,0 +1,1108 @@
+     1→// ============================================================
+     2→// ECOS DE AELTHAR — ACTO II · Arte pixel procedural de la
+     3→// EXPANSIÓN (AGENTE 7-b · enemigos + sprites).
+     4→// 100% procedural: canvas + fillRect píxel a píxel, sin assets.
+     5→// NO toca sprites.ts: usa registerSpr()/hash2() (contrato).
+     6→//
+     7→// Contenido:
+     8→//   · initExpansionSprites(): registra 'neumo', 'espectro', 'arpi',
+     9→//     'sirena' (jefa 32×32), 'golem' (jefe 32×32) y los proyectiles
+    10→//     'orb', 'shard', 'nota' (1 frame).
+    11→//   · drawExpansionTile(): tiles de suelo nuevos ('s' arena, 'S' nieve,
+    12→//     'i' hielo) + variantes de '.' ',' ':' '=' por mapa (costa,
+    13→//     aldea, cumbres). Devuelve true si dibujó el tile.
+    14→//   · drawExpansionTallTile(): palmera ('p' en costa) y pino nevado
+    15→//     ('t'/'p' en cumbres). Devuelve true si dibujó.
+    16→//   · drawExpansionProp(): 'wreck', 'faro', 'lamp' (centrados en cx,cy).
+    17→//   · drawExpansionProjectile(): 'orb', 'shard', 'nota' con animación.
+    18→//
+    19→// Estilo: copia la técnica de sprites.ts (buildWolf/buildGuardian/
+    20→// buildFragment/drawTile): outline oscuro, sombreado simple por
+    21→// rects, hash2(tx,ty) para moteado determinista, zoom lo aplica el
+    22→// render (los canvas van en píxeles de arte).
+    23→// ============================================================
+    24→
+    25→import { registerSpr, hash2 } from './sprites';
+    26→import type { Frames } from './sprites';
+    27→
+    28→// ---------------- utilidades locales ----------------
+    29→
+    30→function cv(w: number, h: number): { c: HTMLCanvasElement; x: CanvasRenderingContext2D } {
+    31→  const c = document.createElement('canvas');
+    32→  c.width = w; c.height = h;
+    33→  const x = c.getContext('2d')!;
+    34→  x.imageSmoothingEnabled = false;
+    35→  return { c, x };
+    36→}
+    37→
+    38→/** Rect pintado (equivalente al px() interno de sprites.ts). */
+    39→function rc(x: CanvasRenderingContext2D, rx: number, ry: number, rw: number, rh: number, col: string) {
+    40→  x.fillStyle = col;
+    41→  x.fillRect(rx, ry, rw, rh);
+    42→}
+    43→
+    44→/** Disco pixelado determinista (para burbujas, orbes y halos). */
+    45→function disc(x: CanvasRenderingContext2D, cx: number, cy: number, r: number, col: string, alpha = 1) {
+    46→  x.globalAlpha = alpha;
+    47→  x.fillStyle = col;
+    48→  const top = Math.ceil(r);
+    49→  for (let dy = -top; dy <= top; dy++) {
+    50→    const w = Math.sqrt(Math.max(0, r * r - dy * dy));
+    51→    if (w < 0.35 && Math.abs(dy) > 0) continue;
+    52→    x.fillRect(Math.round(cx - w), cy + dy, Math.max(1, Math.round(w * 2 + 1)), 1);
+    53→  }
+    54→  x.globalAlpha = 1;
+    55→}
+    56→
+    57→// ============================================================
+    58→// ENEMIGOS NUEVOS
+    59→// ============================================================
+    60→
+    61→// ---------------- Neumo de Marea (16×16 · 2 frames) ----------------
+    62→// Criatura burbuja de espuma: flota y tiembla. Aguamarina translúcida
+    63→// con brillo y un ojo oscuro pequeño.
+    64→
+    65→function buildNeumo(): Frames {
+    66→  const frames: Frames = [];
+    67→  for (let f = 0; f < 2; f++) {
+    68→    const { c, x } = cv(16, 16);
+    69→    const O = '#1c5a5e', BD = '#4ec2b8', B = '#7fe8d8', HL = '#d8fcf4', EYE = '#173038';
+    70→    const oy = f; // tiembla: el cuerpo sube/baja 1 px
+    71→    // contorno + masa
+    72→    disc(x, 8, 8, f === 0 ? 6 : 6.4, O, 0.85);
+    73→    disc(x, 8, 8 + oy * 0.4, 5.2, BD, 0.72);
+    74→    disc(x, 8, 8 + oy * 0.4, 4.1, B, 0.68);
+    75→    // brillo (espalda superior)
+    76→    x.globalAlpha = 0.92;
+    77→    rc(x, 5, 4 - f, 3, 2, HL);
+    78→    rc(x, 4, 5 - f, 1, 1, HL);
+    79→    x.globalAlpha = 0.55;
+    80→    rc(x, 9, 5 - f, 1, 2, HL);
+    81→    // ojo oscuro pequeño
+    82→    x.globalAlpha = 1;
+    83→    rc(x, 9, 7 - f, 2, 2, EYE);
+    84→    rc(x, 9, 7 - f, 1, 1, '#ffffff');
+    85→    // burbujitas de espuma en la base
+    86→    x.globalAlpha = 0.7;
+    87→    rc(x, 3, 12, 2, 2, B);
+    88→    rc(x, 11, 12 + f, 2, 1, B);
+    89→    rc(x, 7, 13, 1, 1, HL);
+    90→    x.globalAlpha = 1;
+    91→    frames.push(c);
+    92→  }
+    93→  return frames;
+    94→}
+    95→
+    96→// ---------------- Espectro sin Nombre (16×16 · 2 frames) ----------------
+    97→// Fantasma humanoide pálido que sube y baja; borde difuminado
+    98→// (globalAlpha dentro del canvas) y ojos huecos.
+    99→
+   100→function buildEspectro(): Frames {
+   101→  const frames: Frames = [];
+   102→  for (let f = 0; f < 2; f++) {
+   103→    const { c, x } = cv(16, 16);
+   104→    const O = '#3a4a5e', B = '#c9d4e4', S = '#a2b2c8', EYE = '#232e42';
+   105→    const dy = f === 0 ? 0 : -1; // sube/baja
+   106→    // cuerpo (semivapor)
+   107→    x.globalAlpha = 0.88;
+   108→    rc(x, 4, 7 + dy, 8, 4, B);
+   109→    rc(x, 5, 11 + dy, 6, 2, B);
+   110→    rc(x, 4, 7 + dy, 1, 4, S);
+   111→    rc(x, 11, 7 + dy, 1, 4, S);
+   112→    // cabeza
+   113→    x.globalAlpha = 0.95;
+   114→    rc(x, 5, 2 + dy, 6, 5, B);
+   115→    rc(x, 4, 3 + dy, 8, 3, B);
+   116→    rc(x, 5, 6 + dy, 6, 1, S);
+   117→    // borde difuminado: costados y rabo translúcidos
+   118→    x.globalAlpha = 0.35;
+   119→    rc(x, 3, 4 + dy, 1, 6, B);
+   120→    rc(x, 12, 4 + dy, 1, 6, B);
+   121→    rc(x, 4, 13 + dy, 8, 1, B);
+   122→    // jirones finales (alternan con el frame)
+   123→    x.globalAlpha = 0.55;
+   124→    if (f === 0) { rc(x, 6, 13, 2, 2, S); rc(x, 9, 13, 1, 1, S); }
+   125→    else { rc(x, 5, 12, 1, 2, S); rc(x, 8, 13, 2, 1, S); }
+   126→    // ojos huecos
+   127→    x.globalAlpha = 1;
+   128→    rc(x, 6, 4 + dy, 1, 2, EYE);
+   129→    rc(x, 9, 4 + dy, 1, 2, EYE);
+   130→    x.globalAlpha = 0.5;
+   131→    rc(x, 7, 6 + dy, 2, 1, EYE);
+   132→    // contorno parcial (difuminado, nunca cerrado)
+   133→    x.globalAlpha = 0.38;
+   134→    rc(x, 4, 2 + dy, 8, 1, O);
+   135→    rc(x, 4, 2 + dy, 1, 4, O);
+   136→    rc(x, 11, 2 + dy, 1, 4, O);
+   137→    x.globalAlpha = 1;
+   138→    frames.push(c);
+   139→  }
+   140→  return frames;
+   141→}
+   142→
+   143→// ---------------- Arpía de Cumbre (16×16 · 2 frames) ----------------
+   144→// Ave de ventisca: alas arriba / alas abajo. Blanco-azul hielo,
+   145→// pico gris, mirada hacia la derecha (el render voltea a la izq.).
+   146→
+   147→function buildArpi(): Frames {
+   148→  const frames: Frames = [];
+   149→  for (let f = 0; f < 2; f++) {
+   150→    const { c, x } = cv(16, 16);
+   151→    const O = '#2e4256', W = '#eef6fc', WS = '#bcdcf0', WSD = '#8fb8d8', BK = '#8a94a0', EYE = '#1e2c3a';
+   152→    // alas (arriba en f0, abajo en f1)
+   153→    x.globalAlpha = 1;
+   154→    x.fillStyle = WS;
+   155→    if (f === 0) {
+   156→      rc(x, 3, 2, 3, 5, WS); rc(x, 2, 4, 2, 4, WS);          // ala izq. alzada
+   157→      rc(x, 10, 2, 3, 5, WS); rc(x, 12, 4, 2, 4, WS);        // ala der. alzada
+   158→      rc(x, 4, 3, 1, 3, W); rc(x, 11, 3, 1, 3, W);           // brillo de pluma
+   159→    } else {
+   160→      rc(x, 2, 9, 3, 5, WS); rc(x, 1, 11, 2, 3, WS);         // ala izq. baja
+   161→      rc(x, 11, 9, 3, 5, WS); rc(x, 13, 11, 2, 3, WS);       // ala der. baja
+   162→      rc(x, 3, 10, 1, 3, W); rc(x, 12, 10, 1, 3, W);
+   163→    }
+   164→    // cola
+   165→    rc(x, 2, 8, 3, 2, WSD);
+   166→    rc(x, 1, 9, 1, 1, WSD);
+   167→    // cuerpo
+   168→    rc(x, 5, 7, 6, 4, W);
+   169→    rc(x, 6, 6, 4, 6, W);
+   170→    rc(x, 5, 10, 6, 1, WS);
+   171→    rc(x, 6, 11, 4, 1, WS);
+   172→    // cabeza + pico gris
+   173→    rc(x, 9, 4, 4, 4, W);
+   174→    rc(x, 9, 7, 4, 1, WS);
+   175→    rc(x, 13, 5, 2, 2, BK);
+   176→    rc(x, 15, 6, 1, 1, BK);
+   177→    rc(x, 11, 5, 1, 1, EYE);
+   178→    // contorno sutil
+   179→    x.globalAlpha = 0.5;
+   180→    rc(x, 5, 6, 4, 1, O);
+   181→    rc(x, 9, 4, 4, 1, O);
+   182→    x.globalAlpha = 1;
+   183→    frames.push(c);
+   184→  }
+   185→  return frames;
+   186→}
+   187→
+   188→// ---------------- Sirena Abisal (32×32 · 3 frames · JEFA) ----------------
+   189→// Reina del naufragio: melena de agua ondulante, cola de pez
+   190→// escarchada, corona de coral roto. Verde-mar + turquesa + perla.
+   191→// Debe verse REGIA y triste: mirada baja, boca mínima, perlas.
+   192→
+   193→function buildSirena(): Frames {
+   194→  const frames: Frames = [];
+   195→  for (let f = 0; f < 3; f++) {
+   196→    const { c, x } = cv(32, 32);
+   197→    const HAIR = '#2e6a68', HAIR2 = '#54b8a8', SKIN = '#e9e4d8', SKINS = '#c6c0b2',
+   198→      CORAL = '#c86a5a', CORALD = '#a44e42', PEARL = '#eef4ee',
+   199→      TOP = '#3e8a7a', TOP2 = '#54b8a8', FIN = '#54b8a8', FIN2 = '#7fd8c8',
+   200→      FROST = '#eef8f4', EYE = '#2a4a54';
+   201→    const sway = f === 0 ? 0 : f === 1 ? 1 : -1; // vaivén de melena y aletas
+   202→    // ---- melena trasera (masa de agua) ----
+   203→    x.globalAlpha = 0.95;
+   204→    rc(x, 9, 3, 14, 12, HAIR);
+   205→    rc(x, 8, 5 + sway, 2, 10, HAIR);           // mechón izq.
+   206→    rc(x, 22, 5 - sway, 2, 10, HAIR);          // mechón der.
+   207→    rc(x, 7, 9 + sway, 2, 6, HAIR2);
+   208→    rc(x, 23, 9 - sway, 2, 6, HAIR2);
+   209→    // puntas que ondean
+   210→    x.globalAlpha = 0.6;
+   211→    rc(x, 6, 15 + sway, 3, 3, HAIR2);
+   212→    rc(x, 23, 15 - sway, 3, 3, HAIR2);
+   213→    rc(x, 9, 16 - sway, 2, 2, HAIR2);
+   214→    // ---- corona de coral roto ----
+   215→    x.globalAlpha = 1;
+   216→    rc(x, 10, 1, 3, 4, CORAL);                 // pica izq. (entera)
+   217→    rc(x, 10, 1, 3, 1, PEARL);
+   218→    rc(x, 14, 3, 3, 2, CORALD);                // pica central ROTA (mucho más baja)
+   219→    rc(x, 15, 2, 1, 1, CORALD);
+   220→    rc(x, 19, 1, 3, 4, CORAL);                 // pica der. (entera)
+   221→    rc(x, 19, 1, 3, 1, PEARL);
+   222→    // ---- rostro ----
+   223→    rc(x, 12, 4, 8, 8, SKIN);
+   224→    rc(x, 12, 10, 8, 2, SKINS);
+   225→    rc(x, 11, 5, 1, 4, SKINS);
+   226→    rc(x, 20, 5, 1, 4, SKINS);
+   227→    // flequillo de agua partido
+   228→    rc(x, 11, 3, 10, 2, HAIR2);
+   229→    rc(x, 11, 5, 3, 2, HAIR2);
+   230→    rc(x, 18, 5, 3, 2, HAIR2);
+   231→    // ojos tristes (mirada baja, párpado caído)
+   232→    rc(x, 13, 7, 2, 2, EYE);
+   233→    rc(x, 17, 7, 2, 2, EYE);
+   234→    rc(x, 13, 6, 2, 1, SKINS);
+   235→    rc(x, 17, 6, 2, 1, SKINS);
+   236→    rc(x, 14, 9, 1, 1, '#bfe8f0');             // lágrima de perla
+   237→    rc(x, 15, 10, 2, 1, '#8a7a72');            // boca mínima
+   238→    // ---- busto con túnica de marea ----
+   239→    rc(x, 9, 12, 14, 3, TOP);
+   240→    rc(x, 9, 12, 14, 1, '#dceae4');            // ribete de perla
+   241→    rc(x, 12, 15, 8, 4, SKIN);
+   242→    rc(x, 12, 15, 8, 1, SKINS);
+   243→    // collar de perlas
+   244→    rc(x, 12, 15, 1, 1, PEARL); rc(x, 14, 16, 1, 1, PEARL);
+   245→    rc(x, 17, 16, 1, 1, PEARL); rc(x, 19, 15, 1, 1, PEARL);
+   246→    // brazos
+   247→    rc(x, 7, 13, 2, 6, SKIN); rc(x, 7, 13, 1, 6, SKINS);
+   248→    rc(x, 23, 13, 2, 6, SKIN); rc(x, 24, 13, 1, 6, SKINS);
+   249→    // ---- cola escarchada ----
+   250→    rc(x, 10, 18, 12, 3, TOP);
+   251→    rc(x, 11, 21, 10, 2, TOP);
+   252→    rc(x, 12, 23, 8, 2, TOP2);
+   253→    rc(x, 13, 25, 6, 2, FIN);
+   254→    // escamas de brillo
+   255→    x.globalAlpha = 0.7;
+   256→    rc(x, 12 + sway, 19, 2, 1, TOP2);
+   257→    rc(x, 17 - sway, 22, 2, 1, FROST);
+   258→    rc(x, 14, 24, 1, 2, FROST);
+   259→    x.globalAlpha = 1;
+   260→    // aletas (frost tips) — se mecen con el frame
+   261→    const fs = sway;
+   262→    rc(x, 11 + fs, 26, 4, 2, FIN); rc(x, 9 + fs, 27, 4, 2, FIN2);
+   263→    rc(x, 7 + fs, 28, 4, 2, FIN); rc(x, 5 + fs, 29, 3, 2, FROST);
+   264→    rc(x, 17 - fs, 26, 4, 2, FIN); rc(x, 19 - fs, 27, 4, 2, FIN2);
+   265→    rc(x, 21 - fs, 28, 4, 2, FIN); rc(x, 24 - fs, 29, 3, 2, FROST);
+   266→    // aura de bruma marina
+   267→    x.globalAlpha = 0.18;
+   268→    rc(x, 5, 10 + sway, 2, 8, FIN2);
+   269→    rc(x, 25, 10 - sway, 2, 8, FIN2);
+   270→    x.globalAlpha = 1;
+   271→    frames.push(c);
+   272→  }
+   273→  return frames;
+   274→}
+   275→
+   276→// ---------------- Gólem de Escarcha (32×32 · 2 frames · JEFE) ----------------
+   277→// Masa de hielo masiva con núcleo brillante y cristales al hombro.
+   278→// Frame 2 = el núcleo pulsa. Azul hielo + blanco + cian núcleo.
+   279→
+   280→function buildGolem(): Frames {
+   281→  const frames: Frames = [];
+   282→  for (let f = 0; f < 2; f++) {
+   283→    const { c, x } = cv(32, 32);
+   284→    const O = '#1c3048', ICE = '#7ea8cc', ICED = '#5a86b0', ICEDD = '#4a76a0',
+   285→      L = '#a8cce8', XT = '#c8e4f4', SNOW = '#eef6fc';
+   286→    const CORE = f === 0 ? '#3ec8e8' : '#5fdcf8';
+   287→    const CORE2 = f === 0 ? '#8ef0ff' : '#d8f8ff';
+   288→    // ---- torso macizo ----
+   289→    rc(x, 8, 10, 16, 15, ICE);
+   290→    rc(x, 8, 10, 16, 2, L);
+   291→    rc(x, 9, 24, 14, 2, ICED);
+   292→    // placas y grietas
+   293→    rc(x, 8, 14, 16, 1, ICED);
+   294→    rc(x, 8, 19, 16, 1, ICED);
+   295→    rc(x, 10, 15, 1, 4, '#3a5a7c');
+   296→    rc(x, 21, 11, 1, 3, '#3a5a7c');
+   297→    rc(x, 17, 20, 1, 3, '#3a5a7c');
+   298→    // ---- núcleo brillante ----
+   299→    if (f === 1) disc(x, 15.5, 17.5, 5.5, CORE2, 0.22); // pulso
+   300→    rc(x, 12, 14, 8, 7, '#2a7a9c');
+   301→    rc(x, 13, 15, 6, 5, CORE);
+   302→    rc(x, 14, 16, 4, 3, CORE2);
+   303→    // ---- cabeza hundida ----
+   304→    rc(x, 12, 3, 8, 7, ICE);
+   305→    rc(x, 12, 3, 8, 1, L);
+   306→    rc(x, 12, 9, 8, 1, ICED);
+   307→    rc(x, 13, 6, 2, 1, CORE); rc(x, 17, 6, 2, 1, CORE); // ojos ranura de cian
+   308→    // ---- hombros con cristales ----
+   309→    rc(x, 2, 8, 9, 7, ICED);
+   310→    rc(x, 2, 8, 9, 1, L);
+   311→    rc(x, 4, 5, 4, 3, XT); rc(x, 5, 4, 2, 1, SNOW);     // cristal izq.
+   312→    rc(x, 21, 8, 9, 7, ICED);
+   313→    rc(x, 21, 8, 9, 1, L);
+   314→    rc(x, 24, 5, 4, 3, XT); rc(x, 26, 4, 2, 1, SNOW);   // cristal der.
+   315→    // nieve posada
+   316→    rc(x, 3, 8, 4, 1, SNOW); rc(x, 25, 8, 4, 1, SNOW);
+   317→    // ---- brazos colosales ----
+   318→    rc(x, 1, 12, 5, 12, ICED);
+   319→    rc(x, 1, 12, 1, 12, L);
+   320→    rc(x, 0, 23, 7, 5, ICEDD);
+   321→    rc(x, 0, 23, 7, 1, L);
+   322→    rc(x, 26, 12, 5, 12, ICED);
+   323→    rc(x, 30, 12, 1, 12, '#3a5a7c');
+   324→    rc(x, 25, 23, 7, 5, ICEDD);
+   325→    rc(x, 25, 23, 7, 1, L);
+   326→    // ---- pata de bloque y escarcha base ----
+   327→    rc(x, 9, 25, 6, 4, ICEDD);
+   328→    rc(x, 17, 25, 6, 4, ICEDD);
+   329→    rc(x, 9, 28, 6, 1, '#3a5a7c'); rc(x, 17, 28, 6, 1, '#3a5a7c');
+   330→    rc(x, 8, 29, 8, 1, SNOW); rc(x, 16, 29, 8, 1, SNOW);
+   331→    // chispas de escarcha (deterministas)
+   332→    x.globalAlpha = 0.8;
+   333→    rc(x, 11, 11, 1, 1, SNOW); rc(x, 22, 17, 1, 1, SNOW); rc(x, 6, 16, 1, 1, SNOW);
+   334→    x.globalAlpha = 1;
+   335→    // contorno exterior mínimo
+   336→    x.globalAlpha = 0.55;
+   337→    rc(x, 0, 28, 7, 1, O); rc(x, 25, 28, 7, 1, O);
+   338→    x.globalAlpha = 1;
+   339→    frames.push(c);
+   340→  }
+   341→  return frames;
+   342→}
+   343→
+   344→// ============================================================
+   345→// PROYECTILES (1 frame · los anima drawExpansionProjectile)
+   346→// ============================================================
+   347→
+   348→function buildOrb(): Frames {
+   349→  const { c, x } = cv(12, 12);
+   350→  disc(x, 6, 6, 5, '#2e78b8', 0.9);   // borde de agua profunda
+   351→  disc(x, 6, 6, 4.1, '#58a8e0', 0.82);
+   352→  disc(x, 6, 6, 2.6, '#9ad0f0', 0.8);
+   353→  x.globalAlpha = 1;
+   354→  rc(x, 4, 3, 2, 2, '#f4fbff');       // brillo
+   355→  rc(x, 8, 9, 1, 1, '#2e78b8');
+   356→  return [c];
+   357→}
+   358→
+   359→function buildShard(): Frames {
+   360→  const { c, x } = cv(12, 12);
+   361→  // rombo afilado vertical
+   362→  const rows: [number, number, number][] = [
+   363→    // [y, x0, ancho]
+   364→    [0, 5, 2], [1, 4, 4], [2, 4, 4], [3, 3, 6], [4, 3, 6],
+   365→    [5, 2, 8], [6, 2, 8], [7, 3, 6], [8, 3, 6], [9, 4, 4], [10, 4, 4], [11, 5, 2],
+   366→  ];
+   367→  for (const [y, x0, w] of rows) {
+   368→    rc(x, x0, y, w, 1, w <= 2 ? '#dff4fc' : '#9fd4ec');
+   369→    if (w >= 6) { rc(x, x0, y, 1, 1, '#5aa8cc'); rc(x, x0 + w - 1, y, 1, 1, '#5aa8cc'); }
+   370→  }
+   371→  rc(x, 5, 2, 1, 6, '#eaf8ff');       // filo de luz
+   372→  rc(x, 6, 3, 1, 3, '#ffffff');
+   373→  return [c];
+   374→}
+   375→
+   376→function buildNota(): Frames {
+   377→  const { c, x } = cv(12, 12);
+   378→  // halo + corchea pixelada blanco-azulada
+   379→  disc(x, 6, 6, 5, '#bfe0ff', 0.25);
+   380→  x.globalAlpha = 1;
+   381→  rc(x, 3, 8, 3, 2, '#e8f4ff');       // cabeza de la nota
+   382→  rc(x, 3, 9, 3, 1, '#9fc8e8');
+   383→  rc(x, 6, 2, 1, 7, '#e8f4ff');       // mástil
+   384→  rc(x, 7, 2, 2, 1, '#e8f4ff');       // banderín (corchea)
+   385→  rc(x, 8, 3, 1, 2, '#cfe6fa');
+   386→  rc(x, 9, 5, 1, 1, '#cfe6fa');
+   387→  rc(x, 10, 1, 1, 1, '#ffffff');      // destello
+   388→  x.globalAlpha = 1;
+   389→  return [c];
+   390→}
+   391→
+   392→// ---------------- registro ----------------
+   393→
+   394→export function initExpansionSprites(): void {
+   395→  registerSpr('neumo', buildNeumo());
+   396→  registerSpr('espectro', buildEspectro());
+   397→  registerSpr('arpi', buildArpi());
+   398→  registerSpr('sirena', buildSirena());
+   399→  registerSpr('golem', buildGolem());
+   400→  registerSpr('orb', buildOrb());
+   401→  registerSpr('shard', buildShard());
+   402→  registerSpr('nota', buildNota());
+   403→  // 14-a (jefes-enemigos): 2 jefes nuevos + 2 enemigos de mapa
+   404→  registerSpr('vult', buildVult());
+   405→  registerSpr('coro1', buildCoro(1));
+   406→  registerSpr('coro2', buildCoro(2));
+   407→  registerSpr('coro3', buildCoro(3));
+   408→  registerSpr('ecodesg', buildEcodesg());
+   409→  registerSpr('satiro', buildSatiro());
+   410→}
+   411→
+   412→// ============================================================
+   413→// TILES DE SUELO (Acto II)
+   414→// El motor llama a drawTile() al pre-renderizar el suelo; el
+   415→// integrador debe probar PRIMERO esta función y caer al dibujo
+   416→// genérico si devuelve false:
+   417→//   if (drawExpansionTile(x, ch, tx, ty, this.mapId)) continue;
+   418→//   drawTile(x, ch, tx, ty, this.mapId, 0);
+   419→// ============================================================
+   420→
+   421→export function drawExpansionTile(
+   422→  x: CanvasRenderingContext2D, ch: string, tx: number, ty: number, mapId: string,
+   423→): boolean {
+   424→  const px0 = tx * 16, py0 = ty * 16;
+   425→  const r = hash2(tx, ty);
+   426→  const r2 = hash2(tx * 7 + 3, ty * 11 + 5);
+   427→  const r3 = hash2(tx * 13 + 1, ty * 3 + 7);
+   428→  switch (ch) {
+   429→    case 's': { // arena con moteado determinista
+   430→      rc(x, px0, py0, 16, 16, r < 0.5 ? '#dcc590' : '#d2bb84');
+   431→      for (let i = 0; i < 5; i++) {
+   432→        const hx = hash2(tx * 5 + i * 3, ty * 7 + i);
+   433→        const hy = hash2(tx * 11 + i, ty * 5 + i * 7);
+   434→        if (hx < 0.45) {
+   435→          x.fillStyle = i % 2 === 0 ? '#c4ab74' : '#e6d2a2';
+   436→          x.fillRect(px0 + Math.floor(hx * 30) % 15, py0 + Math.floor(hy * 30) % 15, 1, 1);
+   437→        }
+   438→      }
+   439→      if (r2 > 0.86) { // concha suelta
+   440→        rc(x, px0 + 4 + Math.floor(r * 6), py0 + 5 + Math.floor(r3 * 6), 2, 1, '#f0e8d4');
+   441→      }
+   442→      if (r3 < 0.1) rc(x, px0 + 9, py0 + 3, 2, 1, '#e8d4a4');
+   443→      return true;
+   444→    }
+   445→    case 'S': { // nieve con destellos
+   446→      rc(x, px0, py0, 16, 16, r < 0.5 ? '#e9eef5' : '#e2e9f1');
+   447→      const n = r2 > 0.5 ? 2 : 1;
+   448→      for (let i = 0; i < n; i++) {
+   449→        const hx = hash2(tx * 3 + i * 11, ty * 9 + i * 5);
+   450→        const hy = hash2(tx * 17 + i, ty * 13 + i * 3);
+   451→        rc(x, px0 + 2 + Math.floor(hx * 12), py0 + 2 + Math.floor(hy * 12), 1, 1, '#ffffff');
+   452→      }
+   453→      if (r3 > 0.72) rc(x, px0 + 4 + Math.floor(r * 8), py0 + 9, 3, 1, '#d2dde9');
+   454→      return true;
+   455→    }
+   456→    case 'i': { // hielo liso con grietas claras + reflejo
+   457→      rc(x, px0, py0, 16, 16, r < 0.5 ? '#a9d2ea' : '#9fc9e4');
+   458→      // reflejo diagonal
+   459→      x.globalAlpha = 0.2;
+   460→      rc(x, px0 + 2 + Math.floor(r2 * 4), py0, 3, 16, '#eaf7ff');
+   461→      x.globalAlpha = 1;
+   462→      // grietas (polilínea determinista)
+   463→      if (r2 > 0.4) {
+   464→        const cx0 = px0 + 3 + Math.floor(r * 6), cy0 = py0 + 3 + Math.floor(r3 * 8);
+   465→        rc(x, cx0, cy0, 4, 1, '#d6eefc');
+   466→        rc(x, cx0 + 3, cy0 + 1, 1, 3, '#d6eefc');
+   467→        rc(x, cx0 + 2, cy0 + 3, 2, 1, '#c2e2f4');
+   468→      }
+   469→      if (r3 < 0.25) rc(x, px0 + 10, py0 + 10, 3, 1, '#c2e2f4');
+   470→      rc(x, px0, py0, 16, 1, '#b8dcf0');
+   471→      return true;
+   472→    }
+   473→    case '.': {
+   474→      if (mapId === 'costa') { // hierba salada amarillenta-verdosa
+   475→        rc(x, px0, py0, 16, 16, r < 0.5 ? '#8aa860' : '#7e9c56');
+   476→        for (let i = 0; i < 4; i++) {
+   477→          const hx = hash2(tx * 4 + i, ty * 9 + i);
+   478→          if (hx < 0.4) {
+   479→            rc(x, px0 + Math.floor(hx * 14), py0 + Math.floor(hash2(tx + i, ty * 3 + i) * 14), 1, 2,
+   480→              i % 2 === 0 ? '#a8c070' : '#6e8c4c');
+   481→          }
+   482→        }
+   483→        if (r2 > 0.8) rc(x, px0 + 6, py0 + 8, 2, 1, '#c8b878'); // brizna seca
+   484→        return true;
+   485→      }
+   486→      if (mapId === 'cumbres') { // nieve corta verdosa
+   487→        rc(x, px0, py0, 16, 16, r < 0.5 ? '#a8c098' : '#9cb48c');
+   488→        for (let i = 0; i < 4; i++) {
+   489→          const hx = hash2(tx * 6 + i, ty * 5 + i * 3);
+   490→          if (hx < 0.4) {
+   491→            rc(x, px0 + Math.floor(hx * 14), py0 + Math.floor(hash2(tx + i * 5, ty + i) * 14), 1, 1,
+   492→              i % 2 === 0 ? '#c4d8b4' : '#8aa07c');
+   493→          }
+   494→        }
+   495→        if (r2 > 0.62) rc(x, px0 + 3 + Math.floor(r * 8), py0 + 4 + Math.floor(r3 * 8), 2, 1, '#eef4f0');
+   496→        return true;
+   497→      }
+   498→      return false; // lunaris/bosque: dibujo genérico del motor
+   499→    }
+   500→    case ',': {
+   501→      if (mapId === 'costa') { // flores de sal
+   502→        rc(x, px0, py0, 16, 16, r < 0.5 ? '#8aa860' : '#7e9c56');
+   503→        // matas de sal cristalizada
+   504→        const bx = px0 + 3 + Math.floor(r * 7), by = py0 + 3 + Math.floor(r2 * 7);
+   505→        rc(x, bx, by, 2, 2, '#f0f4f0');
+   506→        rc(x, bx + 1, by - 1, 1, 1, '#ffffff');
+   507→        rc(x, bx - 1, by + 1, 1, 1, '#d8e8e0');
+   508→        if (r3 > 0.5) {
+   509→          const cx2 = px0 + 9 - Math.floor(r * 5), cy2 = py0 + 9 - Math.floor(r2 * 5);
+   510→          rc(x, cx2, cy2, 2, 1, '#e4efe6');
+   511→          rc(x, cx2, cy2 + 1, 1, 1, '#c8dcd4');
+   512→        }
+   513→        return true;
+   514→      }
+   515→      return false;
+   516→    }
+   517→    case ':': {
+   518→      if (mapId === 'aldea') { // empedrado viejo más oscuro/agrietado
+   519→        rc(x, px0, py0, 16, 16, r < 0.5 ? '#585864' : '#525260');
+   520→        rc(x, px0, py0, 16, 1, '#6a6a78');
+   521→        // juntas de losas
+   522→        x.fillStyle = '#40404c';
+   523→        x.fillRect(px0, py0, 1, 16);
+   524→        x.fillRect(px0, py0 + (r > 0.5 ? 7 : 9), 16, 1);
+   525→        x.fillRect(px0 + (r2 > 0.5 ? 6 : 10), py0, 1, 8);
+   526→        // grietas
+   527→        if (r2 > 0.7) {
+   528→          rc(x, px0 + 3 + Math.floor(r * 6), py0 + 3, 1, 5, '#3c3c48');
+   529→          rc(x, px0 + 4 + Math.floor(r * 6), py0 + 7, 2, 1, '#3c3c48');
+   530→        }
+   531→        if (r3 > 0.85) rc(x, px0 + 11, py0 + 11, 2, 1, '#6e6e7c'); // piedra clara
+   532→        return true;
+   533→      }
+   534→      return false; // cripta/lunaris: dibujo genérico
+   535→    }
+   536→    case '=': {
+   537→      if (mapId === 'cumbres') { // camino pisado moreno
+   538→        rc(x, px0, py0, 16, 16, r < 0.5 ? '#8a7048' : '#7c6440');
+   539→        rc(x, px0, py0, 16, 1, '#9a8056');
+   540→        for (let i = 0; i < 5; i++) {
+   541→          const hx = hash2(tx * 13 + i, ty * 5 + i * 3);
+   542→          if (hx < 0.4) {
+   543→            rc(x, px0 + Math.floor(hx * 13), py0 + Math.floor(hash2(tx + i * 7, ty + i) * 13), 2, 1, '#6a5436');
+   544→          }
+   545→        }
+   546→        if (r2 > 0.75) rc(x, px0 + 5 + Math.floor(r * 6), py0 + 6, 2, 1, '#a8906a'); // piedrecilla
+   547→        return true;
+   548→      }
+   549→      return false; // lunaris: dibujo genérico
+   550→    }
+   551→    default:
+   552→      return false;
+   553→  }
+   554→}
+   555→
+   556→// ============================================================
+   557→// OBJETOS ALTOS (se dibujan por fila sobre el suelo, igual que
+   558→// drawTallTile del motor). Devuelve true si dibujó el tile.
+   559→// ============================================================
+   560→
+   561→export function drawExpansionTallTile(
+   562→  x: CanvasRenderingContext2D, ch: string, tx: number, ty: number, mapId: string,
+   563→): boolean {
+   564→  const px0 = tx * 16, py0 = ty * 16;
+   565→  const r = hash2(tx * 3 + 1, ty * 5 + 7);
+   566→  const r2 = hash2(tx * 11 + 9, ty * 7 + 3);
+   567→
+   568→  if (ch === 'p' && mapId === 'costa') {
+   569→    // ---- PALMERA: tronco curvado + hojas ----
+   570→    const bend = r > 0.5 ? 1 : -1; // curva determinista por tile
+   571→    // tronco (segmentos que se curvan)
+   572→    const seg = [
+   573→      [7, 13, 2], [7, 11, 2], [8, 9, 2], [8 + bend, 7, 2], [8 + bend, 5, 2], [9 + bend, 3, 2],
+   574→    ] as [number, number, number][];
+   575→    for (let i = 0; i < seg.length; i++) {
+   576→      const [sx, sy, sw] = seg[i];
+   577→      rc(x, px0 + sx + (bend > 0 ? 0 : 0), py0 + sy, sw, 2, i % 2 === 0 ? '#8a6a3e' : '#6d5430');
+   578→    }
+   579→    // anillos del tronco
+   580→    rc(x, px0 + 7, py0 + 12, 2, 1, '#5c462a');
+   581→    rc(x, px0 + 8 + bend, py0 + 8, 2, 1, '#5c462a');
+   582→    const crownX = px0 + 9 + bend, crownY = py0 + 2;
+   583→    // hojas (palmas) — 5 frondas
+   584→    rc(x, crownX - 6, crownY + 1, 7, 2, '#3e8a4a');   // izquierda
+   585→    rc(x, crownX - 7, crownY + 2, 4, 2, '#2e6a38');
+   586→    rc(x, crownX + 1, crownY + 1, 7, 2, '#3e8a4a');   // derecha
+   587→    rc(x, crownX + 5, crownY + 2, 4, 2, '#2e6a38');
+   588→    rc(x, crownX - 2, crownY - 2, 5, 2, '#5aa858');   // arriba
+   589→    rc(x, crownX - 1, crownY - 3, 3, 1, '#5aa858');
+   590→    rc(x, crownX - 5, crownY + 3, 3, 1, '#5aa858');   // caídas
+   591→    rc(x, crownX + 3, crownY + 3, 3, 1, '#5aa858');
+   592→    if (r2 > 0.55) rc(x, crownX - 8, crownY + 3, 2, 1, '#2e6a38'); // fronda extra
+   593→    // cocos
+   594→    rc(x, crownX - 2, crownY + 3, 2, 2, '#6d4520');
+   595→    rc(x, crownX + 1, crownY + 4, 2, 2, '#6d4520');
+   596→    return true;
+   597→  }
+   598→
+   599→  if ((ch === 't' || ch === 'p') && mapId === 'cumbres') {
+   600→    // ---- PINO NEVADO: verde oscuro con capa blanca ----
+   601→    // tronco
+   602→    rc(x, px0 + 7, py0 + 12, 2, 4, '#54381e');
+   603→    rc(x, px0 + 7, py0 + 15, 2, 1, '#3e2a16');
+   604→    // tres pisos de copa, cada uno con gorro de nieve
+   605→    const layers: [number, number, number][] = [
+   606→      // [x0, y0, ancho]
+   607→      [3, 7, 10], [4, 4, 8], [5, 1, 6],
+   608→    ];
+   609→    for (let i = 0; i < layers.length; i++) {
+   610→      const [lx, ly, lw] = layers[i];
+   611→      const deep = i % 2 === 0 ? '#1e4a34' : '#21503a';
+   612→      rc(x, px0 + lx, py0 + ly, lw, 4, deep);
+   613→      rc(x, px0 + lx + 1, py0 + ly + 1, lw - 3, 1, '#2e5e42'); // brillo interior
+   614→      // capa de nieve
+   615→      const snowW = r2 > 0.5 ? lw : lw - 2;
+   616→      rc(x, px0 + lx, py0 + ly, snowW, 1, '#e8f0f4');
+   617→      rc(x, px0 + lx + 2, py0 + ly + 1, Math.max(1, snowW - 5), 1, '#d4e4ea');
+   618→    }
+   619→    // copa encendida
+   620→    rc(x, px0 + 7, py0 - 1, 2, 2, '#e8f0f4');
+   621→    if (r > 0.7) rc(x, px0 + 5, py0 + 3, 2, 1, '#f4fafc');
+   622→    return true;
+   623→  }
+   624→
+   625→  return false;
+   626→}
+   627→
+   628→// ============================================================
+   629→// PROPS DE LA EXPANSIÓN (dibujados a pantalla, centrados en
+   630→// (cx, cy) = coordenadas de pantalla del centro del prop — el
+   631→// motor pasará sx(px), sy(py) como hace drawProps()).
+   632→// ============================================================
+   633→
+   634→export function drawExpansionProp(
+   635→  ctx: CanvasRenderingContext2D, kind: string, cx: number, cy: number,
+   636→  zoom: number, t: number, lit: boolean,
+   637→): void {
+   638→  const Z = zoom;
+   639→  switch (kind) {
+   640→    case 'wreck': {
+   641→      // ---- casco de nave naufragada (~40×24) ----
+   642→      ctx.save();
+   643→      ctx.translate(cx, cy);
+   644→      ctx.rotate(-0.16);
+   645→      // sombra
+   646→      ctx.globalAlpha = 0.25;
+   647→      ctx.fillStyle = '#000';
+   648→      ctx.beginPath();
+   649→      ctx.ellipse(0, 11 * Z, 22 * Z, 4 * Z, 0, 0, Math.PI * 2);
+   650→      ctx.fill();
+   651→      ctx.globalAlpha = 1;
+   652→      // casco: franjas apiladas (quilla arriba, panza abajo)
+   653→      for (let i = 0; i < 5; i++) {
+   654→        const w = (17 - i * 2.4) * Z;
+   655→        ctx.fillStyle = i % 2 === 0 ? '#6d4a2a' : '#54381e';
+   656→        ctx.fillRect(-w, (6 - i * 4) * Z, w * 2, 4 * Z);
+   657→      }
+   658→      // borde superior desbordado (cubierta rota)
+   659→      ctx.fillStyle = '#8a6438';
+   660→      ctx.fillRect(-14 * Z, -12 * Z, 10 * Z, 2 * Z);
+   661→      ctx.fillStyle = '#54381e';
+   662→      ctx.fillRect(2 * Z, -11 * Z, 7 * Z, 2 * Z);
+   663→      // tablón suelto
+   664→      ctx.fillStyle = '#7d5630';
+   665→      ctx.fillRect(-4 * Z, -9 * Z, 9 * Z, 1.5 * Z);
+   666→      // musgo
+   667→      ctx.fillStyle = '#4a7a3e';
+   668→      ctx.fillRect(-9 * Z, -6 * Z, 5 * Z, 2 * Z);
+   669→      ctx.fillRect(6 * Z, 1 * Z, 4 * Z, 2 * Z);
+   670→      // mástil roto
+   671→      ctx.fillStyle = '#54381e';
+   672→      ctx.fillRect(6 * Z, -26 * Z, 2.4 * Z, 22 * Z);
+   673→      ctx.fillStyle = '#3e2a16';
+   674→      ctx.fillRect(7.4 * Z, -26 * Z, 1 * Z, 22 * Z);
+   675→      // vela desgarrada ondeando con sin(t)
+   676→      const wav = Math.sin(t * 1.7) * 3;
+   677→      ctx.globalAlpha = 0.92;
+   678→      ctx.fillStyle = '#cfc8b4';
+   679→      ctx.beginPath();
+   680→      ctx.moveTo(8.6 * Z, -25 * Z);
+   681→      ctx.quadraticCurveTo((26 + wav) * Z, (-20 + wav * 0.6) * Z, (22 + wav) * Z, (-5 + wav) * Z);
+   682→      ctx.lineTo(15 * Z, (-9 + wav * 0.4) * Z);
+   683→      ctx.lineTo(10.5 * Z, (-15 + wav * 0.2) * Z);
+   684→      ctx.closePath();
+   685→      ctx.fill();
+   686→      // jirones (desgarrada)
+   687→      ctx.globalAlpha = 0.85;
+   688→      ctx.fillStyle = '#a89f8a';
+   689→      ctx.fillRect((17 + wav * 0.5) * Z, (-13 + wav) * Z, 4 * Z, 2 * Z);
+   690→      ctx.fillRect(11 * Z, -19 * Z, 3 * Z, 2 * Z);
+   691→      ctx.globalAlpha = 1;
+   692→      ctx.restore();
+   693→      break;
+   694→    }
+   695→    case 'faro': {
+   696→      // ---- faro en ruinas (~20×48): torre de piedra con franjas ----
+   697→      // 8 segmentos de 6 px → 48 px de alto, se estrecha hacia arriba
+   698→      for (let i = 0; i < 8; i++) {
+   699→        const yTop = cy + (14 - i * 6) * Z - 6 * Z;
+   700→        const halfW = (10 - i * 0.5) * Z;
+   701→        ctx.fillStyle = i % 2 === 0 ? '#c8c2b4' : '#9a5a4a';
+   702→        ctx.fillRect(cx - halfW, yTop, halfW * 2, 6 * Z + 0.6);
+   703→      }
+   704→      // piedras caídas / ruina
+   705→      ctx.fillStyle = '#8a8478';
+   706→      ctx.fillRect(cx - 11 * Z, cy + 8 * Z, 3 * Z, 2 * Z);
+   707→      ctx.fillRect(cx + 7 * Z, cy + 2 * Z, 4 * Z, 2 * Z);
+   708→      // grieta
+   709→      ctx.fillStyle = 'rgba(40,36,30,0.5)';
+   710→      ctx.fillRect(cx - 2 * Z, cy - 10 * Z, 1.2 * Z, 10 * Z);
+   711→      ctx.fillRect(cx - 1 * Z, cy - 2 * Z, 1.2 * Z, 6 * Z);
+   712→      // linterna
+   713→      const gy = cy - 34 * Z;
+   714→      ctx.fillStyle = '#3a3e48';
+   715→      ctx.fillRect(cx - 6 * Z, gy, 12 * Z, 8 * Z);
+   716→      if (lit) {
+   717→        // luz superior que pulsa con sin(t*2.4)
+   718→        const pulse = 0.55 + Math.sin(t * 2.4) * 0.45;
+   719→        ctx.globalAlpha = pulse;
+   720→        ctx.fillStyle = '#ffe9a0';
+   721→        ctx.fillRect(cx - 4 * Z, gy + 2 * Z, 8 * Z, 4 * Z);
+   722→        ctx.globalAlpha = 0.25 + pulse * 0.3;
+   723→        ctx.fillStyle = '#ffe9a0';
+   724→        ctx.beginPath();
+   725→        ctx.arc(cx, gy + 4 * Z, 10 * Z, 0, Math.PI * 2);
+   726→        ctx.fill();
+   727→        // haz cónico semitransparente rotando lento
+   728→        ctx.globalAlpha = 0.12;
+   729→        ctx.save();
+   730→        ctx.translate(cx, gy + 4 * Z);
+   731→        ctx.rotate(t * 0.35);
+   732→        ctx.fillStyle = '#fff3c8';
+   733→        const L = 64 * Z;
+   734→        ctx.beginPath();
+   735→        ctx.moveTo(0, -3 * Z); ctx.lineTo(L, -12 * Z); ctx.lineTo(L, 12 * Z); ctx.closePath();
+   736→        ctx.fill();
+   737→        ctx.beginPath();
+   738→        ctx.moveTo(0, -3 * Z); ctx.lineTo(-L, -12 * Z); ctx.lineTo(-L, 12 * Z); ctx.closePath();
+   739→        ctx.fill();
+   740→        ctx.restore();
+   741→        ctx.globalAlpha = 1;
+   742→      } else {
+   743→        // ventana oscura
+   744→        ctx.fillStyle = '#1c2028';
+   745→        ctx.fillRect(cx - 4 * Z, gy + 2 * Z, 8 * Z, 4 * Z);
+   746→      }
+   747→      // cúpula rota
+   748→      ctx.fillStyle = '#6a6458';
+   749→      ctx.fillRect(cx - 6 * Z, gy - 3 * Z, 5 * Z, 3 * Z);
+   750→      ctx.fillRect(cx + 1 * Z, gy - 2 * Z, 5 * Z, 2 * Z);
+   751→      break;
+   752→    }
+   753→    case 'lamp': {
+   754→      // ---- farol de pie (~10×18) ----
+   755→      // peana + poste
+   756→      ctx.fillStyle = '#2a2a32';
+   757→      ctx.fillRect(cx - 3 * Z, cy + 6 * Z, 6 * Z, 2 * Z);
+   758→      ctx.fillStyle = '#3a3a44';
+   759→      ctx.fillRect(cx - 1 * Z, cy - 8 * Z, 2 * Z, 15 * Z);
+   760→      // caja del farol
+   761→      ctx.fillStyle = '#3a3a44';
+   762→      ctx.fillRect(cx - 3.5 * Z, cy - 16 * Z, 7 * Z, 9 * Z);
+   763→      ctx.fillStyle = '#2a2a32';
+   764→      ctx.fillRect(cx - 4.5 * Z, cy - 18 * Z, 9 * Z, 2.5 * Z);
+   765→      if (lit) {
+   766→        // llama cálida parpadeante + halo dorado
+   767→        const fl = 0.7 + Math.sin(t * 9) * 0.2 + Math.sin(t * 23.7) * 0.1;
+   768→        ctx.globalAlpha = 0.22 + fl * 0.18;
+   769→        ctx.fillStyle = '#ffd88a';
+   770→        ctx.beginPath();
+   771→        ctx.arc(cx, cy - 11.5 * Z, 10 * Z, 0, Math.PI * 2);
+   772→        ctx.fill();
+   773→        ctx.globalAlpha = 1;
+   774→        ctx.fillStyle = `rgba(255,216,138,${0.7 + fl * 0.3})`;
+   775→        ctx.fillRect(cx - 2.5 * Z, cy - 14.5 * Z, 5 * Z, 6 * Z);
+   776→        ctx.fillStyle = '#fff6d8';
+   777→        ctx.fillRect(cx - 1 * Z, cy - 13 * Z, 2 * Z, 3 * Z);
+   778→      } else {
+   779→        // cristal apagado gris
+   780→        ctx.fillStyle = '#8a8f98';
+   781→        ctx.fillRect(cx - 2.5 * Z, cy - 14.5 * Z, 5 * Z, 6 * Z);
+   782→        ctx.fillStyle = '#6a6f78';
+   783→        ctx.fillRect(cx - 1 * Z, cy - 12 * Z, 2 * Z, 3 * Z);
+   784→      }
+   785→      break;
+   786→    }
+   787→    default:
+   788→      break; // prop no gestionado: el motor usa su dibujo propio
+   789→  }
+   790→}
+   791→
+   792→// ============================================================
+   793→// PROYECTILES DE LA EXPANSIÓN (a pantalla, centro x,y)
+   794→// El integrador lo llamará desde el bucle de proyectiles del
+   795→// render antes del fallback genérico. Devuelve true si dibujó.
+   796→// ============================================================
+   797→
+   798→/** Corchea pixelada reutilizable (nota musical). */
+   799→function notaGlyph(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, col: string) {
+   800→  const u = s / 6;
+   801→  ctx.fillStyle = col;
+   802→  // cabeza
+   803→  ctx.fillRect(x - 1.6 * u, y + 1.2 * u, 2.6 * u, 1.8 * u);
+   804→  // mástil
+   805→  ctx.fillRect(x + 0.4 * u, y - 2.6 * u, 0.8 * u, 4.2 * u);
+   806→  // banderín
+   807→  ctx.fillRect(x + 1.2 * u, y - 2.6 * u, 0.8 * u, 1.6 * u);
+   808→  ctx.fillRect(x + 2 * u, y - 1.6 * u, 0.6 * u, 1.2 * u);
+   809→}
+   810→
+   811→export function drawExpansionProjectile(
+   812→  ctx: CanvasRenderingContext2D, sprite: string, x: number, y: number,
+   813→  r: number, zoom: number, t: number,
+   814→): boolean {
+   815→  switch (sprite) {
+   816→    case 'orb': {
+   817→      // esfera de agua con highlight y ondulación
+   818→      const wob = 1 + Math.sin(t * 6) * 0.12;
+   819→      const R = Math.max(3, r) * zoom * wob;
+   820→      ctx.globalAlpha = 0.28;
+   821→      ctx.fillStyle = '#2e78b8';
+   822→      ctx.beginPath(); ctx.arc(x, y, R + 1.5, 0, Math.PI * 2); ctx.fill();
+   823→      ctx.globalAlpha = 0.85;
+   824→      ctx.fillStyle = '#58a8e0';
+   825→      ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill();
+   826→      ctx.globalAlpha = 0.9;
+   827→      ctx.fillStyle = '#9ad0f0';
+   828→      ctx.beginPath(); ctx.arc(x - R * 0.2, y - R * 0.25, R * 0.55, 0, Math.PI * 2); ctx.fill();
+   829→      ctx.globalAlpha = 1;
+   830→      ctx.fillStyle = '#f4fbff';
+   831→      ctx.fillRect(x - R * 0.45, y - R * 0.55, Math.max(1.5, R * 0.35), Math.max(1.5, R * 0.35));
+   832→      return true;
+   833→    }
+   834→    case 'shard': {
+   835→      // cristal de hielo afilado girando lento
+   836→      ctx.save();
+   837→      ctx.translate(x, y);
+   838→      ctx.rotate(t * 3);
+   839→      const s = Math.max(3, r + 1) * zoom;
+   840→      ctx.fillStyle = '#5aa8cc';
+   841→      ctx.beginPath();
+   842→      ctx.moveTo(0, -s); ctx.lineTo(s * 0.55, 0); ctx.lineTo(0, s); ctx.lineTo(-s * 0.55, 0);
+   843→      ctx.closePath(); ctx.fill();
+   844→      ctx.fillStyle = '#9fd4ec';
+   845→      ctx.beginPath();
+   846→      ctx.moveTo(0, -s * 0.8); ctx.lineTo(s * 0.3, 0); ctx.lineTo(0, s * 0.8); ctx.lineTo(-s * 0.3, 0);
+   847→      ctx.closePath(); ctx.fill();
+   848→      ctx.fillStyle = '#eaf8ff';
+   849→      ctx.beginPath();
+   850→      ctx.moveTo(0, -s * 0.45); ctx.lineTo(s * 0.12, 0); ctx.lineTo(0, s * 0.45); ctx.lineTo(-s * 0.12, 0);
+   851→      ctx.closePath(); ctx.fill();
+   852→      ctx.restore();
+   853→      return true;
+   854→    }
+   855→    case 'nota': {
+   856→      // nota musical luminosa con estela parpadeante
+   857→      const bob = Math.sin(t * 4) * 1.5;
+   858→      const pulse = 0.7 + Math.sin(t * 8) * 0.3;
+   859→      const s = Math.max(3, r + 1) * zoom;
+   860→      ctx.globalAlpha = 0.22 * pulse;
+   861→      ctx.fillStyle = '#bfe0ff';
+   862→      ctx.beginPath(); ctx.arc(x, y + bob, s * 1.6, 0, Math.PI * 2); ctx.fill();
+   863→      for (let i = 1; i <= 2; i++) {
+   864→        ctx.globalAlpha = (0.3 / i) * pulse;
+   865→        notaGlyph(ctx, x - i * 2, y + bob - i * 3, s * (1 - i * 0.18), '#9fc8e8');
+   866→      }
+   867→      ctx.globalAlpha = 1;
+   868→      notaGlyph(ctx, x, y + bob, s, '#f2f9ff');
+   869→      return true;
+   870→    }
+   871→    default:
+   872→      return false; // no gestionado: fallback del motor
+   873→  }
+   874→}
+   875→
+   876→// ============================================================
+   877→// 14-a (AGENTE JEFES-ENEMIGOS) — sprites de los 2 jefes nuevos
+   878→// (Vult, El Coro Roto) y los 2 enemigos de mapa (Eco Desgarrado,
+   879→// Sátiro de la Niebla). APPEND puro: lo de arriba queda intacto y
+   880→// el registro vive en initExpansionSprites (al final del bloque de
+   881→// registro, marcado con 14-a).
+   882→// ============================================================
+   883→
+   884→// ---------------- Vult, el Cazador de Ecos (32×32 · 3 frames · JEFE) ----
+   885→// Humanoide veloz: gabardina de cazador verde-niebla, pañuelo al viento,
+   886→// dos dagas de eco (filos pálidos). Silueta inclinada hacia delante
+   887→// (siempre en carrerilla). El frame alterna el ondear de la capa.
+   888→
+   889→function buildVult(): Frames {
+   890→  const frames: Frames = [];
+   891→  for (let f = 0; f < 3; f++) {
+   892→    const { c, x } = cv(32, 32);
+   893→    const CAP = '#26483c', CAP2 = '#31604e', CAPD = '#1a332a',
+   894→      SKIN = '#d4dcc8', SKINS = '#aeb8a2', SCARF = '#8ef0c0',
+   895→      DGA = '#dfeee6', DGAD = '#9cbcb0', BOOT = '#20302a', EYE = '#b8ffd8',
+   896→      BK = '#14241e';
+   897→    const sway = f === 0 ? 0 : f === 1 ? 1 : -1; // capa y pañuelo
+   898→    // ---- capa trasera (ondea opuesta al avance) ----
+   899→    x.globalAlpha = 0.95;
+   900→    rc(x, 7 - sway, 8, 7, 14, CAPD);
+   901→    rc(x, 5 - sway, 10, 3, 10, CAPD);
+   902→    x.globalAlpha = 0.55;
+   903→    rc(x, 4 - sway, 14 + sway, 3, 6, CAP);           // ala baja de la capa
+   904→    x.globalAlpha = 1;
+   905→    // ---- pañuelo de eco (se mecen con el frame) ----
+   906→    rc(x, 16 + sway, 7, 6, 2, SCARF);
+   907→    rc(x, 21 + sway * 2, 6, 4, 2, SCARF);
+   908→    x.globalAlpha = 0.6;
+   909→    rc(x, 24 + sway * 2, 5, 3, 2, SCARF);            // punta que se disuelve
+   910→    x.globalAlpha = 1;
+   911→    // ---- torso y gabardina ----
+   912→    rc(x, 12, 10, 9, 10, CAP);
+   913→    rc(x, 12, 10, 9, 1, CAP2);
+   914→    rc(x, 13, 12, 1, 7, CAP2);                       // solapa
+   915→    rc(x, 19, 11, 1, 8, CAPD);
+   916→    rc(x, 12, 19, 10, 4, CAPD);                      // faldón
+   917→    rc(x, 13, 23, 4, 3, BOOT);
+   918→    rc(x, 18, 23, 4, 3, BOOT);
+   919→    // ---- cabeza con capucha ----
+   920→    rc(x, 13, 3, 8, 7, CAP);
+   921→    rc(x, 12, 4, 1, 5, CAPD);
+   922→    rc(x, 21, 4, 1, 5, CAPD);
+   923→    rc(x, 14, 5, 6, 4, BK);                          // hueco de la capucha
+   924→    rc(x, 15, 6, 1, 1, EYE);                         // ojos de eco
+   925→    rc(x, 18, 6, 1, 1, EYE);
+   926→    // ---- brazos + dagas de eco ----
+   927→    rc(x, 9, 11, 3, 3, CAP); rc(x, 8, 13, 2, 3, SKIN);   // brazo trasero
+   928→    rc(x, 21, 11, 3, 3, CAP); rc(x, 23, 13, 2, 3, SKIN); // brazo delantero
+   929→    // daga 1 (alzada, atrás)
+   930→    rc(x, 6, 6, 2, 8, DGA);
+   931→    rc(x, 6, 6, 1, 8, DGAD);
+   932→    rc(x, 5, 13, 4, 2, DGAD);                        // guarda
+   933→    // daga 2 (invertida, adelante — agarre de cazarreco)
+   934→    rc(x, 24, 16, 2, 7, DGA);
+   935→    rc(x, 25, 16, 1, 7, DGAD);
+   936→    rc(x, 23, 22, 4, 2, DGAD);
+   937→    // brillo de los filos (parpadea por frame)
+   938→    if (f !== 1) { x.globalAlpha = 0.8; rc(x, 6, 7, 1, 3, '#ffffff'); rc(x, 25, 17, 1, 2, '#ffffff'); x.globalAlpha = 1; }
+   939→    // contorno sutil
+   940→    x.globalAlpha = 0.5;
+   941→    rc(x, 13, 3, 8, 1, BK);
+   942→    rc(x, 12, 19, 10, 1, BK);
+   943→    x.globalAlpha = 1;
+   944→    frames.push(c);
+   945→  }
+   946→  return frames;
+   947→}
+   948→
+   949→// ---------------- El Coro Roto (30×30 · 2 frames × 3 máscaras · JEFE) ----
+   950→// MASA de tres máscaras flotantes unidas por hilos de bruma: una central
+   951→// grande cantando al revés (boca vertical) y dos menores a los flancos.
+   952→// buildCoro(fase) devuelve la variante de la fase:
+   953→//   1 · MÁSCARA DEL PULSO    — hueso claro, glow aguamarina, intacta.
+   954→//   2 · MÁSCARA DEL VERA     — hueso frío, glow violeta, grietas finas.
+   955→//   3 · MÁSCARA DEL SILENCIO — hueso apagado, glow dorado, cuarteadas.
+   956→
+   957→function buildCoro(fase: 1 | 2 | 3): Frames {
+   958→  const pal = fase === 1
+   959→    ? { HUESO: '#d8d4c4', HUESO2: '#bdb8a6', GLOW: '#7ee8ff', HUECO: '#1a2030', FILO: '#eef2e8' }
+   960→    : fase === 2
+   961→      ? { HUESO: '#c8c2b2', HUESO2: '#aaa494', GLOW: '#b48fff', HUECO: '#1c1830', FILO: '#e4e2da' }
+   962→      : { HUESO: '#c4bcae', HUESO2: '#9c9486', GLOW: '#ffd88a', HUECO: '#241f28', FILO: '#dcd8cc' };
+   963→  const frames: Frames = [];
+   964→  for (let f = 0; f < 2; f++) {
+   965→    const { c, x } = cv(30, 30);
+   966→    const bob = f === 0 ? 0 : 1;
+   967→    const { HUESO, HUESO2, GLOW, HUECO, FILO } = pal;
+   968→    // ---- hilos de bruma que unen la masa ----
+   969→    x.globalAlpha = 0.4;
+   970→    rc(x, 8, 14 + bob, 4, 1, GLOW);
+   971→    rc(x, 18, 14 - bob, 4, 1, GLOW);
+   972→    x.globalAlpha = 0.22;
+   973→    disc(x, 15, 13 + bob, 11, GLOW);                 // aura compartida
+   974→    x.globalAlpha = 1;
+   975→    // ---- máscara central (boca vertical = canto al revés) ----
+   976→    rc(x, 10, 5 + bob, 10, 13, HUESO);
+   977→    rc(x, 9, 6 + bob, 12, 11, HUESO);
+   978→    rc(x, 10, 17 + bob, 10, 2, HUESO2);              // mentón
+   979→    rc(x, 9, 6 + bob, 1, 9, HUESO2);
+   980→    rc(x, 20, 6 + bob, 1, 9, HUESO2);
+   981→    // ojos huecos (el central mayor según la fase: se apaga el coro)
+   982→    const eyeH = fase === 1 ? 2 : fase === 2 ? 3 : 4;
+   983→    rc(x, 11, 8 + bob, 2, eyeH, HUECO);
+   984→    rc(x, 17, 8 + bob, 2, eyeH, HUECO);
+   985→    rc(x, 11, 8 + bob, 2, 1, FILO);
+   986→    rc(x, 17, 8 + bob, 2, 1, FILO);
+   987→    // boca vertical (la nota al revés) + glow interior
+   988→    rc(x, 14, 11 + bob, 2, 5, HUECO);
+   989→    x.globalAlpha = 0.85;
+   990→    rc(x, 14, 11 + bob, 1, 4, GLOW);
+   991→    x.globalAlpha = 1;
+   992→    // grietas: finas en F2, cuarteadas en F3
+   993→    if (fase >= 2) {
+   994→      rc(x, 12, 5 + bob, 1, 3, HUESO2);
+   995→      rc(x, 18, 13 + bob, 1, 4, HUESO2);
+   996→    }
+   997→    if (fase === 3) {
+   998→      rc(x, 10, 12 + bob, 3, 1, HUECO);
+   999→      rc(x, 16, 5 + bob, 1, 4, HUECO);
+  1000→      rc(x, 13, 18 + bob, 4, 1, HUECO);
+  1001→      rc(x, 19, 9 + bob, 1, 3, HUESO2);
+  1002→    }
+  1003→    // ---- máscara izquierda (perfil, cuelga más baja) ----
+  1004→    rc(x, 3, 12 + bob, 6, 8, HUESO2);
+  1005→    rc(x, 2, 13 + bob, 1, 6, HUESO2);
+  1006→    rc(x, 4, 15 + bob, 2, 2, HUECO);                 // ojo ladeado
+  1007→    rc(x, 5, 20 + bob, 1, 2, HUECO);                 // boca pequeña
+  1008→    // ---- máscara derecha (perfil, más alta) ----
+  1009→    rc(x, 21, 9 + bob, 6, 8, HUESO2);
+  1010→    rc(x, 27, 10 + bob, 1, 6, HUESO2);
+  1011→    rc(x, 23, 12 + bob, 2, 2, HUECO);
+  1012→    rc(x, 24, 17 + bob, 1, 2, HUECO);
+  1013→    // destello del glow (parpadeo por frame)
+  1014→    if (f === 1) {
+  1015→      x.globalAlpha = 0.7;
+  1016→      rc(x, 14, 15 + bob, 1, 1, FILO);
+  1017→      rc(x, 6, 11 + bob, 1, 1, GLOW);
+  1018→      rc(x, 23, 8 + bob, 1, 1, GLOW);
+  1019→      x.globalAlpha = 1;
+  1020→    }
+  1021→    frames.push(c);
+  1022→  }
+  1023→  return frames;
+  1024→}
+  1025→
+  1026→// ---------------- Eco Desgarrado (16×16 · 2 frames) ----------------------
+  1027→// Espectro PARTIDO en dos mitades con un hueco de bruma entre ellas:
+  1028→// el hueco late (cambia de ancho por frame). Paleta pálida azulada.
+  1029→
+  1030→function buildEcodesg(): Frames {
+  1031→  const frames: Frames = [];
+  1032→  for (let f = 0; f < 2; f++) {
+  1033→    const { c, x } = cv(16, 16);
+  1034→    const O = '#39465e', B = '#cdd8ea', S = '#a4b2ca', EYE = '#222c44', GAP = f === 0 ? 1 : 2;
+  1035→    x.globalAlpha = 0.85;
+  1036→    // mitad izquierda (jag de desgarro)
+  1037→    rc(x, 4, 4, 3, 7, B);
+  1038→    rc(x, 3, 6, 1, 4, B);
+  1039→    rc(x, 7 - GAP, 5, 1, 2, B);
+  1040→    rc(x, 6 - GAP, 8, 1, 2, S);
+  1041→    // mitad derecha (simétrica rota)
+  1042→    rc(x, 9 + GAP, 4, 3, 7, B);
+  1043→    rc(x, 12 + GAP, 6, 1, 4, B);
+  1044→    rc(x, 8 + GAP, 5, 1, 2, S);
+  1045→    rc(x, 9 + GAP, 8, 1, 2, S);
+  1046→    // cola desgarrada (3 jirones)
+  1047→    x.globalAlpha = 0.6;
+  1048→    rc(x, 4, 11, 2, 2 + f, B);
+  1049→    rc(x, 7, 11 + GAP, 2, 1 + f, S);
+  1050→    rc(x, 10 + GAP, 11, 2, 2, B);
+  1051→    x.globalAlpha = 1;
+  1052→    // ojos desalineados (el eco no se reconoce)
+  1053→    rc(x, 4, 6, 1, 2, EYE);
+  1054→    rc(x, 11 + GAP, 6, 1, 2, EYE);
+  1055→    // borde superior del desgarro
+  1056→    rc(x, 4, 3, 8, 1, O);
+  1057→    x.globalAlpha = 0.5;
+  1058→    rc(x, 7, 3 + GAP, 2, 1, O);                      // labio del hueco
+  1059→    x.globalAlpha = 1;
+  1060→    frames.push(c);
+  1061→  }
+  1062→  return frames;
+  1063→}
+  1064→
+  1065→// ---------------- Sátiro de la Niebla (16×16 · 2 frames) -----------------
+  1066→// Cabrío pequeño y encorvado con zampoña: pelaje gris-verde, cuernos
+  1067→// claros, ojos dorados. El frame alterna el brinco (patas) y la flauta.
+  1068→
+  1069→function buildSatiro(): Frames {
+  1070→  const frames: Frames = [];
+  1071→  for (let f = 0; f < 2; f++) {
+  1072→    const { c, x } = cv(16, 16);
+  1073→    const FUR = '#4a5648', FUR2 = '#5e6c58', HORN = '#c8b890', EYE = '#ffd88a',
+  1074→      HOOF = '#2c342a', NIEBLA = '#aebcc8', BK = '#262e26';
+  1075→    const hop = f === 0 ? 0 : -1; // brinco
+  1076→    // niebla en los cascos
+  1077→    x.globalAlpha = 0.35;
+  1078→    rc(x, 2, 14, 5, 1, NIEBLA);
+  1079→    rc(x, 9, 14, 5, 1, NIEBLA);
+  1080→    x.globalAlpha = 1;
+  1081→    // cuernos curvos
+  1082→    rc(x, 4, 1 + hop, 1, 3, HORN); rc(x, 3, 1 + hop, 1, 2, HORN);
+  1083→    rc(x, 9, 1 + hop, 1, 3, HORN); rc(x, 10, 1 + hop, 1, 2, HORN);
+  1084→    // cabeza cabruna (perfil)
+  1085→    rc(x, 4, 3 + hop, 6, 4, FUR);
+  1086→    rc(x, 9, 4 + hop, 2, 2, FUR);                    // hocico
+  1087→    rc(x, 5, 4 + hop, 1, 1, EYE);
+  1088→    // barba de chivo
+  1089→    rc(x, 8, 7 + hop, 1, 2, FUR2);
+  1090→    // torso encorvado
+  1091→    rc(x, 3, 7 + hop, 8, 4, FUR);
+  1092→    rc(x, 4, 11 + hop, 6, 1, FUR2);
+  1093→    rc(x, 3, 7 + hop, 8, 1, BK);
+  1094→    // patas traseras y delanteras (el brinco alterna)
+  1095→    rc(x, 4, 11 + hop, 1, 3 - f, FUR2); rc(x, 4, 13 + hop - f, 1, 1, HOOF);
+  1096→    rc(x, 9, 11 + hop, 1, 3 - (1 - f), FUR2); rc(x, 9, 13 + hop - (1 - f), 1, 1, HOOF);
+  1097→    rc(x, 3, 11 + hop, 1, 2, FUR2);
+  1098→    // zampoña (tubos) junto al hocico — silba la balada curva
+  1099→    rc(x, 10, 6 + hop, 1, 4, '#8a6a4a');
+  1100→    rc(x, 11, 6 + hop, 1, 3, '#6a4e36');
+  1101→    if (f === 1) { x.globalAlpha = 0.7; rc(x, 12, 5 + hop, 1, 1, NIEBLA); x.globalAlpha = 1; } // nota de niebla
+  1102→    // cola corta
+  1103→    rc(x, 2, 8 + hop, 1, 2, FUR2);
+  1104→    frames.push(c);
+  1105→  }
+  1106→  return frames;
+  1107→}
+  1108→

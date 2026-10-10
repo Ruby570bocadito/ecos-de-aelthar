@@ -1,0 +1,22 @@
+=== toplevel ===
+/home/z/my-project
+=== log 15 ===
+ef039e5 e01e63af-6522-46c1-9dcd-520386db583a
+67b1608 5bdd9798-f032-4fe1-b914-280f3746eafb
+b807610 5d49ddc7-5e48-48a2-8cbe-8f1cee9bafb3
+8f9c0bc 9d44b609-7191-43f3-8579-101334eb64c6
+19e040e fa310c8a-f291-4036-860e-c6a6d0092829
+6ae3554 c5172c4e-40f7-44d1-925f-e7c646c6358f
+b3e0c5c 8fd76671-f672-4818-a7a1-954c28a0964b
+2b1a141 7fda1c57-4ce7-416e-a49f-2ffd87dba322
+6255857 f523d555-f468-4dcc-9e1e-e4924634e993
+3428819 b6acfcff-d1d7-4144-850e-11067412d91b
+ed34b5f e89d5a77-68db-4418-9792-58ae518f7fdb
+df715cf Initial commit
+=== status ===
+?? scripts/_estado.txt
+?? scripts/_gitinfo.txt
+?? tool-results/read_1791622389540_cd59fd6fe1bc.txt
+?? tool-results/read_1791622406914_7dc7e5897125.txt
+=== zpkg git? ===
+ls: cannot access '/home/z/my-project/.zpackage/ecos-de-aelthar/.git': No such file or directory

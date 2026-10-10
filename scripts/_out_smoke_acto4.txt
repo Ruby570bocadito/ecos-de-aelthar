@@ -1,0 +1,78 @@
+=== 1) ESTRUCTURA: misiones, memoria VII, jefe final, Guarda, brújula ===
+  ✓ q14/q15/q16 presentes: Las Campanas de Antes · La Sala del Primer Canto · El Eco que Elegiste
+  ✓ QUESTS.length = 16 (q1..q16, Acto IV incluido)
+  ✓ pasos: q14 3 · q15 3 · q16 2
+  ✓ memoria VII mem_ultimacanto definida
+  ✓ jefe final 'heraldo': hp 640, quiebre 130, sprite existente 'inquisidor'
+  ✓ Guarda del Primer Canto en la Cripta (showFlag 'acto3Done', sprite 'kael')
+  ✓ Brújula: objetivos de q14-q16 definidos
+  ✓ ACTO4_BOSS exportado (patrón ACTO3_ELITE)
+  ✓ nodo de respaldo acto4_epilogo_canto presente
+  ✓ envoltorio 16-a: delegación base intacta (brisa q0 → brisa_intro)
+  ✓ envoltorio 16-a: delegación Acto III intacta (mara q5 → mara_intro)
+  ✓ transición q12→q13: Brisa abre el Acto IV (briefing alcanzable)
+  ✓ sin acto3Done: la capa 13-a conserva el cierre del Acto III
+
+=== 2) Flujo q14: aceptar → Toln → 2 voces (cualquier orden) → reporte ===
+  ✓ accept_q14: misión activa (idx 13, paso 0)
+  ✓ acto4_toln: campana criada, paso 0→1
+  ✓ acto4_cam_ivo: voz 1/2 (paso aún abierto)
+  ✓ acto4_cam_mera: coro completo (desordenado) → paso 1→2
+  ✓ acto4_report paga q14 y avanza a q15
+  ✓ recompensa q14: +80 coronas y +1 poción
+
+=== 3) Flujo q15: Guarda → JEFE FINAL (Vesh, la Última Nota) → catchUp → reporte ===
+  ✓ acto4_guarda: paso 0→1
+  ✓ acto4_subir: Cripta + jefe final con barra de jefe activa
+  ✓ jefe final instanciado: etype 'heraldo', quiebre 130
+  ✓ jefe final caído → catchUp avanza paso 1→2
+  ✓ barra de jefe y música limpiados por el catchUp
+  ✓ botín del jefe otorgado por killEnemy (rama por defecto)
+  ✓ acto4_subir idempotente: el jefe derrotado no renace
+  ✓ acto4_report paga q15 → q16 (epílogo)
+  ✓ recompensa q15: +120 coronas y +1 poción
+  ✓ anti-doble-pago q15: repetir report no paga dos veces
+
+=== 4) q16 · Epílogo: ramas por reputación, pago, memoria UNA VEZ, final dinámico ===
+  ✓ epílogo: Orden > Guardianes → rama VERDAD (espejo de reputación)
+  ✓ epílogo: Guardianes >= Orden → rama SILENCIO
+  ✓ acto4_epilogo: pago final + acto4Done
+  ✓ recompensa q16: +150 coronas y +1 poción
+  ✓ memoria VII otorgada y paso 0→1 del epílogo
+  ✓ final dinámico del epílogo instalado en dynNodes
+  ✓ anti-doble-pago q16: ni oro ni memoria duplicados
+  ✓ final dinámico: menciona al Coro Roto y a Vult al haber caído
+  ✓ textos de jefes del epílogo definidos en data.ts
+  ✓ post-epílogo: despedida con opción de terminar el viaje (end_demo)
+
+=== 5) Juego FUERA DE ORDEN: voces/jefe/recuerdos ANTES de aceptar ===
+  ✓ q14 fuera de orden: voces previas + catchUp cierran el paso
+  ✓ q15 fuera de orden: flag del jefe muerto avanza el paso
+  ✓ save a medio aceptar: q14 con idx 12 auto-reparado
+
+=== 6) Caso sin condiciones: el catchUp NO avanza nada espúreo ===
+  ✓ sin condiciones: la misión sigue en paso 0
+  ✓ sin decisión de Acto III: rama neutra del epílogo
+
+=== 7) RUTEO de diálogos del Acto IV (envoltorio en capas) ===
+  ✓ brisa q14 paso 0 → guía de campanas
+  ✓ brisa q14 paso 2 → cierre con informe
+  ✓ toln q14 paso 0 → forja de la campana
+  ✓ toln con tono sarcástico → variante Listillo
+  ✓ toln con campana criada → menú normal (forja/tienda)
+  ✓ mera q14 paso 1 (Sirena caída) → voz de Merrow
+  ✓ ivo q14 paso 1 (Gólem caído) → resonancia de las Cumbres
+  ✓ mera con voz entregada → delega (no repite el nodo)
+  ✓ guarda q15 paso 0 → presentación
+  ✓ guarda paso 1 → ofrecimiento de la puerta
+  ✓ guarda con Sala abierta → re-entrada (anti-bloqueo)
+  ✓ guarda tras el jefe → gratitud
+  ✓ guarda antes de q15 → silencio (la Sala aún duerme)
+  ✓ heraldo NPC durante el Acto IV → último aviso
+  ✓ heraldo tras su muerte → delega (aviso retirado)
+  ✓ brisa q15 paso 0 → guía hacia la Cripta
+  ✓ brisa q15 paso 1 con jefe vivo → "no la dejes esperando"
+  ✓ brisa q15 con jefe caído → informe inmediato (anti-bloqueo)
+  ✓ epílogo por flags espejo: verdad
+
+SMOKE ACTO IV: TODO OK

@@ -17,6 +17,7 @@ import { audio } from './audio';
 import { COL, text, textShadow, panel, bar, button, wrapText, addHit } from './ui';
 import { openChallengeMenu, drawChallengeTitleUi, drawChallengeOverlay } from './challenge'; // 12-a (modo desafío)
 import { drawTitlePanels, openStatsPanel, openLogrosPanel } from './achievements'; // 16-c: Estadísticas y Logros
+import { interludioTick18F, bannerActo18F } from './interludios'; // 18-f: interludios de acto + banner (agente historia-transiciones)
 
 const INTRO_SLIDES = [
   {
@@ -79,12 +80,22 @@ export function drawScreens(g: Game) {
     case 'controls': drawControls(g); break;
     case 'intro': drawIntro(g); break;
     case 'pause': drawPause(g); break;
-    case 'dialogue': drawDialogue(g); break;
+    case 'dialogue':
+      drawDialogue(g);
+      drawBannerActo18F(g); // 18-f: el banner de acto sigue durante la cinemática
+      break;
     case 'dead': drawDead(g); break;
     case 'end': drawEnd(g); break;
     case 'play':
+      // ==== 18-f (historia-transiciones): tick de los interludios de acto +
+      // barrera de los altares del Eco. Corre en el camino de dibujo porque
+      // update.ts/render.ts son de otros agentes — ver la cabecera de
+      // interludios.ts para el punto alternativo EXACTO en update.ts:384.
+      // Guard interno: solo estado 'play', con jugador y fuera de la arena.
+      interludioTick18F(g);
       // 12-a: HUD del modo desafío (oleada/enemigos/puntos, cuenta atrás y banner)
       if (g.challengeRun) drawChallengeOverlay(g);
+      drawBannerActo18F(g); // 18-f: banner «ACTO N — título» (fade 2,5 s)
       break;
     default: break;
   }
@@ -531,6 +542,27 @@ function drawSlider(g: Game, x: number, y: number, w: number, cb: (v: number) =>
   bar(g, x, y, w, 14, cur, COL.res, '#123038');
   ctx.fillStyle = '#fff';
   ctx.fillRect(x + cur * w - 3, y - 3, 6, 20);
+}
+
+// ==== 18-f (historia-transiciones): banner «ACTO N — título del acto» ====
+// Una línea, tipografía del juego, banda translúcida con filetes dorados y
+// fade de 2,5 s (0,35 entrada · mantiene · 0,6 salida — lo calcula
+// interludios.bannerActo18F). Se dibuja en 'play' y 'dialogue' (la
+// cinemática es un diálogo del sistema existente). Sin uiHit: no roba clics.
+function drawBannerActo18F(g: Game) {
+  const b = bannerActo18F(g);
+  if (!b || b.alpha <= 0) return;
+  const ctx = g.ctx;
+  const y = 96, h = 34;
+  ctx.save();
+  ctx.globalAlpha = b.alpha;
+  ctx.fillStyle = 'rgba(4,5,12,0.62)';
+  ctx.fillRect(0, y, VIEW_W, h);
+  ctx.fillStyle = 'rgba(240,200,74,0.55)';
+  ctx.fillRect(0, y, VIEW_W, 1);
+  ctx.fillRect(0, y + h - 1, VIEW_W, 1);
+  textShadow(g, b.texto, VIEW_W / 2, y + 9, 16, COL.goldSoft, '#000', 'center', true);
+  ctx.restore();
 }
 
 function audioClick() { audio.sfx('select'); }

@@ -1,0 +1,74 @@
+=== snippet 18-c en cabecera sprites_expansion ===
+// ============================================================
+// ECOS DE AELTHAR — ACTO II+III · Arte pixel procedural de la
+// EXPANSIÓN · Task 18-c (sprites-jefes): REHAÚSO COMPLETO de los
+// jefes/miniboses y mejora de los enemigos regulares.
+// 100% procedural: canvas + fillRect píxel a píxel, sin assets.
+// Determinismo TOTAL: sin Math.random — mulberry32 con semillas
+// fijas y hash2(); construir el sprite dos veces da EXACTAMENTE
+// los mismos canvas (verificado por smoke).
+// NO toca sprites.ts: usa registerSpr()/hash2() (contrato).
+//
+// ══ ORDEN DE FRAMES (CONTRATO 18-c PARA EL INTEGRADOR) ══
+// entityFrame() (sprites.ts) alterna SOLO los frames 0/1 cuando
+// moving=true (n>=2 → Math.floor(anim*6)%2) y elige el 0 quieto:
+// por eso los frames de PATRULLA son SIEMPRE 0 y 1. Los frames
+// de telegraph/ataque/estado (índices >= 2) los elige el
+// integrador así (todas las señales ya existen en Enemy):
+//
+//   e.ai === 'carga' && e.windup > 0  → frame TELEGRAPH
+//   e.ai === 'ataca'                  → frame ATTACK
+//   e.invulT > 0                      → frame ESPECTRAL/ESTADO
+//
+//   sirena  (5): 0 flotar A · 1 flotar B · 2 TELEGRAPH (se hincha,
+//                abre brazos) · 3 ATTACK (látigo de agua) ·
+//                4 SUMERGIDA (e.invulT>0 — 9-a)
+//   golem   (5): 0 andar A · 1 andar B · 2 TELEGRAPH (brazos
+//                arriba, núcleo encendido) · 3 ATTACK (smash) ·
+//                4 AGRIETADO (usar como base de reposo cuando
+//                e.phase === 3 — grietas abiertas con glow)
+//   vult    (4): 0 carrera A · 1 carrera B · 2 TELEGRAPH (garra
+//                alzada) · 3 ATTACK (embestida/acecho)
+//   coro1-3 (3): 0 bob A · 1 bob B · 2 CANTO (máscara abre la
+//                boca y dispara SU motivo: Pulso=orbes,
+//                Vera=rayos, Silencio=notas) — usar en 'carga'
+//                y durante la lluvia de la F3 (m.coroT>0)
+//   neumo   (3): 0 membrana A · 1 membrana B · 2 HINCHADO
+//                (telegraph de la escupitaja, windup 0.7)
+//   espectro(3): 0 flotar A · 1 flotar B · 2 FASE ESPECTRAL
+//                (e.invulT>0 — tras el golpe recibido)
+//   arpi    (3): 0 alas arriba · 1 alas abajo · 2 PLAFÓN/PLENO
+//                (alas medias — usar en el PICADO, 'carga')
+//   ecodesg (3): 0 parpadeo flanco izq · 1 parpadeo flanco der ·
+//                2 DASH (estirado, estelas — durante la embestida)
+//   satiro  (3): 0 brinco A · 1 brinco B · 2 LIRA (tocando la
+//                balada curva — telegraph del 'aro')
+//   orb/shard/nota (2): pulso sutil; en pantalla los anima SIEMPRE
+//                drawExpansionProjectile() (los frames son fallback).
+//
+// Ejemplo de cableado en render.ts (drawEntity), ANTES de
+// entityFrame:
+//   let fi = entityFrame(spr, e.dir, e.moving, e.anim);
+//   if (e.kind === 'enemy') {
+//     if (e.ai === 'carga' && e.windup > 0 && spr.length > 2) fi = 2;
+//     else if (e.ai === 'ataca' && spr.length > 3) fi = 3;
+//     else if ((e.invulT ?? 0) > 0 && spr.length > 4) fi = 4;
+//     fi = Math.min(fi, spr.length - 1);
+//   }
+// (los frames >= 2 son SIEMPRE opcionales: si el integrador no
+//  cablea nada, el juego sigue igual con el ciclo 0/1.)
+//
+// Resto del módulo (API intacta):
+=== render drawWaterGlints y drawAmbient sky ===
+82:  drawWaterGlints(g, sx, sy);
+156:  drawAmbient(g, 'sky');
+159:  drawFloats(g, sx, sy);
+653:function drawWaterGlints(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
+806:function drawFloats(g: Game, sx: (n: number) => number, sy: (n: number) => number) {
+=== engine constructor initExpansionSprites ===
+12:import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
+203:    initExpansionSprites(); // Acto II: sprites de neumo/espectro/arpi/sirena/golem + proyectiles
+=== engine armorTick en update ===
+256:    armorTick(this, dt);     // 14-b: pasiva de la Malla del Alba (+vigor/s)
+=== update.ts interaccionTick ===
+384:  interaccionTick(g, dt);

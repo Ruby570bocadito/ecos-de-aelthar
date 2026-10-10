@@ -13,6 +13,8 @@ import { drawScreens } from './screens';
 import { drawSlashArc, entityFrame, drawPortrait, hash2 } from './sprites';
 import * as SPRITES from './sprites'; // poses de combate (contrato 9-b, llamada opcional)
 import { drawExpansionProp, drawExpansionProjectile } from './sprites_expansion';
+import { drawCostaBiomaGround, drawCostaBiomaOverlay } from './biomas_costa'; // 18-a: Costa de Bruma
+import { drawCumbresBiomaOverlay } from './biomas_cumbres'; // 18-b: Cumbres Heladas
 import { drawSkillTree } from './skilltree';
 import { drawWorldLife } from './worldlife';
 import { tileAt } from './maps';
@@ -80,6 +82,7 @@ function drawWorld(g: Game) {
 
   // agua viva: brillos especulares sobre los tiles '~' visibles (R3-c)
   drawWaterGlints(g, sx, sy);
+  drawCostaBiomaGround(g, sx, sy); // 18-a: terreno costero + espuma + charcos (BAJO entidades y filtro de época)
 
   ctx.save();
   ctx.filter = WORLD_FILTER[g.epoch] ?? 'none';
@@ -154,6 +157,12 @@ function drawWorld(g: Game) {
 
   // capa de cielo: estrellas, luna, antorchas (sobre la iluminación)
   drawAmbient(g, 'sky');
+
+  // 18-a/18-b: overlays biómicos de la Costa de Bruma (bruma, haz del faro,
+  // gaviotas) y de las Cumbres Heladas (aurora, ventisca, lago) — ambos con
+  // early-out si el mapa no es el suyo.
+  drawCumbresBiomaOverlay(g);
+  drawCostaBiomaOverlay(g);
 
   // textos flotantes (después de la luz: siempre legibles)
   drawFloats(g, sx, sy);
@@ -320,7 +329,18 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
   ctx.ellipse(sx(e.x), sy(e.y + 4), (e.w / 2 + 3) * ZOOM, 3 * ZOOM, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  const fi = entityFrame(spr, e.dir, e.moving, e.anim);
+  let fi = entityFrame(spr, e.dir, e.moving, e.anim);
+  // 18-c: frames de telegraph/ataque/estado de los jefes y enemigos de la
+  // expansión (contrato documentado en la cabecera de sprites_expansion.ts).
+  // Los índices >= 2 son SIEMPRE opcionales: si el sprite es corto, queda el
+  // ciclo 0/1 de entityFrame.
+  if (e.kind === 'enemy') {
+    const en2 = e as Enemy;
+    if (en2.ai === 'carga' && en2.windup > 0 && spr.length > 2) fi = 2;
+    else if (en2.ai === 'ataca' && spr.length > 3) fi = 3;
+    else if ((en2.invulT ?? 0) > 0 && spr.length > 4) fi = 4;
+    fi = Math.min(fi, spr.length - 1);
+  }
   const idx = Math.min(fi, spr.length - 1);
 
   // R3-c: poses de combate del Portador (contrato con 9-b). getAttackFrames /

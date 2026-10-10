@@ -333,7 +333,17 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
     epochDiffs: costaDiffs,
     music: 'costa',
     npcs: [
-      { id: 'mara', x: 7, y: 19, sprite: 'maelis', name: 'Mara, la farera' },
+      // ==== 18-e (faro-historia) ====
+      // mara: sprite PROPIO 'mara_farera' (antes usaba 'maelis'); su retrato
+      // vive en faro_historia.ts (FARO_PORTRAITS) y sus nodos nuevos en
+      // FARO_DIALOGUES (ver cabecera de faro_historia.ts para el cableado).
+      { id: 'mara', x: 7, y: 19, sprite: 'mara_farera', name: 'Mara, la farera' },
+      // uso_faro (5,21) y tina_faro (9,20): tiles libres verificados con BFS
+      // sobre mapRows + SOLID_CHARS (adyacencia peatonal OK en ambas épocas).
+      // NpcDef NO soporta needPresent (types.ts congelado) → siempre visibles.
+      // Sus sprites/diálogos/retratos viven en faro_historia.ts.
+      { id: 'uso_faro', x: 5, y: 21, sprite: 'uso_faro', name: 'Uso, el farero tuerto' },
+      { id: 'tina_faro', x: 9, y: 20, sprite: 'tina_faro', name: 'Tina, la niña del faro' },
       { id: 'vult', x: 30, y: 32, sprite: 'corvin', name: 'Vult, cartógrafo de la Liga' },
     ],
     chests: [
@@ -373,6 +383,9 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
       { id: 'altar_mareas', kind: 'altarEcho', x: 36, y: 27 },
       { id: 'sign_co1', kind: 'sign', x: 23, y: 3, label: '«Costa de Bruma. Al sur y al este, el mar. Todavía susurra con voz prestada: no le respondas con tu nombre.»' },
       { id: 'sign_co2', kind: 'sign', x: 25, y: 31, label: '«Muelle viejo de Merrow. En pie solo cuando el ayer lo sostiene.»' },
+      // 18-e (faro-historia): cartel del promontorio, junto al faro (8,17 libre,
+      // vecino del camino (7,17))
+      { id: 'sign_co3', kind: 'sign', x: 8, y: 17, label: '«Faro de la Punta de la Cerilla. Tres generaciones de fareros: una cantaba, otra escuchaba, y el que queda cuenta barcos. La lámpara no tiembla de frío: tiembla de ganas. No la mires. Escúchala.»' },
     ],
   },
 

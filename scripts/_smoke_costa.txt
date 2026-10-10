@@ -1,0 +1,29 @@
+=== 1) Instalación IDEMPOTENTE (2× init + auto-install del tick) ===
+  ✓ initCostaBioma instala el bioma (installed=true)
+  ✓ 2× initCostaBioma → UNA sola construcción (builds=1)
+  ✓ auto-install perezoso del tick: sigue en builds=1 (nada duplicado)
+  ✓ sprites pre-rasterizados en install: 3 bancos de bruma + 2 frames de gaviota
+
+=== 2) costaBiomaTick × 600 frames: fases avanzan y arrays ACOtados ===
+  ✓ 600 ticks sin lanzar
+  ✓ fase temporal acumulada t=10.000 s (600×1/60)
+  ✓ sin NaN en fases (t=10.000000000000076, beamA=3.500 rad)
+  ✓ ángulo del haz acotado a [0,2π): 3.5000
+  ✓ charcos de marea registrados: 14 (cap 14)
+  ✓ la orilla de la costa genera charcos de verdad (14 cuencas)
+  ✓ bruma: 6 blobs lejanos + 9 cercanos (fijos)
+  ✓ gaviotas: 4 circuitos fijos
+  ✓ 600 ticks NO crecieron ningún array del bioma (todo longitud fija)
+
+=== 3) draw (ground + overlay) con ctx stub: no lanza en ningún estado ===
+  ✓ draw ground+overlay sin lanzar (día · noche · atardecer · época pasado · 5 cámaras · fallback globalT)
+  ✓ mapa no-costa (lunaris): tick/draw early-out sin lanzar
+  ✓ el tick NO acumula fase fuera de la costa (t sigue en 0)
+  ✓ los draws no añaden partículas/floats/toasts al motor (0 allocations de pools)
+
+=== 4) DETERMINISMO: dos builds del raster estático → misma traza ===
+  ✓ traza densa: 85528 ops serializadas (hash 82b5e9bb)
+  ✓ dos builds del raster estático → traza IDÉNTICA byte a byte
+  ✓ tras 60 ticks el raster estático sigue siendo EXACTAMENTE el mismo
+
+SMOKE COSTA BIOMA: TODO OK

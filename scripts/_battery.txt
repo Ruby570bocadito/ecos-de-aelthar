@@ -1,0 +1,19 @@
+VERDE   smoke_acto2.ts
+VERDE   smoke_acto3.ts
+VERDE   smoke_acto4.ts
+VERDE   smoke_arbol.ts
+VERDE   smoke_balance.ts
+VERDE   smoke_costa_bioma.ts
+VERDE   smoke_cumbres_bioma.ts
+VERDE   smoke_desafio.ts
+VERDE   smoke_faro.ts
+VERDE   smoke_hero_fx.ts
+VERDE   smoke_interaccion.ts
+VERDE   smoke_interludios.ts
+VERDE   smoke_jefes_sprites.ts
+VERDE   smoke_logros.ts
+VERDE   smoke_motor_acto2.ts
+VERDE   smoke_rutas.ts
+VERDE   smoke_timeskip.ts
+VERDE   smoke_worldlife.ts
+TOTAL: 18 verdes, 0 rojos

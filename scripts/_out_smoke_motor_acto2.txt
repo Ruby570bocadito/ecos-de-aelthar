@@ -1,0 +1,37 @@
+=== 1) Arranque del motor (constructor + newGame) ===
+  ✓ newGame: jugador creado, questIdx=0 (q1)
+
+=== 2) Cadena normal q5→q6→…→q10 (métodos públicos reales) ===
+  ✓ talkTo(brisa) completa q5 → q6 paso 0
+  ✓ accept_q6: flag q6, questIdx 5
+  ✓ loadMap(costa) avanza paso 0→1 (idempotente por estado)
+  ✓ mara_met: q6 → q7 paso 0 (un solo toast de misión)
+  ✓ watcher sirenaSeen: q7 paso 0→1
+  ✓ killEnemy(sirena): paso 1→2, flag + botín poción
+  ✓ botín garantizado de la jefa: +1 poción
+  ✓ eco_mareas_taken: q7 → q8 (paso 2 completado)
+  ✓ grantQuestLoot(q7): +40 coronas pagadas (249 ≥ 249)
+  ✓ recompensa q7 (grantQuestLoot): +1 poción
+  ✓ loadMap(aldea): paso 0→1
+  ✓ 2 faroles en desorden: sin avance prematuro (2/3)
+  ✓ 3er farol (orden aleatorio): paso 1→2
+  ✓ mera_eco: q8 → q9
+  ✓ loadMap(cumbres): paso 0→1
+  ✓ killEnemy(golem): paso 1→2, +30 coronas de botín
+  ✓ eco_cumbres_taken: q9 → q10
+  ✓ talkTo(brisa) en q10: grantQuestLoot(9) pagado una vez (+60)
+  ✓ acto2_report: cierra q10 (flag acto2Done)
+  ✓ q10Paid: reabrir el diálogo no duplica el pago
+
+=== 3) Juego FUERA DE ORDEN: catchUpActo2 rescata la cadena ===
+  ✓ caso A: sirena ya muerta + eco tomado → q7 se salta entera, q8 paso 0
+  ✓ caso B: lightLamp avanza con 3/3 incluso aceptando tarde
+  ✓ caso B2: faroles pre-encendidos antes de aceptar q8 → catchUp completa paso 1
+  ✓ caso C: golemDefeated antes de q9 → catchUp completa paso 1
+  ✓ caso D: sin condiciones cumplidas, catchUp no toca el progreso
+
+=== 4) save() serializa TODAS las flags del Acto II ===
+  ✓ save(): las 20 flags del Acto II persisten (Record genérico, sin filtro)
+
+================================
+RESULTADO: ✗ 0 fallos — motor y cadena del Acto II verificados

@@ -1,0 +1,100 @@
+=== moveEntity dir ===
+    const comboMult = [1, 1.12, 1.28][p.combo];
+    const dmg = playerMeleeDmg(p) * comboMult * (charged ? 2.1 : 1);
+    if (charged) {
+      const dirs: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
+      const [dx, dy] = dirs[p.dir];
+      this.aoeHit(p.x + dx * 20, p.y + dy * 20, 34, dmg, 'ninguno', false);
+      this.shake = 3;
+      this.burst(p.x + dx * 18, p.y + dy * 18, '#ffe86a', 12, 70);
+    } else {
+      this.meleeHit(24, 20, dmg, 'ninguno', 50);
+    }
+    void chargeTime;
+  }
+
+  startParry() {
+    if (!this.player) return;
+    const p = this.player;
+    if (this.state !== 'play' || p.rollT > 0) return;
+    if (p.sta < 12) { audio.sfx('parryFail'); return; }
+    p.sta -= 12;
+    p.parryT = 0.2;
+    p.parryFx = 0.32;
+    audio.sfx('swing');
+  }
+
+  aimAtMouse() {
+    if (!this.player) return;
+    const p = this.player;
+    const wx = this.mouse.x / ZOOM + this.camX / ZOOM;
+    const wy = this.mouse.y / ZOOM + this.camY / ZOOM;
+    const dx = wx - p.x, dy = wy - p.y;
+    if (Math.abs(dx) > Math.abs(dy)) p.dir = dx > 0 ? 'right' : 'left';
+    else p.dir = dy > 0 ? 'down' : 'up';
+  }
+
+  useSkill(i: number) {
+    if (!this.player) return;
+    const p = this.player;
+    const disc = SKILLS[p.discipline];
+    if (i < 0 || i >= disc.length) return;
+    const sk = disc[i];
+    if (p.cds[i] > 0) { this.toast(`${sk.name}: aún en recarga`, '#9aa0b8'); return; }
+    if (p.res < sk.cost) { this.toast(`Resonancia insuficiente (${sk.cost})`, '#e88'); audio.sfx('error'); return; }
+    p.res -= sk.cost;
+    // 14-b (camino B del contrato skilltree.ts): el descuento del árbol se
+    // aplica AL FIJAR (skillCdMult); el decaimiento extra por tick está OFF
+=== bosque filas 0-8 ===
+function buildBosque(): string[] {
+  const W = 56, H = 44;
+  const g = grid(W, H, '.');
+  borderForest(g, 2, 't');
+  // abertura sur (vuelta a Lunaris)
+  rect(g, 24, 42, 6, 2, '=');
+  // río
+  rect(g, 0, 10, 56, 3, '~');
+  for (let x = 0; x < 56; x++) {
+    if (g[9][x] === 't') continue;
+    if ((x * 13 + 5) % 7 < 2) set(g, x, 9, ',');
+    if ((x * 7 + 3) % 8 < 2) set(g, x, 13, ',');
+  }
+  // puente principal (roto en el presente)
+  rect(g, 25, 10, 2, 3, 'x');
+  pathV(g, 13, 14, 25); pathV(g, 13, 14, 26);
+  pathV(g, 2, 9, 25); pathV(g, 2, 9, 26);
+  // pinos
+  scatter(g, 2, 2, 53, 41, 'p', 0.17, 202, (x, y) => g[y][x] !== '.');
+  // camino serpenteante al sur (entrada → ruina)
+  pathV(g, 36, 41, 27);
+  pathH(g, 27, 40, 36);
+  pathV(g, 30, 36, 40);
+  pathH(g, 40, 43, 30);
+  pathV(g, 29, 30, 43);
+  // ruina antigua
+  rect(g, 36, 20, 12, 9, ':');
+  set(g, 36, 20, 'P'); set(g, 47, 20, 'P'); set(g, 36, 28, 'P'); set(g, 47, 28, 'P');
+  set(g, 39, 23, 'g'); set(g, 44, 26, 'g');
+  pathH(g, 26, 40, 24);   // del puente a la ruina
+=== sprites de enemigos expansion ===
+3:// (AGENTE 7-b · enemigos + sprites · pulido 9-a: jefes profundos)
+406:            dmg: def.dmg, element: 'ninguno', from: 'enemy', sprite: 'orb', radius: 5, pierce: 0,
+650:    x, y, vx, vy, t: 2.0, dmg: 10, element: 'hielo', from: 'enemy', sprite: 'nota', radius: 5, pierce: 0,
+993:          t: 1.7, dmg: 12, element: 'hielo', from: 'enemy', sprite: 'shard', radius: 5, pierce: 0,
+1053:              t: 1.7, dmg: 12, element: 'hielo', from: 'enemy', sprite: 'shard', radius: 5, pierce: 0,
+1184:    x, y, vx, vy, t: 1.5, dmg: 11, element: 'sombra', from: 'enemy', sprite: 'shard', radius: 4, pierce: 0,
+1392:  e.sprite = `coro${m.maskIdx}`;
+1416:        t: 2.6, dmg: 11, element: 'sombra', from: 'enemy', sprite: 'orb', radius: 5.5, pierce: 0,
+1433:          t: 1.6, dmg: 11, element: 'sombra', from: 'enemy', sprite: 'nota', radius: 4.5, pierce: 0,
+1446:        t: 1.8, dmg: 10, element: 'sombra', from: 'enemy', sprite: 'nota', radius: 4.5, pierce: 0,
+1506:            t: 1.35, dmg: 10, element: 'sombra', from: 'enemy', sprite: 'nota', radius: 4.5, pierce: 0,
+1687:            t: 1.1, dmg: def.dmg, element: 'ninguno', from: 'enemy', sprite: 'orb', radius: 4, pierce: 0,
+=== faro prop ===
+src/game/maps_expansion.ts:371:      { id: 'faro_co', kind: 'faro', x: 6, y: 18 },
+=== npc movement worldlife/village ===
+393:function fireRumor(g: Game, st: WLState, npc: Npc): void {
+394:  const pool = rumorPool(g, npc.nid);
+398:  g.floats.push({ x: npc.x, y: npc.y - 24, text, t: 2.8, color, vy: -6, size: 7 });
+399:  st.rumorNext.set(npc.nid, st.clock + 8 + Math.random() * 6); // 8-14 s
+410:  for (let i = 0; i < g.npcs.length; i++) {
+411:    const n = g.npcs[i];

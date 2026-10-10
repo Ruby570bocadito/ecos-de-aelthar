@@ -10,6 +10,9 @@ import type {
 import { MAPS, mapRows, tileAt } from './maps';
 import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
 import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
+import { initCostaBioma, costaBiomaTick } from './biomas_costa'; // 18-a: Costa de Bruma
+import { initCumbresBioma } from './biomas_cumbres'; // 18-b: Cumbres Heladas
+import { initFaroSprites } from './faro_historia'; // 18-e: los tres del faro
 import { audio } from './audio';
 import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue, SENNUEL } from './data';
 import { updateGame } from './update';
@@ -201,6 +204,9 @@ export class Game {
     this.ctx.imageSmoothingEnabled = false;
     initSprites();
     initExpansionSprites(); // Acto II: sprites de neumo/espectro/arpi/sirena/golem + proyectiles
+    initCostaBioma();   // 18-a: pre-rasterizado del bioma de la Costa de Bruma (idempotente)
+    initCumbresBioma(); // 18-b: pre-rasterizado del bioma de las Cumbres Heladas (idempotente)
+    initFaroSprites();  // 18-e: sprites propios de Mara/Uso/Tina en el faro (idempotente)
     this.bindInput();
     // volúmenes persistidos (sistema → sliders)
     try {
@@ -254,6 +260,7 @@ export class Game {
     worldTick(this, dt);     // fauna, rumores y eventos del mundo (13-b)
     timeTick(this, dt);      // inmersión del viaje temporal (13-c)
     armorTick(this, dt);     // 14-b: pasiva de la Malla del Alba (+vigor/s)
+    costaBiomaTick(this, dt); // 18-a: fases temporales del bioma costero (espuma, bruma, haz)
     // ==== 16-c (logros-stats): tiempoJugado + memorias + logros (O(1), early-out) ====
     statsTick(this, dt);
     achievementTick(this);

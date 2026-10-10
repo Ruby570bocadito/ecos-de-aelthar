@@ -1,0 +1,35 @@
+=== git status ===
+ M src/game/data.ts
+ M src/game/fx.ts
+ M src/game/hooks.ts
+ M src/game/maps.ts
+ M src/game/maps_expansion.ts
+ M src/game/screens.ts
+ M src/game/sprites.ts
+ M src/game/sprites_expansion.ts
+ M worklog.md
+?? public/costa_preview.html
+?? public/costa_preview.js
+?? scripts/_diag_cripta.ts
+?? scripts/_diag_cripta.txt
+?? scripts/_diag_portraits.ts
+?? scripts/_diag_sprites.ts
+?? scripts/_estado.txt
+?? scripts/_estado18.txt
+?? scripts/_estado2.txt
+?? scripts/_gitinfo.txt
+?? scripts/_recon.txt
+?? scripts/_recon10.txt
+?? scripts/_recon11.txt
+?? scripts/_recon12.txt
+?? scripts/_recon13.txt
+?? scripts/_recon14.txt
+=== ficheros nuevos ===
+-rw-rw-r-- 1 z z 43559 Oct 10 09:36 src/game/biomas_costa.ts
+-rw-rw-r-- 1 z z 30275 Oct 10 09:25 src/game/biomas_cumbres.ts
+-rw-rw-r-- 1 z z 44600 Oct 10 09:31 src/game/faro_historia.ts
+-rw-rw-r-- 1 z z 17587 Oct 10 09:28 src/game/interludios.ts
+ls: cannot access 'scripts/smoke_hero_fx.ts': No such file or directory
+scripts/smoke_faro.ts
+=== tsc ===
+TSC_EXIT=0

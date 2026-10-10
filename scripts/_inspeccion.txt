@@ -1,0 +1,49 @@
+=== diff stat ===
+ src/game/fx.ts             | 138 +++++++++++++++++++++++
+ src/game/maps_expansion.ts |  15 ++-
+ src/game/sprites.ts        | 268 ++++++++++++++++++++++++++++++++++++++-------
+ 3 files changed, 379 insertions(+), 42 deletions(-)
+=== exports faro ===
+391:export function buildFaroSprites(): Record<string, Frames> {
+403:export function initFaroSprites(): void {
+418:export interface FaroPortraitDef {
+432:export const FARO_PORTRAITS: Record<string, FaroPortraitDef> = {
+472:export const FARO_DIALOGUES: Record<string, DialogueNode> = {
+668:export interface FaroDialogueCtx {
+683:export function faroRouteDialogue(nid: string, ctx: FaroDialogueCtx): string | null {
+741:export function faroTick(g: {
+=== npcs costa ahora ===
+335:    npcs: [
+336-      // ==== 18-e (faro-historia) ====
+337-      // mara: sprite PROPIO 'mara_farera' (antes usaba 'maelis'); su retrato
+338-      // vive en faro_historia.ts (FARO_PORTRAITS) y sus nodos nuevos en
+339-      // FARO_DIALOGUES (ver cabecera de faro_historia.ts para el cableado).
+--
+400:    npcs: [
+401-      { id: 'mera', x: 22, y: 16, sprite: 'nimue', name: 'Espectro de Merrow' },
+402-    ],
+403-    chests: [
+404-      // el botín del festival solo existe en el pueblo vivo
+--
+=== cableado en cabecera faro ===
+// CABLEADO PARA EL INTEGRADOR (6 líneas exactas, todo lo demás vive aquí)
+// ============================================================
+// 1) data.ts — tras la definición de `const D: Record<string, DialogueNode>`
+//    (p. ej. junto al `export const DIALOGUES = D;`, línea ~749):
+//      Object.assign(D, FARO_DIALOGUES); // ==== 18-e: faro-historia ====
+//    (con el import arriba: `import { FARO_DIALOGUES } from './faro_historia';`)
+//    NO introduce ciclos: faro_historia solo importa types + sprites.
+//
+// 2) data.ts — RUTEO de los 3 NPCs. El binding VIVO de getDialogue es el
+//    envoltorio getDialogueActo4 (16-a reasigna el export al final de data.ts;
+//    engine.talkTo resuelve SIEMPRE por él). Añadir al principio del cuerpo de
+//    getDialogueActo4 (y SOLO allí — la capa 13-a/16-a ya delega hacia abajo):
+//      { const fr = faroRouteDialogue(nid, ctx); if (fr) return fr; } // ==== 18-e ====
+//    (import: `import { faroRouteDialogue } from './faro_historia';`)
+//    faroRouteDialogue devuelve null para todo lo que no sea mara/uso_faro/
+//    tina_faro y respeta los estados de q6/mara_intro, mara_react y las rutas
+//    del Acto III (acto3_eco_mara / acto3_mara_ayer) → regresión 0.
+//
+// 3) sprites.ts — RETRATOS: el registro PORTRAITS es privado de sprites.ts.
+//    Añadir arriba `import { FARO_PORTRAITS } from './faro_historia';` y dentro
+//    de initSprites() (NO a nivel de módulo: faro_historia importa sprites →

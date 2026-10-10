@@ -1,0 +1,181 @@
+=== getSpr y fallback ===
+src/game/sprites.ts-545-}
+src/game/sprites.ts-546-
+src/game/sprites.ts:547:export function getSpr(name: string): Frames {
+src/game/sprites.ts-548-  return SPR[name] ?? SPR['hero_alba'];
+src/game/sprites.ts-549-}
+src/game/sprites.ts-550-
+src/game/sprites.ts-551-/**
+src/game/sprites.ts-552- * Registro de sprites para módulos de expansión (ACTO II).
+src/game/sprites.ts-553- * Contrato: los módulos nuevos (p. ej. sprites_expansion.ts) llaman aquí
+src/game/sprites.ts-554- * desde su initExpansionSprites() en vez de tocar este archivo.
+src/game/sprites.ts-555- * Frames: array de canvas (1 = estático, 2+ = ciclo de animación).
+src/game/sprites.ts-556- */
+src/game/sprites.ts-557-export function registerSpr(name: string, frames: Frames): void {
+=== claves SPRITES ===
+428:  hero_alba: {
+433:  hero_tejedor: {
+438:  brisa: {
+443:  toln: {
+448:  ilwen: {
+453:  esqueleto: {
+458:  sombra: {
+464:  sasha: {
+471:  brokk: {
+477:  maelis: {
+483:  corvin: {
+489:  kael: {
+495:  inquisidor: {
+501:  teo: {
+507:  doran: {
+513:  nimue: {
+520:  merrow_h: {
+526:  merrow_m: {
+595:  hero_alba: { kind: 'sword', metal: '#d8dee8', glint: '#f6f9fc', grip: '#5a3a28', trim: '#c8384a' },
+596:  kael: { kind: 'sword', metal: '#dfe3ea', glint: '#ffffff', grip: '#4a4a54', trim: '#8a94a8' },
+597:  hero_tejedor: { kind: 'staff', metal: '#8a6a44', glint: '#fff8d8', grip: '#6a4e30', trim: '#f0c84a' },
+598:  brisa: { kind: 'staff', metal: '#9a7a50', glint: '#f8f0d0', grip: '#6a4e30', trim: '#e8d8a8' },
+599:  doran: { kind: 'staff', metal: '#6d4520', glint: '#e0f4c0', grip: '#54381e', trim: '#8ac05a' },
+600:  toln: { kind: 'hammer', metal: '#9aa4b4', glint: '#c8d2dc', grip: '#7a5c3a', trim: '#3a3a3e' },
+601:  ilwen: { kind: 'bow', metal: '#8a5a2b', glint: '#e8e0c8', grip: '#54381e', trim: '#e8c860' },
+1053:  hero_alba: {
+1059:  hero_tejedor: {
+1065:  brisa: {
+1071:  toln: {
+1077:  ilwen: {
+1083:  sasha: {
+1089:  brokk: {
+1095:  maelis: {
+1101:  corvin: {
+1106:  kael: {
+1111:  inquisidor: {
+1116:  teo: {
+1122:  doran: {
+1128:  nimue: {
+1134:  guardian: {
+1139:  sombra: {
+1144:  wisp: {
+1149:  fragment: {
+1154:  sanctuary: {
+=== render dir3 mapping ===
+function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: number) => number) {
+  const ctx = g.ctx;
+  const spr = getSpr(e.sprite);
+  const zoomW = spr[0].width, zoomH = spr[0].height;
+
+  // parpadeo suave del jugador durante i-frames (esquiva/daño reciente)
+  let spriteAlpha = 1;
+  if (e.kind === 'player') {
+    const pp = g.player!;
+    if (pp.iframes > 0 && pp.rollT <= 0) spriteAlpha = 0.55 + Math.abs(Math.sin(g.globalT * 24)) * 0.35;
+  }
+  // Acto II: fase intangible de enemigos (espectro/sirena sumergida)
+  if (e.kind === 'enemy' && (e as Enemy).invulT !== undefined && (e as Enemy).invulT! > 0) {
+    spriteAlpha = 0.3 + Math.abs(Math.sin(g.globalT * 14)) * 0.18;
+  }
+
+  // sombra (estable)
+  ctx.globalAlpha = 0.3;
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.ellipse(sx(e.x), sy(e.y + 4), (e.w / 2 + 3) * ZOOM, 3 * ZOOM, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  const fi = entityFrame(spr, e.dir, e.moving, e.anim);
+  const idx = Math.min(fi, spr.length - 1);
+
+  // R3-c: poses de combate del Portador (contrato con 9-b). getAttackFrames /
+  // getCastFrames devuelven [frameAnticipación, frameGolpe] (mismo tamaño que
+  // los frames de andar) o null. Llamada opcional vía namespace: mientras 9-b
+  // no exista el fallback es el frame de andar — nunca rompe la compilación.
+  let poseCv: HTMLCanvasElement | null = null;
+  if (e.kind === 'player' && g.player && g.player.attackT > 0) {
+    const pl = g.player;
+    const dur = pl.chargedHit ? 0.4 : 0.26;
+    const anticip = pl.attackT > dur * 0.5; // 1ª mitad: preparación · 2ª: golpe
+    const SP = SPRITES as unknown as {
+      getAttackFrames?: (base: string, dir: string) => HTMLCanvasElement[] | null;
+      getCastFrames?: (base: string, dir: string) => HTMLCanvasElement[] | null;
+    };
+    const frames = pl.discipline === 'tejedor' && SP.getCastFrames
+      ? (SP.getCastFrames(pl.sprite, pl.dir) ?? (SP.getAttackFrames ? SP.getAttackFrames(pl.sprite, pl.dir) : null))
+      : (SP.getAttackFrames ? SP.getAttackFrames(pl.sprite, pl.dir) : null);
+    if (frames && frames.length > 1) poseCv = frames[anticip ? 0 : 1] ?? null;
+  }
+
+  const flip = e.dir === 'left';
+  const dx = sx(e.x) - (zoomW * ZOOM) / 2;
+  const dy = sy(e.y + 4) - zoomH * ZOOM;
+
+  const frCv = poseCv ?? spr[idx];
+  ctx.globalAlpha = spriteAlpha;
+  if (flip) {
+    ctx.save();
+    ctx.translate(dx + zoomW * ZOOM, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(frCv, 0, dy, zoomW * ZOOM, zoomH * ZOOM);
+    ctx.restore();
+  } else {
+    ctx.drawImage(frCv, dx, dy, zoomW * ZOOM, zoomH * ZOOM);
+  }
+  ctx.globalAlpha = 1;
+
+  // flash de daño
+  const en = e as Enemy;
+  if (en.hitFlash && en.hitFlash > 0) {
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(dx + 4, dy + 4, zoomW * ZOOM - 8, zoomH * ZOOM - 8);
+    ctx.globalAlpha = 1;
+  }
+
+  // telegrafía de ataque
+  if (en.kind === 'enemy' && en.ai === 'carga' && en.windup > 0) {
+    textShadow(g, '!', sx(e.x), dy - 16, 14, '#ff5040', '#000', 'center', true);
+  }
+  if (en.kind === 'enemy' && en.ai === 'aturdido') {
+    const t = g.globalT * 6;
+    text(g, '✦', sx(e.x) + Math.sin(t) * 6, dy - 14, 10, '#ffe86a', 'center');
+    if (en.maxSta > 0) text(g, 'QUEBRADO', sx(e.x), dy - 30, 8, '#ffe86a', 'center');
+  }
+
+  // barras de vida de enemigos dañados
+  if (en.kind === 'enemy' && en.hp < en.maxHp && !en.dead && en.etype !== 'guardian') {
+    bar(g, sx(e.x) - 12, dy - 6, 24, 3, en.hp / en.maxHp, COL.hp, COL.hpBg);
+  }
+
+  // iconos de estado con mini-barra de tiempo
+  if (en.kind === 'enemy' && !en.dead) {
+    drawStatusIcons(g, en, sx(e.x), dy - 12);
+  }
+
+  // indicador del jugador
+  if (e.kind === 'player') {
+    const p = g.player!;
+    // aura de época si puede cambiar
+    if (p.hasEcho && g.map.epochDiffs.length > 0) {
+      ctx.globalAlpha = 0.14 + Math.sin(g.globalT * 3) * 0.06;
+      ctx.fillStyle = g.epoch === 'pasado' ? '#ffd88a' : '#8ab8d8';
+      ctx.beginPath();
+      ctx.arc(sx(p.x), sy(p.y - 5), 15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    if (p.parryFx > 0) {
+      ctx.globalAlpha = Math.min(1, p.parryFx * 3);
+      ctx.strokeStyle = '#fff8c0';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sx(p.x), sy(p.y - 6), 14 + (0.32 - p.parryFx) * 30, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    if (p.charging && p.chargeT > 0.35) {
+      // indicador de carga: aro que crece + flecha
+      const k = Math.min(1, p.chargeT / 0.8);
+      ctx.globalAlpha = 0.5 + k * 0.4;
+      ctx.strokeStyle = '#ffe86a';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(sx(p.x), sy(p.y - 4), 12 + k * 10, 0, Math.PI * 2);
+      ctx.stroke();

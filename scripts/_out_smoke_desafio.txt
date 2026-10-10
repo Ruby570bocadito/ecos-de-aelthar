@@ -1,0 +1,62 @@
+=== 1) Mapa ARENA: filas, centro pisable, puerta sur, borde sólido ===
+  ✓ filas normalizadas 44×34
+  ✓ arena sin spawns de mapa (challenge.ts instancia todo)
+  ✓ centro (21,16) pisable (':')
+  ✓ corredor de la puerta sur (x20..23, y29..33) transitable
+  ✓ zona de salida (20..23, 32..33) pisable
+  ✓ muralla perimetral sólida
+
+=== 2) OLEADAS: arranque, oleada 1, kills, despeje, oleada 2, aborto con restauración ===
+  ✓ startChallenge: estado play, mapa arena, reto en marcha
+  ✓ Portador curado al entrar (campaña conservada)
+  ✓ cuenta atrás 3.4 s → oleada 1 lanzada
+  ✓ primer spawn en anillo 8–14 tiles (nunca encima del Portador)
+  ✓ oleada 1: 3 lobos instanciados (3)
+  ✓ oleada 1: hp base sin escala (mult 1.0)
+  ✓ kills=3, score=oleadas+kills=4 (espec)
+  ✓ oleada despejada → cuenta atrás de 3 s
+  ✓ oleada 2 lanzada tras la cuenta atrás
+  ✓ killEnemy pagó oro de campaña (20→43); la restauración lo devuelve
+  ✓ aborto: challengeRun cerrado al salir del mapa
+  ✓ oro restaurado exacto (20)
+  ✓ flags restauradas (sin visited_arena residual)
+  ✓ misión intacta tras el aborto
+
+=== 3) DUELO (victoria, Portador de campaña): restauración + logro + botín deshecho ===
+  ✓ duelo: Sirena instanciada con barra de jefe activa (bossActive/bossRef)
+  ✓ duelo: pociones a 0 (1 sola vida, sin curas)
+  ✓ banner de jefe del motor reutilizado (bossBannerText)
+  ✓ jefe de arena: hp con el buff 14-a de ENEMY_DEFS (380→440, comparte defs)
+  ✓ victoria: panel de resultados sobre el título
+  ✓ flag de campaña sirenaDefeated DESHECHA (la arena no marca campaña)
+  ✓ recompensa: +1 poción por primer duelo (2→3)
+  ✓ oro restaurado exacto tras el botín del motor (20)
+  ✓ logro escrito en ecos-desafio-logros: duelo:sirena
+  ✓ el duelo NO escribe récord de oleadas
+  ✓ drawChallengeTitleUi (resultados) dibuja sin excepciones
+  ✓ endChallenge: título, reto limpio, mundo lunaris cargado bajo el título
+
+=== 4) OLEADAS: récord en ecos-desafio-best + derrota sin peaje de campaña ===
+  ✓ muerte en arena: pantalla de muerte del motor (E para continuar)
+  ✓ derrota: panel de resultados sobre el título
+  ✓ récord guardado en ecos-desafio-best: 1
+  ✓ peaje de muerte de campaña devuelto (oro intacto)
+  ✓ contador de muertes de campaña intacto
+  ✓ endChallenge tras derrota: título limpio
+
+=== 5) DUELO con Portador TEMPORAL (desde título sin campaña) ===
+  ✓ Portador temporal creado (Alba Nv 8, arma +2)
+  ✓ Gólem de Escarcha instanciado
+  ✓ victoria temporal NO escribe logro (premio reservado a campaña)
+  ✓ resultados al terminar (Portador temporal)
+  ✓ Portador temporal retirado al volver al título
+
+=== 6) Guardado escrito DENTRO de la arena → reparado al salir ===
+  ✓ guardado en arena detectado (el raw cambió)
+  ✓ save reescrito con mapId lunaris (ya no atrapa en la arena)
+  ✓ save reescrito con campaña restaurada (oro/flags)
+
+=== 7) HUD/overlays del desafío dibujan sin excepciones ===
+  ✓ drawChallengeOverlay (play) + drawChallengeTitleUi (título, sin menú)
+
+SMOKE DESAFÍO: TODO OK

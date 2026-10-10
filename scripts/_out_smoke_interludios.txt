@@ -1,0 +1,68 @@
+=== 1) ESTRUCTURA: 9 nodos de interludio + 6 reacciones, cadena íntegra ===
+  ✓ acto 2: 3 nodos 'fragment' (interludio_acto2_a → _b → _c)
+  ✓ acto 2: 1er nodo marca flag_interludio_acto2_vista
+  ✓ acto 2: '…' encadena a → b → c
+  ✓ acto 2: el cierre del Eco enlaza la reacción de Brisa
+  ✓ acto 2: reacciones Brisa+Toln con retratos correctos
+  ✓ acto 2: reacción de Brisa → Toln
+  ✓ acto 2: opción final de Toln cierra y devuelve al juego
+  ✓ acto 3: 3 nodos 'fragment' (interludio_acto3_a → _b → _c)
+  ✓ acto 3: 1er nodo marca flag_interludio_acto3_vista
+  ✓ acto 3: '…' encadena a → b → c
+  ✓ acto 3: el cierre del Eco enlaza la reacción de Brisa
+  ✓ acto 3: reacciones Brisa+Toln con retratos correctos
+  ✓ acto 3: reacción de Brisa → Toln
+  ✓ acto 3: opción final de Toln cierra y devuelve al juego
+  ✓ acto 4: 3 nodos 'fragment' (interludio_acto4_a → _b → _c)
+  ✓ acto 4: 1er nodo marca flag_interludio_acto4_vista
+  ✓ acto 4: '…' encadena a → b → c
+  ✓ acto 4: el cierre del Eco enlaza la reacción de Brisa
+  ✓ acto 4: reacciones Brisa+Toln con retratos correctos
+  ✓ acto 4: reacción de Brisa → Toln
+  ✓ acto 4: opción final de Toln cierra y devuelve al juego
+  ✓ INTERLUDIOS exporta 9 nodos (3 por acto)
+  ✓ 6 nodos de reacción registrados en DIALOGUES (data.ts, bloque 18-f)
+
+=== 2) DISPARO: cada transición abre su interludio UNA vez ===
+  ✓ accept_q6 (motor): el interludio aún no salta fuera de play
+  ✓ watcher por estado: accept_q6 → interludio_acto2_a abierto (una vez)
+  ✓ banner de acto activo: 'ACTO II — LAS NOTAS PERDIDAS'
+  ✓ ticks extra durante el diálogo: no re-abren
+  ✓ cadena acto2 navegable completa (5 nodos: 3 del Eco + Brisa + Toln)
+  ✓ el cierre del interludio devuelve al juego (state play)
+  ✓ banner expirado tras 2,5 s (fade completo, sin estado residual)
+  ✓ repetir accept_q6 + 6 ticks: el interludio NO se re-abre (idempotente)
+  ✓ accept_q11 (hooks) → interludio_acto3_a abierto
+  ✓ banner acto III: 'ACTO III — EL CANTO AL REVÉS'
+  ✓ cadena acto3 navegable completa (5 nodos)
+  ✓ acto3: repetición no re-abre
+  ✓ accept_q14 (hooks) → interludio_acto4_a abierto
+  ✓ cadena acto4 navegable completa (5 nodos)
+  ✓ acto4: repetición no re-abre
+
+=== 3) RECUPERACIÓN y saves antiguos (watcher por estado) ===
+  ✓ recuperación: flag sin _vista → el interludio se re-encola al cargar
+  ✓ tras marcar _vista, el interludio no vuelve a encolarse
+  ✓ flag + _vista ya puestas: sin recuperación (una sola vez por partida)
+  ✓ save antiguo a mitad del Acto II (idx 7): sin interludio fuera de sitio
+
+=== 4) BARRERA DE LOS ALTARES: custodio vivo 1 vez en 10 s; muerto nunca ===
+  ✓ custodio vivo a ≤4 tiles del altar: aggro + persecución forzadas
+  ✓ barra de jefe activada con el custodio (bossRef/bossActive)
+  ✓ toast dramático: «La Marea Sin Nombre se interpone entre tú y el Eco»
+  ✓ re-entrada a los 2 s: el cooldown de 8 s retiene el spam
+  ✓ 10 s dentro del radio: exactamente 1 disparo (flanco + cooldown 8 s)
+  ✓ jefe derrotado (flag): el watcher nunca interpone ni aggro
+  ✓ sin flag de derrota: el custodio vivo vuelve a interponerse (1 vez)
+  ✓ cripta: el Guardián Hueco se interpone en el altar del Eco de la Voz
+  ✓ prop 'altar_mareas' presente en 'costa'
+  ✓ prop 'altar_cumbres' presente en 'cumbres'
+  ✓ prop 'altar_c' presente en 'cripta'
+
+=== 5) PERSISTENCIA: los flags interludio_* viajan en el save ===
+  ✓ save() serializa las 6 flags del 18-f (interludio_acto2, interludio_acto2_vista, interludio_acto3, interludio_acto3_vista, interludio_acto4, interludio_acto4_vista)
+  ✓ continueGame restaura 6/6 flags del 18-f
+  ✓ tras continuar: ningún interludio se re-abre (flags ya puestas)
+
+================================
+SMOKE INTERLUDIOS: TODO OK

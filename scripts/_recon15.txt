@@ -1,0 +1,7 @@
+390:export const MAPS: Record<MapId, MapDef> = { ...BASE_MAPS, ...EXPANSION_MAPS };
+390:export const MAPS: Record<MapId, MapDef> = { ...BASE_MAPS, ...EXPANSION_MAPS };
+393:export function mapRows(m: MapDef): string[] {
+402:export function tileAt(m: MapDef, rows: string[], tx: number, ty: number, epoch: Epoch): string {
+---
+576:    this.groundPastCanvas = this.map.epochDiffs.length ? mk('pasado') : this.groundCanvas;
+844:    if (this.map.epochDiffs.length === 0) {
