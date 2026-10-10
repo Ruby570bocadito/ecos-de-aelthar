@@ -12,7 +12,7 @@ export { VIEW_W, VIEW_H, ZOOM, fitViewToWindow };
 import type {
   Player, Enemy, Npc, Companion, MapId, Epoch, Projectile, Particle, FloatText,
   Toast, Shockwave, TeleGraph, SaveData, DialogueNode, DialogueOption, Dir, Element, StatsData,
-  ChestDef, SpellFxSlot,
+  ChestDef, SpellFxSlot, SpawnDef,
 } from './types';
 import { MAPS, mapRows, tileAt, mapEpochs } from './maps';
 import { ARENA_MAP_ID } from './maps_expansion'; // 17-d: la arena no entra en visitedMaps (ver loadMap)
@@ -34,7 +34,7 @@ import { drawGame } from './render';
 import { buildMinimapV2 } from './world/minimap';
 import { handleCustomAction, recordDialogueTone } from './hooks';
 import { challengeTick, onChallengeDeath, type ChallengeRun } from './challenge';
-import { skillTick, skillCdMult, setSkillCdDecay, skillDamageMult } from './skilltree';
+import { skillTick, skillCdMult, setSkillCdDecay, skillDamageMult, resetTreeForNewGame } from './skilltree';
 import { balanceTick, enemyStatMult, critChance, CRIT_MULT } from './balance';
 import { worldTick, worldInteract } from './worldlife';
 import { timeTick, beginEpochShift } from './timeskip';
@@ -51,6 +51,7 @@ import {
 import { initPerf, perfFrame, drawPerfOverlay, togglePerfOverlay, perfQuality } from './perf'; // R5-O1: supervisión · R6-V10: consume perfQuality
 import { lorePropsForMap, loreTextFor, noteBellRing } from './world/props'; // R10-6: lore en el mundo · R15: texto de lore + campana
 import { resetCinematic } from './cinematic'; // R15: prólogo animado saltable
+import { sanitizeSaveData } from './savefix'; // R16: lectura tolerante del guardado
 
 // R10-6 · siembra de props de lore (placas/restos/altares/carteles/mojones):
 // determinista, nunca sobre sólidos. FUNCIÓN con guard — NO a nivel de módulo:
@@ -134,6 +135,14 @@ const MAX_MAP_ENEMIES = 40;    // tope de población viva total tras un evento
 // R8-1.3: los cofres se validan UNA vez por objeto/sesión (WeakSet — no toca
 // types.ts ni maps.ts; el ajuste de posición lo leen render e interacción).
 const validatedChests = new WeakSet<ChestDef>();
+
+// R16: enemigos nacidos de un spawn ligado a una época (needPast/needPresent)
+// → refreshEpochSpawns los retira/añade al cambiar de época con Q.
+const epochBound = new WeakMap<Enemy, SpawnDef>();
+// spawns con época de la visita actual: ya nacidos / retirados por época
+// (un enemigo DERROTADO no vuelve a nacer por alternar Q: anti-farmeo)
+let epochSpawned = new Set<SpawnDef>();
+let epochRetired = new Set<SpawnDef>();
 
 // R6-V10 (calidad adaptativa): tope de ancho de vista en BAJA sostenida.
 // El coste de drawGame escala con VIEW_W×VIEW_H: recortar el ancho extra que
@@ -298,7 +307,11 @@ export class Game {
     // transición fantasma: si se sale de play/dialogue a mitad de un fade
     // (pausa, muerte…), el viaje pendiente se cancela para no teletransportar
     // al reanudar ni reescribir el autoguardado con posición incorrecta.
-    if (s !== 'play' && s !== 'dialogue') this.pendingMap = null;
+    if (s !== 'play' && s !== 'dialogue' && this.pendingMap) {
+      this.pendingMap = null;
+      // R16 (#28 QA): avisar en vez de cancelar en silencio
+      if (s === 'pause') this.toast('Viaje cancelado: vuelve a cruzar la salida', '#9aa0b8');
+    }
     if (s !== 'play') this.rollQueued = false;
     // 14-b (auditoría): al salir de 'play' (pausa/muerte) con una carga en
     // curso (clic o J sostenidos), se cancela — si no, al reanudar el
@@ -312,6 +325,9 @@ export class Game {
   }
 
   update(dt: number) {
+    // R16 (#34 QA): un dt NaN/negativo envenenaba dayT para siempre (el
+    // bucle RAF ya acota el dt real a 0,05 s; aquí solo se sanea la forma)
+    if (!Number.isFinite(dt) || dt < 0) dt = 0;
     updateGame(this, dt);
     // Watchers del Acto II que viven en el motor (O(1) por frame; update.ts es
     // de otro agente). q7 paso 0→1: la Sirena entra en combate. Elección
@@ -354,6 +370,21 @@ export class Game {
    * cualquier orden. O(1): early-out salvo cadena del Acto II activa.
    */
   private catchUpActo2() {
+    // R16 (softlock S1 del informe QA): la misma red, por ESTADO, para el
+    // Acto I. Entrar en la Cripta y matar al Guardián durante q3 consumía
+    // visitedCripta y la muerte del jefe: al aceptar q4 su paso 0 («cruza el
+    // puente») y su paso 1 («derrota al Guardián») ya no podían dispararse.
+    if (this.questIdx === 2) {
+      // q3: 0 bosque visitado · 1 fragmento tocado
+      if (this.questStep === 0 && this.flags.visitedBosque) this.questAdvance();
+      if (this.questIdx === 2 && this.questStep === 1 && this.flags.fragmentTouched) this.questAdvance();
+    }
+    if (this.questIdx === 3) {
+      // q4: 0 cripta alcanzada · 1 Guardián derrotado · 2 Eco de la Voz
+      if (this.questStep === 0 && this.flags.visitedCripta) this.questAdvance();
+      if (this.questIdx === 3 && this.questStep === 1 && this.flags.guardianDefeated) this.questAdvance();
+      if (this.questIdx === 3 && this.questStep === 2 && this.flags.ecoVoz) this.questAdvance();
+    }
     if (this.questIdx < 5 || this.questIdx > 9) return;
     // q7 (idx 6): 0 avistada · 1 derrotada · 2 Eco de las Mareas tomado
     if (this.questIdx === 6) {
@@ -439,7 +470,7 @@ export class Game {
       vx: 0, vy: 0, dir: 'down', hp: maxHp, maxHp,
       sprite: disc === 'alba' ? 'hero_alba' : 'hero_tejedor',
       anim: 0, moving: false,
-      level: 1, xp: 0, sta: 100, maxSta: 100, res: 0, maxRes: 100,
+      level: 1, xp: 0, sta: 100, maxSta: 100, res: disc === 'tejedor' ? 30 : 0, maxRes: 100, // R16: el Tejedor despierta con algo de canto
       attrs: { fue: 2, des: 2, int: 2, esp: 2, vig: 2 },
       points: 0, gold: 20, weaponPlus: 0, potions: 2, cds: [0, 0, 0, 0],
       iframes: 0, parryT: 0, parryFx: 0, attackT: 0, combo: 0,
@@ -449,6 +480,7 @@ export class Game {
       memories: [],
       repFacciones: { guardianes: 0, orden: 0, circulo: 0, liga: 0 },
     };
+    resetTreeForNewGame(this.player); // R16: el árbol no se hereda entre partidas
     this.flags = {};
     this.questIdx = 0; this.questStep = 0;
     // terror v2 (Ronda 2): estado interno de intro del jefe y FX de fases, limpio
@@ -492,16 +524,31 @@ export class Game {
   continueGame() {
     const raw = (() => { try { return localStorage.getItem('ecos-aelthar-save'); } catch { return null; } })();
     if (!raw) return;
-    let d: SaveData;
-    try {
-      d = JSON.parse(raw) as SaveData;
-      if (!d || !d.player || typeof d.x !== 'number' || typeof d.y !== 'number' || !MAPS[d.map]) throw new Error('forma inválida');
-    } catch {
+    const discard = () => {
       // save corrupto: nunca dejar el juego muerto — se descarta y se puede empezar de nuevo
       try { localStorage.removeItem('ecos-aelthar-save'); } catch { /* noop */ }
       this.toast('La partida guardada estaba dañada y no pudo recuperarse.', '#ff8060');
-      return;
+    };
+    let d: SaveData | null;
+    try {
+      // R16: lectura TOLERANTE campo a campo (savefix.ts) — tipos raros se
+      // reparan con defaults en vez de lanzar / producir NaN persistentes.
+      d = sanitizeSaveData(JSON.parse(raw), (id) => !!MAPS[id as MapId], QUESTS.length);
+    } catch { d = null; }
+    if (!d) { discard(); return; }
+    try {
+      this.restoreFromSave(d);
+    } catch {
+      // red final: cualquier fallo inesperado al restaurar no deja el botón
+      // CONTINUAR roto para siempre ni la partida a medio montar.
+      discard();
+      this.player = null;
+      this.setState('title');
     }
+  }
+
+  /** Monta la partida desde un SaveData YA saneado (ver continueGame). */
+  private restoreFromSave(d: SaveData) {
     const p = d.player;
     const maxHp = p.maxHp;
     // R8-1.1: habilidad DERIVADA del estado persistente — se calcula UNA vez y
@@ -530,10 +577,13 @@ export class Game {
       repFacciones: p.repFacciones ?? { guardianes: 0, orden: 0, circulo: 0, liga: 0 },
     };
     this.flags = { ...d.flags };
-    this.questIdx = d.questIdx; this.questStep = d.questStep;
+    this.questIdx = d.questIdx;
+    this.questStep = Math.min(d.questStep, Math.max(0, QUESTS[d.questIdx].steps.length - 1));
     this.openedChests = new Set(d.openedChests);
     this.takenEchoes = new Set(d.takenEchoes);
-    this.deadGolds = d.deadGolds ?? [];
+    this.deadGolds = d.deadGolds;
+    // R16: la hora del día viaja en el save (guardar de noche ya no amanece)
+    this.dayT = typeof d.dayT === 'number' ? d.dayT : 0.15;
     // ==== 16-c (logros-stats): restore tolerante (saves antiguos sin stats) ====
     this.stats = sanitizeStats(d.stats);
     // R8-1.1: la época de entrada usa el mismo flag derivado (saves sin
@@ -605,6 +655,7 @@ export class Game {
       companionMode: this.companion?.mode ?? 'seguir', // 16-b: orden táctica serializada
       saveTime: Date.now(),
       stats: { ...this.stats }, // 16-c: estadísticas dentro del guardado
+      dayT: Number.isFinite(this.dayT) ? this.dayT : 0.15, // R16
     };
     try { localStorage.setItem('ecos-aelthar-save', JSON.stringify(d)); } catch { /* noop */ }
     // ==== 16-c (logros-stats): espejo de las últimas cifras para el título ====
@@ -624,6 +675,16 @@ export class Game {
       // lista corrompía al otro)
       this.flags[`bossHpWho_${this.mapId}`] = this.bossRef.etype;
       if (this.mapId === 'cripta') this.flags.bossHp = this.bossRef.hp; // compat con saves antiguos
+    }
+    // R16 (#13 QA): memoria POR JEFE. Con 2 jefes vivos en el mapa (cripta:
+    // Sepulcro + Guardián) solo el bossRef activo memorizaba; el otro volvía
+    // al 100% al reentrar (reset de combate explotable). Cada jefe herido
+    // guarda su vida bajo bossHp_<mapa>_<tipo>. Fuera del desafío.
+    if (!this.challengeRun && this.rows.length) {
+      for (const e of this.enemies) {
+        if (e.dead || BOSS_DEFEAT_FLAG[e.etype] === undefined || e.hp >= e.maxHp) continue;
+        this.flags[`bossHp_${this.mapId}_${e.etype}`] = e.hp;
+      }
     }
     this.mapId = id;
     this.map = MAPS[id];
@@ -676,6 +737,11 @@ export class Game {
         ? this.enemies.find(e => e.etype === who)
         : this.enemies.find(e => BOSS_DEFEAT_FLAG[e.etype] !== undefined);
       if (boss) boss.hp = Math.max(1, Math.min(boss.maxHp, savedBossHp));
+    }
+    // R16: la memoria por jefe manda sobre la legacy (cubre al 2º jefe del mapa)
+    for (const e of this.enemies) {
+      const v = this.flags[`bossHp_${id}_${e.etype}`];
+      if (typeof v === 'number' && BOSS_DEFEAT_FLAG[e.etype] !== undefined) e.hp = Math.max(1, Math.min(e.maxHp, v));
     }
     this.spawnNpcs();
     this.projectiles = []; this.waves = []; this.telegraphs = [];
@@ -833,6 +899,7 @@ export class Game {
 
   spawnEnemies() {
     this.enemies = [];
+    epochSpawned = new Set(); epochRetired = new Set();
     for (const s of this.map.spawns) {
       if (s.needPast && this.epoch !== 'pasado') continue;
       if (s.needPresent && this.epoch !== 'presente') continue;
@@ -848,7 +915,44 @@ export class Game {
         if (!fix) continue;
         sx = fix[0]; sy = fix[1];
       }
-      this.enemies.push(this.makeEnemy(s.type, sx * TILE + 8, sy * TILE + 8, s.patrol ?? 2, s.zone));
+      const e = this.makeEnemy(s.type, sx * TILE + 8, sy * TILE + 8, s.patrol ?? 2, s.zone);
+      if (s.needPast || s.needPresent) { epochBound.set(e, s); epochSpawned.add(s); }
+      this.enemies.push(e);
+    }
+  }
+
+  /**
+   * R16 (#30 QA): el cambio de época re-evalúa los spawns ligados a una época.
+   * Antes los espectros needPresent seguían vivos en el pasado (y los
+   * needPast no aparecían) hasta recargar el mapa. Los de la otra época se
+   * desvanecen (sin botín: no los has derrotado) y nacen los de la nueva
+   * con un respiro de cortesía. Jefes y enemigos ya en combate no se tocan.
+   */
+  private refreshEpochSpawns() {
+    if (this.challengeRun) return;
+    const retired: Enemy[] = [];
+    for (const e of this.enemies) {
+      const def = epochBound.get(e);
+      if (!def || e.dead || e.aggro) continue;
+      const b: Epoch = def.needPast ? 'pasado' : 'presente';
+      if (b === this.epoch) continue;
+      retired.push(e);
+      epochRetired.add(def);
+      this.burst(e.x, e.y - 4, '#c8b0e8', 10, 40);
+    }
+    if (retired.length) this.enemies = this.enemies.filter(e => !retired.includes(e));
+    for (const s of this.map.spawns) {
+      const want: Epoch | null = s.needPast ? 'pasado' : s.needPresent ? 'presente' : null;
+      if (!want || want !== this.epoch) continue;
+      if (BOSS_DEFEAT_FLAG[s.type] !== undefined) continue;
+      if (epochSpawned.has(s) && !epochRetired.has(s)) continue; // vivo o ya derrotado
+      const x = s.x * TILE + 8, y = s.y * TILE + 8;
+      if (this.tileSolidAt(x, y)) continue;
+      const e = this.makeEnemy(s.type, x, y, s.patrol ?? 2, s.zone);
+      e.spawnGuard = 1.2;
+      epochBound.set(e, s);
+      epochSpawned.add(s); epochRetired.delete(s);
+      this.enemies.push(e);
     }
   }
 
@@ -1097,12 +1201,18 @@ export class Game {
    * en un muro ni en un teletransporte (bucle cripta↔bosque, P0-1).
    */
   private findSafeTile(tx: number, ty: number): [number, number] {
+    // R16: una petición fuera del mapa se lleva primero al borde interior
+    // (antes la búsqueda por anillos r≤8 nunca alcanzaba una sala pequeña
+    // desde un punto lejano y devolvía el tile FUERA del mapa).
+    tx = Math.max(0, Math.min(this.map.w - 1, Math.floor(tx)));
+    ty = Math.max(0, Math.min(this.map.h - 1, Math.floor(ty)));
     const ok = (x: number, y: number) =>
       x >= 0 && y >= 0 && x < this.map.w && y < this.map.h &&
       !this.tileSolidAt(x * TILE + 8, y * TILE + 8) &&
       !this.inExitZone(x, y);
     if (ok(tx, ty)) return [tx, ty];
-    for (let r = 1; r <= 8; r++) {
+    const R = Math.max(8, Math.max(this.map.w, this.map.h));
+    for (let r = 1; r <= R; r++) {
       for (let dy = -r; dy <= r; dy++) {
         for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
@@ -1153,7 +1263,13 @@ export class Game {
     // throttled (el ARTE de la barrera vive en sprites.ts/world — ajeno;
     // aquí se arregla la lógica de bloqueo + feedback).
     if ((blockedX || blockedY) && e === this.player && this.state === 'play') {
-      this.epochBarrierFeedback(e.x + (blockedX ? Math.sign(dx) : 0), e.y + (blockedY ? Math.sign(dy) : 0));
+      // R16 (#10 QA): se muestrea el tile JUSTO tras el borde de la caja que
+      // chocó (antes a 1 px del centro: nunca caía en la barrera real, que
+      // bloquea a w/2 px, y el aviso no salía jamás). Borde superior: boxFree
+      // usa y0 = y − h/2 − 2.
+      const sx = blockedX ? e.x + Math.sign(dx) * (e.w / 2 + 1) : e.x;
+      const sy = blockedY ? (dy < 0 ? e.y - e.h / 2 - 3 : e.y + e.h / 2 + 1) : e.y;
+      this.epochBarrierFeedback(sx, sy);
     }
     // ==== 16-c (logros-stats): distancia andada del Portador. moveEntity es la
     // ÚNICA puerta del movimiento (caminar, rodar, hielo, empujones): se cuenta
@@ -1183,7 +1299,11 @@ export class Game {
       return;
     }
     if (this.map.epochDiffs.length === 0) {
-      this.toast('La Cripta existe fuera del tiempo.', '#9aa0b8');
+      // R16 (#40 QA): el veto decía «La Cripta…» en cualquier mapa sin épocas
+      const msg = this.mapId === 'cripta' ? 'La Cripta existe fuera del tiempo.'
+        : this.map.indoor ? 'Entre estas paredes el tiempo no se mueve.'
+        : `${this.map.name} no guarda otro tiempo.`;
+      this.toast(msg, '#9aa0b8');
       return;
     }
     // ==== R13 · ÉPOCA TERNARIA: en la Cuna, Q alterna 'aun' ↔ 'presente'. ====
@@ -1231,6 +1351,7 @@ export class Game {
       this.player.y = sy * TILE + 8;
       this.toast('El mundo cambia a tu alrededor... y te aparta del muro.', '#c8b0e8');
     }
+    this.refreshEpochSpawns(); // R16: los habitantes de cada época
     this.toast(this.epoch === 'pasado' ? 'El pasado canta a tu alrededor' : 'Vuelves al presente en ruinas', '#ffe9a0');
   }
 
@@ -1423,7 +1544,9 @@ export class Game {
       { text: 'Descansar y guardar la partida', action: 'rest' },
     ];
     for (const mid of Object.keys(this.visitedMaps) as MapId[]) {
-      if (this.visitedMaps[mid] && mid !== this.mapId) {
+      // R16: solo mapas CON santuario (los interiores visitados aparecían en
+      // la lista y el viaje aterrizaba fuera del mapa — P1 del informe QA)
+      if (this.visitedMaps[mid] && mid !== this.mapId && this.hasSanctuary(mid)) {
         const nm = MAPS[mid as MapId].name;
         opts.push({ text: `Viajar: ${nm}`, action: `travel_${mid}` });
       }
@@ -1480,7 +1603,11 @@ export class Game {
     if (!this.dlgNode) return;
     if (!this.dialogueFinishedText()) { this.dlgCharT = this.dlgNode.text.length; return; }
     if (this.dlgNode.action) this.applyAction(this.dlgNode.action);
+    // R16 (#17 QA): una action puede CERRAR el diálogo (dlgNode=null) —
+    // antes la línea siguiente leía dlgNode.onEnd y lanzaba TypeError.
+    if (!this.dlgNode) return;
     if (this.dlgNode.onEnd) this.applyAction(this.dlgNode.onEnd);
+    if (!this.dlgNode) return;
     if (this.dlgNode.options && this.dlgNode.options.length > 0) {
       const opt = this.dlgNode.options[this.dlgSel];
       recordDialogueTone(this, opt);
@@ -1698,7 +1825,27 @@ export class Game {
     if (id === 'costa') return [22, 21];
     if (id === 'aldea') return [17, 21];
     if (id === 'cumbres') return [14, 24];
+    // R16: mapas SIN santuario (interiores de casas, salas de la Ciudadela,
+    // cripta...). El viejo fallback [19,24] caía FUERA de las salas de 22×16
+    // y de las casas de 13×10 (morir o viajar allí dejaba al Portador en el
+    // vacío y el autoguardado envenenaba el save). Ahora: junto a la primera
+    // salida del mapa (la puerta por la que se entra; findSafeTile lo aparta
+    // de la zona de salida) o, sin salidas, el centro del mapa.
+    const m = MAPS[id];
+    if (m) {
+      const ex = m.exits[0];
+      if (ex) return [ex.x, ex.y];
+      return [Math.floor(m.w / 2), Math.floor(m.h / 2)];
+    }
     return [19, 24];
+  }
+
+  /** R16: ¿el mapa tiene Santuario (destino válido del menú «Viajar»)? */
+  hasSanctuary(id: MapId): boolean {
+    const m = MAPS[id];
+    if (!m) return false;
+    return m.props.some(pr => pr.kind === 'sanctuary')
+      || id === 'lunaris' || id === 'bosque' || id === 'costa' || id === 'aldea' || id === 'cumbres';
   }
 
   questAdvance() {
@@ -1979,6 +2126,15 @@ export class Game {
       else if (k === 'e' || k === ' ' || k === 'enter') this.advanceIntro();
     } else if (this.state === 'dialogue') {
       if (k === 'e' || k === ' ' || k === 'enter') this.advanceDialogue();
+      // R16 (#27 QA): ESC/M dentro de un diálogo — completa el texto y, si el
+      // nodo es solo charla (sin opciones, acción ni continuación), lo cierra.
+      // Los nodos con decisiones o efectos nunca se saltan a ciegas.
+      else if (k === 'escape' || k === 'm') {
+        const n = this.dlgNode;
+        if (n && !this.dialogueFinishedText()) this.dlgCharT = n.text.length;
+        else if (n && !(n.options && n.options.length) && !n.action && !n.onEnd && !n.next) this.closeDialogue();
+        else audio.sfx('blip');
+      }
       else if (k === 'arrowup' || k === 'w') { if (this.dlgNode?.options) { this.dlgSel = (this.dlgSel + this.dlgNode.options.length - 1) % this.dlgNode.options.length; audio.sfx('blip'); } }
       else if (k === 'arrowdown' || k === 's') { if (this.dlgNode?.options) { this.dlgSel = (this.dlgSel + 1) % this.dlgNode.options.length; audio.sfx('blip'); } }
     } else if (this.state === 'play') {
@@ -2125,21 +2281,28 @@ export class Game {
     const p = this.player!;
     const wasCharging = p.charging;
     p.charging = false;
-    const charged = wasCharging && p.chargeT > 0.35;
+    let charged = wasCharging && p.chargeT > 0.35;
     const chargeTime = p.chargeT;
     p.chargeT = 0;
     if (!wasCharging) return;
     if (p.attackT > 0 || p.rollT > 0 || this.state !== 'play') return;
-    if (p.sta < 8) { audio.sfx('parryFail'); return; }
+    if (p.sta < 8) { audio.sfx('parryFail'); this.warnLowStamina('¡Sin aguante!'); return; }
+    // R16 (#24 QA): sin aguante para el tajo cargado, sale un tajo normal y
+    // se AVISA (antes se cobraba 18 con lo que hubiera y no se decía nada).
+    if (charged && p.sta < 18) { charged = false; this.warnLowStamina('Aguante justo: tajo normal'); }
     p.attackT = charged ? 0.4 : 0.26;
     p.combo = (p.combo + 1) % 3;
-    p.sta -= charged ? 18 : 8;
+    // R16 (#22 QA): el aguante nunca baja de 0
+    p.sta = Math.max(0, p.sta - (charged ? 18 : 8));
     p.chargedHit = charged;
     this.aimAtMouse();
     audio.sfx(charged ? 'swing2' : 'swing');
     // daño del golpe ==== 17-e (qa): los multiplicadores del árbol (Filo
     // Templado/Cólera del Alba) aplican al ataque BASE del jugador ====
-    const comboMult = [1, 1.12, 1.28][p.combo];
+    // R16 (#23 QA): p.combo ya se incrementó (1→1º golpe, 2→2º, 0→3º):
+    // la tabla se indexa así para que el REMATE del combo sea el que más pega
+    // (antes 1º ×1.12 · 2º ×1.28 · 3º ×1.0 — al revés de lo prometido).
+    const comboMult = [1.28, 1, 1.12][p.combo];
     const dmg = playerMeleeDmg(p) * comboMult * (charged ? 2.1 : 1) * skillDamageMult(this, 'melee');
     if (charged) {
       const dirs: Record<Dir, [number, number]> = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
@@ -2153,11 +2316,19 @@ export class Game {
     void chargeTime;
   }
 
+  /** R16: aviso flotante de aguante insuficiente (máx. 1 cada 0,9 s). */
+  private lowStaWarnAt = -9;
+  warnLowStamina(text: string) {
+    if (!this.player || this.globalT - this.lowStaWarnAt < 0.9) return;
+    this.lowStaWarnAt = this.globalT;
+    this.floatAt(this.player.x, this.player.y - 24, text, '#9ee870', 6);
+  }
+
   startParry() {
     if (!this.player) return;
     const p = this.player;
     if (this.state !== 'play' || p.rollT > 0) return;
-    if (p.sta < 12) { audio.sfx('parryFail'); return; }
+    if (p.sta < 12) { audio.sfx('parryFail'); this.warnLowStamina('¡Sin aguante para parar!'); return; }
     p.sta -= 12;
     p.parryT = 0.2;
     p.parryFx = 0.32;
@@ -2181,7 +2352,10 @@ export class Game {
     if (i < 0 || i >= disc.length) return;
     const sk = disc[i];
     if (p.cds[i] > 0) { this.toast(`${sk.name}: aún en recarga`, '#9aa0b8'); return; }
-    if (p.res < sk.cost) { this.toast(`Resonancia insuficiente (${sk.cost})`, '#e88'); audio.sfx('error'); return; }
+    if (p.res < sk.cost) {
+      this.toast(`Resonancia insuficiente (${Math.floor(p.res)}/${sk.cost}) — golpea o derrota enemigos para cargarla`, '#e88');
+      audio.sfx('error'); return;
+    }
     p.res -= sk.cost;
     // 14-b (camino B del contrato skilltree.ts): el descuento del árbol se
     // aplica AL FIJAR (skillCdMult); el decaimiento extra por tick está OFF
@@ -2426,6 +2600,8 @@ export class Game {
     // (e.hp <= 0) → XP, oro, kills y restos otorgados DOS veces. Un solo pago.
     if (e.dead) return;
     e.dead = true;
+    // R16: el jefe muerto no deja memoria de vida pendiente
+    if (!this.challengeRun && BOSS_DEFEAT_FLAG[e.etype] !== undefined) delete this.flags[`bossHp_${this.mapId}_${e.etype}`];
     // ==== 16-b (interacción con todo): restos examinables con E + botín raro
     // de jefes (8% de +1 señuelo de caza) ====
     registerCorpse16b(this, e);

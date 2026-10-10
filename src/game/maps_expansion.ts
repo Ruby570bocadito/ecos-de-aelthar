@@ -312,7 +312,9 @@ function buildAldea(): string[] {
   pathH(g, 23, 31, 36);
   // lápidas (tras los caminos: ninguna pisa el sendero)
   set(g, 25, 35, 'g'); set(g, 27, 35, 'g'); set(g, 29, 35, 'g'); set(g, 31, 35, 'g'); set(g, 33, 35, 'g');
-  set(g, 26, 37, 'g'); set(g, 28, 37, 'g'); set(g, 30, 37, 'g'); set(g, 32, 37, 'g');
+  // R16: la lápida que había en (32,37) tapaba la ÚNICA entrada de la
+  // cripta familiar (32,38) — el recinto quedaba sellado. Se corre al oeste.
+  set(g, 26, 37, 'g'); set(g, 28, 37, 'g'); set(g, 30, 37, 'g'); set(g, 24, 37, 'g');
   set(g, 26, 39, 'g'); set(g, 27, 40, 'g');
   // despejar coordenadas clave del extramuros
   const clearKey2: [number, number, string][] = [
@@ -501,7 +503,10 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
     id: 'costa',
     name: 'Costa de Bruma',
     subtitle: 'Donde el mar guarda las notas · Zona 10–16',
-    w: 52, h: 40,
+    // R16: w 52→64 — buildCosta genera 64 columnas desde R10-2 (la marea
+    // retirada: Jardines de Sal + naufragio de La Madre del Mar en x51..58);
+    // con w=52 mapRows recortaba todo ese contenido y era inalcanzable.
+    w: 64, h: 40,
     rows: buildCosta(),
     epochDiffs: costaDiffs,
     music: 'costa',
@@ -514,10 +519,15 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
       { id: 'co1', x: 29, y: 37, gold: 60, potions: 1, needPast: true },
       { id: 'co2', x: 4, y: 15, gold: 35 },
       { id: 'co3', x: 42, y: 29, gold: 40, potions: 1 },
+      // R16 · contenido de R10-2 por fin registrado (coordenadas del clearKey)
+      { id: 'co4', x: 9, y: 16, gold: 45 },                    // faro en ruinas
+      { id: 'co5', x: 53, y: 28, gold: 90, potions: 1 },       // bodega de La Madre del Mar
     ],
     echoes: [
       { id: 'co_e1', x: 24, y: 30, title: 'Eco menor · El farero que no se dormía', text: '«La abuela de Mara subía cada noche a encender la lámpara cantando, una nota por vuelta de engranaje. Cuando el canto del dios murió, la lámpara siguió girando... pero la luz aprendió a temblar. Los barcos ya no buscan fuego en la costa: buscan permiso para volver.»' },
       { id: 'co_e2', x: 37, y: 19, title: 'Eco menor · Los barcos sin canción', text: '«Antes, las tripulaciones cantaban al doblar el cabo y el mar respondía liso como zinc. Ahora cruzan en silencio y la Niebla Muda las apunta una a una en su lista de nombres. El mar guarda las notas que faltan: por algo todavía susurra.»' },
+      { id: 'co_e4', x: 8, y: 17, title: 'Eco menor · La torre que contaba olas', text: '«El primer faro de la costa no tenía fuego: tenía una campana que el farero tocaba una vez por cada ola grande. Los barcos no buscaban luz, buscaban el compás. Cuando la Niebla se tragó el sonido, la torre se partió por la mitad sin que nadie la tocara: dicen que fue de pena.»' },
+      { id: 'co_e5', x: 56, y: 27, title: 'Eco menor · La Madre del Mar', text: '«La nave más grande que salió de Merrow se llamaba así porque llevaba a bordo a todas las madres del puerto: iban a cantar al cabo para que el mar devolviera a los pescadores. El mar devolvió a los pescadores. A la nave, no. La bodega todavía huele a sal y a nana.»' },
       { id: 'co_e3', x: 11, y: 25, title: 'Eco menor · La marea que borra nombres', text: '«El mar fue el primer archivo de Aelthar: cada ola leía un nombre en voz baja para que el dios-tejedor lo bordara en su canto. La noche del asesinato, la marea subió más que nunca y, desde entonces, borra en vez de leer. La que duerme en el naufragio sabe dónde fueron a parar los nombres.»' },
     ],
     spawns: [
@@ -530,6 +540,9 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
       { type: 'neumo', x: 38, y: 30, patrol: 3, zone: 'costa' },
       { type: 'espectro', x: 14, y: 22, zone: 'costa' },
       { type: 'espectro', x: 24, y: 26, zone: 'costa' },
+      // R16: el lecho de los Jardines de Sal (R10-2) recibe su guardia
+      { type: 'neumo', x: 50, y: 27, patrol: 3, zone: 'costa' },
+      { type: 'espectro', x: 54, y: 13, zone: 'costa' },
       // JEFA: la Sirena Abisal, junto a su naufragio
       { type: 'sirena', x: 39, y: 24, zone: 'boss' },
     ],
@@ -537,7 +550,8 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
       // aterrizaje en lunaris (26,35): camino '=', fuera de la zona de salida sur
       { x: 25, y: 0, w: 3, h: 2, to: 'lunaris', tx: 26, ty: 35, label: 'Valle de Lunaris' },
       // aterrizaje en aldea (3,18): camino '=', fuera de la zona de salida oeste
-      { x: 50, y: 17, w: 2, h: 4, to: 'aldea', tx: 3, ty: 18, label: 'Aldea de Merrow' },
+      // R16: la salida sigue a la calzada hasta el borde REAL del mapa (x62)
+      { x: 62, y: 17, w: 2, h: 4, to: 'aldea', tx: 3, ty: 18, label: 'Aldea de Merrow' },
     ],
     props: [
       { id: 'sanc_co', kind: 'sanctuary', x: 22, y: 21 },
@@ -546,6 +560,8 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
       { id: 'altar_mareas', kind: 'altarEcho', x: 36, y: 27 },
       { id: 'sign_co1', kind: 'sign', x: 23, y: 3, label: '«Costa de Bruma. Al sur y al este, el mar. Todavía susurra con voz prestada: no le respondas con tu nombre.»' },
       { id: 'sign_co2', kind: 'sign', x: 25, y: 31, label: '«Muelle viejo de Merrow. En pie solo cuando el ayer lo sostiene.»' },
+      { id: 'sign_co3', kind: 'sign', x: 10, y: 19, label: '«Faro del Cabo. Se ruega no subir: la escalera recuerda a todos los que la subieron y se cansa.»' },
+      { id: 'sign_co4', kind: 'sign', x: 45, y: 21, label: '«Jardines de Sal. Aquí había mar. Si oyes olas bajo los pies, no son tuyas: sigue andando.»' },
     ],
   },
 
@@ -553,7 +569,9 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
     id: 'aldea',
     name: 'Aldea de Merrow',
     subtitle: 'La que la Niebla borró · Zona 12–16',
-    w: 44, h: 34,
+    // R16: h 34→44 — buildAldea genera 44 filas desde R10 (extramuros sur:
+    // huerto vallado + cementerio, puerta en la muralla x20..23).
+    w: 44, h: 44,
     rows: buildAldea(),
     epochDiffs: aldeaDiffs,
     music: 'aldea',
@@ -564,9 +582,14 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
       // el botín del festival solo existe en el pueblo vivo
       { id: 'a1', x: 10, y: 23, gold: 60, potions: 2, needPast: true },
       { id: 'a2', x: 32, y: 9, gold: 30 },
+      // R16 · extramuros sur (R10-2): huerto y cripta familiar
+      { id: 'a3', x: 6, y: 39, gold: 40, potions: 1 },
+      { id: 'a4', x: 34, y: 40, gold: 75 },
     ],
     echoes: [
       { id: 'al_e1', x: 23, y: 14, title: 'Eco menor · El nombre que nadie dice', text: '«Merrow no es su nombre. Es el que quedó cuando la Niebla borró el verdadero, como quien roba un pañuelo y deja la mano fría. Los espectros caminan la plaza esperando que alguien les diga cómo se llamaban. Tú también has olvidado cosas, Portador. La Niebla trabaja despacio.»' },
+      { id: 'al_e3', x: 10, y: 37, title: 'Eco menor · El huerto de la fundadora', text: '«La primera mujer de Merrow plantó aquí una hilera de coles por cada hijo que el mar le devolvió. Eran once hileras. Cuando la Niebla quemó el huerto, las coles no ardieron: se quedaron mudas, que en Merrow es peor.»' },
+      { id: 'al_e4', x: 31, y: 39, title: 'Eco menor · El dintel liso', text: '«Sobre la puerta de esta cripta había tallado un apellido. La Niebla no rompió la piedra: la alisó, letra a letra, como quien acaricia un perro hasta borrarle el nombre. En el ayer todavía se lee. Quien lo lea en voz alta le devuelve a la familia su sitio en el canto.»' },
       { id: 'al_e2', x: 6, y: 19, title: 'Eco menor · Los faroles del Recuerdo', text: '«Los faroles de Merrow no se encendían con fuego: se encendían con nombres dichos en voz alta, uno por farol, uno por familia. Tres siguen esperando en el ayer. Enciéndelos allí y acaso el presente aprenda otra vez a iluminarse.»' },
     ],
     spawns: [
@@ -577,6 +600,9 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
       { type: 'espectro', x: 30, y: 21, zone: 'aldea', needPresent: true },
       { type: 'neumo', x: 16, y: 8, zone: 'aldea' },
       { type: 'neumo', x: 27, y: 29, zone: 'aldea' },
+      // R16 · extramuros sur
+      { type: 'neumo', x: 14, y: 39, zone: 'aldea' },
+      { type: 'espectro', x: 33, y: 37, zone: 'aldea', needPresent: true },
     ],
     exits: [
       // aterrizaje en costa (47,18): calzada '=', fuera de la zona de salida este
@@ -592,6 +618,8 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
       { id: 'lamp3', kind: 'lamp', x: 20, y: 22, needPast: true },
       { id: 'sign_al1', kind: 'sign', x: 5, y: 16, label: '«Aldea de Merrow. Pregunta por cualquiera: la Niebla respondió por todos.»' },
       { id: 'sign_al2', kind: 'sign', x: 26, y: 20, label: '«Los Faroles del Recuerdo no se encienden con fuego. Se encienden con nombres, y solo en el ayer.»' },
+      { id: 'sign_al3', kind: 'sign', x: 19, y: 34, label: '«Huerto común. Coge lo que necesites, deja lo que te sobre. (Debajo, con otra letra: «ya no queda nada que coger»)»' },
+      { id: 'sign_al4', kind: 'sign', x: 25, y: 34, label: '«Cementerio marino. Las lápidas miran al agua porque así lo pidieron. No les des la espalda.»' },
     ],
   },
 
@@ -599,7 +627,9 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
     id: 'cumbres',
     name: 'Cumbres Heladas',
     subtitle: 'El frío que aprendió a escuchar · Zona 14–20',
-    w: 50, h: 42,
+    // R16: w 50→66 — buildCumbres genera 66 columnas desde R10-2 (cueva de
+    // las Tres Velas, mirador helado y campamento al este de la muralla).
+    w: 66, h: 42,
     rows: buildCumbres(),
     epochDiffs: cumbresDiffs,
     music: 'cumbres',
@@ -610,10 +640,15 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
       { id: 'cu1', x: 5, y: 7, gold: 50 },
       { id: 'cu2', x: 43, y: 30, gold: 40, potions: 1 },
       { id: 'cu3', x: 27, y: 4, gold: 60 },
+      // R16 · el este de R10-2: mina de las Tres Velas y mirador helado
+      { id: 'cu4', x: 52, y: 3, gold: 70, potions: 1 },
+      { id: 'cu5', x: 61, y: 3, gold: 85 },
     ],
     echoes: [
       { id: 'cu_e1', x: 11, y: 19, title: 'Eco menor · El invierno del silencio', text: '«Hubo un invierno en que la Niebla subió a las cumbres a buscar las últimas voces libres. Los pastores dejaron de cantar para esconderlas, y el frío las guardó mejor que ellos: bajo el hielo aún se oyen, si sabes escuchar de rodillas.»' },
       { id: 'cu_e2', x: 23, y: 30, title: 'Eco menor · Los turnos de canto', text: '«Los pastores de las Cumbres cantaban por turnos: uno dormía y otro velaba su voz, para que el silencio no encontrara a nadie solo. La última noche cantaron todos a la vez. Nadie recuerda quién quedó para el alba, y la montaña, que todo lo escucha, no lo quiere decir.»' },
+      { id: 'cu_e4', x: 52, y: 4, title: 'Eco menor · Las Tres Velas', text: '«Los mineros bajaban con tres velas: una para ver, una para volver y una para cantar si la segunda se apagaba. La última cuadrilla encendió la tercera. El derrumbe no los enterró: los dejó cantando al otro lado, y la montaña aún tararea su estribillo cuando sopla del este.»' },
+      { id: 'cu_e5', x: 59, y: 3, title: 'Eco menor · El mirador', text: '«Desde esta repisa se veían los cinco pueblos de Aelthar a la vez. Los pastores subían a contarlos cada mañana: si había humo en las cinco chimeneas, el mundo seguía entero. Hoy se ven tres humos. El cuarto es niebla. El quinto, nadie se atreve a decirlo.»' },
       { id: 'cu_e3', x: 36, y: 12, title: 'Eco menor · Las voces bajo el hielo', text: '«El lago no congela agua: congela coros. Los que la Niebla atrapó durante la huida quedaron suspendidos boca arriba, mirando el cielo desde debajo. En los deshielos breves piden ayuda... en armonía. El Gólem los cuenta cada noche, como un pastor cuenta ovejas.»' },
     ],
     spawns: [
@@ -628,6 +663,10 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
       { type: 'lobo', x: 18, y: 36, zone: 'cumbres' },
       { type: 'espectro', x: 35, y: 34, zone: 'cumbres' },
       { type: 'espectro', x: 40, y: 26, zone: 'cumbres' },         // 10-b: guarda el tesoro del este
+      // R16 · el este de R10-2 (coordenadas de su clearKeyE)
+      { type: 'arpi', x: 60, y: 10, patrol: 4, zone: 'cumbres' },
+      { type: 'lobo', x: 52, y: 26, zone: 'cumbres' },
+      { type: 'lobo', x: 58, y: 30, zone: 'cumbres' },
       // JEFE: el Gólem de Escarcha, guardián del paso al altar
       { type: 'golem', x: 24, y: 8, zone: 'boss' },
     ],
@@ -640,6 +679,7 @@ export const EXPANSION_MAPS: Record<'costa' | 'aldea' | 'cumbres', MapDef> & { a
       { id: 'altar_cumbres', kind: 'altarEcho', x: 24, y: 3 },
       { id: 'sign_cu1', kind: 'sign', x: 27, y: 39, label: '«Paso de las Cumbres. Más arriba el aire corta los nombres por la mitad. Llévalos cerca del pecho.»' },
       { id: 'sign_cu2', kind: 'sign', x: 7, y: 34, label: '«Hoguera de los pastores. Cantaban por turnos para no velar su voz en soledad. Nadie canta ya la última estrofa.»' },
+      { id: 'sign_cu3', kind: 'sign', x: 56, y: 19, label: '«Campamento de la Veta. Turno de noche: tres velas por cabeza. Turno de día: canta alto, que te oigan los de abajo.»' },
     ],
   },
 

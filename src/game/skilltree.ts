@@ -85,10 +85,18 @@ function treeKey(p: Player): string {
 }
 
 /** Lee (una vez por identidad) el árbol del localStorage y aplica el equipaje. */
+/** R16: identidad cuyo equipaje está aplicado ahora mismo en SKILLS[disc]. */
+const appliedKey: Record<'alba' | 'tejedor', string | null> = { alba: null, tejedor: null };
+
 function getTree(p: Player): TreeSave {
   const k = treeKey(p);
   const cached = treeCache.get(k);
-  if (cached) return cached;
+  if (cached) {
+    // R16: si otra identidad de la misma disciplina tocó la barra global
+    // (otra partida en la misma página), se re-aplica el equipaje propio
+    if (appliedKey[p.discipline] !== k) { applyLoadout(p.discipline, cached.equip); appliedKey[p.discipline] = k; }
+    return cached;
+  }
   const t: TreeSave = { learned: [], equip: [null, null, null, null] };
   try {
     const all = JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}') as Record<string, Partial<TreeSave>>;
@@ -103,6 +111,7 @@ function getTree(p: Player): TreeSave {
   } catch { /* sin localStorage (stub de smoke): árbol volátil en memoria */ }
   treeCache.set(k, t);
   applyLoadout(p.discipline, t.equip);
+  appliedKey[p.discipline] = k;
   return t;
 }
 
@@ -110,11 +119,39 @@ function saveTree(p: Player): void {
   const t = treeCache.get(treeKey(p));
   if (!t) return;
   try {
-    const all: Record<string, TreeSave> = {};
-    // escribe el cache completo (soporta varias partidas en la misma página)
+    // R16 (#15 QA): FUSIONA con lo que ya hay en disco. Antes se escribía
+    // solo el cache del proceso y se borraban los árboles de las demás
+    // identidades guardadas que esta sesión no había llegado a leer.
+    let all: Record<string, TreeSave> = {};
+    try {
+      const prev = JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}');
+      if (prev && typeof prev === 'object' && !Array.isArray(prev)) all = prev as Record<string, TreeSave>;
+    } catch { /* disco corrupto: se reescribe con el cache */ }
     treeCache.forEach((v, key) => { all[key] = v; });
     localStorage.setItem(STORE_KEY, JSON.stringify(all));
   } catch { /* noop */ }
+}
+
+/**
+ * R16 (#16/#31 QA): partida NUEVA. La identidad del árbol es nombre|disciplina:
+ * recrear un Portador con el mismo nombre heredaba el árbol aprendido y el
+ * equipaje (maxHp y magias de nivel alto a Nv 1). Además SKILLS es global y
+ * mostraba las magias de la partida anterior hasta el primer skillTick.
+ * Borra el árbol de esa identidad (cache + disco) y devuelve ambas barras
+ * a sus habilidades base.
+ */
+export function resetTreeForNewGame(p: Player): void {
+  const k = treeKey(p);
+  treeCache.delete(k);
+  try {
+    const prev = JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}');
+    if (prev && typeof prev === 'object' && !Array.isArray(prev) && k in prev) {
+      delete (prev as Record<string, unknown>)[k];
+      localStorage.setItem(STORE_KEY, JSON.stringify(prev));
+    }
+  } catch { /* noop */ }
+  applyLoadout(p.discipline, [null, null, null, null]);
+  appliedKey[p.discipline] = null;
 }
 
 function spentPoints(t: TreeSave): number {
@@ -235,7 +272,9 @@ export function equipNewSkill(p: Player, skillId: string, slot: number): boolean
   // una magia nueva solo ocupa un hueco a la vez
   for (let j = 0; j < 4; j++) if (t.equip[j] === skillId) t.equip[j] = null;
   t.equip[slot] = skillId;
-  SKILLS[p.discipline][slot] = def;
+  // R16 (#14 QA): re-aplica TODA la barra — el hueco del que salió la magia
+  // vuelve a su base también en memoria viva (antes seguía lanzándola).
+  applyLoadout(p.discipline, t.equip);
   saveTree(p);
   audio.sfx('confirm');
   return true;

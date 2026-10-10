@@ -139,6 +139,11 @@ export function handleCustomAction(g: Game, action: string): boolean {
 
   // mara_gift: Mara enciende el faro tras la Sirena y paga en pociones (una vez)
   if (action === 'mara_gift') {
+    // R16 (softlock S2 del informe QA): si la Sirena cae DURANTE q6, Mara
+    // salta directo a esta reacción y mara_intro (único nodo con mara_met)
+    // ya no se sirve nunca → q6 «Habla con Mara» quedaba atascada para
+    // siempre. Hablar con ella aquí TAMBIÉN cuenta como conocerla.
+    if (g.questIdx === 5 && g.questStep === 1) g.questAdvance();
     p.potions += 2;
     g.flags.maraGift = true;
     audio.sfx('potion');

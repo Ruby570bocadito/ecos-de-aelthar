@@ -285,6 +285,10 @@ export function updateGame(g: Game, dt: number) {
   const mlen = Math.hypot(mx, my) || 1;
 
   p.sta = Math.min(p.maxSta, p.sta + (p.rollT > 0 ? 0 : 26) * dt);
+  // R16 (#25 QA): el Tejedor de Ecos «respira» resonancia (+2/s, hasta 50):
+  // antes arrancaba a 0 y no podía lanzar NINGÚN canto sin pegar antes en
+  // melé — el mago tenía que hacer de guerrero para poder ser mago.
+  if (p.discipline === 'tejedor' && p.res < 50) p.res = Math.min(50, p.res + 2 * dt);
   if (p.iframes > 0) p.iframes -= dt;
   if (p.parryT > 0) p.parryT -= dt;
   if (p.parryFx > 0) p.parryFx -= dt;

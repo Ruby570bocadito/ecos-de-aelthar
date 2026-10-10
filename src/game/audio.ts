@@ -313,8 +313,10 @@ export class AudioEngine {
     if (this.ctx && this.ctx.state === 'suspended') void this.ctx.resume();
   }
 
-  setMusicVol(v: number) { this.musicVol = v; if (this.musicGain) this.musicGain.gain.value = v; }
-  setSfxVol(v: number) { this.sfxVol = v; if (this.sfxGain) this.sfxGain.gain.value = v; }
+  // R16 (#33 QA): volumen saneado a [0,1] (antes aceptaba −3, 999 y NaN, y el
+  // NaN quedaba fijo en el bus para toda la sesión)
+  setMusicVol(v: number) { v = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : this.musicVol; this.musicVol = v; if (this.musicGain) this.musicGain.gain.value = v; }
+  setSfxVol(v: number) { v = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : this.sfxVol; this.sfxVol = v; if (this.sfxGain) this.sfxGain.gain.value = v; }
 
   // ---------------- Música ----------------
 
@@ -330,7 +332,7 @@ export class AudioEngine {
     this.drumGain = 0;
     this.tensionGain = 0;
     this.loopNo = 0;
-    if (this.musicTimer !== null) { clearInterval(this.musicTimer); this.musicTimer = null; }
+    if (this.musicTimer !== null) { window.clearInterval(this.musicTimer); this.musicTimer = null; }
     const pat = TRACKS[name];
     const stepDur = 60 / pat.bpm / 4;
     this.nextNoteTime = this.ctx.currentTime + 0.06;
@@ -341,17 +343,23 @@ export class AudioEngine {
       if (this.nextNoteTime < this.ctx.currentTime - 0.25) {
         this.nextNoteTime = this.ctx.currentTime + 0.05;
       }
-      while (this.nextNoteTime < this.ctx.currentTime + 0.18) {
-        this.loopNo = Math.floor(this.step / 32); // para micro-variación (10-c)
-        this.scheduleStep(pat, this.step % 32, this.nextNoteTime, stepDur);
-        this.step++;
-        this.nextNoteTime += stepDur;
+      try {
+        while (this.nextNoteTime < this.ctx.currentTime + 0.18) {
+          this.loopNo = Math.floor(this.step / 32); // para micro-variación (10-c)
+          this.scheduleStep(pat, this.step % 32, this.nextNoteTime, stepDur);
+          this.step++;
+          this.nextNoteTime += stepDur;
+        }
+      } catch {
+        // R16: contexto roto → la música se detiene en vez de lanzar 25 veces/s
+        if (this.musicTimer !== null) { window.clearInterval(this.musicTimer); this.musicTimer = null; }
+        this.cur = null;
       }
     }, 40);
   }
 
   stopMusic() {
-    if (this.musicTimer !== null) { clearInterval(this.musicTimer); this.musicTimer = null; }
+    if (this.musicTimer !== null) { window.clearInterval(this.musicTimer); this.musicTimer = null; }
     this.cur = null;
   }
 
@@ -944,7 +952,7 @@ export class AudioEngine {
       }
     } else {
       g.linearRampToValueAtTime(0.0001, now + 1.6); // crossfade de salida
-      if (this.nightTimer !== null) { clearInterval(this.nightTimer); this.nightTimer = null; }
+      if (this.nightTimer !== null) { window.clearInterval(this.nightTimer); this.nightTimer = null; }
     }
   }
 
@@ -1158,7 +1166,7 @@ export class AudioEngine {
       }
     } else {
       g.linearRampToValueAtTime(0.0001, now + 1.8); // crossfade de salida
-      if (this.cryptTimer !== null) { clearInterval(this.cryptTimer); this.cryptTimer = null; }
+      if (this.cryptTimer !== null) { window.clearInterval(this.cryptTimer); this.cryptTimer = null; }
     }
   }
 
@@ -1380,7 +1388,7 @@ export class AudioEngine {
       }
     } else {
       g.linearRampToValueAtTime(0.0001, now + 1.2); // crossfade de salida
-      if (this.interiorTimer !== null) { clearInterval(this.interiorTimer); this.interiorTimer = null; }
+      if (this.interiorTimer !== null) { window.clearInterval(this.interiorTimer); this.interiorTimer = null; }
     }
   }
 
@@ -1432,7 +1440,42 @@ export class AudioEngine {
   }
 }
 
-export const audio = new AudioEngine();
+// R16 (#19 QA): MODO DEGRADADO. Un AudioContext cerrado o roto (ctx.close(),
+// cambio de dispositivo, nodo inválido) lanzaba DENTRO de update/render y
+// tumbaba el frame entero cada vez (pantalla negra con error en bucle). Cada
+// llamada pública pasa ahora por un envoltorio con try/catch; tras
+// AUDIO_MAX_FAILS fallos el motor de audio se silencia para el resto de la
+// sesión en vez de seguir lanzando. Funciones envueltas cacheadas (cero
+// alloc por llamada en régimen).
+const AUDIO_MAX_FAILS = 20;
+let audioFails = 0;
+const audioRaw = new AudioEngine();
+const wrapped = new Map<PropertyKey, unknown>();
+export const audio: AudioEngine = new Proxy(audioRaw, {
+  get(target, prop, recv) {
+    const v = Reflect.get(target, prop, recv);
+    if (typeof v !== 'function') return v;
+    let w = wrapped.get(prop);
+    if (!w) {
+      w = (...args: unknown[]) => {
+        if (audioFails >= AUDIO_MAX_FAILS) return undefined;
+        // se resuelve en CADA llamada: si alguien reasigna el método (stubs de
+        // los smokes, parches en caliente) el envoltorio cacheado no queda viejo
+        const fn = Reflect.get(target, prop) as (...a: unknown[]) => unknown;
+        try { return fn.apply(target, args); } catch (err) {
+          audioFails++;
+          if (audioFails === AUDIO_MAX_FAILS) {
+            console.warn('[EcosAelthar] audio desactivado tras errores repetidos:', err);
+            try { target.stopMusic(); } catch { /* noop */ }
+          }
+          return undefined;
+        }
+      };
+      wrapped.set(prop, w);
+    }
+    return w;
+  },
+});
 
 // ============================================================
 // R9-8 · API EXPORT para el orquestador (envoltorios delgados sobre

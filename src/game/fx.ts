@@ -683,6 +683,9 @@ function drawSky(g: Game, ctx: CanvasRenderingContext2D): void {
     return;
   }
 
+  // R16: salas cubiertas — sin estrellas ni luna sobre el techo
+  if (g.map.indoor) return;
+
   // factor de noche coherente con drawLighting
   const dayLight = Math.max(0.1, Math.sin(g.dayT * Math.PI * 2) * 1.25 + 0.25);
   const nf = 1 - Math.min(1, dayLight);

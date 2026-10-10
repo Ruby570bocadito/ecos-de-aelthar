@@ -1476,23 +1476,38 @@ export function drawWeatherSky(ctx: CanvasRenderingContext2D, g: Game): void {
 
 export interface WeatherStats {
   active: number; drops: number; splashes: number; dust: number; fireflies: number;
+  // R16 (#32 QA): familias que la telemetría no contaba (clima dibujándose
+  // con contadores a cero): nieve de cumbres, rocío de costa, humo de aldea,
+  // pétalos/briznas/hojas/polen y chispas/volutas de la cripta.
+  snow: number; dew: number; smoke: number; petals: number; leaves: number; pollen: number; crypt: number;
   index: number; wind: number; rainAmp: number;
 }
 
 /** Snapshot del estado del clima (para harness/debug; aloca un objeto). */
 export function weatherStats(): WeatherStats {
   let drops = 0, splashes = 0, dust = 0, fireflies = 0;
+  let snow = 0, dew = 0, smoke = 0, petals = 0, leaves = 0, pollen = 0, crypt = 0, active = 0;
   for (let i = 0; i < CAP; i++) {
     const s = pool[i];
     if (!s.active) continue;
-    if (s.kind === P_DROP) drops++;
-    else if (s.kind === P_SPLASH) splashes++;
-    else if (s.kind === P_DUST) dust++;
-    else if (s.kind === P_FIREFLY) fireflies++;
+    active++;
+    switch (s.kind) {
+      case P_DROP: drops++; break;
+      case P_SPLASH: splashes++; break;
+      case P_DUST: dust++; break;
+      case P_FIREFLY: fireflies++; break;
+      case P_SNOW: snow++; break;
+      case P_DEW: dew++; break;
+      case P_SMOKE: smoke++; break;
+      case P_PETAL: case P_BRIZNA: petals++; break;
+      case P_LEAF: leaves++; break;
+      case P_POLLEN: pollen++; break;
+      case P_SPARK: case P_WISP: crypt++; break;
+    }
   }
   return {
-    active: drops + splashes + dust + fireflies,
-    drops, splashes, dust, fireflies,
+    active, drops, splashes, dust, fireflies,
+    snow, dew, smoke, petals, leaves, pollen, crypt,
     index: curIdx, wind: curWind, rainAmp: curRainAmp,
   };
 }

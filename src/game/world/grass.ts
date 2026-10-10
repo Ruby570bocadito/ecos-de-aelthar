@@ -649,3 +649,141 @@ export function paintGrass(
   }
   transiciones(x, X0, Y0, tx, ty, ch, mapId, at);
 }
+
+// ============================================================
+// R16 · CAMINO '=' — pintor propio
+// El char '=' no tenía pintor en lunaris/bosque/arena/cuna/ciudadela
+// (la expansión solo cubre costa/aldea/cumbres): caía al default de
+// verde plano y cada sendero se veía como una franja verde lisa con
+// el borde de tierra (bordeCamino) dibujado SOLO del lado de la
+// hierba. Ahora:
+//  · valle/bosque → tierra apisonada moteada (ruido de valor en
+//    coordenadas globales, sin costuras) con rodadas en el eje del
+//    camino, guijarros con luz/sombra, huellas y — en el bosque —
+//    hojarasca y agujas; los bordes que dan a hierba reciben mechones
+//    que invaden 1-3 px (funde con bordeCamino del lado de la hierba).
+//  · ciudades de piedra (ciudadela/arena/cuna) → calzada de losas
+//    irregulares con juntas, desgaste central y musgo en juntas.
+// Determinista (hash2/vnoise), prerrender estático como el resto.
+// ============================================================
+
+const TIERRA_CAMINO_VALLE: string[] = [PAL.pathShadow, PAL.pathDark, '#ad8f5e', PAL.path, PAL.pathLight];
+const TIERRA_CAMINO_BOSQUE: string[] = ['#5e4a30', '#6a5436', '#765e3e', '#816846', '#8c7250'];
+const LOSA_CALZADA: string[] = ['#7d776c', '#878175', '#918b7e', '#9b9587', '#a59f90'];
+const CALZADA_CITY = new Set(['ciudadela', 'arena', 'cuna']);
+const HOJARASCA: string[] = ['#a0602c', '#8a4e24', '#b88a3a', '#2f4a28'];
+
+function tonoCamino(vx: number, vy: number, tones: string[]): string {
+  const n = 0.6 * vnoise(vx, vy, 6, 131) + 0.4 * vnoise(vx, vy, 3, 57);
+  let k = (n - 0.22) / 0.56;
+  if (k < 0) k = 0; else if (k > 0.999) k = 0.999;
+  return tones[(k * tones.length) | 0];
+}
+
+function esCamino(ch: string): boolean { return ch === '='; }
+
+/** Calzada de losas (ciudades de piedra). */
+function paintCalzada(x: CanvasRenderingContext2D, X0: number, Y0: number, tx: number, ty: number, at: NeighborFn): void {
+  // base con ruido muy suave
+  baseMoteado(x, X0, Y0, (vx, vy) => tonoCamino(vx, vy, LOSA_CALZADA));
+  const junta = '#5f5a52', juntaHi = '#aaa394';
+  // dos hileras de losas por tile, desfase alterno por fila → aparejo irregular
+  for (let row = 0; row < 2; row++) {
+    const y = Y0 + row * 8;
+    px(x, X0, y, 16, 1, junta);
+    px(x, X0, y + 1, 16, 1, 'rgba(170,163,148,0.35)');
+    const off = (((hash2(tx * 7 + row, ty * 13) * 2) * 6) | 0) + (row === 1 ? 4 : 0);
+    for (let k = 0; k < 3; k++) {
+      const jx = X0 + ((off + k * 7) % 16);
+      px(x, jx, y + 1, 1, 7, junta);
+      if (jx + 1 < X0 + 16) px(x, jx + 1, y + 2, 1, 5, juntaHi);
+    }
+  }
+  // desgaste central (paso de siglos) + musgo en alguna junta
+  const r = h1(tx * 17, ty * 29);
+  if (r < 0.5) px(x, X0 + 5 + ((r * 8) | 0), Y0 + 3 + ((h1(tx, ty * 3) * 8) | 0), 3, 1, '#b2ab9c');
+  if (h1(tx * 31, ty * 11) < 0.35) {
+    const mx = X0 + ((h1(tx * 5, ty * 7) * 14) | 0), my = Y0 + (h1(tx * 3, ty * 5) < 0.5 ? 0 : 8);
+    px(x, mx, my, 2, 1, '#4f6a3e'); px(x, mx + 1, my + 1, 1, 1, '#5d7a48');
+  }
+  if (h1(tx * 13 + 3, ty * 19 + 1) < 0.18) { // grieta fina
+    const cx = X0 + 3 + ((h1(tx * 9, ty * 2) * 9) | 0), cy = Y0 + 2 + ((h1(tx * 4, ty * 8) * 10) | 0);
+    px(x, cx, cy, 1, 1, junta); px(x, cx + 1, cy + 1, 1, 1, junta); px(x, cx + 1, cy + 2, 1, 1, junta);
+  }
+  // remate contra hierba: borde de bordillo oscuro de 1px
+  for (let side = 0; side < 4; side++) {
+    const dx = side === 2 ? -1 : side === 3 ? 1 : 0;
+    const dy = side === 0 ? -1 : side === 1 ? 1 : 0;
+    const nb = at(dx, dy);
+    if (esCamino(nb) || nb === ':' || nb === '_' || nb === 'P' || nb === 'V') continue;
+    const p = pintorLado(x, X0, Y0, side);
+    for (let k = 0; k < 16; k++) { p(k, 0, junta); if (h1(tx * 5 + k, ty * 9 + side) < 0.5) p(k, 1, '#6c665c'); }
+  }
+}
+
+/** Sendero de tierra (valle / bosque). */
+export function paintPath(
+  x: CanvasRenderingContext2D, tx: number, ty: number, mapId: string, at?: NeighborFn,
+): void {
+  const X0 = tx * 16, Y0 = ty * 16;
+  const nb: NeighborFn = at ?? (() => '=');
+  if (CALZADA_CITY.has(mapId)) { paintCalzada(x, X0, Y0, tx, ty, nb); return; }
+  const forest = isForest(mapId);
+  const tones = forest ? TIERRA_CAMINO_BOSQUE : TIERRA_CAMINO_VALLE;
+  baseMoteado(x, X0, Y0, (vx, vy) => tonoCamino(vx, vy, tones));
+
+  const n = esCamino(nb(0, -1)), s = esCamino(nb(0, 1)), w = esCamino(nb(-1, 0)), e = esCamino(nb(1, 0));
+  const horiz = (w || e) && !(n || s) ? true : (n || s) && !(w || e) ? false : (w && e);
+  const rut = forest ? '#56432a' : PAL.pathShadow;
+  const rutHi = forest ? '#8f7650' : PAL.pathLight;
+  // rodadas: dos surcos discontinuos en el eje del camino
+  for (let i = 0; i < 16; i++) {
+    for (let k = 0; k < 2; k++) {
+      const off = k === 0 ? 4 : 11;
+      if (h1(tx * 16 + i * 3 + k * 7, ty * 16 + k * 11) < 0.62) {
+        if (horiz) { px(x, X0 + i, Y0 + off, 1, 1, rut); if (i % 3 === 0) px(x, X0 + i, Y0 + off + 1, 1, 1, rutHi); }
+        else { px(x, X0 + off, Y0 + i, 1, 1, rut); if (i % 3 === 0) px(x, X0 + off + 1, Y0 + i, 1, 1, rutHi); }
+      }
+    }
+  }
+  // guijarros (luz arriba, sombra abajo)
+  const nP = 1 + ((h1(tx * 7 + 1, ty * 5 + 3) * 3) | 0);
+  for (let k = 0; k < nP; k++) {
+    const gx = X0 + 1 + ((h1(tx * 11 + k * 5, ty * 13 + k) * 13) | 0);
+    const gy = Y0 + 1 + ((h1(tx * 17 + k, ty * 19 + k * 3) * 13) | 0);
+    const big = h1(tx * 23 + k, ty * 29 + k) < 0.3;
+    px(x, gx, gy, big ? 2 : 1, 1, PAL.pebble);
+    px(x, gx, gy + 1, big ? 2 : 1, 1, PAL.pebbleDark);
+    if (big) px(x, gx, gy, 1, 1, '#b6ac9c');
+  }
+  // huella de bota (rara) en el valle · hojarasca y agujas en el bosque
+  if (!forest && h1(tx * 41, ty * 43) < 0.16) {
+    const fx = X0 + 4 + ((h1(tx * 3, ty * 7) * 7) | 0), fy = Y0 + 4 + ((h1(tx * 5, ty * 3) * 7) | 0);
+    px(x, fx, fy, 2, 3, PAL.pathDark); px(x, fx, fy + 4, 2, 1, PAL.pathDark);
+  }
+  if (forest) {
+    const nL = 2 + ((h1(tx * 9, ty * 15) * 3) | 0);
+    for (let k = 0; k < nL; k++) {
+      const lx = X0 + ((h1(tx * 31 + k * 7, ty * 3 + k) * 15) | 0);
+      const ly = Y0 + ((h1(tx * 5 + k, ty * 37 + k * 5) * 15) | 0);
+      const c = HOJARASCA[pick(h1(tx + k * 13, ty * 7 + k), HOJARASCA.length)];
+      px(x, lx, ly, 2, 1, c);
+      if (h1(tx * 3 + k, ty * 3 + k) < 0.5) px(x, lx + 1, ly + 1, 1, 1, c);
+    }
+  }
+  // bordes que dan a hierba: mechones que invaden el sendero (1-3 px)
+  const cBlade = forest ? PAL.grassBladeBosque : PAL.grassBlade;
+  const cDark = forest ? '#2c4f2a' : PAL.grassDark;
+  for (let side = 0; side < 4; side++) {
+    const dx = side === 2 ? -1 : side === 3 ? 1 : 0;
+    const dy = side === 0 ? -1 : side === 1 ? 1 : 0;
+    const v = nb(dx, dy);
+    if (!HIERBA.has(v) && v !== 't' && v !== 'p') continue;
+    const p = pintorLado(x, X0, Y0, side);
+    for (let k = 0; k < 16; k++) {
+      const h = h1(tx * 13 + k + side * 47, ty * 13 + side * 29);
+      const d = h < 0.25 ? 3 : h < 0.65 ? 2 : 1;
+      for (let m = 0; m < d; m++) p(k, m, m === 0 ? cDark : (h1(tx * 7 + k + m, ty * 9 + side + m) < 0.5 ? cBlade : cDark));
+    }
+  }
+}

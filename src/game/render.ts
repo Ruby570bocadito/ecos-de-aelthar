@@ -9,7 +9,7 @@ import type { Entity, Enemy } from './types';
 import { VIEW_W, VIEW_H, ZOOM, TILE, getSpr, SKILLS, QUESTS } from './engine';
 import { tileAt } from './maps';
 import { ENEMY_DEFS } from './data';
-import { COL, text, textShadow, panel, bar, clearHits, wrapText, fBody } from './ui';
+import { COL, text, textShadow, panel, bar, clearHits, wrapText, fBody, shortName } from './ui';
 import { drawScreens } from './screens';
 import { drawSlashArc, entityFrame, drawPortrait } from './sprites';
 import { hash2 } from './world/palette'; // hash determinista (sprites lo re-exporta)
@@ -931,7 +931,7 @@ function drawHud(g: Game) {
   ctx.strokeStyle = '#5a4a30';
   ctx.strokeRect(14, 14, 44, 44);
   const bx = 66, bw = 158;
-  text(g, `${p.name} · Nv ${p.level}`, bx, 12, 14, COL.goldSoft);
+  text(g, `${shortName(p.name)} · Nv ${p.level}`, bx, 12, 14, COL.goldSoft);
   bar(g, bx, 30, bw, 10, p.hp / p.maxHp, COL.hp, COL.hpBg);
   text(g, `${Math.ceil(p.hp)}/${p.maxHp}`, bx + bw / 2, 30, 13, '#fff', 'center');
   bar(g, bx, 44, bw, 7, p.sta / p.maxSta, COL.sta, COL.staBg);

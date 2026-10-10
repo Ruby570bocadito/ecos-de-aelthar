@@ -93,6 +93,9 @@ export interface MapDef {
   baseEpoch?: Epoch;
   epochDiffs: EpochDiff[];
   dark?: boolean;
+  // R16: sala cubierta (casas, salas de la Ciudadela): sin cielo, nubes,
+  // sombras de nube, estrellas ni luna. dark implica indoor.
+  indoor?: boolean;
   music: TrackName;
   npcs: NpcDef[];
   chests: ChestDef[];
@@ -266,6 +269,7 @@ export interface SaveData {
   companionMode?: CompMode;  // 16-b: orden táctica del compañero (opcional: saves viejos = 'seguir')
   saveTime: number;
   stats?: StatsData;         // 16-c: ausente en saves antiguos → defaults
+  dayT?: number;             // R16: hora del día (saves viejos → amanecer)
 }
 
 export interface Toast { text: string; t: number; color?: string }

@@ -332,6 +332,11 @@ export default function EcosGame() {
     // título): guard title-only en el motor + stamp de estado en uiHit → este
     // setState nunca ocurre por frame ni en plena partida (blindaje ab61a49/a30cc3a).
     g.onRequestCreate = () => setShowCreate(true);
+    // Solo en desarrollo: acceso al motor para pruebas E2E (Playwright) y
+    // depuración desde consola. En producción no se expone nada.
+    if (process.env.NODE_ENV !== 'production') {
+      (window as unknown as { __ecos?: Game }).__ecos = g;
+    }
     g.setState('title');
     g.start(); // guard running + cancelAnimationFrame anti-doble-rAF (R5-O6)
 

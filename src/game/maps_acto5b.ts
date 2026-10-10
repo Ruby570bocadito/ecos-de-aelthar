@@ -241,7 +241,7 @@ export const ACTO5_MAPS_R14: Record<'ciudadela' | 'biblioteca' | 'nombres' | 'ar
     subtitle: 'Distrito I · La verdad del primer Eco',
     w: 22, h: 16,
     rows: buildBiblioteca(),
-    epochDiffs: [], dark: false, music: 'crypt',
+    epochDiffs: [], dark: false, indoor: true, music: 'crypt',
     npcs: [],
     chests: [{ id: 'bi1', x: 11, y: 6, gold: 140 }],   // el estante guardó algo para quien volviera
     echoes: [
@@ -262,7 +262,7 @@ export const ACTO5_MAPS_R14: Record<'ciudadela' | 'biblioteca' | 'nombres' | 'ar
     subtitle: 'Distrito II · La verdad de los que no volvieron',
     w: 22, h: 16,
     rows: buildNombres(),
-    epochDiffs: [], dark: false, music: 'crypt',
+    epochDiffs: [], dark: false, indoor: true, music: 'crypt',
     npcs: [
       // NAIA (biblia §734): la hermana de Ilwen. Se hizo cantora de la Orden
       // y de tanto cantar los nombres de los Portadores caídos olvidó el suyo.
@@ -294,7 +294,7 @@ export const ACTO5_MAPS_R14: Record<'ciudadela' | 'biblioteca' | 'nombres' | 'ar
     subtitle: 'Distrito III · La verdad de Vesh',
     w: 22, h: 16,
     rows: buildArchivo(),
-    epochDiffs: [], dark: false, music: 'crypt',
+    epochDiffs: [], dark: false, indoor: true, music: 'crypt',
     npcs: [],
     chests: [{ id: 'ar1', x: 11, y: 12, gold: 100 }],
     echoes: [
@@ -317,7 +317,7 @@ export const ACTO5_MAPS_R14: Record<'ciudadela' | 'biblioteca' | 'nombres' | 'ar
     subtitle: 'La Orden de Vesh · Trescientos años de espera',
     w: 24, h: 16,
     rows: buildAntecamara(),
-    epochDiffs: [], dark: false, music: 'crypt',
+    epochDiffs: [], dark: false, indoor: true, music: 'crypt',
     npcs: [
       // El Consejo de la Orden: la voz de los que esperaron permiso para
       // devolver la Lanza. (Sprite 'kael' provisional — ronda visual.)

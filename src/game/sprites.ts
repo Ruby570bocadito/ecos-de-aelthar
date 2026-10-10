@@ -10,7 +10,7 @@ import { buildWolf, buildGuardian } from './actors/enemies';
 import { buildChest, buildSanctuary, buildFragment, buildWisp } from './actors/objects';
 import { PALS } from './actors/palettes';
 import { drawPortrait } from './actors/portraits';
-import { paintGrass } from './world/grass';
+import { paintGrass, paintPath } from './world/grass';
 import { paintWater } from './world/water';
 import { paintStone } from './world/stone';
 import { paintVillage } from './world/village';
@@ -117,6 +117,16 @@ export function drawTile(
   switch (ch) {
     case '.': case ',': case 'c': case 'm':
       paintGrass(x, ch, tx, ty, mapId, t, at); break;
+    // R16: el suelo bajo los árboles ('t' frondoso / 'p' pino) caía al
+    // default de verde plano → cada árbol se veía sobre un CUADRADO de otro
+    // tono. Ahora recibe la misma hierba moteada procedural que sus vecinos
+    // (el árbol se pinta encima en la segunda pasada de buildGround).
+    case 't': case 'p':
+      paintGrass(x, '.', tx, ty, mapId, t, at); break;
+    // R16: el camino '=' tampoco tenía pintor fuera de costa/aldea/cumbres
+    // (franja verde lisa en lunaris/bosque/ciudadela/cuna/arena).
+    case '=':
+      paintPath(x, tx, ty, mapId, at); break;
     // R7-Q1 #3: 'n' (Niebla Muda, bosque norte) es SÓLIDO pero caía al default
     // de hierba plana → muro invisible de 6×2 en el camino. Velo de niebla
     // determinista (hash2, sin Math.random) que delata el bloqueo.

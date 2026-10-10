@@ -20,7 +20,7 @@ import { drawBalancePanel, critChance } from './balance'; // 12-c: dificultad (p
 import { drawArmorRow, ARMORS, armorActive, type ArmorDef } from './armor'; // 14-b: datos de corazas (solo lectura)
 import { drawPortrait } from './sprites';
 import { audio } from './audio';
-import { COL, text, textShadow, panel, bar, button, wrapText, addHit, refreshCursor } from './ui';
+import { COL, text, textShadow, panel, bar, button, wrapText, addHit, refreshCursor, shortName } from './ui';
 import { drawSkyBackdrop } from './world/sky';
 import { drawCinematic } from './cinematic'; // R15: prólogo animado saltable
 import { openChallengeMenu, drawChallengeTitleUi, drawChallengeOverlay } from './challenge'; // 12-a (modo desafío)
@@ -482,7 +482,7 @@ function badge(g: Game, x: number, y: number, n: number) {
 function drawPauseHub(g: Game, px: number, py: number, pw: number, ph: number) {
   const p = g.player!;
   textShadow(g, '— PAUSA —', VIEW_W / 2, py + 14, 14, COL.gold, '#000', 'center', true);
-  text(g, `${p.name} — Portador de nivel ${p.level}`, VIEW_W / 2, py + 38, 15, COL.dim, 'center');
+  text(g, `${shortName(p.name, 20)} — Portador de nivel ${p.level}`, VIEW_W / 2, py + 38, 15, COL.dim, 'center');
 
   if (NAV.up) { hubSel = (hubSel + HUB_ROWS.length - 1) % HUB_ROWS.length; audio.sfx('blip'); }
   if (NAV.down) { hubSel = (hubSel + 1) % HUB_ROWS.length; audio.sfx('blip'); }
@@ -545,7 +545,7 @@ function drawPauseLayer(g: Game, px: number, py: number, pw: number, ph: number)
 function drawSecEstado(g: Game, px: number, py: number, pw: number, cx: number, cy: number) {
   const p = g.player!;
   const ctx = g.ctx;
-  text(g, `${p.name} — Portador nivel ${p.level}`, cx, cy, 19, COL.goldSoft);
+  text(g, `${shortName(p.name, 20)} — Portador nivel ${p.level}`, cx, cy, 19, COL.goldSoft);
   bar(g, cx, cy + 26, 240, 8, p.xp / g.xpNext(p.level), COL.xp, '#241a30');
   text(g, `XP ${Math.floor(p.xp)} / ${g.xpNext(p.level)}`, cx + 250, cy + 22, 15, COL.dim);
   // aviso de puntos disponibles (pulsa mientras haya sin gastar)
@@ -962,7 +962,9 @@ function drawDead(g: Game) {
     'Pulsa E para despertar en el último Santuario',
   ];
   lines.forEach((l, i) => text(g, l, VIEW_W / 2, 250 + i * 30, 18, i === 3 ? COL.goldSoft : COL.dim, 'center'));
-  if (Math.sin(g.globalT * 3) > -0.2) text(g, 'E ▸', VIEW_W / 2, 420, 18, COL.gold, 'center');
+  // R16 (#26 QA): botón clicable (antes solo E/Enter — inaccesible con ratón)
+  button(g, 'DESPERTAR  (E)', VIEW_W / 2 - 110, 400, 220, 40, () => g.respawn(), 13);
+  void p;
 }
 
 // ---------------- Final de la demo (estadísticas escalonadas) ----------------

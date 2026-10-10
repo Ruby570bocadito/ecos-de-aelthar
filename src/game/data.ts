@@ -1653,33 +1653,36 @@ const D_ACTO4: Record<string, DialogueNode> = {
   // envoltorio getDialogueActo4 leyendo el espejo flags.acto4RepOrden/Guard
   // que escribe hooks.acto4CatchUp). Los tres comparten el FINAL dinámico
   // 'acto4_epilogo_canto' (texto compuesto en hooks según jefes derrotados).
+  // R16: el pago/cierre (acto4_epilogo) vivía en el onEnd de los TRES nodos
+  // de entrada → se aplicaba ANTES de resolver la opción y «Todavía no»
+  // pagaba +150, la Memoria VII y fijaba acto4Done sin cantar. Ahora solo
+  // las opciones de CANTAR disparan acto4_epilogo (que ya acepta q16 y
+  // repara el índice); «Todavía no» cierra sin efectos y Brisa vuelve a
+  // ofrecer el epílogo la próxima vez.
   acto4_epilogo_verdad: {
     name: 'Anciana Brisa', portrait: 'brisa',
     text: 'La verdad, entonces. (Brisa no sonríe: descansa) Contaste lo que Velmora te confió y la Orden dejó de ser un puño cerrado: por primera vez en trescientos años, los de la Ciudadela lloran a sus muertos en voz alta, y las lanzas descansan porque una verdad pesa menos que un secreto. Hay quien te lo reprocha, Portador: hay quien quería a los Guardianes con la causa intacta. Pero el Eco que elegiste es este: una verdad con el suelo mojado de lágrimas viejas. El Último Canto se canta con ella... o no se canta.',
-    onEnd: 'acto4_epilogo',
     options: [
-      { text: '(Cantar con la verdad puesta: es mi letra y la sostengo.)', action: 'accept_q16', next: 'acto4_epilogo_canto', tone: 'empatico' },
-      { text: '(Cantar. Llorar encima si hace falta; la nota manda.)', action: 'accept_q16', next: 'acto4_epilogo_canto', tone: 'pragmatico' },
-      { text: '(Cantar una versión donde salgo mejor parado. Obviamente.)', action: 'accept_q16', next: 'acto4_epilogo_canto', tone: 'sarcastico' },
+      { text: '(Cantar con la verdad puesta: es mi letra y la sostengo.)', action: 'acto4_epilogo', next: 'acto4_epilogo_canto', tone: 'empatico' },
+      { text: '(Cantar. Llorar encima si hace falta; la nota manda.)', action: 'acto4_epilogo', next: 'acto4_epilogo_canto', tone: 'pragmatico' },
+      { text: '(Cantar una versión donde salgo mejor parado. Obviamente.)', action: 'acto4_epilogo', next: 'acto4_epilogo_canto', tone: 'sarcastico' },
       { text: 'Todavía no. Déjame respirar antes del Último Canto.', tone: 'pragmatico' },
     ],
   },
   acto4_epilogo_silencio: {
     name: 'Anciana Brisa', portrait: 'brisa',
     text: 'El silencio, entonces. (Brisa sí sonríe, y es como ver llover sobre el río) Guardaste el secreto de la Orden y los Guardianes conservaron su causa: trescientos años cantando a un dios que mataba por cantar, y nada de eso se derrumbó. Hay quien dirá que mentiste al mundo con tu callar. Yo digo que elegiste a quién darle el peso: hay verdades que solo sostienen los que ya las cargan. El Eco que elegiste es este: un silencio que suena, como el de una casa vacía donde aún se guarda la taza llena. El Último Canto se canta con él... o no se canta.',
-    onEnd: 'acto4_epilogo',
     options: [
-      { text: '(Cantar con el silencio bien guardado: mi letra es un refugio.)', action: 'accept_q16', next: 'acto4_epilogo_canto', tone: 'empatico' },
-      { text: '(Cantar. Lo que se conserva también se comparte.)', action: 'accept_q16', next: 'acto4_epilogo_canto', tone: 'pragmatico' },
+      { text: '(Cantar con el silencio bien guardado: mi letra es un refugio.)', action: 'acto4_epilogo', next: 'acto4_epilogo_canto', tone: 'empatico' },
+      { text: '(Cantar. Lo que se conserva también se comparte.)', action: 'acto4_epilogo', next: 'acto4_epilogo_canto', tone: 'pragmatico' },
       { text: 'Todavía no. Déjame respirar antes del Último Canto.', tone: 'pragmatico' },
     ],
   },
   acto4_epilogo: {
     name: 'Anciana Brisa', portrait: 'brisa',
     text: 'Hazlo como quieras, Portador: callado o a gritos, el Canto ya es tuyo. (Brisa te mira como se mira el primer día y el último) Tres ecos devueltos, tres campanas criadas, una Sala abierta y una Nota aquietada. Lo que fuiste haciendo mientras caminabas... eso es el Último Canto. Solo falta ponerle letra. ¿La tuya?',
-    onEnd: 'acto4_epilogo',
     options: [
-      { text: '(Cantar. Con todo lo que tengo y lo que me dieron.)', action: 'accept_q16', next: 'acto4_epilogo_canto', tone: 'empatico' },
+      { text: '(Cantar. Con todo lo que tengo y lo que me dieron.)', action: 'acto4_epilogo', next: 'acto4_epilogo_canto', tone: 'empatico' },
       { text: 'Todavía no. Déjame respirar antes del Último Canto.', tone: 'pragmatico' },
     ],
   },

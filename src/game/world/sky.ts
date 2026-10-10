@@ -950,41 +950,65 @@ export function dawnMistStrength(dayT: number): number {
   return trap(mod(dayT, 1), 0.07, 0.26, 0.05);
 }
 
-// Bandas bajas del valle: cobertura Bayer creciente hacia el suelo.
-// R5-O4: y como FRACCIÓN de VIEW_H (vista dinámica; antes quedaba
-// congelada al VIEW_H del arranque del módulo) + strings precalculados.
+// R16 · Niebla de amanecer v2: BANCOS DE NIEBLA suaves en vez de las
+// bandas Bayer de borde duro (se leían como un fallo de render: franjas
+// tramadas grises de lado a lado de la pantalla con canto recto). Cada
+// banco es una tira horneada UNA vez (elipses con degradado radial,
+// enlosable en horizontal: cada mancha se pinta también desplazada ±W),
+// que deriva con el tiempo y con parallax de cámara → la niebla se queda
+// en el valle mientras el Portador camina, en lugar de ir pegada al
+// cristal. Bordes que se disuelven arriba y abajo, cero fillRect duros.
 const MIST_BANDS = [
-  { fy: 0.66, h: 36, mask: 0b0001, a: 0.18, spd: 5, dir: 1 },
-  { fy: 0.76, h: 44, mask: 0b0011, a: 0.24, spd: 9, dir: -1 },
-  { fy: 0.86, h: 52, mask: 0b0111, a: 0.30, spd: 14, dir: 1 },
+  { fy: 0.62, a: 0.55, spd: 5, dir: 1, par: 0.25, seed: 3 },
+  { fy: 0.74, a: 0.70, spd: 9, dir: -1, par: 0.45, seed: 11 },
+  { fy: 0.86, a: 0.85, spd: 14, dir: 1, par: 0.7, seed: 23 },
 ];
-const DM_Q = 64;
-const DM_CSS: string[][] = [[], [], []];
-for (let i = 0; i < MIST_BANDS.length; i++) {
-  for (let q = 0; q <= DM_Q; q++) {
-    DM_CSS[i].push(`rgba(214,226,238,${(MIST_BANDS[i].a * q / DM_Q).toFixed(3)})`);
+const MIST_W = 512, MIST_H = 72;
+const mistStrips: (HTMLCanvasElement | null)[] = [null, null, null];
+
+function buildMistStrip(seed: number): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = MIST_W; c.height = MIST_H;
+  const x = c.getContext('2d')!;
+  const n = 14;
+  for (let k = 0; k < n; k++) {
+    const cx = (k + hash2(seed * 7 + k, 3) * 2) * (MIST_W / n);
+    const cy = MIST_H * (0.42 + hash2(seed + k * 3, 9) * 0.32);
+    const rx = 40 + hash2(k * 5 + seed, 13) * 50;
+    const ry = 13 + hash2(k + seed * 3, 17) * 12;
+    const al = 0.22 + hash2(k * 11, seed + 5) * 0.26;
+    for (const off of [-MIST_W, 0, MIST_W]) {
+      x.save();
+      x.translate(cx + off, cy);
+      x.scale(rx / ry, 1);
+      const gr = x.createRadialGradient(0, 0, 0, 0, 0, ry);
+      gr.addColorStop(0, `rgba(220,230,240,${al.toFixed(3)})`);
+      gr.addColorStop(0.55, `rgba(214,226,238,${(al * 0.55).toFixed(3)})`);
+      gr.addColorStop(1, 'rgba(214,226,238,0)');
+      x.fillStyle = gr;
+      x.beginPath(); x.arc(0, 0, ry, 0, Math.PI * 2); x.fill();
+      x.restore();
+    }
   }
+  return c;
 }
 
-/** Niebla de amanecer: bandas horizontales dithered SOLO en lunaris (valle). */
+/** Niebla de amanecer: bancos de niebla suaves SOLO en lunaris (valle). */
 function drawDawnMist(ctx: CanvasRenderingContext2D, g: Game, dT: number): void {
   if (g.mapId !== 'lunaris') return;                           // valle de Lunaris
   const p = dawnMistStrength(dT);
   if (p <= 0.005) return;
-  const q = Math.max(1, Math.round(p * DM_Q));                 // intensidad cuantizada
+  const prevA = ctx.globalAlpha;
   for (let bi = 0; bi < MIST_BANDS.length; bi++) {
     const b = MIST_BANDS[bi];
-    // deriva cuantizada a píxeles ≤ 1 tile: el patrón es periódico de 4 px,
-    // así que el envuelve del módulo es invisible y el rect sigue entero.
-    const d = Math.floor(mod(g.globalT * b.spd * b.dir, 4));
-    ctx.save();
-    ctx.translate(-d, 0);
-    // patrón dither cacheado por (color, máscara); con la intensidad
-    // cuantizada el color es estable → el patrón se reutiliza sin rebuilds
-    ctx.fillStyle = ditherPattern(ctx, DM_CSS[bi][q], b.mask);
-    ctx.fillRect(d, Math.round(VIEW_H * b.fy), VIEW_W, b.h);
-    ctx.restore();
+    let strip = mistStrips[bi];
+    if (!strip) { strip = buildMistStrip(b.seed); mistStrips[bi] = strip; }
+    const ox = -mod(g.camX * b.par + g.globalT * b.spd * b.dir, MIST_W);
+    const y = Math.round(VIEW_H * b.fy - MIST_H / 2);
+    ctx.globalAlpha = prevA * b.a * p;
+    for (let x0 = Math.floor(ox); x0 < VIEW_W; x0 += MIST_W) ctx.drawImage(strip, x0, y);
   }
+  ctx.globalAlpha = prevA;
 }
 
 // ============================================================
@@ -1363,16 +1387,21 @@ export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void 
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   }
 
+  // R16: sala cubierta (casas, salas de la Ciudadela) — sin cielo: ni
+  // horizonte, ni niebla de valle, ni nubes, ni estrellas. Solo el tinte
+  // horario de arriba y el lavado de época de abajo.
+  const indoor = !!g.map.indoor;
+
   // ---- 2) banda rosada-naranja tenue en los bordes horizontales ----
-  drawHorizonGlow(ctx, dT);
+  if (!indoor) drawHorizonGlow(ctx, dT);
 
   // ---- 3) niebla de amanecer (bandas dithered bajas, solo valle) ----
-  drawDawnMist(ctx, g, dT);
+  if (!indoor) drawDawnMist(ctx, g, dT);
 
   // ---- 4) nubes v3: cuerpos sobre entidades (exterior de día), en orden
   //      de capa (alta → media → baja), alpha por capa y presupuesto por
   //      perfQuality (en calidad baja solo sobrevive la capa media). ----
-  const dayF = cloudDayFactor(dT);
+  const dayF = indoor ? 0 : cloudDayFactor(dT);
   if (dayF > 0.004) {
     const plan = cloudPlanAt(g.mapId, g.globalT, g.camX, g.camY);
     const seed = seedFromMapId(g.mapId);
@@ -1394,7 +1423,7 @@ export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void 
   //      Densidad crece con la profundidad de la noche (umbral por mota). ----
   const dayLight = Math.max(0.1, Math.sin(dT * TAU) * 1.25 + 0.25);
   const nf = 1 - Math.min(1, dayLight);
-  if (nf > 0.14) {
+  if (nf > 0.14 && !indoor) {
     ensureStarAssets();
     drawMilky(ctx, g.globalT, g.camX, g.camY, Math.min(1, (nf - 0.14) / 0.32) * 0.5);
     drawTwinklers(ctx, g.globalT, nf, TWIN_BUDGET[perfQuality()]);
@@ -1403,7 +1432,7 @@ export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void 
   // ---- 5) estrella fugaz rara (noche cerrada, ventana determinista).
   //      (La LUNA del mundo la pinta fx.ts en drawAmbient 'sky'; para
   //      alinear su fase puede leer moonPhaseIndexAt(g.globalT) — v4) ----
-  if (nf > 0.55) drawShootingStar(ctx, g.globalT, Math.min(1, (nf - 0.55) / 0.25));
+  if (nf > 0.55 && !indoor) drawShootingStar(ctx, g.globalT, Math.min(1, (nf - 0.55) / 0.25));
 
   // ---- 6) lavado de época ----
   if (isPast) {
@@ -1430,7 +1459,7 @@ export function drawDayNightGrade(ctx: CanvasRenderingContext2D, g: Game): void 
 // ============================================================
 
 export function drawCloudShadows(ctx: CanvasRenderingContext2D, g: Game): void {
-  if (g.map.dark) return;                                    // cripta: nunca
+  if (g.map.dark || g.map.indoor) return;                    // cripta / salas cubiertas: nunca
   if (g.state === 'title' || g.state === 'controls') return; // sin mundo debajo
   const dayF = cloudDayFactor(mod(g.dayT, 1));
   if (dayF <= 0.004) return;

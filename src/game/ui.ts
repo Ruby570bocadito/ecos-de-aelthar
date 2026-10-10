@@ -83,6 +83,11 @@ function ensureFont(ctx: CanvasRenderingContext2D, font: string): void {
   }
 }
 
+/** R16 (#18 QA): recorta un nombre propio con elipsis (HUD/pausa/final). */
+export function shortName(name: string, max = 14): string {
+  return name.length > max ? name.slice(0, max - 1) + '…' : name;
+}
+
 export function text(
   g: Game, str: string, x: number, y: number,
   size: number, color = COL.text, align: CanvasTextAlign = 'left', title = false,

@@ -156,7 +156,12 @@ type G = InstanceType<typeof Game>;
 
 function newGame(name: string, disc: 'alba' | 'tejedor' = 'alba'): G {
   const g = new Game(makeCanvas());
+  // R16: newGame borra el árbol de esa identidad (partida nueva = árbol
+  // limpio). Los casos que SIEMBRAN un árbol antes simulan un Portador ya
+  // avanzado: se conserva lo sembrado y se fuerza la recarga del cache.
+  const snap = rawLs('ecos-arbol');
   g.newGame(name, disc);
+  if (snap !== null) { setLs('ecos-arbol', snap); __stReloadTrees(); }
   g.startPlay();
   return g;
 }
@@ -829,11 +834,14 @@ console.log('\n--- 6) Árbol de habilidades ---');
 
   // REGRESIÓN 17-c: el daño del árbol aplica a los ataques BASE
   p.attrs.des = -50; // sin críticos: daño determinista
+  // R16: critChance tiene SUELO del 4 % aunque des<0 → 1 de cada 25 corridas
+  // salía crítico (×2.5) y el smoke fallaba al azar. Golpe sin azar:
+  const noCrit = (fn: () => void) => { const r = Math.random; Math.random = () => 0.999; try { fn(); } finally { Math.random = r; } };
   const baseEnemy = () => { const e = g.makeEnemy('lobo', p.x + 14, p.y, 0); e.hp = 100000; e.maxHp = 100000; g.enemies = [e]; return e; };
   // con c_fuerte (×1.10 aprendida arriba) vía golpe cargado (releaseCharge)
   let e = baseEnemy();
-  p.combo = 2; p.attackT = 0; p.sta = 100; p.rollT = 0;
-  p.charging = true; p.chargeT = 0.4; g.releaseCharge();
+  p.combo = 0; p.attackT = 0; /* R16 #23: 1er golpe del combo = ×1 */ p.sta = 100; p.rollT = 0;
+  p.charging = true; p.chargeT = 0.4; noCrit(() => g.releaseCharge());
   const dmgConFuerte = 100000 - e.hp;
   const esperadoFuerte = Math.max(1, Math.round(playerMeleeDmg(p) * 1 * 2.1 * 1.10));
   check('c_fuerte aplica al melé BASE (golpe cargado ×2.1·1.10)', dmgConFuerte === esperadoFuerte, `${dmgConFuerte} vs ${esperadoFuerte}`);
@@ -849,8 +857,8 @@ console.log('\n--- 6) Árbol de habilidades ---');
   check('cadena c_eco→c_onda→c_lanza→c_colera aprendida',
     (() => { const all = JSON.parse(rawLs('ecos-arbol') ?? '{}') as Record<string, { learned: string[] }>; const l = all['QAAlba6|alba']?.learned ?? []; return l.includes('c_eco') && l.includes('c_onda') && l.includes('c_lanza') && l.includes('c_colera'); })(), rawLs('ecos-arbol') ?? '—');
   e = baseEnemy();
-  p.combo = 2; p.attackT = 0; p.sta = 100;
-  p.charging = true; p.chargeT = 0.4; g.releaseCharge();
+  p.combo = 0; p.attackT = 0; /* R16 #23: 1er golpe del combo = ×1 */ p.sta = 100;
+  p.charging = true; p.chargeT = 0.4; noCrit(() => g.releaseCharge());
   const dmgColera = 100000 - e.hp;
   const esperadoColera = Math.max(1, Math.round(playerMeleeDmg(p) * 1 * 2.1 * 1.10 * 1.15));
   check('c_colera apila EXACTO (×1.10·1.15) en melé base', dmgColera === esperadoColera, `${dmgColera} vs ${esperadoColera}`);

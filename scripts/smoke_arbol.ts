@@ -84,7 +84,12 @@ function seedTree(name: string, disc: 'alba' | 'tejedor', learned: string[], equ
 }
 function boot(name: string, disc: 'alba' | 'tejedor', level: number) {
   const g = new Game(makeCanvas());
+  // R16: newGame borra el árbol de esa identidad (una partida NUEVA no hereda
+  // el árbol de otra con el mismo nombre). El smoke simula un Portador YA
+  // avanzado: re-siembra el árbol guardado tras crear la partida.
+  const snap = store.get('ecos-arbol');
   g.newGame(name, disc);
+  if (snap !== undefined) store.set('ecos-arbol', snap);
   g.startPlay();                       // carga Lunaris y pasa a 'play'
   g.player!.level = level;             // nivel alto directo (puntos del árbol)
   for (let i = 0; i < 3; i++) g.update(1 / 60); // frames para que skillTick cargue el árbol

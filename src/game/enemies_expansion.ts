@@ -65,6 +65,7 @@ import { getPortadorVel } from './update'; // R7-O1: binding 'isNight' retirado 
 // activar los 2 enemigos nuevos de mapa SIN tocar maps*.ts (congelados esta
 // ronda): push de SpawnDef sobre los arrays ya existentes de MAPS.
 import { MAPS } from './maps';
+import { nightAggroMul } from './world/lighting'; // R16: curva nocturna compartida
 
 // ── 14-a: ids de los 2 jefes-enemigos nuevos (los del Acto II quedan como
 // literales 'sirena'/'golem' por consistencia con el fuente original).
@@ -261,7 +262,10 @@ function commonTick(g: Game, e: Enemy, dt: number, def: EnemyDef, m: ExpMem): bo
 
   // aggro (idempotente: si el motor ya lo fijó, no-op)
   if (p && !e.aggro && g.state === 'play') {
-    const nightMult = isNightG(g) ? 1.3 : 1;
+    // R16 (#29 QA): la misma curva SUAVE que los enemigos base (R9-2:
+    // 1.0 de día → 1.35 en noche profunda) en vez del salto binario ×1.3.
+    // En interiores/cripta no hay noche que valga.
+    const nightMult = g.map.dark || g.map.indoor ? 1 : nightAggroMul(g.dayT * 1440);
     const rr = def.aggroR * nightMult;
     if (dist2(e.x, e.y, p.x, p.y) < rr * rr) {
       e.aggro = true;
@@ -708,18 +712,22 @@ function fireNotas(g: Game, e: Enemy, p: Player, m: ExpMem): void {
   m.pendingSalva = 0;
 }
 
+/** R16: neumos invocados por la Sirena (su «coro»): el cap solo los cuenta a ellos. */
+const coroNeumos = new WeakSet<Enemy>();
+
 /** Invoca 1 neumo en un tile libre junto a la sirena (cap 2 vivos;
  *  en fase 3 —9-a— cap 3 y cadencia propia de 15 s). */
 function summonNeumo(g: Game, e: Enemy, fase: number, m: ExpMem): void {
-  // 'zone' no se guarda en Enemy: contamos todos los neumos vivos
-  // (solo existen los suyos, junto a la jefa)
+  // R16 (#12 QA): el cap contaba TODOS los neumos vivos del mapa y la Costa
+  // trae 4+ salvajes → el cap estaba siempre lleno y la Sirena nunca
+  // invocaba su coro. Ahora solo cuentan los que ELLA invocó (WeakSet).
   const cap = fase === 3 ? 3 : 2;
   // R7-O1: recuento indexado (antes .filter().length → array+closure por llamada)
   const es = g.enemies;
   let vivos = 0;
   for (let i = 0; i < es.length; i++) {
     const o = es[i];
-    if (!o.dead && o.etype === 'neumo') vivos++;
+    if (!o.dead && o.etype === 'neumo' && coroNeumos.has(o)) vivos++;
   }
   if (vivos >= cap) { e.sumT = 4; return; }
   for (let i = 0; i < 12; i++) {
@@ -728,6 +736,7 @@ function summonNeumo(g: Game, e: Enemy, fase: number, m: ExpMem): void {
     if (!g.tileSolidAt(x, y)) {
       const s = g.makeEnemy('neumo', x, y, 1, 'boss');
       s.aggro = true;
+      coroNeumos.add(s);
       g.enemies.push(s);
       g.burst(x, y, '#8ef0ff', 14, 70);
       g.floatAt(s.x, s.y - 18, '¡un neumo emerge!', '#8ef0ff', 7);
