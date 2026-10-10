@@ -16,8 +16,9 @@ import type {
 } from './types';
 import { MAPS, mapRows, tileAt, mapEpochs } from './maps';
 import { ARENA_MAP_ID } from './maps_expansion'; // 17-d: la arena no entra en visitedMaps (ver loadMap)
-import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2 } from './sprites';
-import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile } from './sprites_expansion';
+import { SOLID_CHARS, TILE, initSprites, getSpr, frameIndex, drawTallTile, drawTile, hash2, registerSpr } from './sprites';
+import { initExpansionSprites, drawExpansionTile, drawExpansionTallTile, prepareTileContext } from './sprites_expansion';
+import { R18_BIOME } from './maps_r18'; // R18
 import { audio, playSpellCast, playSpellImpact, playNightAmbience, playHowlDistant, playBossRoarVariant, playLeverPull, playDoorOpen } from './audio';
 import { ENEMY_DEFS, SKILLS, DIALOGUES, QUESTS, getDialogue, SENNUEL } from './data';
 import { updateGame, cryptDoorOpen, cryptLeverTryActivateNear } from './update';
@@ -54,6 +55,9 @@ import { resetCinematic } from './cinematic'; // R15: prólogo animado saltable
 import { sanitizeSaveData } from './savefix'; // R16: lectura tolerante del guardado
 import { spawnVfx, vfxTick, resetVfx } from './actors/vfx'; // R16: VFX de combate y magia
 import { cutsceneActive, advanceCutscene, skipCutscene, resetCutscenes } from './cutscene'; // R18: cinemáticas en el motor
+import { R18_BOSSES, R18_BIG, r18DamageMult } from './enemies_r18'; // R18: enemigos y mini-jefes de las secciones nuevas
+import { buildR18Creatures } from './actors/creatures_r18';
+import { sideQuestDialogue, sideQuestAction, sideQuestInteract, sideQuestOnKill, relicDamageTakenMult, relicFreezeChance } from './sidequests'; // R18
 import { initR16Sprites } from './actors/enemies_r16';       // R16: sprites de centinela/raíz/ahogado/Madre
 import { placeR16Spawns } from './enemies_r16';               // R16: spawns de los enemigos nuevos
 import { causalInteract, causalTick } from './ecocausal';     // R17: semillas del Eco (pasado → presente)
@@ -119,6 +123,7 @@ export const BOSS_DEFEAT_FLAG: Record<string, string> = {
   sepulcro: 'sepulcroDerrotado', // R10-9: mini-jefe de la entrada de la cripta
   madre: 'madreDefeated',        // R16: jefa opcional de los Jardines de Sal (Costa)
 };
+Object.assign(BOSS_DEFEAT_FLAG, R18_BOSSES); // R18: mini-jefes de las secciones nuevas
 
 // R5-O6 (optimización): topes duros de recursos FX. fx.ts empuja partículas
 // directo a g.particles sin cap: en picos de combate el render degradaba.
@@ -299,6 +304,7 @@ export class Game {
     initSprites();
     initExpansionSprites(); // Acto II: sprites de neumo/espectro/arpi/sirena/golem + proyectiles
     initR16Sprites();       // R16: Centinela de Cristal, Raíz Hambrienta, Ahogado y La Madre del Mar
+    for (const [k, fr] of Object.entries(buildR18Creatures())) registerSpr(k, fr); // R18: criaturas de las secciones nuevas
     placeR16Spawns(MAPS as unknown as Parameters<typeof placeR16Spawns>[0]);
     this.bindInput();
     initPerf(this); // R5-O1: lee localStorage['aelthar_perf'] (no-op seguro en SSR)
@@ -881,6 +887,9 @@ export class Game {
     if (this.groundCacheKey === cacheKey && this.groundCanvas) return;
     this.groundCacheKey = cacheKey;
     const { w, h } = this.map;
+    // R18: las secciones nuevas se pintan con su bioma (contexto de vecinos propio)
+    const paintId = R18_BIOME[this.mapId] ?? this.mapId;
+    prepareTileContext(this.mapId, this.rows);
     const mk = (ep: Epoch) => {
       const c = document.createElement('canvas');
       c.width = w * TILE; c.height = h * TILE;
@@ -892,8 +901,8 @@ export class Game {
           const ch = tileAt(this.map, this.rows, tx, ty, ep);
           // Acto II: arena/nieve/hielo y suelos por bioma los dibuja la expansión; fallback genérico
           // (el fallback usa el drawTile v2 con hook de vecinos para autotiling — merge mejora-visual)
-          if (!drawExpansionTile(x, ch, tx, ty, this.mapId))
-            drawTile(x, ch, tx, ty, this.mapId, 0, (dx: number, dy: number) =>
+          if (!drawExpansionTile(x, ch, tx, ty, paintId))
+            drawTile(x, ch, tx, ty, paintId, 0, (dx: number, dy: number) =>
               tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
         }
       }
@@ -902,8 +911,8 @@ export class Game {
         for (let tx = 0; tx < w; tx++) {
           const ch = tileAt(this.map, this.rows, tx, ty, ep);
           if (SOLID_CHARS.has(ch) && (ch === 't' || ch === 'p')) {
-            if (!drawExpansionTallTile(x, ch, tx, ty, this.mapId))
-              drawTallTile(x, ch, tx, ty, this.mapId, (dx: number, dy: number) =>
+            if (!drawExpansionTallTile(x, ch, tx, ty, paintId))
+              drawTallTile(x, ch, tx, ty, paintId, (dx: number, dy: number) =>
                 tileAt(this.map, this.rows, tx + dx, ty + dy, ep));
           }
         }
@@ -1053,8 +1062,8 @@ export class Game {
     const hp = Math.max(1, Math.round(d.hp * bm.hp));
     return {
       kind: 'enemy', etype: type, x, y,
-      w: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' || type === 'madre' ? 22 : 12,
-      h: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' || type === 'madre' ? 16 : 10,
+      w: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' || type === 'madre' || R18_BIG.has(type) ? 22 : 12,
+      h: type === 'guardian' || type === 'sirena' || type === 'golem' || type === 'vult' || type === 'coro' || type === 'madre' || R18_BIG.has(type) ? 16 : 10,
       vx: 0, vy: 0, dir: 'down', hp, maxHp: hp, sprite: d.sprite, anim: Math.random() * 9, moving: false,
       ai: 'patrulla', aiT: Math.random() * 2, homeX: x, homeY: y, patrolAngle: Math.random() * Math.PI * 2,
       aggro: false, windup: 0, atkCd: Math.random(), sta: d.breakBar ?? 0, maxSta: d.breakBar ?? 0,
@@ -1440,6 +1449,7 @@ export class Game {
     }
     // R17: parcelas de las Semillas del Eco (plantar en el pasado / cosechar en el presente)
     if (!this.challengeRun) causalInteract(this, consider);
+    if (!this.challengeRun) sideQuestInteract(this, consider); // R18: objetos de las secciones nuevas
     return best;
   }
 
@@ -1596,6 +1606,9 @@ export class Game {
   }
 
   talkTo(nid: string) {
+    // R18: NPCs de las secciones nuevas (diálogo según su misión secundaria)
+    const sqKey = sideQuestDialogue(this, nid);
+    if (sqKey) { this.openDialogue(sqKey); return; }
     // q5→q6: «Regresa con la Anciana Brisa» (1 paso) se completa AL hablar con
     // ella tras el Guardián. Se avanza ANTES de resolver el nodo para que
     // getDialogue vea la misión nueva (coordinación agente 8-a: con questIdx 5
@@ -1838,7 +1851,7 @@ export class Game {
         break;
       default:
         // acciones extendidas (sistema de tono, memorias, facciones...) — ver hooks.ts
-        handleCustomAction(this, action);
+        if (!sideQuestAction(this, action)) handleCustomAction(this, action); // R18: misiones secundarias
         break;
     }
   }
@@ -2625,6 +2638,14 @@ export class Game {
     if (Math.random() * 100 < critChance(p.attrs.des)) { final *= CRIT_MULT; crit = true; } // R8-7: menos críticos, más jugosos
     if (def.weakTo !== 'ninguno' && element === def.weakTo) final *= 1.5;
     if (e.ai === 'aturdido' && e.etype === 'guardian') final *= 1.5;
+    // R18: guardia de pinzas (cangrejos) — de frente el golpe rebota
+    const guardK = r18DamageMult(e, p.x);
+    if (guardK < 1) { final *= guardK; this.floatAt(e.x, e.y - 18, '¡BLOQUEADO!', '#c8d0e0', 6); audio.sfx('parry'); }
+    // R18: reliquia Escarcha Cantora — los golpes pueden congelar
+    if (Math.random() < relicFreezeChance(this) && !e.statuses.some(st => st.kind === 'congelado')) {
+      e.statuses.push({ kind: 'congelado', t: 1.4, power: 0.5 });
+      this.floatAt(e.x, e.y - 26, '¡congelado!', '#a8e8ff', 6);
+    }
     final = Math.max(1, Math.round(final));
     e.hp -= final;
     e.hitFlash = 0.12;
@@ -2869,6 +2890,7 @@ export class Game {
       this.floatAt(e.x, e.y - 40, 'Botín de la Madre: +1 punto, +2 pociones', '#f0c84a');
       this.applyAction('rep_circulo_5');
     }
+    sideQuestOnKill(this, e); // R18: savia de las raíces + mini-jefes de las secciones nuevas
     // ==== 17-a (qa): el duelo entra en pausa dramática EN EL MISMO golpe que
     // cae al jefe — challengeTick solo corría en el update siguiente y el
     // endBeat no era observable de inmediato ====
@@ -2918,7 +2940,7 @@ export class Game {
   damagePlayer(dmg: number, fromX: number, fromY: number) {
     const p = this.player!;
     // balanceador (12-c): embudo único de todo el daño enemigo (neutro en desafío)
-    dmg = Math.max(1, Math.round(dmg * enemyStatMult(this).dmg));
+    dmg = Math.max(1, Math.round(dmg * enemyStatMult(this).dmg * relicDamageTakenMult(this))); // R18: Corona de Ramas
     if (p.iframes > 0 || p.rollT > 0 || this.state !== 'play') return;
     if (p.parryT > 0) {
       // ¡parada perfecta!

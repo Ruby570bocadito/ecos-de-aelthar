@@ -260,6 +260,7 @@ export function agresionPorNivel(nivel: number): number {
 const TIPOS_JEFE: ReadonlySet<string> = new Set([
   'guardian', 'sirena', 'golem', 'vult', 'coro', 'heraldo', 'madre', // R16
   'sepulcro', // R17: mini-jefe con vida de diseño (la zona 5 lo dejaba casi como el Guardián)
+  'reina_cuervo', 'ciervo', 'rey_cangrejo', 'viuda', 'wendigo', // R18: mini-jefes de las secciones nuevas
 ]);
 
 // ---------------- estado persistido ----------------
@@ -547,6 +548,7 @@ export function balanceTick(g: Game, dt: number): void {
 export const ZONA_NIVEL: Readonly<Record<string, number>> = {
   lunaris: 1, bosque: 3, cripta: 5, costa: 6, aldea: 7, cumbres: 8,
   cuna: 11, ciudadela: 12, biblioteca: 12, nombres: 12, archivo: 12, antecamara: 12,
+  molino: 3, hondonada: 4, acantilado: 7, pantano: 9, glaciar: 10, // R18: secciones nuevas
 };
 
 /** Nivel de zona del mapa (1 si no está en la tabla: interiores, arena…). */

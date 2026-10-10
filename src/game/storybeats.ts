@@ -193,6 +193,38 @@ function acto(g: Game): Cutscene | null {
   };
 }
 
+// ---------------------------------------------------------------- R18: llegadas a las secciones nuevas
+function llegada(map: string, id: string, title: string, sub: string, cam: [number, number], line: string, npc?: [string, string, number, number]): (g: Game) => Cutscene | null {
+  return (g: Game) => {
+    if (g.mapId !== map) return null;
+    const steps: CutStep[] = [
+      { k: 'title', text: title, sub, dur: 2.6 },
+      camOn(cam[0], cam[1], 2),
+      { k: 'say', who: '', text: line, color: NARR },
+    ];
+    if (npc) steps.push(camOn(npc[2], npc[3], 1.6), { k: 'say', who: npc[0], text: npc[1] });
+    steps.push({ k: 'camPlayer', dur: 1.5 });
+    return { id, steps };
+  };
+}
+const LLEGADAS: Beat[] = [
+  { flag: 'cs_molino', when: llegada('molino', 'molino', 'CAMPOS DEL MOLINO', 'El molino que se calló', [20, 6],
+    'Hace trescientos años estos campos eran de oro. Hoy solo quedan espantapájaros… y cuervos que aprendieron a hablar la noche en que el molino se calló.',
+    ['Aldara, la molinera', '¿Eres tú el Portador del que hablan en la plaza? Ven, por favor. Necesito que alguien camine por el ayer.', 15, 33]) },
+  { flag: 'cs_hondonada', when: llegada('hondonada', 'hondonada', 'HONDONADA DE LAS RAÍCES', 'El Árbol Viejo llora ceniza', [24, 18],
+    'En el fondo de la Hondonada, el Árbol Viejo deja caer ceniza como quien llora sin hacer ruido. Sus raíces se han vuelto hambrientas.',
+    ['Fenna, la herbolaria', 'Las raíces te han olido, Portador. No te asustes: me avisaron de que venías.', 42, 13]) },
+  { flag: 'cs_acantilado', when: llegada('acantilado', 'acantilado', 'ACANTILADOS DEL FARO VIEJO', 'Lo que el mar devuelve', [9, 8],
+    'Antes que el faro de Mara hubo este. Lo apagó un farero que no soportaba ver volver vacías las barcas.',
+    ['Bram, el pescador', '¡Eh, tú! ¿Sabes leer? Llevo treinta años esperando a alguien que sepa leer.', 36, 11]) },
+  { flag: 'cs_pantano', when: llegada('pantano', 'pantano', 'PANTANO DE LAS VELAS', 'Una llama por cada nombre', [26, 22],
+    'Merrow anotaba a sus muertos en el agua: una vela por nombre. Cuando la Niebla se comió los nombres, las velas se quedaron ardiendo por nadie… hasta apagarse.',
+    ['Ysolde, la de las velas', 'Pisa donde piso yo, criatura. El agua de aquí recuerda, y no siempre cosas buenas.', 32, 10]) },
+  { flag: 'cs_glaciar', when: llegada('glaciar', 'glaciar', 'GLACIAR DEL ECO', 'El coro congelado', [30, 18],
+    'Bajo el hielo, decenas de figuras con la boca abierta. La noche del Silencio cantaban al alba; el frío quiso quedarse con la canción.',
+    ['Haldor, el ermitaño', 'No te acerques al hielo de noche. Hay algo que imita las voces… y sabe cuáles echas de menos.', 12, 11]) },
+];
+
 interface Beat { flag: string; when: (g: Game) => Cutscene | null }
 const BEATS: Beat[] = [
   { flag: 'cs_despertar', when: despertar },
@@ -203,6 +235,7 @@ const BEATS: Beat[] = [
   { flag: 'cs_merrow', when: merrow },
   { flag: 'cs_cumbres', when: cumbres },
 ];
+BEATS.push(...LLEGADAS); // R18
 
 /** Hitos extra registrados por otros módulos (secciones nuevas de R18). */
 const extraBeats: Beat[] = [];

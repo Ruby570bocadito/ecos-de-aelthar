@@ -106,7 +106,7 @@ ok('SKILLS: 4 habilidades por disciplina');
 
 console.log('\n=== 5) MAPAS: filas w×h correctas ===');
 const MAP_IDS = Object.keys(MAPS) as MapId[];
-if (MAP_IDS.length === 16) ok(`MAPS tiene 16 mapas: ${MAP_IDS.join(', ')}`); // 6 campaña + arena (12-a) + cuna (R13) + ciudadela y 4 salas (R14) + 3 interiores (R10-5)
+if (MAP_IDS.length === 21) ok(`MAPS tiene 21 mapas: ${MAP_IDS.join(', ')}`); // 6 campaña + arena (12-a) + cuna (R13) + ciudadela y 4 salas (R14) + 3 interiores (R10-5) + 5 secciones (R18)
 else bad(`MAPS tiene ${MAP_IDS.length} mapas`);
 for (const id of MAP_IDS) {
   const m = MAPS[id];

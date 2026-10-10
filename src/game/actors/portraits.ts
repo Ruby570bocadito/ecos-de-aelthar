@@ -108,6 +108,32 @@ interface PortraitDef {
 }
 
 const PORTRAITS: Record<string, PortraitDef> = {
+  // R18: NPCs de las secciones nuevas
+  aldara: {
+    kind: 'human', bg: '#1c160e',
+    skin: '#e8b88a', skinS: '#c8946a', hair: '#d8b878', hairS: '#b8985a',
+    eye: '#3a2a20', cloth: '#a86a48', clothS: '#7e4c32', accent: '#ece0c0', hood: true, hoodCol: '#c8a868',
+  },
+  fenna: {
+    kind: 'human', bg: '#101a10',
+    skin: '#e0c4a0', skinS: '#c0a07c', hair: '#5a8a3e', hairS: '#46702e',
+    eye: '#2a4a2a', cloth: '#4a6a42', clothS: '#36502e', accent: '#a87a48', hood: true, hoodCol: '#3e5e32',
+  },
+  bram: {
+    kind: 'human', bg: '#101820',
+    skin: '#d8a078', skinS: '#b88058', hair: '#c8c4b8', hairS: '#a8a498',
+    eye: '#2a2a2a', cloth: '#d8b040', clothS: '#a8862a', accent: '#5a6a7a', beard: '#d0ccc0',
+  },
+  ysolde: {
+    kind: 'human', bg: '#140f18',
+    skin: '#dcc0a8', skinS: '#bca088', hair: '#ecece4', hairS: '#c8c8c0',
+    eye: '#4a4a52', cloth: '#3a3448', clothS: '#2a2436', accent: '#ffcc66', hairLong: true,
+  },
+  haldor: {
+    kind: 'human', bg: '#121820',
+    skin: '#e0b090', skinS: '#c09070', hair: '#e8e8e8', hairS: '#c4c4c4',
+    eye: '#3a4a5a', cloth: '#8a7a68', clothS: '#6a5c4c', accent: '#b8c8d8', beard: '#f0f0f0', hood: true, hoodCol: '#7a6c5c',
+  },
   hero_alba: {
     kind: 'human', bg: '#1a1218',
     skin: '#f2c99c', skinS: '#d8a878', hair: '#6e3222', hairS: '#4e2216', // R18: pelo castaño bajo la capucha roja (modelo v4)

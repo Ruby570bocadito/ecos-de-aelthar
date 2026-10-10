@@ -67,6 +67,37 @@ export const GATES: GateRule[] = [
     why: 'El paso del noreste está helado de silencio. Las Cumbres esperan a que Merrow recuerde su nombre.',
     hint: 'Completa «La Aldea que Olvidó su Nombre»',
   },
+  // R18: las secciones nuevas se abren con la historia de su región
+  {
+    from: 'lunaris', to: 'molino',
+    open: g => g.questIdx >= 1,
+    why: 'Una cerca de niebla corta el camino del este. Habla primero con la Anciana Brisa: el valle aún no te conoce.',
+    hint: 'Habla con la Anciana Brisa',
+  },
+  {
+    from: 'bosque', to: 'hondonada',
+    open: g => g.questIdx >= 3 || !!g.flags.fragmentTouched,
+    why: 'Las raíces del oeste se cierran como una mano. El Bosque aún no te reconoce: toca antes el Fragmento de la Ruina Antigua.',
+    hint: 'Toca el Fragmento de la Ruina Antigua',
+  },
+  {
+    from: 'costa', to: 'acantilado',
+    open: g => g.questIdx >= 6,
+    why: 'El sendero de los acantilados se pierde en una bruma salada. Habla antes con Mara: ella sabe qué caminos devuelve el mar.',
+    hint: 'Habla con Mara, la farera',
+  },
+  {
+    from: 'aldea', to: 'pantano',
+    open: g => g.questIdx >= 8,
+    why: 'La niebla del pantano no deja pasar a quien Merrow no recuerda. Devuélvele antes su nombre a la aldea.',
+    hint: 'Completa «La Aldea que Olvidó su Nombre»',
+  },
+  {
+    from: 'cumbres', to: 'glaciar',
+    open: g => g.questIdx >= 9,
+    why: 'Una ventisca muda cierra el paso del este. Mientras el Gólem de Escarcha siga en pie, el glaciar no escucha a nadie.',
+    hint: 'Derrota al Gólem de Escarcha',
+  },
 ];
 
 /** Reglas extra registradas por otros módulos (secciones nuevas). */

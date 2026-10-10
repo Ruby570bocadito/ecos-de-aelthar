@@ -31,7 +31,7 @@ import { VIEW_W, VIEW_H } from './consts';
 
 export interface Parcela { id: string; map: MapId; tx: number; ty: number; idx: number }
 
-const CUOTA: Partial<Record<string, number>> = { lunaris: 3, bosque: 3, costa: 2, aldea: 2, cumbres: 2 };
+const CUOTA: Partial<Record<string, number>> = { lunaris: 3, bosque: 3, costa: 2, aldea: 2, cumbres: 2, molino: 1, hondonada: 1, acantilado: 1, pantano: 1, glaciar: 1 }; // R18: +1 por sección nueva
 const SUELOS = new Set(['.', ',', 'S', ':']);
 const cache = new Map<string, Parcela[]>();
 

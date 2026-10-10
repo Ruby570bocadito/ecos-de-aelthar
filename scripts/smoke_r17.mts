@@ -130,7 +130,7 @@ console.log('=== 1) Balance por zona ===');
 console.log('\n=== 2) Semillas del Eco ===');
 {
   const all = eco.todasLasParcelas();
-  check('12 parcelas en 5 mapas', all.length === 12, String(all.length));
+  check('17 parcelas en 10 mapas (R18: +1 por sección nueva)', all.length === 17, String(all.length));
   check('ids únicos', new Set(all.map(s => s.id)).size === all.length);
   check('deterministas (misma elección en 2 llamadas)', JSON.stringify(eco.todasLasParcelas()) === JSON.stringify(all));
   for (const s of all) {

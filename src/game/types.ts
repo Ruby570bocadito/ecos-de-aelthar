@@ -14,12 +14,15 @@ export type Dir = 'down' | 'up' | 'left' | 'right';
 export interface Vec { x: number; y: number }
 
 export type MapId = 'lunaris' | 'bosque' | 'cripta' | 'costa' | 'aldea' | 'cumbres' | 'cuna'
-  | 'ciudadela' | 'biblioteca' | 'nombres' | 'archivo' | 'antecamara'; // R13: +cuna · R14: +La Ciudadela y sus salas
+  | 'ciudadela' | 'biblioteca' | 'nombres' | 'archivo' | 'antecamara' // R13: +cuna · R14: +La Ciudadela y sus salas
+  | 'molino' | 'hondonada' | 'acantilado' | 'pantano' | 'glaciar'; // R18: secciones nuevas de cada región
 export type Epoch = 'presente' | 'pasado' | 'aun'; // R13: +aun (solo mapas baseEpoch 'aun')
 export type TrackName = 'village' | 'forest' | 'crypt' | 'boss' | 'title' | 'costa' | 'aldea' | 'cumbres';
 
 export type EnemyType = 'lobo' | 'esqueleto' | 'sombra' | 'guardian' | 'neumo' | 'espectro' | 'arpi' | 'sirena' | 'golem' | 'vult' | 'coro' | 'ecodesg' | 'satiro' | 'heraldo' | 'sepulcro' // 16-a: jefe final del Acto IV · R10-9: mini-jefe de la cripta
-  | 'centinela' | 'raiz' | 'ahogado' | 'madre'; // R16: enemigos nuevos + jefa opcional de la Costa
+  | 'centinela' | 'raiz' | 'ahogado' | 'madre' // R16: enemigos nuevos + jefa opcional de la Costa
+  | 'cuervo' | 'arana' | 'cangrejo' | 'fatuo'  // R18: enemigos de las secciones nuevas
+  | 'reina_cuervo' | 'ciervo' | 'rey_cangrejo' | 'viuda' | 'wendigo'; // R18: mini-jefes
 export type Element = 'fuego' | 'hielo' | 'rayo' | 'sombra' | 'sagrado' | 'ninguno';
 export type StatusKind = 'quemado' | 'congelado' | 'aturdido' | 'marcado';
 
@@ -72,7 +75,8 @@ export interface ExitDef {
   label?: string;
 }
 
-export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'fragment2' | 'altarEcho' | 'sign' | 'gate' | 'wreck' | 'faro' | 'lamp' | 'plaque' | 'remains' | 'altarMinor' | 'woodsign' | 'waypost' | 'verdad' | 'campana' | 'hoguera'; // R13: +fragment2 · R10-6: +lore (plaque/remains/altarMinor/woodsign/waypost) · R14: +verdad · R15: +campana (la plaza suena) y hoguera (el descanso del caminante)
+export type PropKind = 'sanctuary' | 'forge' | 'fragment' | 'fragment2' | 'altarEcho' | 'sign' | 'gate' | 'wreck' | 'faro' | 'lamp' | 'plaque' | 'remains' | 'altarMinor' | 'woodsign' | 'waypost' | 'verdad' | 'campana' | 'hoguera'
+  | 'molino' | 'arbolviejo' | 'botella' | 'vela' | 'cristalhielo' | 'cuaderno' | 'altarsavia'; // R18: interactivos de las secciones nuevas // R13: +fragment2 · R10-6: +lore (plaque/remains/altarMinor/woodsign/waypost) · R14: +verdad · R15: +campana (la plaza suena) y hoguera (el descanso del caminante)
 
 export interface PropDef {
   id: string; kind: PropKind; x: number; y: number;
@@ -200,6 +204,7 @@ export interface Player extends Entity {
   lastHitT: number;
   castT?: number;               // R18: >0 mientras lanza una habilidad (pose de lanzar)
   sprintT?: number;             // R18: >0 mientras esprinta (pose de carrera)
+  webT?: number;                // R18: >0 atrapado en telaraña (−45% velocidad)
   hasEcho: boolean;             // cambio de época desbloqueado
   kills: number;
   deaths: number;

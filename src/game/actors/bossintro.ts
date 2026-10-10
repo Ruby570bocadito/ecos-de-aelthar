@@ -89,10 +89,17 @@ const BOSS_TITLES: ReadonlyArray<readonly [string, string]> = [
   ['EL HERALDO', 'VESH, LA ÚLTIMA NOTA'],
   ['EL SEPULCRO', 'GUARDA DEL UMBRAL'], // R10-9: mini-jefe de la antesala de la cripta
   ['LA MADRE DEL MAR', 'CANTA NANAS A LOS QUE SE AHOGAN'], // R16: jefa opcional de la Costa
+  // R18: mini-jefes de las secciones nuevas
+  ['LA REINA DE LOS CUERVOS', 'ANIDÓ EN EL MOLINO QUE SE CALLÓ'],
+  ['EL CIERVO DE CENIZA', 'GUARDA EL CORAZÓN DEL ÁRBOL VIEJO'],
+  ['EL REY CANGREJO', 'TODO LO QUE EL MAR DEVUELVE ES SUYO'],
+  ['LA VIUDA DE NIEBLA', 'LLEVA PUESTOS LOS NOMBRES DE OTROS'],
+  ['EL WENDIGO DE ESCARCHA', 'IMITA LA VOZ DE QUIEN ECHAS DE MENOS'],
 ];
 const KIND_OF: Record<string, number> = {
   guardian: 0, sirena: 1, golem: 2, vult: 3, coro: 4, heraldo: 5, sepulcro: 6, // R10-9
   madre: 7, // R16
+  reina_cuervo: 8, ciervo: 9, rey_cangrejo: 10, viuda: 11, wendigo: 12, // R18
 };
 
 // Colores constantes (el fade SIEMPRE va por globalAlpha).
@@ -179,7 +186,14 @@ const FONT: Record<string, string[]> = {
   O: [' ### ', '#   #', '#   #', '#   #', '#   #', '#   #', ' ### '],
   P: ['#### ', '#   #', '#   #', '#### ', '#    ', '#    ', '#    '],
   Q: [' ### ', '#   #', '#   #', '#   #', '#  # ', ' ### ', '   ##'],
-  R: ['#### ', '#   #', '#   #', '#### ', '#  # ', '# #  ', '#    '],
+  R: ['#### ', '#   #', '#   #', '#### ', '# #  ', '#  # ', '#   #'], // R18: pata completa (antes se leía como P)
+  // R18: letras que piden los mini-jefes nuevos (REY, VIEJO, WENDIGO…)
+  F: ['#####', '#    ', '#    ', '#### ', '#    ', '#    ', '#    '],
+  J: ['  ###', '    #', '    #', '    #', '    #', '#   #', ' ### '],
+  K: ['#   #', '#  # ', '# #  ', '##   ', '# #  ', '#  # ', '#   #'],
+  W: ['#   #', '#   #', '#   #', '# # #', '# # #', '## ##', '#   #'],
+  X: ['#   #', '#   #', ' # # ', '  #  ', ' # # ', '#   #', '#   #'],
+  Y: ['#   #', '#   #', ' # # ', '  #  ', '  #  ', '  #  ', '  #  '],
   S: [' ####', '#    ', '#    ', ' ### ', '    #', '    #', '#### '],
   T: ['#####', '  #  ', '  #  ', '  #  ', '  #  ', '  #  ', '  #  '],
   U: ['#   #', '#   #', '#   #', '#   #', '#   #', '#   #', ' ### '],

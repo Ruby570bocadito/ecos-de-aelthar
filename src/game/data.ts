@@ -3,6 +3,7 @@
 // Todo el contenido vive en datos (arquitectura del GDD)
 // ============================================================
 
+import { ENEMY_DEFS_R18 } from './data_r18'; // R18
 import type { QuestDef, DialogueNode, DialogueOption, EnemyType, Element, ToneKind, SpawnDef } from './types';
 import { INTERIOR_NPC_DIALOGUES } from './maps_interiores'; // R10-5: diálogos de interiores
 
@@ -2619,6 +2620,7 @@ export const ENEMY_DEFS_R16: Record<string, EnemyDef> = {
   },
 };
 Object.assign(ENEMY_DEFS, ENEMY_DEFS_R16);
+Object.assign(ENEMY_DEFS, ENEMY_DEFS_R18); // R18: enemigos y mini-jefes de las secciones nuevas
 
 
 // ═══════ R17 · Balance de JEFES (vida de diseño al nivel previsto) ═══════

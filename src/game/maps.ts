@@ -13,6 +13,7 @@ import { EXPANSION_MAPS } from './maps_expansion';
 import { ACTO5_MAPS } from './maps_acto5'; // R13 «La carta»: La Cuna del Canto (Acto V fase 1)
 import { ACTO5_MAPS_R14 } from './maps_acto5b'; // R14 «La Ciudadela»: la ciudad-fortaleza y sus salas (Acto V fase 2)
 import { INTERIOR_MAPS, INTERIOR_MAP_IDS } from './maps_interiores'; // R10-5: interiores de casas
+import { R18_MAPS, applyR18Links, pruneChests } from './maps_r18'; // R18: secciones nuevas de cada región
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -664,7 +665,10 @@ const INTERIOR_MAPS_BY_ID: Partial<Record<MapId, MapDef>> = {
   [INTERIOR_MAP_IDS.tienda]: INTERIOR_MAPS.tienda,
   [INTERIOR_MAP_IDS.taberna]: INTERIOR_MAPS.taberna,
 };
-export const MAPS: Record<MapId, MapDef> = { ...BASE_MAPS, ...EXPANSION_MAPS, ...ACTO5_MAPS, ...ACTO5_MAPS_R14, ...INTERIOR_MAPS_BY_ID } as Record<MapId, MapDef>;
+export const MAPS: Record<MapId, MapDef> = { ...BASE_MAPS, ...EXPANSION_MAPS, ...ACTO5_MAPS, ...ACTO5_MAPS_R14, ...INTERIOR_MAPS_BY_ID, ...R18_MAPS } as Record<MapId, MapDef>;
+// R18: los mapas viejos abren su borde hacia cada sección nueva (camino + salida)
+applyR18Links(MAPS);
+pruneChests(MAPS); // R18: menos cofres sueltos (el valor pasa a misiones y mini-jefes)
 
 /**
  * R13 · Épocas de un mapa, en orden [base, alternativa]. Convención histórica

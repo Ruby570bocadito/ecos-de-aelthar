@@ -39,6 +39,38 @@ const PALS: Record<string, HumanPal> = {
     cape: true, // capeC → bodyS violeta; bordado dorado automático
   },
 
+  // --- R18: NPCs de las secciones nuevas ---
+  aldara: {
+    // Molinera: pañuelo de trigo (hood) + delantal claro + harina en las manos
+    outline: '#2a2018', hair: '#d8b878', hairS: '#b8985a', skin: '#e8b88a',
+    body: '#a86a48', bodyS: '#7e4c32', accent: '#ece0c0',
+    legs: '#6a5440', legsS: '#54402e', boots: '#4a3424', eye: '#3a2a20', hood: true, chest: '#f0e6cc',
+  },
+  fenna: {
+    // Herbolaria: capucha de musgo, hojas en los hombros, faja de raíces
+    outline: '#18241a', hair: '#5a8a3e', hairS: '#46702e', skin: '#e0c4a0',
+    body: '#4a6a42', bodyS: '#36502e', accent: '#a87a48',
+    legs: '#4a4030', legsS: '#3a3226', boots: '#3a2c1e', eye: '#2a4a2a', hood: true, leafy: true,
+  },
+  bram: {
+    // Pescador: barba cana, chubasquero amarillo, botas de agua
+    outline: '#241e14', hair: '#c8c4b8', hairS: '#a8a498', skin: '#d8a078',
+    body: '#d8b040', bodyS: '#a8862a', accent: '#5a6a7a',
+    legs: '#3a4a5a', legsS: '#2e3a48', boots: '#2a3240', eye: '#2a2a2a', beard: '#d0ccc0',
+  },
+  ysolde: {
+    // Vieja de las velas: chal oscuro, melena blanca larga, brasa en el pecho
+    outline: '#1a1620', hair: '#ecece4', hairS: '#c8c8c0', skin: '#dcc0a8',
+    body: '#3a3448', bodyS: '#2a2436', accent: '#ffcc66',
+    legs: '#2e2a38', legsS: '#24202c', boots: '#1e1a24', eye: '#4a4a52', hairLong: true, chest: '#ffcc66',
+  },
+  haldor: {
+    // Ermitaño: pieles, barba blanca trenzada, capucha de lana
+    outline: '#202020', hair: '#e8e8e8', hairS: '#c4c4c4', skin: '#e0b090',
+    body: '#8a7a68', bodyS: '#6a5c4c', accent: '#b8c8d8',
+    legs: '#5a5048', legsS: '#4a423a', boots: '#3a3430', eye: '#3a4a5a', beard: '#f0f0f0', beardS: '#c8c8c8', hood: true, pauldrons: true,
+  },
+
   // --- NPCs de la biblia ---
   brisa: {
     // Anciana sabia: chal (hood con hair gris perla = pañoleta, ondea en

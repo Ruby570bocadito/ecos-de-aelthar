@@ -53,6 +53,9 @@ import { heroFrame, HERO_W, HERO_H, type HeroAct, type HeroDir, type HeroFrame }
 import { armorActive } from './armor';
 import { exitGate, drawGates } from './gates'; // R18: sellos de la Niebla
 import { cutsceneActive, cutsceneBars, drawCutsceneOverlay, drawCutsceneActors } from './cutscene'; // R18
+import { R18_TYPES, r18Frame, r18Ghosted } from './enemies_r18'; // R18
+import { drawPropR18 } from './world/props_r18'; // R18
+import { sqTracked } from './sidequests'; // R18
 import { raizFrame, madreFrame, centinelaFrame, ahogadoFrame, drawR16Fx } from './enemies_r16'; // R16
 import { drawCausal, drawEchoLens, drawEpochWipe, drawEpochAtmosphere, progresoSemillas, lensDisponible, todasLasParcelas } from './ecocausal'; // R17: semillas del Eco + lente + transición + atmósfera
 
@@ -445,6 +448,14 @@ function drawProps(g: Game, sx: (n: number) => number, sy: (n: number) => number
         // Acto II: props de la expansión (nave naufragada, faro, faroles de Merrow)
         drawExpansionProp(ctx, pr.kind, sx(px), sy(py), ZOOM, g.globalT, !!g.flags[pr.id]);
         break;
+      // R18: objetos de las secciones nuevas (estado según época y misión)
+      case 'molino': case 'arbolviejo': case 'botella': case 'vela': case 'cristalhielo': case 'cuaderno': case 'altarsavia': {
+        const past = g.epoch === 'pasado';
+        const on = pr.kind === 'vela' ? !!g.flags[pr.id] : pr.kind === 'arbolviejo' || pr.kind === 'altarsavia' ? !!g.flags.sq_savia_altar : false;
+        const done = pr.kind === 'molino' ? !!g.flags.reinaCuervoDerrotada : !!g.flags[pr.id];
+        drawPropR18(ctx, pr.kind, sx(px), sy(py), ZOOM, g.globalT, { past, on, done });
+        break;
+      }
       default: break;
     }
   }
@@ -504,6 +515,7 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
   if (e.kind === 'enemy' && (e as Enemy).invulT !== undefined && (e as Enemy).invulT! > 0) {
     spriteAlpha = 0.3 + Math.abs(Math.sin(g.globalT * 14)) * 0.18;
   }
+  if (e.kind === 'enemy' && r18Ghosted(e as Enemy)) spriteAlpha = 0.12; // R18: la Viuda hecha bruma
 
   // sombra (estable)
   ctx.globalAlpha = 0.3;
@@ -531,6 +543,8 @@ function drawEntity(g: Game, e: Entity, sx: (n: number) => number, sy: (n: numbe
     fi = centinelaFrame(enF);      // R16: flotación · carga · disparo
   } else if (e.kind === 'enemy' && enF.etype === 'ahogado') {
     fi = ahogadoFrame(enF);        // R16: andar arrastrado · carga · golpe
+  } else if (e.kind === 'enemy' && R18_TYPES.has(enF.etype)) {
+    fi = r18Frame(enF);            // R18: criaturas de las secciones nuevas
   } else {
     fi = entityFrame(spr, e.dir, e.moving, e.anim);
   }
@@ -1096,6 +1110,7 @@ function drawHud(g: Game) {
 
   // ---- misión (abajo-derecha) — oculta en el modo desafío: es contenido de campaña ----
   const q = g.challengeRun ? null : QUESTS[g.questIdx];
+  let qTop = VIEW_H - 10;
   if (q) {
     const lines = wrapText(g.questProgressText() ?? q.steps[g.questStep], 30);
     const qw = 216;
@@ -1103,6 +1118,17 @@ function drawHud(g: Game) {
     panel(g, VIEW_W - qw - 10, VIEW_H - qh - 10, qw, qh);
     text(g, '◆ ' + q.name, VIEW_W - qw, VIEW_H - qh + 2, 13, COL.quest);
     lines.forEach((l, i) => text(g, l, VIEW_W - qw, VIEW_H - qh + 20 + i * 14, 14, COL.text));
+    qTop = VIEW_H - qh - 10;
+  }
+  // R18: misión secundaria seguida (la del mapa actual o la última activa)
+  const sq = g.challengeRun ? null : sqTracked(g);
+  if (sq) {
+    const sl = wrapText(sq.text, 32).slice(0, 3);
+    const sw2 = 216, sh2 = 24 + sl.length * 13;
+    const y0 = qTop - sh2 - 6;
+    panel(g, VIEW_W - sw2 - 10, y0, sw2, sh2, '#4a5a3a', 'rgba(12,18,14,0.86)');
+    text(g, '◇ ' + sq.q.name, VIEW_W - sw2, y0 + 4, 12, '#c8e8a0');
+    sl.forEach((l, i) => text(g, l, VIEW_W - sw2, y0 + 18 + i * 13, 13, '#d8e0d0'));
   }
 
   // ---- barra del jefe v2 (Ronda 3): color por fase, marcas y quiebre con glow

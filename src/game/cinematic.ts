@@ -35,6 +35,9 @@ import { VIEW_W, VIEW_H } from './consts';
 import { COL, text, textShadow, button } from './ui';
 import { audio } from './audio';
 import { hash2 } from './world/palette';
+import { heroFrame, HERO_W, HERO_H } from './actors/hero'; // R18: el Portador v4 en el prólogo
+import { getSpr } from './sprites';
+
 
 // ---------------- líneas temporales ----------------
 const SCENE_DUR = [12.5, 13.5, 11.5];
@@ -111,6 +114,28 @@ function drawStars(ctx: CanvasRenderingContext2D, t: number, mul: number): void 
     R(ctx, x, y, s, s, '#e8ecff');
   }
   ctx.globalAlpha = 1;
+}
+
+// ---------------- R18: cordilleras en parallax ----------------
+// Dos capas de montañas (lejana azulada, cercana oscura) que derivan con la
+// cámara; el perfil sale de senos con hash (determinista).
+function drawRanges(ctx: CanvasRenderingContext2D, horizon: number, t: number, far: string, near: string): void {
+  for (let layer = 0; layer < 2; layer++) {
+    const amp = layer === 0 ? 96 : 52, base = horizon - (layer === 0 ? 10 : 2);
+    const drift = t * (layer === 0 ? 2 : 5);
+    ctx.fillStyle = layer === 0 ? far : near;
+    ctx.beginPath();
+    ctx.moveTo(0, horizon + 4);
+    for (let x = 0; x <= VIEW_W + 6; x += 6) {
+      const u = (x + drift) * (layer === 0 ? 0.0105 : 0.017) + layer * 3.1;
+      // crestas afiladas: 1 − |sen| da picos hacia arriba
+      const h = 0.62 * (1 - Math.abs(Math.sin(u))) + 0.38 * (1 - Math.abs(Math.sin(u * 2.17 + 1.3))) * 0.8;
+      ctx.lineTo(x, base - h * amp);
+    }
+    ctx.lineTo(VIEW_W, horizon + 4);
+    ctx.closePath();
+    ctx.fill();
+  }
 }
 
 // ---------------- EL DIOS-TEJEDOR (Aelthar) ----------------
@@ -240,6 +265,7 @@ function drawScene0(ctx: CanvasRenderingContext2D, t: number): void {
   }
   // los 5 pueblos se encienden uno a uno (cada nota llega a su casa)
   const horizon = VIEW_H * 0.78;
+  drawRanges(ctx, horizon, t, '#262e52', '#1c2240');
   const lights = VILL_X.map((_, v) => easeOut((t - (4.2 + v * 1.35)) / 0.9));
   drawValley(ctx, horizon, lights, t, 0);
   // polvo dorado de memoria (como la vieja intro, más denso)
@@ -281,17 +307,23 @@ function drawScene1(ctx: CanvasRenderingContext2D, t: number): void {
     const sway = Math.sin(t * 7 + k * 2.4) * 1.4; // trepada
     ctx.save();
     ctx.globalAlpha = 0.96;
-    // capa (silueta oscura con capucha)
-    R(ctx, gx - 7 + sway * 0.3, gy - 22, 14, 26, '#100c1a');
-    R(ctx, gx - 8 + sway * 0.3, gy - 8, 16, 12, '#0c0916');
-    R(ctx, gx - 5 + sway * 0.4, gy - 26, 10, 7, '#0c0916');          // capucha
-    R(ctx, gx - 3 + sway * 0.4, gy - 24, 3, 2, '#2a1a2e');           // sombra del rostro
-    R(ctx, gx - 7 + sway * 0.3, gy - 22, 2, 26, '#1c1428');          // borde luz de luna
-    // puñal con destello quelate
+    // R18: los asesinos de la Orden son figuras de verdad (sprite «sombra»
+    // ×3, de espaldas, trepando con el ciclo de andar) con borde de luna
+    const spr = getSpr('sombra');
+    const fr = spr[Math.min(spr.length - 1, 9 + (Math.floor(t * 7 + k * 2) % 6))] ?? spr[0]; // bloque de espaldas (andar)
+    const sc = k === 1 ? 3.4 : 3; // el del centro, el que lleva la Lanza, algo mayor
+    const fw = fr.width * sc, fh = fr.height * sc;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(fr, gx - fw / 2 + sway, gy - fh, fw, fh);
+    // borde de luz de luna (tinte frío sobre el contorno izquierdo)
+    ctx.globalAlpha = 0.18;
+    R(ctx, gx - fw / 2 + sway, gy - fh * 0.85, 3, fh * 0.7, '#8aa0d8');
+    // puñal con destello
     const gl = 0.5 + Math.abs(Math.sin(t * 5 + k)) * 0.5;
-    R(ctx, gx + 6 + sway * 0.3, gy - 14, 1, 6, '#cfd8e8');
+    ctx.globalAlpha = 1;
+    R(ctx, gx + fw / 2 - 4 + sway, gy - fh * 0.62, 2, 10, '#cfd8e8');
     ctx.globalAlpha = gl * 0.9;
-    R(ctx, gx + 6 + sway * 0.3, gy - 15, 1, 1, '#ffffff');
+    R(ctx, gx + fw / 2 - 4 + sway, gy - fh * 0.62 - 2, 2, 2, '#ffffff');
     ctx.globalAlpha = 1;
     ctx.restore();
   }
@@ -342,6 +374,7 @@ function drawScene1(ctx: CanvasRenderingContext2D, t: number): void {
     const wasLit = 1;
     return wasLit * clamp01(1 - (t - (7.2 + (VILL_X.length - 1 - v) * 0.9)) / 0.8);
   });
+  drawRanges(ctx, horizon, t, '#2a1a2c', '#1e1422');
   drawValley(ctx, horizon, lights, t, t > 7 ? 1 : 0);
   for (let f = 0; f < 3; f++) {
     const fa = clamp01((t - 6.6 - f * 0.5) / 1.2) * (0.10 + f * 0.05);
@@ -370,6 +403,7 @@ function drawScene2(ctx: CanvasRenderingContext2D, t: number, g: Game): void {
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   drawStars(ctx, t, 0.25);
   const horizon = VIEW_H * 0.62;
+  drawRanges(ctx, horizon - 6, t, '#2e3550', '#262c40');
   // ruinas lejanas en silueta (la aldea que fue)
   R(ctx, 0, horizon - 8, VIEW_W, 8, '#252b3d');
   for (let i = 0; i < 7; i++) {
@@ -396,35 +430,41 @@ function drawScene2(ctx: CanvasRenderingContext2D, t: number, g: Game): void {
     R(ctx, bx - 8, by - 30, 6, 2, '#242430'); R(ctx, bx + 3, by - 34, 7, 2, '#242430');
     R(ctx, bx - 6, by - 24, 5, 2, '#242430'); R(ctx, bx + 2, by - 20, 5, 2, '#242430');
   }
-  // EL PORTADOR: tres poses (tumbado → arrodillado → en pie) + respiración
+  // EL PORTADOR (R18: modelo v4 ×3): tumbado → de rodillas → en pie y, al
+  // final, se gira hacia el horizonte donde estaba su aldea
   const px = VIEW_W / 2 - 46, py = horizon + 40;
-  const rise = t;
-  const breathe = Math.sin(t * 2.2) * (rise > 4.6 ? 1 : 0);
-  const cloak = '#6a5a48', skin = '#e8c8a0', hair = '#4a3828', pants = '#4a4034';
-  if (rise < 2.6) {
-    // tumbado en la hierba
-    R(ctx, px - 10, py - 2, 16, 3, cloak);           // torso acostado
-    R(ctx, px + 6, py - 2, 6, 3, pants);             // piernas
-    R(ctx, px + 12, py - 3, 4, 4, skin);             // cabeza
-    R(ctx, px + 12, py - 4, 4, 2, hair);
-    R(ctx, px - 14, py - 1, 5, 2, cloak);            // brazo caído
-  } else if (rise < 4.6) {
-    // arrodillado, incorporándose (la mano empuja el suelo)
-    const k = easeInOut((rise - 2.6) / 2);
-    R(ctx, px - 4, py - 12 - k * 6, 8, 12 + k * 6, cloak);   // torso se alza
-    R(ctx, px - 3, py - 16 - k * 6, 6, 5, skin);             // cabeza
-    R(ctx, px - 3, py - 17 - k * 6, 6, 2, hair);
-    R(ctx, px + 3, py - 2, 5, 3, pants);                     // rodilla
-    R(ctx, px - 6, py - 1, 4, 2, skin);                      // mano en el suelo
+  const disc = g.player?.discipline ?? 'alba';
+  const look = { disc, armor: 0, weapon: 0 };
+  const SC = 3;
+  const hw = HERO_W * SC, hh = HERO_H * SC;
+  ctx.imageSmoothingEnabled = false;
+  // sombra en la hierba
+  ctx.globalAlpha = 0.35;
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.ellipse(px, py, 34, 7, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  if (t < 2.6) {
+    // tumbado: el cuerpo girado sobre la hierba, respira despacio
+    const cv = heroFrame(look, 'side', 'idle', 2).cv;
+    ctx.save();
+    ctx.translate(px, py - 6 + Math.sin(t * 1.6) * 1);
+    ctx.rotate(-Math.PI / 2);
+    ctx.drawImage(cv, -hh + 18, -hw / 2, hw, hh);
+    ctx.restore();
+  } else if (t < 4.6) {
+    // de rodillas, incorporándose (el cuerpo sube con el ease)
+    const k = easeInOut((t - 2.6) / 2);
+    const cv = heroFrame(look, 'down', k < 0.5 ? 'hurt' : 'idle', 0).cv;
+    const sink = (1 - k) * 34;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(px - hw, py - hh - 10, hw * 2, hh + 10 - 2); ctx.clip();
+    ctx.drawImage(cv, px - hw / 2, py - hh + sink, hw, hh);
+    ctx.restore();
   } else {
-    // en pie (mirada al horizonte, arpa pequeña en la mano)
-    R(ctx, px - 4, py - 20 + breathe, 9, 14, cloak);
-    R(ctx, px - 4, py - 20 + breathe, 2, 14, '#7e6c56');     // luz de lomo
-    R(ctx, px - 3, py - 26 + breathe, 6, 6, skin);
-    R(ctx, px - 4, py - 27 + breathe, 8, 2, hair);
-    R(ctx, px - 4, py - 6, 3, 6, pants); R(ctx, px + 1, py - 6, 3, 6, pants);
-    R(ctx, px + 5, py - 16 + breathe, 1, 7, '#e8c060');      // arpa
-    R(ctx, px + 4, py - 9 + breathe, 4, 1, '#e8c060');
+    // en pie: respira; al final mira hacia el horizonte (de espaldas)
+    const turn = t > 9.2;
+    const cv = heroFrame(look, turn ? 'up' : 'down', 'idle', Math.floor(t / 1.1) % 2).cv;
+    ctx.drawImage(cv, px - hw / 2, py - hh, hw, hh);
   }
   // BRISA (wisp): desciende y orbita al Portador
   if (t > 5) {
@@ -518,7 +558,9 @@ function caption(ctx: CanvasRenderingContext2D, g: Game, idx: number, t: number,
   const cap = CAPS[idx];
   textShadow(g, cap.title, VIEW_W / 2, VIEW_H - BAR_H - 78, 16, COL.goldSoft, '#000', 'center', true);
   R(ctx, VIEW_W / 2 - 44, VIEW_H - BAR_H - 58, 88, 1, 'rgba(240,200,74,0.55)');
-  const lines = cap.lines.match(/.{1,86}(\s|$)/g) ?? [cap.lines];
+  // R18: el subtítulo se escribe solo (≈38 caracteres/s)
+  const shown = cap.lines.slice(0, Math.max(0, Math.floor((t - 0.7) * 38)));
+  const lines = shown.match(/.{1,86}(\s|$)/g) ?? [shown];
   lines.forEach((l, i) => text(g, l.trim(), VIEW_W / 2, VIEW_H - BAR_H - 46 + i * 20, 14, COL.text, 'center'));
   ctx.globalAlpha = 1;
 }
@@ -571,10 +613,20 @@ export function drawCinematic(g: Game): void {
   // golpe del puñal (escena 1, t≈5.62 — casado con el flash)
   if (idx === 1 && !struck && cineT >= 5.62) { struck = true; audio.sfx('break'); }
 
-  // escena
+  // escena — R18: zoom lento de cámara (Ken Burns) y fundido de entrada
+  const zk = 1 + 0.045 * Math.min(1, cineT / SCENE_DUR[idx]);
+  ctx.save();
+  ctx.translate(VIEW_W / 2, VIEW_H * 0.45);
+  ctx.scale(zk, zk);
+  ctx.translate(-VIEW_W / 2, -VIEW_H * 0.45);
   if (idx === 0) drawScene0(ctx, cineT);
   else if (idx === 1) drawScene1(ctx, cineT);
   else drawScene2(ctx, cineT, g);
+  ctx.restore();
+  const fin = 1 - clamp01(cineT / 0.7);
+  const fout = clamp01((cineT - (SCENE_DUR[idx] - 0.5)) / 0.5);
+  const dip = Math.max(fin, fout);
+  if (dip > 0) { ctx.globalAlpha = dip; R(ctx, 0, 0, VIEW_W, VIEW_H, '#05060c'); ctx.globalAlpha = 1; }
 
   // vestuario + rótulos + controles
   vignette(ctx);

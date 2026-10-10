@@ -84,6 +84,7 @@
 //   (el residuo no lleva sonido propio — deliberado: es ambiente)
 // ============================================================
 
+import { drawProjectileR18 } from '../world/props_r18'; // R18
 import type { Projectile } from '../types';
 import { VIEW_W, VIEW_H } from '../consts';
 import { hash2 } from '../world/palette';
@@ -861,7 +862,7 @@ export function drawProjectileV2(
   const Y = Math.round(y);
   if (X < -32 || X > VIEW_W + 32 || Y < -32 || Y > VIEW_H + 32) return; // culling
   ensureSprs(); // lazy 1×: hornea los cuerpos estáticos (no-op después)
-  if (pr.from === 'enemy') { drawEnemyOrb(ctx, X, Y, globalT); return; }
+  if (pr.from === 'enemy') { if (drawProjectileR18(ctx, pr.sprite, X, Y, pr.vx, pr.vy, globalT)) return; drawEnemyOrb(ctx, X, Y, globalT); return; } // R18: telaraña/pluma/burbuja/velo/esquirla
   if (pr.sprite === 'p_arrow' || pr.from === 'companion') { drawArrow(ctx, X, Y, pr, globalT); return; }
   if (pr.sprite === 'p_fire' || pr.element === 'fuego') { drawFire(ctx, X, Y, pr, globalT); return; }
   if (pr.sprite === 'p_ice' || pr.element === 'hielo') { drawIce(ctx, X, Y, pr, globalT); return; }

@@ -441,6 +441,32 @@ export function interaccionInteract16b(g: Game): boolean {
 // ============================================================
 
 const RUMOR_LINES_16B: Record<MapId, string[]> = {
+  // R18: las secciones nuevas también murmuran
+  molino: [
+    'El molino dejó de girar la Noche del Silencio. Dicen que esa noche los cuervos aprendieron a hablar.',
+    'En el ayer, los campos del este eran de oro. Hoy los espantapájaros son lo único que sigue de pie.',
+    'Aldara aún muele trigo a mano. Dice que la piedra del molino se acuerda de su abuela.',
+  ],
+  hondonada: [
+    'El Árbol Viejo llora ceniza desde hace tres siglos. Nadie sabe qué perdió.',
+    'Las arañas de la Hondonada tejen con hilo de niebla: si te atrapan, olvidas por dónde venías.',
+    'Fenna habla con las raíces. Lo raro no es eso: lo raro es que le contestan.',
+  ],
+  acantilado: [
+    'El Faro Viejo se apagó antes que el de Mara. Allí arriba nadie sube desde hace cien años.',
+    'El mar devuelve botellas con mensajes de los ahogados. Bram las guarda todas, aunque no sepa leer.',
+    'Bajo los acantilados duerme algo con pinzas del tamaño de una barca.',
+  ],
+  pantano: [
+    'En el Pantano de las Velas cada llama es un nombre que la Niebla se comió. Ysolde las cuenta cada noche.',
+    'Los fuegos fatuos no son almas: son lo que queda de una vela cuando nadie recuerda por quién ardía.',
+    'Una mujer de niebla camina por el agua sin hundirse. Dicen que busca su propio nombre en los ajenos.',
+  ],
+  glaciar: [
+    'Dentro del glaciar hay un coro entero congelado a mitad de la nota.',
+    'Haldor vino a buscar a su hermano hace cuarenta inviernos. Sigue buscando.',
+    'De noche se oye al Wendigo imitar voces conocidas. No contestes aunque te llame por tu nombre.',
+  ],
   ciudadela: [
     'La Ciudadela de Vesh: tu nombre ya está escrito en la muralla, junto al de todos los que subieron. No preguntes quién lo escribió.',
     'Los lanceros llevan trescientos años de guardia. Pregúntales por qué vigilan: la pregunta no les duele, les da ternura.',

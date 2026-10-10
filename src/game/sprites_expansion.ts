@@ -39,6 +39,7 @@ import type { Frames } from './sprites';
 // R9-1: solo lectura de las filas de la expansión para hornear vecinos
 // (maps_expansion no importa nada de este módulo → sin ciclo).
 import { EXPANSION_MAPS } from './maps_expansion';
+import { R18_BIOME } from './maps_r18'; // R18: pintores por bioma de las secciones nuevas
 
 // ---------------- utilidades locales ----------------
 
@@ -131,20 +132,46 @@ function nbBits(a: Uint8Array | null, tx: number, ty: number, shift: number): nu
   return (a[(ty << 6) | tx] >> shift) & 15;
 }
 
-function initTileContext(): void {
-  const agua = (ch: string) => ch === '~' || ch === 'x' || ch === 'B';
+const aguaCh = (ch: string) => ch === '~' || ch === 'x' || ch === 'B';
+function ctxCosta(rows: string[]): void {
   // costa: agua a 1 y a 2 pasos (empaquetadas en un byte) + arena vecina
-  const c1 = ring1(EXPANSION_MAPS.costa.rows, agua);
+  const c1 = ring1(rows, aguaCh);
   const c2 = ring2(c1);
   const costaAgua = new Uint8Array(64 * 64);
   for (let i = 0; i < costaAgua.length; i++) costaAgua[i] = c1[i] | (c2[i] << 4);
   CX_COSTA_AGUA = costaAgua;
-  CX_COSTA_ARENA = ring1(EXPANSION_MAPS.costa.rows, (ch) => ch === 's');
+  CX_COSTA_ARENA = ring1(rows, (ch) => ch === 's');
+}
+function ctxAldea(rows: string[]): void {
   // aldea: hierba reclaimando el empedrado + laguna
-  CX_ALDEA_HIERBA = ring1(EXPANSION_MAPS.aldea.rows, (ch) => ch === '.' || ch === 'c');
-  CX_ALDEA_AGUA = ring1(EXPANSION_MAPS.aldea.rows, agua);
+  CX_ALDEA_HIERBA = ring1(rows, (ch) => ch === '.' || ch === 'c');
+  CX_ALDEA_AGUA = ring1(rows, aguaCh);
+}
+function ctxCumbres(rows: string[]): void {
   // cumbres: lago helado (orillas del hielo)
-  CX_CUMBRES_HIELO = ring1(EXPANSION_MAPS.cumbres.rows, (ch) => ch === 'i');
+  CX_CUMBRES_HIELO = ring1(rows, (ch) => ch === 'i');
+}
+function initTileContext(): void {
+  ctxCosta(EXPANSION_MAPS.costa.rows);
+  ctxAldea(EXPANSION_MAPS.aldea.rows);
+  ctxCumbres(EXPANSION_MAPS.cumbres.rows);
+}
+
+let ctxPrepared = '';
+/**
+ * R18: las secciones nuevas se pintan con los pintores de su BIOMA (acantilado
+ * → costa, pantano → aldea, glaciar → cumbres). Su autotiling necesita los
+ * vecinos de SUS filas: se recalculan antes de pintar el suelo de cada mapa
+ * (y se restauran al volver a los mapas originales).
+ */
+export function prepareTileContext(mapId: string, rows: string[]): void {
+  const key = mapId + '|' + rows.length;
+  if (ctxPrepared === key) return;
+  ctxPrepared = key;
+  const biome = R18_BIOME[mapId] ?? mapId;
+  if (biome === 'costa') ctxCosta(rows);
+  else if (biome === 'aldea') ctxAldea(rows);
+  else if (biome === 'cumbres') ctxCumbres(rows);
 }
 
 // ============================================================
@@ -835,6 +862,22 @@ export function drawExpansionTile(
   const r = hash2(tx, ty);
   const r2 = hash2(tx * 7 + 3, ty * 11 + 5);
   const r3 = hash2(tx * 13 + 1, ty * 3 + 7);
+  // R18: en la nieve, el suelo bajo pinos y rocas también es nieve (antes
+  // caía al pintor genérico y cada pino/roca se veía sobre un cuadrado verde)
+  if (mapId === 'cumbres' && (ch === 'p' || ch === 't' || ch === 'R')) {
+    drawExpansionTile(x, 'S', tx, ty, mapId);
+    if (ch === 'R') {
+      const ox = px0 + 2 + Math.floor(r * 3), oy = py0 + 3 + Math.floor(r2 * 3);
+      x.fillStyle = 'rgba(40,50,70,0.28)'; x.fillRect(ox + 1, oy + 9, 11, 3);          // sombra
+      x.fillStyle = '#6a7080'; x.fillRect(ox, oy + 3, 12, 8);
+      x.fillStyle = '#80869a'; x.fillRect(ox + 1, oy + 2, 9, 3);
+      x.fillStyle = '#545a6a'; x.fillRect(ox + 8, oy + 5, 4, 6);
+      x.fillStyle = '#f0f6ff'; x.fillRect(ox + 1, oy + 1, 8, 2); x.fillRect(ox + 2, oy, 5, 1);   // capa de nieve
+      x.fillStyle = '#dfe8f6'; x.fillRect(ox + 9, oy + 2, 2, 1);
+      if (r3 > 0.5) { x.fillStyle = '#9aa0b0'; x.fillRect(ox + 3, oy + 6, 2, 1); }
+    }
+    return true;
+  }
   switch (ch) {
     case 's': { // —— COSTA · arena v4: gradación húmeda + espuma + tesoros de marea
       const a1 = nbBits(CX_COSTA_AGUA, tx, ty, 0);

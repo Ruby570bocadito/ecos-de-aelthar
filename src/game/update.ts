@@ -41,6 +41,8 @@ import { tickGrimoire } from './skilltree'; // R18: recargas de la página ocult
 import { exitGate, bumpGate } from './gates'; // R18: sellos de la Niebla (progresión por historia)
 import { cutsceneActive, cutsceneTick, cutsceneBarsTick } from './cutscene'; // R18
 import { storyBeatsTick, storyBeatsForced } from './storybeats'; // R18
+import { R18_TYPES, r18Tick } from './enemies_r18'; // R18: enemigos de las secciones nuevas
+import { relicTick, relicSpeedMult } from './sidequests'; // R18: reliquias
 
 // R6-V10 · Calidad adaptativa (consumidor de perf.ts): multiplicador de partículas
 // COSMÉTICAS según el escalón que perfFrame ya calcula (alta=×1 · media=×0.6 · baja=×0.35).
@@ -404,8 +406,10 @@ export function updateGame(g: Game, dt: number) {
       // control normal (tiles no helados): la memoria de hielo se resetea
       im.vx = 0;
       im.vy = 0;
-      // R18: velocidad objetivo (sprint ×1,45) perseguida con inercia corta
-      const top = spd * (sprinting ? SPRINT_MULT : 1);
+      // R18: velocidad objetivo (sprint ×1,45 · Pluma de la Reina ×1,08 ·
+      // telaraña ×0,55) perseguida con inercia corta
+      if ((p.webT ?? 0) > 0) p.webT = Math.max(0, (p.webT ?? 0) - dt);
+      const top = spd * (sprinting ? SPRINT_MULT : 1) * relicSpeedMult(g) * ((p.webT ?? 0) > 0 ? 0.55 : 1);
       const tvx = mx !== 0 || my !== 0 ? (mx / mlen) * top : 0;
       const tvy = mx !== 0 || my !== 0 ? (my / mlen) * top : 0;
       const kA = 1 - Math.exp(-dt * (mx !== 0 || my !== 0 ? 30 : 38));
@@ -644,6 +648,7 @@ export function updateGame(g: Game, dt: number) {
   es.length = aliveE;
   if (g.bossRef && g.bossRef.dead) g.bossRef = null;
   audio.setCombat(anyAggro);
+  relicTick(g, dt, anyAggro); // R18: efectos continuos de la reliquia equipada
 
   // ---------------- jefe: activación (generalizada Acto II) ----------------
   const bossSpawn = g.map.spawns.find(s => s.zone === 'boss');
@@ -651,7 +656,8 @@ export function updateGame(g: Game, dt: number) {
     const boss = g.enemies.find(e => e.etype === bossSpawn.type);
     if (boss) {
       g.bossRef = boss;
-      if (dist2(p.x, p.y, boss.x, boss.y) < 190 * 190) {
+      const wakeR = R18_TYPES.has(boss.etype) ? 120 : 190; // R18: los mini-jefes despiertan de cerca
+      if (dist2(p.x, p.y, boss.x, boss.y) < wakeR * wakeR) {
         g.bossActive = true;
         audio.playTrack('boss');
         // terror v2 (Ronda 2): capa de pavor + presentación cinematográfica
@@ -773,6 +779,8 @@ export function updateGame(g: Game, dt: number) {
           dead = true;
         } else if (p.iframes <= 0 && p.rollT <= 0) {
           g.damagePlayer(pr.dmg, pr.x, pr.y);
+          // R18: la telaraña de la Araña Tejedora ralentiza
+          if (pr.sprite === 'web') { p.webT = 1.8; g.floatAt(p.x, p.y - 24, '¡atrapado!', '#d8d0f0', 6); }
           dead = true;
         }
       }
@@ -1090,6 +1098,7 @@ function updateEnemy(g: Game, e: Enemy, dt: number) {
   if (e.invulT !== undefined && e.invulT > 0) e.invulT -= dt;
   if (EXPANSION_TYPES.has(e.etype) && expansionTick(g, e, dt, def)) return;
   if (R16_TYPES.has(e.etype) && r16Tick(g, e, dt, def)) return; // R16: cerebros propios
+  if (R18_TYPES.has(e.etype) && r18Tick(g, e, dt, def)) return; // R18: cerebros de las secciones nuevas
 
   const d2 = dist2(e.x, e.y, p.x, p.y);
   const nightMult = curNightMult; // R5-O10: isNight memoizado 1×/frame en updateGame
