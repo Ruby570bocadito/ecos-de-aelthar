@@ -1139,3 +1139,17 @@ Work Log:
 
 Stage Summary:
 - Ronda 18 verificada de punta a punta en vivo: todos los bugs de la lista del usuario corregidos y comprobados en pantalla (facing, retrato de Brisa en smokes, cripta accesible por rutas, faro con 3 NPCs únicos, altares custodiados, transiciones de acto con interludios, Costa/Cumbres profesionales, jefes y héroe rehechos). Pendiente permanente: push a GitHub (sin token válido ni remote en este entorno).
+
+---
+Task ID: 18-cierre
+Agent: Super Z (agente principal — cierre Ronda 18)
+Task: Verificación final integral y estado de entrega.
+
+Work Log:
+- Sin instrumentación de debug residual; npx tsc --noEmit → 0 errores; dev server 200 OK.
+- Batería 18/18 smokes VERDE (incl. los 7 nuevos de R18: rutas, costa_bioma, cumbres_bioma, jefes_sprites, faro, hero_fx, interludios).
+- Commits locales: 512f82e (R18) + 4b26a5f (hotfixes E2E). Árbol limpio.
+- PUSH BLOQUEADO de nuevo: este entorno NO tiene remote configurado ni token válido (el repo .zpackage con remote desapareció con el reset del entorno; los tokens anteriores del usuario fueron revocados por seguridad). Pendiente: que el usuario aporte un token nuevo para volver a enlazar https://github.com/Ruby570bocadito/ecos-de-aelthar y empujar.
+
+Stage Summary:
+- Ronda 18 completa, verificada (18/18 smokes + tsc 0 + E2E en vivo) y comprometida en git local. La sesión lanzó 6 agentes de creación (18-a bioma costa, 18-b bioma cumbres, 18-c sprites de jefes/enemigos, 18-d héroe/retratos/fx, 18-e faro-historia, 18-f interludios/barrera) + integrador/E2E del principal; los 2 agentes que murieron por timeout entregaron su código y fue verificado y completado por el integrador.
